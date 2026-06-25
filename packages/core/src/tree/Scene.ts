@@ -31,11 +31,8 @@ export class Scene {
       isPointInside() {
         return false;
       }
-      render(r: any) {
-        for (const child of this.children) {
-          child.render(r);
-        }
-      }
+      // Root renders nothing itself — renderNode() handles all child traversal.
+      render(_r: any) {}
     })('root');
 
     this.renderer = new CanvasRenderer(canvas);
