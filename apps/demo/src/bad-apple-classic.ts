@@ -61,6 +61,13 @@ async function bootstrap() {
   video.crossOrigin = 'anonymous';
   video.loop = true;
   video.muted = true;
+  video.style.position = 'absolute';
+  video.style.top = '50px';
+  video.style.left = '20px';
+  video.style.width = '240px';
+  video.style.border = '2px solid rgba(255,255,255,0.3)';
+  video.style.zIndex = '100';
+  document.body.appendChild(video);
   video.play();
 
   // 离屏 Canvas (Offscreen) 像素采样器
@@ -188,8 +195,9 @@ function setupNavBar() {
   nav.innerHTML = `
     <b style="color: #38bdf8;">Vectomancy Pro</b>
     <a href="#physics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">📚 Hooke's Law Physics Text</a>
-    <a href="#bad-apple-lyrics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🎵 Bad Apple: Lyrics Reflow</a>
-    <a href="#bad-apple-classic" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🍎 Bad Apple: Classic Matrix</a>
+    <a href="#bad-apple-lyrics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🎵 Lyrics Reflow</a>
+    <a href="#bad-apple-classic" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🍎 Classic Matrix</a>
+    <a href="#bad-apple-variable" style="color: #fca5a5; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">✨ Variable Font ASCII (Pretext)</a>
   `;
   document.body.appendChild(nav);
 }

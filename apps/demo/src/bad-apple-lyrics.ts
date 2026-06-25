@@ -34,7 +34,7 @@ I've forgotten how to tell. Did I ever even know?
 Can I take another step? I've done everything I can
 All the people that I see I will never understand
 If I find a way to change, if I step into the light
-Then I'll never be the same, and it all will fade to white `.repeat(20);
+Then I'll never be the same, and it all will fade to white `.repeat(100);
 
 class LyricsMaskEntity extends Entity {
   private layoutEngine: LayoutEngine;
@@ -63,6 +63,8 @@ class LyricsMaskEntity extends Entity {
     this.offCanvas.height = this.ROWS;
     this.offCtx = this.offCanvas.getContext('2d', { willReadFrequently: true })!;
     this.offCtx.imageSmoothingEnabled = false;
+
+    this.y = 50; // Offset below the navigation bar
   }
 
   isPointInside() {
@@ -98,7 +100,8 @@ class LyricsMaskEntity extends Entity {
     };
 
     // 3. 启动 V8 Intl.Segmenter 全局折行引擎！(60FPS 实时计算万字折行)
-    const res = this.layoutEngine.layoutText(this.text, this.atlas, this.fontSize, exclusionMask);
+    // Pass empty atlas {} for standard monospace width fallback
+    const res = this.layoutEngine.layoutText(this.text, {}, this.fontSize, exclusionMask);
     this.nodes = res.nodes;
   }
 
@@ -108,7 +111,7 @@ class LyricsMaskEntity extends Entity {
       renderer.save();
       // 这里使用原生 fillText 演示极限性能
       renderer.translate(node.x, node.y + this.fontSize * 0.8);
-      renderer.fillText(node.char, 0, 0, `bold ${this.fontSize}px sans-serif`, '#ffffff');
+      renderer.fillText(node.char, 0, 0, `bold ${this.fontSize}px monospace`, '#ffffff');
       renderer.restore();
     }
   }
@@ -238,8 +241,9 @@ function setupNavBar() {
   nav.innerHTML = `
     <b style="color: #38bdf8;">Vectomancy Pro</b>
     <a href="#physics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">📚 Hooke's Law Physics Text</a>
-    <a href="#bad-apple-lyrics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🎵 Bad Apple: Lyrics Reflow</a>
-    <a href="#bad-apple-classic" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🍎 Bad Apple: Classic Matrix</a>
+    <a href="#bad-apple-lyrics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🎵 Lyrics Reflow</a>
+    <a href="#bad-apple-classic" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🍎 Classic Matrix</a>
+    <a href="#bad-apple-variable" style="color: #fca5a5; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">✨ Variable Font ASCII (Pretext)</a>
   `;
   document.body.appendChild(nav);
 }
