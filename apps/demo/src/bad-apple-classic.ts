@@ -81,6 +81,9 @@ async function bootstrap() {
   // 修复重叠幻影：关闭硬件双线性插值，保持极致锐利的像素边缘
   ctx.imageSmoothingEnabled = false;
 
+  // 预分配 asciiGrid 数组，消除每帧 GC
+  const asciiGrid = Array.from({ length: ROWS });
+
   // 暴力劫持 ECS 的逐帧 Update 钩子
   const originalUpdate = grid.update.bind(grid);
   grid.update = (dt: number, time: number) => {
@@ -93,7 +96,6 @@ async function bootstrap() {
       // 2. 瞬间提取所有的像素数据
       const imageData = ctx.getImageData(0, 0, COLS, ROWS).data;
 
-      const asciiGrid = [];
       for (let r = 0; r < ROWS; r++) {
         let rowStr = '';
         for (let c = 0; c < COLS; c++) {
@@ -108,7 +110,7 @@ async function bootstrap() {
           const charIdx = Math.floor((contrast / 255) * (DENSITY.length - 1));
           rowStr += DENSITY[charIdx];
         }
-        asciiGrid.push(rowStr);
+        asciiGrid[r] = rowStr;
       }
       // 3. 将 9600 个字符塞回底层 ECS 实体！
       grid.updateGrid(asciiGrid);

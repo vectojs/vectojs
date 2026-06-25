@@ -195,13 +195,15 @@ async function bootstrap() {
   const ctx = offCanvas.getContext('2d', { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = false;
 
+  // 预分配 newGrid 数组以消除每帧 GC 分配
+  const newGrid = Array.from({ length: COLS * ROWS });
+
   const origUpdate = gridEntity.update.bind(gridEntity);
   gridEntity.update = (dt: number, time: number) => {
     origUpdate(dt, time);
     if (video.readyState >= video.HAVE_CURRENT_DATA) {
       ctx.drawImage(video, 0, 0, COLS, ROWS);
       const imgData = ctx.getImageData(0, 0, COLS, ROWS).data;
-      const newGrid = new Array(COLS * ROWS);
       for (let i = 0; i < COLS * ROWS; i++) {
         const idx = i * 4;
         const b = Math.floor((imgData[idx] + imgData[idx + 1] + imgData[idx + 2]) / 3);

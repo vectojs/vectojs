@@ -1,4 +1,4 @@
-import { Scene, Entity, LayoutEngine, GlyphAtlas } from '@vecto/core';
+import { Scene, Entity } from '@vecto/core';
 import { setupNavBar } from './shared/navBar';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 
@@ -207,7 +207,7 @@ async function bootstrap() {
     }
   });
 
-  window.addEventListener('pointerup', (e) => {
+  window.addEventListener('pointerup', () => {
     if (dragged) {
       // Give a little fling velocity from pointer movement (simple approximation)
       dragged.vx = (Math.random() - 0.5) * 3;

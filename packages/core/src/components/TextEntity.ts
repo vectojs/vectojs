@@ -1,5 +1,5 @@
 import { Entity } from '../tree/Entity';
-import { LayoutEngine, LayoutResult, LayoutNode } from '../layout/LayoutEngine';
+import { LayoutEngine } from '../layout/LayoutEngine';
 import { IRenderer } from '../renderer/IRenderer';
 
 export class TextEntity extends Entity {

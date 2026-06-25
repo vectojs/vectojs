@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LayoutEngine, GlyphAtlas } from '../src/layout/LayoutEngine';
+import { LayoutEngine, GlyphAtlas, LayoutResultBuffer } from '../src/layout/LayoutEngine';
 
 describe('LayoutEngine', () => {
   const mockFontAtlas: GlyphAtlas = {
@@ -90,5 +90,19 @@ describe('LayoutEngine', () => {
     expect(result.nodes[0].x).toBe(0);
     expect(result.nodes[1].char).toBe('好');
     expect(result.nodes[1].x).toBe(32); // advances by glyph width
+  });
+
+  it('should layout text into buffer correctly', () => {
+    const engine = new LayoutEngine(100, 200);
+    const buffer = new LayoutResultBuffer();
+
+    engine.layoutTextIntoBuffer('A B', mockFontAtlas, 32, buffer);
+    expect(buffer.count).toBe(3); // 'A', ' ', 'B'
+    expect(buffer.chars[0]).toBe('A');
+    expect(buffer.xs[0]).toBe(0);
+    expect(buffer.chars[1]).toBe(' ');
+    expect(buffer.xs[1]).toBe(20);
+    expect(buffer.chars[2]).toBe('B');
+    expect(buffer.xs[2]).toBe(30);
   });
 });

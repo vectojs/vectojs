@@ -94,7 +94,7 @@ class PhysicsTextbookEntity extends Entity {
   private _worker: Worker | null = null;
   private _sab: SharedArrayBuffer | null = null;
 
-  constructor(text: string, atlas: any) {
+  constructor(text: string, _atlas: any) {
     super();
     this.layoutEngine = new LayoutEngine(window.innerWidth - 100, window.innerHeight);
 

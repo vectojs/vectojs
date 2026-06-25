@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-We currently support the following versions of Vectomancy:
+We currently support the following versions of VectoUI:
 
 | Version | Supported          |
 | ------- | ------------------ |

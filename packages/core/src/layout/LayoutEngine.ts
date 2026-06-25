@@ -176,6 +176,109 @@ export class LayoutEngine {
       totalHeight: currentY,
     };
   }
+
+  /**
+   * Lay out a Unicode string directly into a pre-allocated {@link LayoutResultBuffer}.
+   *
+   * Avoids GC allocations by writing results directly to flat typed arrays in the buffer.
+   *
+   * @param text - The raw text string to lay out.
+   * @param fontAtlas - Pre-measured glyph metrics keyed by grapheme character.
+   * @param fontSize - Target font size in pixels.
+   * @param buffer - The pre-allocated buffer to write layout results into.
+   * @param exclusionMask - Optional collision-detection callback.
+   */
+  public layoutTextIntoBuffer(
+    text: string,
+    fontAtlas: GlyphAtlas,
+    fontSize: number,
+    buffer: LayoutResultBuffer,
+    exclusionMask?: (x: number, y: number, w: number, h: number) => boolean,
+  ): void {
+    buffer.reset();
+    let currentX = 0;
+    let currentY = 0;
+    const lineHeight = fontSize * 1.5;
+
+    const paragraphs = text.split('\n');
+
+    for (const paragraph of paragraphs) {
+      if (paragraph.length === 0) {
+        currentY += lineHeight;
+        currentX = 0;
+        continue;
+      }
+
+      const segments = this.wordSegmenter.segment(paragraph);
+
+      for (const segment of segments) {
+        const word = segment.segment;
+
+        let wordWidth = 0;
+        const graphemes = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
+
+        for (const char of graphemes) {
+          const glyphInfo = fontAtlas[char];
+          wordWidth += glyphInfo
+            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
+            : fontSize * 0.5;
+        }
+
+        if (currentX + wordWidth > this.maxWidth && currentX > 0) {
+          if (segment.isWordLike === false && word.trim().length === 0) {
+            continue;
+          }
+          currentX = 0;
+          currentY += lineHeight;
+        }
+
+        for (const char of graphemes) {
+          if (buffer.count >= LayoutResultBuffer.CAPACITY) break;
+
+          const glyphInfo = fontAtlas[char];
+          const charWidth = glyphInfo
+            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
+            : fontSize * 0.5;
+
+          let foundSpot = false;
+          while (currentY < this.maxHeight) {
+            if (currentX + charWidth > this.maxWidth && currentX > 0) {
+              currentX = 0;
+              currentY += lineHeight;
+              continue;
+            }
+
+            if (exclusionMask && exclusionMask(currentX, currentY, charWidth, fontSize)) {
+              currentX += charWidth;
+              continue;
+            }
+
+            foundSpot = true;
+            break;
+          }
+
+          if (!foundSpot || currentY >= this.maxHeight) break;
+
+          if (currentX === 0 && char.trim().length === 0) {
+            continue;
+          }
+
+          const idx = buffer.count;
+          buffer.chars[idx] = char;
+          buffer.xs[idx] = currentX;
+          buffer.ys[idx] = currentY;
+          buffer.ws[idx] = charWidth;
+          buffer.hs[idx] = fontSize;
+          buffer.count++;
+
+          currentX += charWidth;
+        }
+      }
+
+      currentX = 0;
+      currentY += lineHeight;
+    }
+  }
 }
 
 /**
@@ -193,7 +296,7 @@ export class LayoutResultBuffer {
   /** Heights of each glyph. */
   hs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Character for each glyph slot. */
-  chars: string[] = new Array(LayoutResultBuffer.CAPACITY);
+  chars: string[] = Array.from({ length: LayoutResultBuffer.CAPACITY });
   /** Number of valid glyphs written in this buffer. */
   count: number = 0;
 

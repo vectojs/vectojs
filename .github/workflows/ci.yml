@@ -21,3 +21,5 @@ jobs:
         run: cd packages/core && bunx vitest run
       - name: Lint
         run: bunx oxlint packages/core/src
+      - name: Build demo app
+        run: cd apps/demo && bun run build

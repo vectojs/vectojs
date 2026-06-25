@@ -1,4 +1,4 @@
-import { Scene, Entity, LayoutEngine, LayoutNode } from '@vecto/core';
+import { Scene, Entity, LayoutEngine, LayoutResultBuffer } from '@vecto/core';
 import { setupNavBar } from './shared/navBar';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 
@@ -40,7 +40,7 @@ Then I'll never be the same, and it all will fade to white `.repeat(15);
 
 class LyricsMaskEntity extends Entity {
   private layoutEngine: LayoutEngine;
-  private nodes: LayoutNode[] = [];
+  private buffer: LayoutResultBuffer;
   public text: string = '';
   public fontSize = 16;
   public atlas: any;
@@ -58,6 +58,7 @@ class LyricsMaskEntity extends Entity {
     this.atlas = atlas;
     this.video = video;
     this.layoutEngine = new LayoutEngine(window.innerWidth, window.innerHeight);
+    this.buffer = new LayoutResultBuffer();
 
     // 建立一个低分辨率的隐藏离屏碰撞贴图，用于 60FPS 极速判断
     this.offCanvas = document.createElement('canvas');
@@ -115,17 +116,27 @@ class LyricsMaskEntity extends Entity {
     };
 
     // 3. 仅在视频帧变化时重排 (帧率受视频 FPS 限制，而非 rAF 60fps)
-    const res = this.layoutEngine.layoutText(this.text, {}, this.fontSize, exclusionMask);
-    this.nodes = res.nodes;
+    this.layoutEngine.layoutTextIntoBuffer(
+      this.text,
+      {},
+      this.fontSize,
+      this.buffer,
+      exclusionMask,
+    );
   }
 
   render(renderer: any) {
     // 极速渲染管线
-    for (const node of this.nodes) {
+    const count = this.buffer.count;
+    const chars = this.buffer.chars;
+    const xs = this.buffer.xs;
+    const ys = this.buffer.ys;
+
+    for (let i = 0; i < count; i++) {
       renderer.save();
       // 这里使用原生 fillText 演示极限性能
-      renderer.translate(node.x, node.y + this.fontSize * 0.8);
-      renderer.fillText(node.char, 0, 0, `bold ${this.fontSize}px monospace`, '#ffffff');
+      renderer.translate(xs[i], ys[i] + this.fontSize * 0.8);
+      renderer.fillText(chars[i], 0, 0, `bold ${this.fontSize}px monospace`, '#ffffff');
       renderer.restore();
     }
   }

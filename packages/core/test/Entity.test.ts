@@ -82,4 +82,26 @@ describe('Entity Component System', () => {
     child.emit('click', {});
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it('animate() queue and step-by-step update interpolation', () => {
+    const entity = new Entity();
+    entity.x = 100;
+
+    // Start animation
+    entity.animate({ x: 200 } as any, 100);
+
+    // First frame initialization (time = 0)
+    entity.update(0, 0);
+    expect(entity.x).toBe(100);
+
+    // Half way (time = 50)
+    // progress = 0.5, easeOut = 0.5 * (2 - 0.5) = 0.75
+    // value = 100 + (200 - 100) * 0.75 = 175
+    entity.update(50, 50);
+    expect(entity.x).toBe(175);
+
+    // Finished (time = 100)
+    entity.update(50, 100);
+    expect(entity.x).toBe(200);
+  });
 });

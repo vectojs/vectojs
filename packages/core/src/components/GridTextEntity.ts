@@ -28,7 +28,7 @@ export class GridTextEntity extends Entity {
     this.cols = ascii[0]?.length || 0;
   }
 
-  public isPointInside(globalX: number, globalY: number): boolean {
+  public isPointInside(_globalX: number, _globalY: number): boolean {
     return false; // Interactive disabled for pure perf test
   }
 
