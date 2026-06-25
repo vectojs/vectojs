@@ -23,6 +23,13 @@ const mockCtx = {
   createLinearGradient: vi.fn(() => ({
     addColorStop: vi.fn(),
   })),
+  // Mutable style state set by CanvasRenderer fill/stroke/fillText.
+  fillStyle: '' as string,
+  strokeStyle: '' as string,
+  lineWidth: 1,
+  lineCap: '' as string,
+  lineJoin: '' as string,
+  font: '',
   canvas: null as any,
 };
 
@@ -46,6 +53,7 @@ describe('CanvasRenderer', () => {
   it('constructor sets size with dpr scaling', () => {
     mockCtx.scale.mockClear();
     const renderer = new CanvasRenderer(mockCanvas as any);
+    expect(renderer).toBeDefined();
     expect(mockCanvas.width).toBe(2048); // 1024 * 2 (dpr)
     expect(mockCanvas.height).toBe(1536); // 768 * 2 (dpr)
     expect(mockCtx.scale).toHaveBeenCalledWith(2, 2);

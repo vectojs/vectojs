@@ -1,4 +1,4 @@
-import { Scene, Entity } from '@vecto/core';
+import { Scene, Entity } from '@vecto-ui/core';
 import { setupNavBar } from './shared/navBar';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 
@@ -196,7 +196,7 @@ async function bootstrap() {
   ctx.imageSmoothingEnabled = false;
 
   // 预分配 newGrid 数组以消除每帧 GC 分配
-  const newGrid = Array.from({ length: COLS * ROWS });
+  const newGrid: BrightnessEntry[] = Array.from({ length: COLS * ROWS }, () => lookup[0]);
 
   const origUpdate = gridEntity.update.bind(gridEntity);
   gridEntity.update = (dt: number, time: number) => {
