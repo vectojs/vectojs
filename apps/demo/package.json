@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@vecto/core": "workspace:*"
+    "@vecto-ui/core": "workspace:*"
   },
   "devDependencies": {
     "vite": "^8.1.0"

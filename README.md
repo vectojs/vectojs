@@ -49,7 +49,7 @@ Traditional DOM frameworks (React, Vue) cause Reflow/Repaint bottlenecks when an
 ## Quick Start
 
 ```typescript
-import { Scene, Entity, IRenderer } from '@vecto/core';
+import { Scene, Entity, IRenderer } from '@vecto-ui/core';
 
 class CircleEntity extends Entity {
   isPointInside(x: number, y: number) {

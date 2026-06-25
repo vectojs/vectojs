@@ -1,11 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Entity } from '../src/tree/Entity';
-import { Scene } from '../src/tree/Scene';
+
+// Entity is abstract; use a minimal concrete subclass for tests.
+class TestEntity extends Entity {
+  isPointInside(): boolean {
+    return false;
+  }
+  render(): void {}
+}
 
 describe('Entity Component System', () => {
   it('should manage children correctly', () => {
-    const parent = new Entity('parent');
-    const child = new Entity('child');
+    const parent = new TestEntity('parent');
+    const child = new TestEntity('child');
 
     parent.add(child);
     expect(parent.children.length).toBe(1);
@@ -17,10 +24,10 @@ describe('Entity Component System', () => {
   });
 
   it('should compute global position correctly', () => {
-    const parent = new Entity();
+    const parent = new TestEntity();
     parent.setPosition(100, 100);
 
-    const child = new Entity();
+    const child = new TestEntity();
     child.setPosition(50, 50);
 
     parent.add(child);
@@ -31,7 +38,7 @@ describe('Entity Component System', () => {
   });
 
   it('should emit events correctly', () => {
-    const entity = new Entity();
+    const entity = new TestEntity();
     const mockHandler = vi.fn();
 
     entity.on('click', mockHandler);
@@ -41,19 +48,19 @@ describe('Entity Component System', () => {
   });
 
   it('should chain add() calls fluently', () => {
-    const parent = new Entity();
-    const a = new Entity();
-    const b = new Entity();
+    const parent = new TestEntity();
+    const a = new TestEntity();
+    const b = new TestEntity();
     parent.add(a).add(b);
     expect(parent.children.length).toBe(2);
   });
 
   it('should compute deeply nested global position', () => {
-    const grandparent = new Entity();
+    const grandparent = new TestEntity();
     grandparent.setPosition(50, 50);
-    const parent = new Entity();
+    const parent = new TestEntity();
     parent.setPosition(20, 20);
-    const child = new Entity();
+    const child = new TestEntity();
     child.setPosition(10, 10);
     grandparent.add(parent);
     parent.add(child);
@@ -63,7 +70,7 @@ describe('Entity Component System', () => {
   });
 
   it('off() removes a specific listener', () => {
-    const entity = new Entity();
+    const entity = new TestEntity();
     const handler = vi.fn();
     entity.on('click', handler);
     entity.off('click', handler);
@@ -72,8 +79,8 @@ describe('Entity Component System', () => {
   });
 
   it('destroy() clears listeners and detaches from parent', () => {
-    const parent = new Entity();
-    const child = new Entity();
+    const parent = new TestEntity();
+    const child = new TestEntity();
     const handler = vi.fn();
     parent.add(child);
     child.on('click', handler);
@@ -84,7 +91,7 @@ describe('Entity Component System', () => {
   });
 
   it('animate() queue and step-by-step update interpolation', () => {
-    const entity = new Entity();
+    const entity = new TestEntity();
     entity.x = 100;
 
     // Start animation
@@ -106,13 +113,13 @@ describe('Entity Component System', () => {
   });
 
   it('should compute global position under parent scale and rotation', () => {
-    const parent = new Entity();
+    const parent = new TestEntity();
     parent.setPosition(100, 100);
     parent.scaleX = 2;
     parent.scaleY = 0.5;
     parent.rotation = Math.PI / 2;
 
-    const child = new Entity();
+    const child = new TestEntity();
     child.setPosition(50, 0);
 
     parent.add(child);

@@ -8,6 +8,7 @@
     "strict": true,
     "allowJs": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "esModuleInterop": true,
     "noEmit": true,
@@ -19,7 +20,7 @@
 
     "baseUrl": ".",
     "paths": {
-      "@vecto/*": ["packages/*/src"]
+      "@vecto-ui/*": ["packages/*/src"]
     }
   },
 

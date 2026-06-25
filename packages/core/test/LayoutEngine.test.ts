@@ -51,7 +51,7 @@ describe('LayoutEngine', () => {
     const engine = new LayoutEngine(100, 200);
 
     // Mask out the region x=[20, 50], so 'B' should be pushed
-    const mask = (x: number, y: number, w: number, h: number) => {
+    const mask = (x: number, y: number, w: number, _h: number) => {
       // If any part of the character overlaps [20, 50]
       return x < 50 && x + w > 20 && y === 0;
     };
