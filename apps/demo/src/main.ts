@@ -1,11 +1,13 @@
-import { Scene, TextEntity } from '@vecto/core';
+import { Scene, GridTextEntity } from '@vecto/core';
+
+// 字符密度表：从最亮到最暗 (越亮的像素用越密集的字符表示)
+const DENSITY = '@%#*+=-:. ';
 
 async function bootstrap() {
-  // Fix HMR overlapping: Hard reset the body DOM!
   document.body.innerHTML = '';
   document.body.style.margin = '0';
   document.body.style.overflow = 'hidden';
-  document.body.style.backgroundColor = '#0f172a';
+  document.body.style.backgroundColor = '#000000';
 
   const canvasParent = document.createElement('div');
   canvasParent.style.position = 'relative';
@@ -21,41 +23,90 @@ async function bootstrap() {
 
   const scene = new Scene(canvas);
 
-  // Load the mathematically extracted font curves
   const res = await fetch('/ast/font_glyph_map.json');
   const atlas = await res.json();
 
-  const text = new TextEntity(
-    'Vecto Agent Mode 🤖\n1. Shadow DOM Synced\n2. Math Gradients 🌈\n3. Click this box!',
-    atlas,
-    window.innerWidth - 100,
-    48, // Reduced font size to fit gracefully
-  );
+  // Bad Apple 专用矩阵 (120x80)
+  const COLS = 120;
+  const ROWS = 80;
 
-  text.id = 'demo-text'; // Explicit ID for Agent Automation Tooling
-  text.setPosition(50, 100);
+  const grid = new GridTextEntity(atlas, 12);
+  grid.fillStyle = '#ffffff';
 
-  // Setup Gradient Fill
-  const gradient = scene.getRenderer().createLinearGradient(0, 0, 800, 400, [
-    { stop: 0, color: '#f59e0b' },
-    { stop: 0.5, color: '#ec4899' },
-    { stop: 1, color: '#8b5cf6' },
-  ]);
-  text.fillStyle = gradient;
-  text.hoveredFillStyle = '#ffffff';
+  // 居中放置这个巨大的文字矩阵
+  grid.setPosition((window.innerWidth - COLS * 12) / 2, (window.innerHeight - ROWS * 13.2) / 2);
+  scene.add(grid);
 
-  // Agent / Automation test handler
-  text.on('click', () => {
-    // Spring morphing animation
-    text.animate({ scaleX: 1.1, scaleY: 0.9 }, 150);
-    setTimeout(() => text.animate({ scaleX: 0.95, scaleY: 1.05 }, 150), 150);
-    setTimeout(() => text.animate({ scaleX: 1.0, scaleY: 1.0 }, 200), 300);
-  });
+  // 挂载隐藏的原生视频标签
+  const video = document.createElement('video');
+  video.src = '/bad-apple.mp4';
+  video.crossOrigin = 'anonymous';
+  video.loop = true;
+  video.muted = true;
+  video.play();
 
-  scene.add(text);
+  // 离屏 Canvas (Offscreen) 像素采样器
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = COLS;
+  offCanvas.height = ROWS;
+  const ctx = offCanvas.getContext('2d', { willReadFrequently: true })!;
+
+  // 暴力劫持 ECS 的逐帧 Update 钩子
+  const originalUpdate = grid.update.bind(grid);
+  grid.update = (dt: number, time: number) => {
+    originalUpdate(dt, time);
+
+    // 如果视频准备好了
+    if (video.readyState >= video.HAVE_CURRENT_DATA) {
+      // 1. 把视频当前帧硬绘制到极其微小的离屏 Canvas 上
+      ctx.drawImage(video, 0, 0, COLS, ROWS);
+      // 2. 瞬间提取所有的像素数据
+      const imageData = ctx.getImageData(0, 0, COLS, ROWS).data;
+
+      const asciiGrid = [];
+      for (let r = 0; r < ROWS; r++) {
+        let rowStr = '';
+        for (let c = 0; c < COLS; c++) {
+          const idx = (r * COLS + c) * 4;
+          // RGB 取平均值计算明度
+          const brightness = (imageData[idx] + imageData[idx + 1] + imageData[idx + 2]) / 3;
+
+          // 明度 (0-255) 映射到 DENSITY 字符串表
+          const charIdx = Math.floor((brightness / 255) * (DENSITY.length - 1));
+          rowStr += DENSITY[charIdx];
+        }
+        asciiGrid.push(rowStr);
+      }
+      // 3. 将 9600 个字符塞回底层 ECS 实体！
+      grid.updateGrid(asciiGrid);
+    }
+  };
+
   scene.start();
-
   setupFPSMonitor();
+
+  // 提供音频交互
+  const instruction = document.createElement('div');
+  instruction.style.position = 'absolute';
+  instruction.style.top = '50%';
+  instruction.style.left = '50%';
+  instruction.style.transform = 'translate(-50%, -50%)';
+  instruction.style.color = '#fff';
+  instruction.style.fontFamily = 'monospace';
+  instruction.style.fontSize = '24px';
+  instruction.style.cursor = 'pointer';
+  instruction.style.padding = '20px';
+  instruction.style.border = '2px dashed #fff';
+  instruction.style.backgroundColor = 'rgba(0,0,0,0.8)';
+  instruction.innerText = '🎬 Click to Start Bad Apple';
+  canvasParent.appendChild(instruction);
+
+  instruction.addEventListener('click', () => {
+    video.muted = false;
+    video.currentTime = 0;
+    video.play();
+    instruction.style.display = 'none';
+  });
 }
 
 function setupFPSMonitor() {
@@ -77,7 +128,7 @@ function setupFPSMonitor() {
     frames++;
     const now = performance.now();
     if (now - lastTime >= 1000) {
-      fpsEl.textContent = `FPS: ${frames} | ECS Mode + Shadow A11y`;
+      fpsEl.textContent = `FPS: ${frames} | Bad Apple 9,600 Math Entities`;
       frames = 0;
       lastTime = now;
     }
