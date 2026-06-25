@@ -40,7 +40,9 @@ describe('TextEntity', () => {
   it('constructor lays out text and sets size', () => {
     const textEntity = new TextEntity('A', mockAtlas, 200, 24);
     expect(textEntity.text).toBe('A');
-    expect(textEntity.width).toBe(200); // LayoutEngine sets totalWidth to maxWidth
+    // width is the actual laid-out text width (glyph 'A' = 24 at fontSize 24),
+    // not maxWidth — see LayoutEngine.totalWidth fix.
+    expect(textEntity.width).toBe(24);
     expect(textEntity.height).toBe(36); // fontSize (24) * 1.5
   });
 

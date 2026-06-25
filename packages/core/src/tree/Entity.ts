@@ -227,12 +227,16 @@ export abstract class Entity {
     let py = this.y;
     let curr = this.parent;
     while (curr && curr.id !== 'root') {
+      // Match Scene.loop's Canvas transform order (translate -> scale -> rotate):
+      // world = parent.pos + S(R(local)). Scale applies per-axis to the rotated
+      // vector. The previous code mixed scaleX/scaleY into the rotation terms,
+      // which was wrong whenever scaleX !== scaleY and rotation !== 0.
       const cos = Math.cos(curr.rotation);
       const sin = Math.sin(curr.rotation);
-      const rx = px * curr.scaleX * cos - py * curr.scaleY * sin;
-      const ry = px * curr.scaleX * sin + py * curr.scaleY * cos;
-      px = curr.x + rx;
-      py = curr.y + ry;
+      const rotatedX = px * cos - py * sin;
+      const rotatedY = px * sin + py * cos;
+      px = curr.x + curr.scaleX * rotatedX;
+      py = curr.y + curr.scaleY * rotatedY;
       curr = curr.parent;
     }
     return { x: px, y: py };

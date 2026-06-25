@@ -109,6 +109,7 @@ export class LayoutEngine {
     const layoutNodes: LayoutNode[] = [];
     let currentX = 0;
     let currentY = 0;
+    let maxLineWidth = 0;
     const lineHeight = fontSize * 1.5;
 
     // Hard split by forced newlines first
@@ -190,6 +191,7 @@ export class LayoutEngine {
           });
 
           currentX += charWidth;
+          if (currentX > maxLineWidth) maxLineWidth = currentX;
         }
       }
 
@@ -200,7 +202,7 @@ export class LayoutEngine {
 
     return {
       nodes: layoutNodes,
-      totalWidth: this.maxWidth,
+      totalWidth: maxLineWidth,
       totalHeight: currentY,
     };
   }

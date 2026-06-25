@@ -124,8 +124,27 @@ describe('Entity Component System', () => {
 
     parent.add(child);
 
+    // Matches the Canvas T*S*R order used by Scene.loop:
+    // R(50,0)@90° = (0,50); S(0,50) with (2,0.5) = (0,25); + parent (100,100) = (100,125).
     const pos = child.getGlobalPosition();
     expect(pos.x).toBeCloseTo(100);
-    expect(pos.y).toBeCloseTo(200);
+    expect(pos.y).toBeCloseTo(125);
+  });
+
+  it('non-uniform scale + rotation matches Canvas T*S*R transform', () => {
+    const parent = new TestEntity();
+    parent.setPosition(0, 0);
+    parent.scaleX = 3;
+    parent.scaleY = 5;
+    parent.rotation = Math.PI / 2;
+
+    const child = new TestEntity();
+    child.setPosition(10, 20);
+    parent.add(child);
+
+    // R(10,20)@90° = (-20,10); S with (3,5) = (-60,50); + parent (0,0) = (-60,50).
+    const pos = child.getGlobalPosition();
+    expect(pos.x).toBeCloseTo(-60);
+    expect(pos.y).toBeCloseTo(50);
   });
 });

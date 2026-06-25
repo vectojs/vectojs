@@ -78,6 +78,21 @@ describe('LayoutEngine', () => {
     expect(result.nodes.length).toBe(0);
   });
 
+  it('totalWidth reflects the longest line, not maxWidth', () => {
+    const engine = new LayoutEngine(500, 200);
+    // 'A B' fits on one line: A(20) + ' '(10) + B(20) = 50, well under maxWidth 500.
+    const result = engine.layoutText('A B', mockFontAtlas, 32);
+    expect(result.totalWidth).toBe(50);
+  });
+
+  it('totalWidth is the max across multiple lines', () => {
+    const engine = new LayoutEngine(200, 200);
+    // 'AB\nA': line1 'AB' = 40, line2 'A' = 20 -> longest line is 40 (< maxWidth 200,
+    // so a buggy `return maxWidth` would give 200, not 40).
+    const result = engine.layoutText('AB\nA', mockFontAtlas, 32);
+    expect(result.totalWidth).toBe(40);
+  });
+
   it('should advance CJK characters correctly', () => {
     const engine = new LayoutEngine(200, 200);
     const cjkAtlas: GlyphAtlas = {
