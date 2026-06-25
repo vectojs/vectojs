@@ -71,4 +71,24 @@ describe('LayoutEngine', () => {
     expect(nodeC.char).toBe('C');
     expect(nodeC.x).toBe(80);
   });
+
+  it('should handle empty string without crashing', () => {
+    const engine = new LayoutEngine(200, 200);
+    const result = engine.layoutText('', mockFontAtlas, 32);
+    expect(result.nodes.length).toBe(0);
+  });
+
+  it('should advance CJK characters correctly', () => {
+    const engine = new LayoutEngine(200, 200);
+    const cjkAtlas: GlyphAtlas = {
+      你: { width: 32, baseSize: 32, ast: null },
+      好: { width: 32, baseSize: 32, ast: null },
+    };
+    const result = engine.layoutText('你好', cjkAtlas, 32);
+    expect(result.nodes.length).toBe(2);
+    expect(result.nodes[0].char).toBe('你');
+    expect(result.nodes[0].x).toBe(0);
+    expect(result.nodes[1].char).toBe('好');
+    expect(result.nodes[1].x).toBe(32); // advances by glyph width
+  });
 });

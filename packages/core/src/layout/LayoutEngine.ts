@@ -146,3 +146,43 @@ export class LayoutEngine {
     };
   }
 }
+
+/**
+ * Pre-allocated buffer for zero-GC layout results.
+ * Reuse a single instance across frames by calling reset() before each layout pass.
+ */
+export class LayoutResultBuffer {
+  static readonly CAPACITY = 16384;
+  /** X positions of each glyph. */
+  xs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Y positions of each glyph. */
+  ys: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Widths of each glyph. */
+  ws: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Heights of each glyph. */
+  hs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Character for each glyph slot. */
+  chars: string[] = new Array(LayoutResultBuffer.CAPACITY);
+  /** Number of valid glyphs written in this buffer. */
+  count: number = 0;
+
+  /** Reset the buffer for reuse. Does NOT free memory. */
+  reset(): void {
+    this.count = 0;
+  }
+
+  /** Convert to the standard LayoutResult format (allocates — use sparingly). */
+  toLayoutResult(): LayoutResult {
+    const nodes: LayoutNode[] = [];
+    for (let i = 0; i < this.count; i++) {
+      nodes.push({
+        char: this.chars[i],
+        x: this.xs[i],
+        y: this.ys[i],
+        width: this.ws[i],
+        height: this.hs[i],
+      });
+    }
+    return { nodes, totalWidth: 0, totalHeight: 0 };
+  }
+}
