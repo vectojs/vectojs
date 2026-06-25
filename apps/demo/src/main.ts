@@ -7,6 +7,8 @@ async function loadDemo() {
     await import('./bad-apple-lyrics.ts');
   } else if (hash === '#bad-apple-classic') {
     await import('./bad-apple-classic.ts');
+  } else if (hash === '#bad-apple-variable') {
+    await import('./bad-apple-variable.ts');
   } else {
     await import('./physics.ts');
   }
