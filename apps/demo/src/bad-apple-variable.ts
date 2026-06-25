@@ -121,10 +121,7 @@ class VariableGridEntity extends Entity {
   render(renderer: any) {
     if (this.grid.length === 0) return;
 
-    // Set background
     renderer.save();
-    renderer.fillStyle = '#000000';
-    renderer.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
@@ -152,6 +149,7 @@ async function bootstrap() {
   document.body.innerHTML = '';
   document.body.style.margin = '0';
   document.body.style.overflow = 'hidden';
+  document.body.style.backgroundColor = '#000000';
 
   const canvasParent = document.createElement('div');
   canvasParent.style.position = 'relative';

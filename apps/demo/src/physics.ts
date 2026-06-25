@@ -40,8 +40,8 @@ class PhysicsChar {
   update(left?: PhysicsChar, right?: PhysicsChar) {
     // 物理参数
     const kRest = 0.02; // 趋向原始位置的恢复力
-    const kNeighbor = 0.25; // 邻居之间的弹簧拉力 (Hooke's Law)
-    const damp = 0.82; // 空气阻力与内摩擦损耗
+    const kNeighbor = 0.15; // 邻居之间的弹簧拉力 (Hooke's Law) - 降低拉力防止爆炸
+    const damp = 0.75; // 空气阻力与内摩擦损耗 - 增加阻尼防震荡
 
     let fx = (this.targetX - this.x) * kRest;
     let fy = (this.targetY - this.y) * kRest;
@@ -65,6 +65,14 @@ class PhysicsChar {
     this.vy += fy;
     this.vx *= damp;
     this.vy *= damp;
+
+    // 添加速度上限（防止因为鼠标拖拽力过大导致弹簧体系崩溃）
+    const maxV = 20;
+    const vMag = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (vMag > maxV) {
+      this.vx = (this.vx / vMag) * maxV;
+      this.vy = (this.vy / vMag) * maxV;
+    }
 
     this.x += this.vx;
     this.y += this.vy;
