@@ -1,6 +1,26 @@
 {
   "name": "@xuepoo/core",
   "version": "0.1.0",
+  "description": "A zero-DOM, Canvas 2D Entity Component System (ECS) rendering framework — 60 FPS with 100,000+ entities.",
+  "keywords": [
+    "canvas",
+    "ecs",
+    "fourier",
+    "spline",
+    "rendering",
+    "60fps",
+    "typescript",
+    "vectorization"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xuepoo/vecto-ui.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xuepoo/vecto-ui/issues"
+  },
+  "homepage": "https://github.com/Xuepoo/vecto-ui#readme",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
