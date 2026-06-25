@@ -71,8 +71,9 @@ async function main() {
   const ptWrap = join(tmp, 'pt.ts');
   writeFileSync(
     coreWrap,
-    `import { LayoutEngine } from ${JSON.stringify(join(REPO, 'packages/core/src/index.ts'))};\n` +
-      `(globalThis).VectoLayout = LayoutEngine;\n`,
+    `import { LayoutEngine, createCanvasMeasurer } from ${JSON.stringify(join(REPO, 'packages/core/src/index.ts'))};\n` +
+      `(globalThis).VectoLayout = LayoutEngine;\n` +
+      `(globalThis).VectoMeasurer = createCanvasMeasurer;\n`,
   );
   writeFileSync(
     ptWrap,
@@ -95,6 +96,7 @@ async function main() {
     domLines: number;
     pretextLines: number;
     fallbackLines: number;
+    measuredLines: number;
     atlasLines: number;
     pretextPrepMs: number;
     pretextLayoutMs: number;
@@ -113,6 +115,7 @@ async function main() {
           VectoLayout: new (
             w: number,
             h: number,
+            measurer?: unknown,
           ) => {
             layoutText: (
               t: string,
@@ -120,6 +123,7 @@ async function main() {
               fs: number,
             ) => { nodes: { y: number }[] };
           };
+          VectoMeasurer: (fontFamily?: string, baseSize?: number) => unknown;
           Pretext: {
             prepare: (t: string, f: string) => unknown;
             layout: (p: unknown, w: number, lh: number) => { lineCount: number };
@@ -180,6 +184,13 @@ async function main() {
           const fallbackLines = distinctLines(
             new g.VectoLayout(maxWidth, 1e7).layoutText(c.text, {}, c.fontSize).nodes,
           );
+          // Empty atlas + canvas measurer (the #1 fix): real per-glyph widths
+          // for non-atlas text, family taken from the case's CSS font.
+          const family = c.font.replace(/^\s*\d+(?:\.\d+)?px\s*/, '') || 'sans-serif';
+          const measurer = g.VectoMeasurer(family, c.fontSize);
+          const measuredLines = distinctLines(
+            new g.VectoLayout(maxWidth, 1e7, measurer).layoutText(c.text, {}, c.fontSize).nodes,
+          );
           const atlasLines = distinctLines(
             new g.VectoLayout(maxWidth, 1e7).layoutText(c.text, atlas, c.fontSize).nodes,
           );
@@ -197,6 +208,7 @@ async function main() {
             domLines,
             pretextLines,
             fallbackLines,
+            measuredLines,
             atlasLines,
             pretextPrepMs: +pretextPrepMs.toFixed(3),
             pretextLayoutMs: +pretextLayoutMs.toFixed(3),
@@ -217,11 +229,11 @@ async function main() {
   const acc = [
     `Accuracy — line count vs DOM ground truth (maxWidth=${MAX_WIDTH}px, ${CHAR_LIMIT} char cap):`,
     '',
-    '| Case | chars | DOM truth | pretext | vecto (atlas) | vecto (fallback) |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '| Case | chars | DOM truth | pretext | vecto (atlas) | vecto (measurer) | vecto (0.5em fallback) |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...results.map(
       (r) =>
-        `| ${r.id} | ${r.chars} | ${r.domLines} | ${err(r.pretextLines, r.domLines)} | ${err(r.atlasLines, r.domLines)} | ${err(r.fallbackLines, r.domLines)} |`,
+        `| ${r.id} | ${r.chars} | ${r.domLines} | ${err(r.pretextLines, r.domLines)} | ${err(r.atlasLines, r.domLines)} | ${err(r.measuredLines, r.domLines)} | ${err(r.fallbackLines, r.domLines)} |`,
     ),
   ];
   const perf = [

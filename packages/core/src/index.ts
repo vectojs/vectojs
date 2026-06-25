@@ -6,4 +6,5 @@ export * from './components/TextEntity';
 export * from './components/GridTextEntity';
 export * from './components/SplineEntity';
 export * from './layout/LayoutEngine';
+export * from './layout/measure';
 export * from './math/SpatialHashGrid';

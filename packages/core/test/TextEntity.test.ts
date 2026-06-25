@@ -2,6 +2,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { TextEntity } from '../src/components/TextEntity';
 
+// jsdom doesn't implement canvas getContext; stub it so the shared font
+// measurer takes its portable null-fallback without logging "Not implemented".
+HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
 const mockAtlas = {
   A: {
     width: 24,

@@ -16,6 +16,11 @@ import {
  * (line-breaking, transforms, caching) rather than one class in isolation.
  */
 
+// jsdom doesn't implement canvas getContext; stub it so the shared font
+// measurer takes its portable null-fallback without logging "Not implemented".
+// Per-instance getContext overrides (see sceneWithRecorder) still win.
+HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
 // A recording 2D context so a real Scene + CanvasRenderer can be driven and the
 // emitted draw calls inspected.
 function recordingCtx() {
