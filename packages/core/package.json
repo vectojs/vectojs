@@ -1,6 +1,6 @@
 {
   "name": "@xuepoo/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A zero-DOM, Canvas 2D Entity Component System (ECS) rendering framework — 60 FPS with 100,000+ entities.",
   "keywords": [
     "canvas",
