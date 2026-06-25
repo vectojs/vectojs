@@ -77,6 +77,47 @@ export interface IRenderer {
   closePath(): void;
 
   /**
+   * Add a circular arc to the current path.
+   *
+   * @param x - X of the arc center.
+   * @param y - Y of the arc center.
+   * @param radius - Arc radius in pixels.
+   * @param startAngle - Start angle in radians (0 = 3 o'clock).
+   * @param endAngle - End angle in radians.
+   * @param counterclockwise - If `true`, draws the arc counter-clockwise.
+   */
+  arc(
+    x: number,
+    y: number,
+    radius: number,
+    startAngle: number,
+    endAngle: number,
+    counterclockwise?: boolean,
+  ): void;
+
+  /**
+   * Add a rounded rectangle to the current path.
+   *
+   * @param x - Left edge.
+   * @param y - Top edge.
+   * @param width - Rectangle width.
+   * @param height - Rectangle height.
+   * @param radii - Corner radius (uniform) or per-corner array as accepted by `CanvasRenderingContext2D.roundRect()`.
+   */
+  roundRect(x: number, y: number, width: number, height: number, radii: number | number[]): void;
+
+  /**
+   * Draw an image or video frame into the canvas.
+   *
+   * @param source - The image source (HTMLImageElement, HTMLVideoElement, HTMLCanvasElement, etc.).
+   * @param dx - Destination X.
+   * @param dy - Destination Y.
+   * @param dw - Destination width.
+   * @param dh - Destination height.
+   */
+  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void;
+
+  /**
    * Fill the current path with the given color or gradient.
    *
    * @param colorOrGradient - CSS color string or a gradient object.

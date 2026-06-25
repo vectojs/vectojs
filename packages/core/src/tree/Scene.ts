@@ -75,6 +75,24 @@ export class Scene {
     return this;
   }
 
+  /**
+   * Remove a top-level entity from the scene graph and clean up its
+   * accessibility shadow element.
+   *
+   * @param entity - The entity to detach from the scene root.
+   * @returns `this` for method chaining.
+   */
+  public remove(entity: Entity): this {
+    this.root.remove(entity);
+    // Clean up A11y shadow element
+    const el = this.a11yElements.get(entity.id);
+    if (el) {
+      el.remove();
+      this.a11yElements.delete(entity.id);
+    }
+    return this;
+  }
+
   private setupEvents(): void {
     window.addEventListener('resize', () => {
       this.renderer.resize(window.innerWidth, window.innerHeight);

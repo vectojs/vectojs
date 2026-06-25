@@ -55,6 +55,9 @@ export class CanvasRenderer implements IRenderer {
     this.height = height;
     this.ctx.canvas.width = width * dpr;
     this.ctx.canvas.height = height * dpr;
+    // Sync CSS size so the logical and physical sizes match on HiDPI screens
+    this.ctx.canvas.style.width = `${width}px`;
+    this.ctx.canvas.style.height = `${height}px`;
     this.ctx.scale(dpr, dpr);
   }
 
@@ -113,6 +116,28 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   closePath(): void {
     this.ctx.closePath();
+  }
+
+  /** @inheritdoc */
+  arc(
+    x: number,
+    y: number,
+    radius: number,
+    startAngle: number,
+    endAngle: number,
+    counterclockwise?: boolean,
+  ): void {
+    this.ctx.arc(x, y, radius, startAngle, endAngle, counterclockwise);
+  }
+
+  /** @inheritdoc */
+  roundRect(x: number, y: number, width: number, height: number, radii: number | number[]): void {
+    this.ctx.roundRect(x, y, width, height, radii as any);
+  }
+
+  /** @inheritdoc */
+  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
+    this.ctx.drawImage(source, dx, dy, dw, dh);
   }
 
   /** @inheritdoc */

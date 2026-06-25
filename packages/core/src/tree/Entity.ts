@@ -176,6 +176,34 @@ export abstract class Entity {
   }
 
   /**
+   * Remove a previously registered event listener.
+   *
+   * @param event - The event name to stop listening to.
+   * @param callback - The exact handler reference passed to {@link on}.
+   * @returns `this` for method chaining.
+   */
+  public off(event: VectoEvent, callback: (e: any) => void): this {
+    const handlers = this.listeners.get(event);
+    if (handlers) {
+      const idx = handlers.indexOf(callback);
+      if (idx !== -1) handlers.splice(idx, 1);
+    }
+    return this;
+  }
+
+  /**
+   * Tear down this entity: clear all animations, event listeners, and detach
+   * from parent. Call before discarding an entity to prevent memory leaks.
+   */
+  public destroy(): void {
+    this.animations = [];
+    this.listeners.clear();
+    if (this.parent) {
+      this.parent.remove(this);
+    }
+  }
+
+  /**
    * Dispatch a {@link VectoEvent} to all registered listeners on this entity.
    *
    * @param event - The event name to dispatch.

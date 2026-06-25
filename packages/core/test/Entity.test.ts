@@ -61,4 +61,25 @@ describe('Entity Component System', () => {
     expect(pos.x).toBe(80);
     expect(pos.y).toBe(80);
   });
+
+  it('off() removes a specific listener', () => {
+    const entity = new Entity();
+    const handler = vi.fn();
+    entity.on('click', handler);
+    entity.off('click', handler);
+    entity.emit('click', {});
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('destroy() clears listeners and detaches from parent', () => {
+    const parent = new Entity();
+    const child = new Entity();
+    const handler = vi.fn();
+    parent.add(child);
+    child.on('click', handler);
+    child.destroy();
+    expect(parent.children.length).toBe(0);
+    child.emit('click', {});
+    expect(handler).not.toHaveBeenCalled();
+  });
 });
