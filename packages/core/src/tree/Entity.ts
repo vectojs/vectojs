@@ -23,6 +23,13 @@ export abstract class Entity {
   public rotation: number = 0;
   public opacity: number = 1;
 
+  // A11y & Automation Agent Layer
+  public interactive: boolean = false;
+  public width: number = 0;
+  public height: number = 0;
+  public a11yOffsetX: number = 0;
+  public a11yOffsetY: number = 0;
+
   protected listeners: Map<VectoEvent, Array<(e: any) => void>> = new Map();
   private animations: Array<any> = [];
 
@@ -42,7 +49,6 @@ export abstract class Entity {
     return this;
   }
 
-  // Animation Tweening Engine
   public animate(targetProps: Partial<this>, durationMs: number): this {
     this.animations.push({
       target: targetProps,
@@ -65,19 +71,17 @@ export abstract class Entity {
 
       const progress = Math.min((time - anim.startTime) / anim.duration, 1);
 
-      // Interpolate
       for (const key in anim.target) {
         const start = anim.startProps[key];
         const end = anim.target[key];
         if (typeof start === 'number' && typeof end === 'number') {
-          // Basic EaseOutQuad interpolation
           const easeOut = progress * (2 - progress);
           (this as any)[key] = start + (end - start) * easeOut;
         }
       }
 
       if (progress >= 1) {
-        this.animations.shift(); // remove finished animation
+        this.animations.shift();
       }
     }
   }
