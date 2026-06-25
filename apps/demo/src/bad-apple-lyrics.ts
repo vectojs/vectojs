@@ -1,4 +1,5 @@
 import { Scene, Entity, LayoutEngine, LayoutNode } from '@vecto/core';
+import { setupNavBar } from './shared/navBar';
 
 // HMR 热更新终极杀手：全局拦截并销毁旧的死循环
 if ((window as any).__VECTO_HMR_CLEANUP) {
@@ -162,7 +163,7 @@ async function bootstrap() {
 
   scene.start();
   setupFPSMonitor();
-  setupNavBar();
+  setupNavBar('#bad-apple-lyrics');
 
   // 提供音频交互
   const instruction = document.createElement('div');
@@ -221,29 +222,3 @@ function setupFPSMonitor() {
 }
 
 bootstrap();
-
-function setupNavBar() {
-  const nav = document.createElement('div');
-  nav.style.position = 'fixed';
-  nav.style.top = '0';
-  nav.style.left = '0';
-  nav.style.width = '100%';
-  nav.style.zIndex = '9999';
-  nav.style.background = 'rgba(0,0,0,0.8)';
-  nav.style.color = 'white';
-  nav.style.padding = '10px';
-  nav.style.fontFamily = 'monospace';
-  nav.style.display = 'flex';
-  nav.style.gap = '20px';
-  nav.style.alignItems = 'center';
-  nav.style.borderBottom = '1px solid #444';
-
-  nav.innerHTML = `
-    <b style="color: #38bdf8;">Vectomancy Pro</b>
-    <a href="#physics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">📚 Hooke's Law Physics Text</a>
-    <a href="#bad-apple-lyrics" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🎵 Lyrics Reflow</a>
-    <a href="#bad-apple-classic" style="color: #fff; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">🍎 Classic Matrix</a>
-    <a href="#bad-apple-variable" style="color: #fca5a5; text-decoration: none;" onclick="setTimeout(()=>location.reload(), 10)">✨ Variable Font ASCII (Pretext)</a>
-  `;
-  document.body.appendChild(nav);
-}
