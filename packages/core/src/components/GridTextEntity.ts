@@ -35,13 +35,6 @@ export class GridTextEntity extends Entity {
   public render(renderer: IRenderer): void {
     if (this.rows === 0) return;
 
-    renderer.save();
-    // 修复：注入底层 Entity 的空间变换矩阵，使得 setPosition 生效，完美居中！
-    renderer.translate(this.x, this.y);
-    renderer.scale(this.scaleX, this.scaleY);
-    renderer.rotate(this.rotation);
-    renderer.setGlobalAlpha(this.alpha);
-
     for (let r = 0; r < this.rows; r++) {
       const row = this.grid[r];
       if (!row) continue;
@@ -60,6 +53,5 @@ export class GridTextEntity extends Entity {
         renderer.restore();
       }
     }
-    renderer.restore();
   }
 }

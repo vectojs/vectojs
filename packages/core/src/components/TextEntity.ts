@@ -1,6 +1,5 @@
 import { Entity } from '../tree/Entity';
-// @ts-ignore
-import { LayoutEngine } from '../layout/LayoutEngine.js';
+import { LayoutEngine, LayoutResult, LayoutNode } from '../layout/LayoutEngine';
 import { IRenderer } from '../renderer/IRenderer';
 
 export class TextEntity extends Entity {
