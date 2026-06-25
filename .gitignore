@@ -16,6 +16,7 @@ coverage/
 
 # Benchmark output
 scripts/.bench-results.json
+scripts/.compare-results.json
 
 # Logs
 *.log
