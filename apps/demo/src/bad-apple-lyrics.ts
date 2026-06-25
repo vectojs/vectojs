@@ -34,7 +34,7 @@ I've forgotten how to tell. Did I ever even know?
 Can I take another step? I've done everything I can
 All the people that I see I will never understand
 If I find a way to change, if I step into the light
-Then I'll never be the same, and it all will fade to white `.repeat(100);
+Then I'll never be the same, and it all will fade to white `.repeat(15);
 
 class LyricsMaskEntity extends Entity {
   private layoutEngine: LayoutEngine;

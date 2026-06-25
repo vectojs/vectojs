@@ -203,9 +203,7 @@ async function bootstrap() {
       for (let i = 0; i < COLS * ROWS; i++) {
         const idx = i * 4;
         const b = Math.floor((imgData[idx] + imgData[idx + 1] + imgData[idx + 2]) / 3);
-        // Force high contrast for Bad Apple
-        const contrast = b > 127 ? 255 : 0;
-        newGrid[i] = lookup[contrast];
+        newGrid[i] = lookup[b];
       }
       gridEntity.grid = newGrid;
     }
