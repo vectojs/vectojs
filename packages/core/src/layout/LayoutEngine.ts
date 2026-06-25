@@ -42,7 +42,8 @@ export class LayoutEngine {
   public maxHeight: number;
   private wordSegmenter: Intl.Segmenter;
   private charSegmenter: Intl.Segmenter;
-  private wordCache: Map<string, Array<{ segment: string; isWordLike: boolean }>> = new Map();
+  private wordCache: Map<string, Array<{ segment: string; isWordLike: boolean | undefined }>> =
+    new Map();
   private graphemeCache: Map<string, string[]> = new Map();
 
   constructor(maxWidth: number, maxHeight: number) {
@@ -56,27 +57,29 @@ export class LayoutEngine {
     this.charSegmenter = new Intl.Segmenter(locale, { granularity: 'grapheme' });
   }
 
-  private getWordSegments(paragraph: string): Array<{ segment: string; isWordLike: boolean }> {
-    let cached = this.wordCache.get(paragraph);
-    if (!cached) {
-      cached = Array.from(this.wordSegmenter.segment(paragraph)).map((s) => ({
-        segment: s.segment,
-        isWordLike: s.isWordLike,
-      }));
-      if (this.wordCache.size > 500) this.wordCache.clear();
-      this.wordCache.set(paragraph, cached);
-    }
-    return cached;
+  private getWordSegments(
+    paragraph: string,
+  ): Array<{ segment: string; isWordLike: boolean | undefined }> {
+    const cached = this.wordCache.get(paragraph);
+    if (cached) return cached;
+
+    const fresh = Array.from(this.wordSegmenter.segment(paragraph)).map((s) => ({
+      segment: s.segment,
+      isWordLike: s.isWordLike,
+    }));
+    if (this.wordCache.size > 500) this.wordCache.clear();
+    this.wordCache.set(paragraph, fresh);
+    return fresh;
   }
 
   private getGraphemes(word: string): string[] {
-    let cached = this.graphemeCache.get(word);
-    if (!cached) {
-      cached = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
-      if (this.graphemeCache.size > 2000) this.graphemeCache.clear();
-      this.graphemeCache.set(word, cached);
-    }
-    return cached;
+    const cached = this.graphemeCache.get(word);
+    if (cached) return cached;
+
+    const fresh = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
+    if (this.graphemeCache.size > 2000) this.graphemeCache.clear();
+    this.graphemeCache.set(word, fresh);
+    return fresh;
   }
 
   /**

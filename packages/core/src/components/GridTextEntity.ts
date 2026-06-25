@@ -2,7 +2,6 @@ import { Entity } from '../tree/Entity';
 import { IRenderer } from '../renderer/IRenderer';
 
 export class GridTextEntity extends Entity {
-  private atlas: any;
   public fontSize: number;
   public fillStyle: string = '#ffffff';
 
@@ -13,9 +12,8 @@ export class GridTextEntity extends Entity {
   public charWidth: number;
   public charHeight: number;
 
-  constructor(atlas: any, fontSize: number = 10) {
+  constructor(_atlas: any, fontSize: number = 10) {
     super();
-    this.atlas = atlas;
     this.fontSize = fontSize;
     this.charWidth = fontSize * 1.0;
     this.charHeight = fontSize * 1.1;

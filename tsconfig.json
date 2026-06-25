@@ -15,11 +15,14 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+
     "baseUrl": ".",
     "paths": {
       "@vecto/*": ["packages/*/src"]
     }
   },
+
   "include": ["packages/**/*.ts", "packages/**/*.js", "apps/**/*.ts", "apps/**/*.js"],
   "exclude": ["node_modules", "dist", "tmp"]
 }

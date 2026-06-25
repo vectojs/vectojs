@@ -132,7 +132,7 @@ export abstract class Entity {
    * @param dt - Elapsed time since the last frame in milliseconds.
    * @param time - Absolute timestamp from `performance.now()`.
    */
-  public update(dt: number, time: number): void {
+  public update(_dt: number, time: number): void {
     if (this.animations.length > 0) {
       const anim = this.animations[0];
       if (anim.startTime === -1) {

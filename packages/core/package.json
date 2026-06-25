@@ -1,15 +1,27 @@
 {
   "name": "@vecto/core",
   "version": "0.1.0",
-  "main": "./src/index.ts",
-  "module": "./src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean"
   },
   "dependencies": {},
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
+    "tsup": "^8.3.5",
     "vitest": "^4.1.9"
   }
 }
