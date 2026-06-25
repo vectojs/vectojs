@@ -8,9 +8,11 @@ const mockCtx = {
   save: vi.fn(),
   restore: vi.fn(),
   translate: vi.fn(),
+  rotate: vi.fn(),
   fillText: vi.fn(),
   beginPath: vi.fn(),
   fill: vi.fn(),
+  set globalAlpha(_v: number) {},
 };
 
 const mockCanvas = {
@@ -173,5 +175,101 @@ describe('Scene', () => {
 
     (scene as any).syncA11y((scene as any).root);
     expect(((scene as any).a11yElements.get('plain') as HTMLElement).tagName).toBe('DIV');
+  });
+});
+
+describe('Scene render loop: culling, onDemand, a11y early-out', () => {
+  // A spy entity with controllable bounds; records render() calls.
+  class SpyEntity extends Entity {
+    public renders = 0;
+    constructor(
+      id: string,
+      private bounds: { x: number; y: number; width: number; height: number } | null,
+    ) {
+      super(id);
+    }
+    getBounds() {
+      return this.bounds;
+    }
+    isPointInside() {
+      return false;
+    }
+    render() {
+      this.renders++;
+    }
+  }
+
+  // Stub rAF so loop()'s self-reschedule is a deterministic no-op.
+  (globalThis as any).requestAnimationFrame = () => 0;
+
+  function makeScene() {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas); // window mock: 800x600 viewport
+    (scene as any).isRunning = true; // allow loop() to run without scheduling
+    return scene;
+  }
+
+  function tick(scene: Scene) {
+    (scene as any).loop(performance.now());
+  }
+
+  it('culls a node whose world bounds are off-viewport', () => {
+    const scene = makeScene();
+    const onScreen = new SpyEntity('on', { x: 0, y: 0, width: 50, height: 50 }).setPosition(
+      10,
+      10,
+    ) as SpyEntity;
+    const offScreen = new SpyEntity('off', { x: 0, y: 0, width: 50, height: 50 }).setPosition(
+      5000,
+      5000,
+    ) as SpyEntity;
+    scene.add(onScreen);
+    scene.add(offScreen);
+
+    tick(scene);
+
+    expect(onScreen.renders).toBe(1);
+    expect(offScreen.renders).toBe(0); // culled
+  });
+
+  it('never culls a node with null bounds (default)', () => {
+    const scene = makeScene();
+    const noBounds = new SpyEntity('nb', null).setPosition(5000, 5000) as SpyEntity;
+    scene.add(noBounds);
+
+    tick(scene);
+
+    expect(noBounds.renders).toBe(1);
+  });
+
+  it('onDemand mode skips render on idle non-dirty frames', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // first frame is dirty
+    expect(e.renders).toBe(1);
+
+    tick(scene); // idle, not dirty
+    expect(e.renders).toBe(1);
+
+    scene.markDirty();
+    tick(scene); // dirty again
+    expect(e.renders).toBe(2);
+  });
+
+  it('onDemand mode keeps rendering while an animation is pending', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('e', null) as SpyEntity;
+    e.animate({ opacity: 0 } as any, 1000);
+    scene.add(e);
+
+    tick(scene);
+    tick(scene);
+    expect(e.renders).toBe(2); // still rendering due to pending animation
   });
 });

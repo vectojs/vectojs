@@ -1,4 +1,4 @@
-import { Entity } from '@vecto-ui/core';
+import { Entity, Bounds } from '@vecto-ui/core';
 
 /**
  * Base class for high-level UI components.
@@ -24,5 +24,10 @@ export abstract class UIComponent extends Entity {
     const lx = globalX - pos.x;
     const ly = globalY - pos.y;
     return lx >= 0 && lx <= this.width && ly >= 0 && ly <= this.height;
+  }
+
+  /** Local-space box, enabling viewport culling by {@link Scene}. */
+  public getBounds(): Bounds {
+    return { x: 0, y: 0, width: this.width, height: this.height };
   }
 }

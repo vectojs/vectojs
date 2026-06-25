@@ -147,4 +147,21 @@ describe('Entity Component System', () => {
     expect(pos.x).toBeCloseTo(-60);
     expect(pos.y).toBeCloseTo(50);
   });
+
+  it('getBounds() defaults to null (never culled)', () => {
+    expect(new TestEntity().getBounds()).toBeNull();
+  });
+
+  it('hasPendingAnimations() is true mid-tween and false after it finishes', () => {
+    const e = new TestEntity();
+    e.x = 0;
+    expect(e.hasPendingAnimations()).toBe(false);
+    e.animate({ x: 100 } as any, 100);
+    expect(e.hasPendingAnimations()).toBe(true);
+    e.update(0, 0); // init
+    e.update(50, 50); // mid
+    expect(e.hasPendingAnimations()).toBe(true);
+    e.update(50, 100); // complete
+    expect(e.hasPendingAnimations()).toBe(false);
+  });
 });

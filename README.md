@@ -12,18 +12,21 @@ Traditional DOM frameworks (React, Vue) cause Reflow/Repaint bottlenecks when an
 ### Measured performance
 
 Reproduce with `bun run benchmark` (headless Chrome, Canvas 2D, simple filled-circle
-entities, vsync/frame-rate cap disabled; every entity is re-rendered each frame — there is
-no dirty-checking or culling yet). Numbers are per-machine and entity-complexity dependent.
+entities, vsync/frame-rate cap disabled). Numbers are per-machine and entity-complexity
+dependent.
 
-| Entities | mean ms/frame | max FPS | sustains 60 FPS |
-| -------- | ------------- | ------- | --------------- |
-| 1,000    | ~5 ms         | ~180    | yes             |
-| 10,000   | ~23 ms        | ~44     | not yet         |
-| 100,000  | ~180 ms       | ~6      | not yet         |
+| Entities | all on-screen   | mostly off-screen (culled) | static, idle (`onDemand`) |
+| -------- | --------------- | -------------------------- | ------------------------- |
+| 1,000    | ~4 ms (240 fps) | ~2.4 ms (410 fps)          | ~0 (frame cost ⟂ N)       |
+| 10,000   | ~19 ms (52 fps) | **~16 ms (63 fps ✅)**     | ~0 (frame cost ⟂ N)       |
+| 100,000  | ~156 ms (6 fps) | ~137 ms (7 fps)            | **~0 (frame cost ⟂ N)**   |
 
-> These are early, unoptimized numbers. Pushing 10k+ entities back to 60 FPS is active
-> work — see the roadmap (viewport culling via the spatial hash, dirty-region rendering,
-> off-thread `OffscreenCanvas`, and a WebGL/WebGPU backend behind `IRenderer`).
+- **Viewport culling** (opt in per entity via `getBounds()`): off-screen entities are skipped —
+  lifts large/scrolled worlds; a 10k off-screen-heavy scene holds 60 FPS.
+- **On-demand redraw** (`scene.renderMode = 'onDemand'` + `markDirty()`): a static scene renders
+  once then idles, so a 100k-entity UI costs the same as an empty one when nothing changes.
+- 100k entities _fully on-screen_ are still ~6–7 FPS — the bottleneck there is per-entity canvas
+  draw calls. Next levers: draw-call batching and a WebGL/WebGPU backend behind `IRenderer`.
 
 ## Architecture
 

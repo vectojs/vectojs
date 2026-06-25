@@ -14,15 +14,25 @@ const params = new URLSearchParams(location.search);
 const N = Number(params.get('n') ?? 10_000);
 const FRAMES = Number(params.get('frames') ?? 120);
 const WARMUP = Number(params.get('warmup') ?? 30);
+// `world=<k>` spreads entities across a k×viewport world (k>1 ⇒ most are
+// off-screen) and gives each a getBounds(), exercising viewport culling.
+const WORLD = Number(params.get('world') ?? 1);
 
 class BenchCircle extends Entity {
   private radius: number;
-  constructor(radius: number) {
+  private culled: boolean;
+  constructor(radius: number, culled: boolean) {
     super();
     this.radius = radius;
+    this.culled = culled;
   }
   isPointInside(): boolean {
     return false;
+  }
+  getBounds() {
+    return this.culled
+      ? { x: -this.radius, y: -this.radius, width: this.radius * 2, height: this.radius * 2 }
+      : null;
   }
   render(r: IRenderer): void {
     r.beginPath();
@@ -35,9 +45,12 @@ const app = document.getElementById('app')!;
 const canvas = document.createElement('canvas');
 app.appendChild(canvas);
 const scene = new Scene(canvas);
+// `render=onDemand` exercises the on-demand redraw path: a static scene renders
+// once then idles, so frame cost should collapse regardless of N.
+if (params.get('render') === 'onDemand') scene.renderMode = 'onDemand';
 
-const W = window.innerWidth;
-const H = window.innerHeight;
+const W = window.innerWidth * WORLD;
+const H = window.innerHeight * WORLD;
 const cols = Math.max(1, Math.ceil(Math.sqrt(N * (W / H))));
 const rows = Math.ceil(N / cols);
 const cellW = W / cols;
@@ -47,7 +60,7 @@ for (let i = 0; i < N; i++) {
   const col = i % cols;
   const row = Math.floor(i / cols);
   scene.add(
-    new BenchCircle(Math.min(3, cellW / 2)).setPosition(
+    new BenchCircle(Math.min(3, cellW / 2), WORLD > 1).setPosition(
       col * cellW + cellW / 2,
       row * cellH + cellH / 2,
     ),

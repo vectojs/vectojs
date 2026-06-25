@@ -7,6 +7,18 @@ export interface Point {
 }
 
 /**
+ * An axis-aligned bounding box in an entity's local coordinate space.
+ *
+ * Returned from {@link Entity.getBounds} to enable viewport culling.
+ */
+export interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
  * Semantic attributes an {@link Entity} can project into the accessibility /
  * automation shadow layer maintained by {@link Scene}.
  *
@@ -280,6 +292,32 @@ export abstract class Entity {
    */
   public getA11yAttributes(): A11yAttributes {
     return {};
+  }
+
+  /**
+   * Local-space axis-aligned bounding box of what this entity's {@link render}
+   * draws, used by {@link Scene} for viewport culling.
+   *
+   * Returns `null` by default, meaning "unknown bounds" — the entity is then
+   * never culled (always rendered). Override to return a {@link Bounds} so the
+   * scene can skip rendering it when it lies outside the viewport.
+   *
+   * @returns The local bounds, or `null` to opt out of culling.
+   */
+  public getBounds(): Bounds | null {
+    return null;
+  }
+
+  /**
+   * Whether this entity still has a queued/running tween animation.
+   *
+   * Used by {@link Scene}'s `onDemand` render mode to keep redrawing while an
+   * animation is in flight.
+   *
+   * @returns `true` if at least one animation remains.
+   */
+  public hasPendingAnimations(): boolean {
+    return this.animations.length > 0;
   }
 
   public abstract isPointInside(globalX: number, globalY: number): boolean;

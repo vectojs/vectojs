@@ -21,6 +21,16 @@ export class Scene {
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
 
+  /**
+   * Redraw strategy:
+   * - `'always'` (default): re-render every animation frame (legacy behavior).
+   * - `'onDemand'`: only re-render when the scene is marked dirty (via
+   *   {@link markDirty}) or while an animation is pending. Ideal for static /
+   *   event-driven UIs where idle frames should cost ~0.
+   */
+  public renderMode: 'always' | 'onDemand' = 'always';
+  private dirty: boolean = true;
+
   // A11y / Automation Layer
   private a11yRoot: HTMLDivElement;
   private a11yElements: Map<string, HTMLElement> = new Map();
@@ -139,6 +149,34 @@ export class Scene {
     this.isRunning = false;
   }
 
+  /**
+   * Mark the scene as needing a redraw on the next frame.
+   *
+   * Only meaningful in `onDemand` {@link renderMode}: call it after mutating
+   * entity state outside of {@link Entity.animate} so the change is rendered.
+   */
+  public markDirty(): void {
+    this.dirty = true;
+  }
+
+  /** True when any node in the subtree has a pending animation. */
+  private hasAnyPendingAnimation(node: Entity): boolean {
+    if (node.hasPendingAnimations()) return true;
+    for (const child of node.children) {
+      if (this.hasAnyPendingAnimation(child)) return true;
+    }
+    return false;
+  }
+
+  /** True when any node in the subtree is interactive (drives a11y sync). */
+  private hasAnyInteractive(node: Entity): boolean {
+    if (node.interactive) return true;
+    for (const child of node.children) {
+      if (this.hasAnyInteractive(child)) return true;
+    }
+    return false;
+  }
+
   private syncA11y(node: Entity) {
     if (node.interactive && node.width > 0) {
       let el = this.a11yElements.get(node.id);
@@ -191,10 +229,68 @@ export class Scene {
     const dt = time - this.lastTime;
     this.lastTime = time;
 
+    // onDemand: only redraw when dirty or an animation is in flight.
+    if (this.renderMode === 'onDemand' && !this.dirty && !this.hasAnyPendingAnimation(this.root)) {
+      requestAnimationFrame((t) => this.loop(t));
+      return;
+    }
+
     this.renderer.clear();
 
-    const renderNode = (node: Entity) => {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
+
+    // renderNode carries the parent's accumulated world matrix as six scalar
+    // params (canvas T*S*R order) to avoid per-node array allocation — important
+    // for large scenes. Off-viewport entities with a known getBounds() are culled.
+    const renderNode = (
+      node: Entity,
+      pa: number,
+      pb: number,
+      pc: number,
+      pd: number,
+      pe: number,
+      pf: number,
+    ) => {
       node.update(dt, time);
+
+      // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
+      const cos = Math.cos(node.rotation);
+      const sin = Math.sin(node.rotation);
+      const te = pa * node.x + pc * node.y + pe;
+      const tf = pb * node.x + pd * node.y + pf;
+      const sxCos = node.scaleX * cos;
+      const sxSin = node.scaleX * sin;
+      const syCos = node.scaleY * cos;
+      const sySin = node.scaleY * sin;
+      const a = pa * sxCos + pc * sxSin;
+      const b = pb * sxCos + pd * sxSin;
+      const c = pa * -sySin + pc * syCos;
+      const d = pb * -sySin + pd * syCos;
+
+      // Cull test: transform the local bounds box and check viewport overlap.
+      let visible = true;
+      const bounds = node.getBounds();
+      if (bounds) {
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (let i = 0; i < 4; i++) {
+          const lx = i & 1 ? bounds.x + bounds.width : bounds.x;
+          const ly = i & 2 ? bounds.y + bounds.height : bounds.y;
+          const wx = a * lx + c * ly + te;
+          const wy = b * lx + d * ly + tf;
+          if (wx < minX) minX = wx;
+          if (wx > maxX) maxX = wx;
+          if (wy < minY) minY = wy;
+          if (wy > maxY) maxY = wy;
+        }
+        visible = maxX >= 0 && minX <= vw && maxY >= 0 && minY <= vh;
+      }
+
+      // Fully skip invisible leaf nodes (no transform, no render, no recursion).
+      if (!visible && node.children.length === 0) return;
 
       this.renderer.save();
       this.renderer.translate(node.x, node.y);
@@ -202,18 +298,22 @@ export class Scene {
       this.renderer.rotate(node.rotation);
       this.renderer.setGlobalAlpha(node.opacity);
 
-      node.render(this.renderer);
+      if (visible) node.render(this.renderer);
 
       for (const child of node.children) {
-        renderNode(child);
+        renderNode(child, a, b, c, d, te, tf);
       }
       this.renderer.restore();
     };
 
-    renderNode(this.root);
+    renderNode(this.root, 1, 0, 0, 1, 0, 0);
 
-    // Sync Automation Shadow DOM
-    this.syncA11y(this.root);
+    // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
+    if (this.hasAnyInteractive(this.root)) {
+      this.syncA11y(this.root);
+    }
+
+    this.dirty = false;
 
     requestAnimationFrame((t) => this.loop(t));
   }
