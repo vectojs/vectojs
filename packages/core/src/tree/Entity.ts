@@ -7,6 +7,25 @@ export interface Point {
 }
 
 /**
+ * Semantic attributes an {@link Entity} can project into the accessibility /
+ * automation shadow layer maintained by {@link Scene}.
+ *
+ * Returned from {@link Entity.getA11yAttributes}; consumed by `Scene.syncA11y`
+ * to create and label the shadow DOM node (e.g. a real `<button>` or `<a href>`)
+ * so the canvas stays accessible and clickable by automation/agents.
+ */
+export interface A11yAttributes {
+  /** Shadow element tag to create. Defaults to `'div'`. */
+  tag?: 'div' | 'a' | 'button';
+  /** ARIA role applied via the `role` attribute. */
+  role?: string;
+  /** Accessible name applied via `aria-label`. */
+  label?: string;
+  /** Destination URL; only meaningful for `tag: 'a'`. */
+  href?: string;
+}
+
+/**
  * Union of all pointer/interaction events that can be emitted by an {@link Entity}.
  */
 export type VectoEvent =
@@ -250,6 +269,19 @@ export abstract class Entity {
    * @param globalY - World-space Y coordinate.
    * @returns Whether the point is inside this entity.
    */
+  /**
+   * Describe this entity's semantics for the accessibility / automation shadow
+   * layer. Override in components to project a real `<button>`, `<a href>`, etc.
+   *
+   * The default returns `{}`, which `Scene.syncA11y` maps to a plain `div`
+   * (preserving the historical behavior of interactive entities).
+   *
+   * @returns The {@link A11yAttributes} for this entity's shadow node.
+   */
+  public getA11yAttributes(): A11yAttributes {
+    return {};
+  }
+
   public abstract isPointInside(globalX: number, globalY: number): boolean;
 
   /**

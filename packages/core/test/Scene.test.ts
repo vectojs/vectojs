@@ -129,4 +129,49 @@ describe('Scene', () => {
     expect((scene as any).a11yElements.has('parent')).toBe(false);
     expect((scene as any).a11yElements.has('child')).toBe(false);
   });
+
+  it('syncA11y builds the shadow node from getA11yAttributes()', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    class LinkLike extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { tag: 'a' as const, role: 'link', label: 'Docs', href: 'https://example.com' };
+      }
+    }
+    const link = new LinkLike('lnk');
+    link.interactive = true;
+    link.width = 80;
+    link.height = 20;
+    scene.add(link);
+
+    (scene as any).syncA11y((scene as any).root);
+    const el = (scene as any).a11yElements.get('lnk') as HTMLElement;
+    expect(el.tagName).toBe('A');
+    expect(el.getAttribute('role')).toBe('link');
+    expect(el.getAttribute('aria-label')).toBe('Docs');
+    expect((el as HTMLAnchorElement).href).toContain('example.com');
+  });
+
+  it('syncA11y defaults to a div when getA11yAttributes is not overridden', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    const e = new TestEntity('plain');
+    e.interactive = true;
+    e.width = 50;
+    e.height = 50;
+    scene.add(e);
+
+    (scene as any).syncA11y((scene as any).root);
+    expect(((scene as any).a11yElements.get('plain') as HTMLElement).tagName).toBe('DIV');
+  });
 });

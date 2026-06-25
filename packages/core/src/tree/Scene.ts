@@ -143,8 +143,12 @@ export class Scene {
     if (node.interactive && node.width > 0) {
       let el = this.a11yElements.get(node.id);
       if (!el) {
-        el = document.createElement('div');
+        const attrs = node.getA11yAttributes();
+        el = document.createElement(attrs.tag || 'div');
         el.setAttribute('data-vecto-id', node.id);
+        if (attrs.role) el.setAttribute('role', attrs.role);
+        if (attrs.label) el.setAttribute('aria-label', attrs.label);
+        if (attrs.href && el instanceof HTMLAnchorElement) el.href = attrs.href;
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
         el.style.cursor = 'pointer';
