@@ -1,0 +1,12 @@
+{
+  "name": "@vecto/core",
+  "version": "0.1.0",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./layout": "./src/layout/LayoutEngine.js",
+    "./renderer": "./src/renderer/CanvasRenderer.js"
+  },
+  "dependencies": {}
+}
