@@ -43,35 +43,13 @@ export class GridTextEntity extends Entity {
         const char = row[c];
         if (char === ' ') continue; // Zero-cost rendering for black pixels
 
-        const glyph = this.atlas[char];
         const x = c * this.charWidth;
         const y = r * this.charHeight;
 
-        if (!glyph) {
-          // Fast fallback
-          renderer.save();
-          renderer.translate(x, y + this.fontSize * 0.8);
-          renderer.fillText(char, 0, 0, `bold ${this.fontSize}px monospace`, this.fillStyle);
-          renderer.restore();
-          continue;
-        }
-
+        // 纯等宽字体渲染，避免数学字体与原生字体由于字距不同产生的重叠错觉
         renderer.save();
-        renderer.translate(x, y);
-        const scale = this.fontSize / glyph.baseSize;
-        renderer.scale(scale, scale);
-
-        for (const path of glyph.ast.paths) {
-          renderer.beginPath();
-          for (const cmd of path.commands) {
-            if (cmd.type === 'M') renderer.moveTo(cmd.x, cmd.y);
-            else if (cmd.type === 'L') renderer.lineTo(cmd.x, cmd.y);
-            else if (cmd.type === 'C')
-              renderer.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
-            else if (cmd.type === 'Z') renderer.closePath();
-          }
-          if (this.fillStyle) renderer.fill(this.fillStyle);
-        }
+        renderer.translate(x, y + this.fontSize * 0.8);
+        renderer.fillText(char, 0, 0, `bold ${this.fontSize}px monospace`, this.fillStyle);
         renderer.restore();
       }
     }

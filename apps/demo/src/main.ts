@@ -30,11 +30,20 @@ async function bootstrap() {
   const COLS = 120;
   const ROWS = 80;
 
-  const grid = new GridTextEntity(atlas, 12);
+  // 动态响应式探测：确保网格完美适配不同屏幕，不需要手动缩放
+  let fontSize = Math.floor(window.innerWidth / COLS);
+  if (fontSize * ROWS * 1.1 > window.innerHeight) {
+    fontSize = Math.floor(window.innerHeight / (ROWS * 1.1));
+  }
+  if (fontSize < 4) fontSize = 4; // 最小保底
+
+  const grid = new GridTextEntity(atlas, fontSize);
   grid.fillStyle = '#ffffff';
 
-  // 居中放置这个巨大的文字矩阵
-  grid.setPosition((window.innerWidth - COLS * 12) / 2, (window.innerHeight - ROWS * 13.2) / 2);
+  // 精确居中
+  const gridWidth = COLS * grid.charWidth;
+  const gridHeight = ROWS * grid.charHeight;
+  grid.setPosition((window.innerWidth - gridWidth) / 2, (window.innerHeight - gridHeight) / 2);
   scene.add(grid);
 
   // 挂载隐藏的原生视频标签
