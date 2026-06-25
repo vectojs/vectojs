@@ -11,11 +11,15 @@ const config: KnipConfig = {
       project: ['src/**/*.{js,ts}'],
     },
     'apps/*': {
-      entry: ['main.js', 'src/main.{js,ts}', 'vite.config.ts'],
+      // src/main.ts is the demo router; src/bench.ts is the benchmark entry (bench.html).
+      entry: ['src/main.{js,ts}', 'src/bench.ts'],
       project: ['**/*.{js,ts}'],
     },
   },
-  ignore: ['tmp/**', 'docs/**'],
+  // playwright is used from the global install by scripts/benchmark.ts (not a dep);
+  // readlink/which are system binaries invoked there.
+  ignoreDependencies: ['playwright'],
+  ignoreBinaries: ['readlink', 'which'],
 };
 
 export default config;
