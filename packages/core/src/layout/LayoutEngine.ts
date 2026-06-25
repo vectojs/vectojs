@@ -13,6 +13,17 @@ export interface GlyphAtlas {
 }
 
 /**
+ * Resolves the pixel advance width of a single grapheme at a given font size,
+ * for glyphs not present in a pre-baked {@link GlyphAtlas}.
+ *
+ * Implemented by {@link createCanvasMeasurer} (canvas `measureText`), but kept
+ * abstract so callers can supply their own metrics source.
+ */
+export interface GlyphMeasurer {
+  measure(char: string, fontSize: number): number;
+}
+
+/**
  * A single positioned glyph produced by {@link LayoutEngine.layoutText}.
  */
 export interface LayoutNode {
@@ -45,10 +56,12 @@ export class LayoutEngine {
   private wordCache: Map<string, Array<{ segment: string; isWordLike: boolean | undefined }>> =
     new Map();
   private graphemeCache: Map<string, string[]> = new Map();
+  private measurer: GlyphMeasurer | null;
 
-  constructor(maxWidth: number, maxHeight: number) {
+  constructor(maxWidth: number, maxHeight: number, measurer?: GlyphMeasurer | null) {
     this.maxWidth = maxWidth;
     this.maxHeight = maxHeight;
+    this.measurer = measurer ?? null;
 
     // Auto-detect browser locale for intelligent CJK and Western word boundaries
     const locale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
@@ -70,6 +83,17 @@ export class LayoutEngine {
     if (this.wordCache.size > 500) this.wordCache.clear();
     this.wordCache.set(paragraph, fresh);
     return fresh;
+  }
+
+  /**
+   * Resolve a grapheme's advance width at `fontSize`, in priority order:
+   * pre-baked atlas entry → injected {@link GlyphMeasurer} → `0.5em` fallback.
+   */
+  private glyphWidth(char: string, fontAtlas: GlyphAtlas, fontSize: number): number {
+    const glyphInfo = fontAtlas[char];
+    if (glyphInfo) return glyphInfo.width * (fontSize / glyphInfo.baseSize);
+    if (this.measurer) return this.measurer.measure(char, fontSize);
+    return fontSize * 0.5;
   }
 
   private getGraphemes(word: string): string[] {
@@ -132,10 +156,7 @@ export class LayoutEngine {
 
         // 1. Measure the entire word first
         for (const char of graphemes) {
-          const glyphInfo = fontAtlas[char];
-          wordWidth += glyphInfo
-            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
-            : fontSize * 0.5;
+          wordWidth += this.glyphWidth(char, fontAtlas, fontSize);
         }
 
         // 2. Line wrap logic
@@ -150,10 +171,7 @@ export class LayoutEngine {
 
         // 3. Layout characters
         for (const char of graphemes) {
-          const glyphInfo = fontAtlas[char];
-          const charWidth = glyphInfo
-            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
-            : fontSize * 0.5;
+          const charWidth = this.glyphWidth(char, fontAtlas, fontSize);
 
           // Dynamically find the next available spot that doesn't collide with the mask
           let foundSpot = false;
@@ -248,10 +266,7 @@ export class LayoutEngine {
         const graphemes = this.getGraphemes(word);
 
         for (const char of graphemes) {
-          const glyphInfo = fontAtlas[char];
-          wordWidth += glyphInfo
-            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
-            : fontSize * 0.5;
+          wordWidth += this.glyphWidth(char, fontAtlas, fontSize);
         }
 
         if (currentX + wordWidth > this.maxWidth && currentX > 0) {
@@ -265,10 +280,7 @@ export class LayoutEngine {
         for (const char of graphemes) {
           if (buffer.count >= LayoutResultBuffer.CAPACITY) break;
 
-          const glyphInfo = fontAtlas[char];
-          const charWidth = glyphInfo
-            ? glyphInfo.width * (fontSize / glyphInfo.baseSize)
-            : fontSize * 0.5;
+          const charWidth = this.glyphWidth(char, fontAtlas, fontSize);
 
           let foundSpot = false;
           while (currentY < this.maxHeight) {

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { LayoutEngine, GlyphAtlas, LayoutResultBuffer } from '../src/layout/LayoutEngine';
+import {
+  LayoutEngine,
+  GlyphAtlas,
+  LayoutResultBuffer,
+  type GlyphMeasurer,
+} from '../src/layout/LayoutEngine';
 
 describe('LayoutEngine', () => {
   const mockFontAtlas: GlyphAtlas = {
@@ -119,5 +124,39 @@ describe('LayoutEngine', () => {
     expect(buffer.xs[1]).toBe(20);
     expect(buffer.chars[2]).toBe('B');
     expect(buffer.xs[2]).toBe(30);
+  });
+});
+
+describe('LayoutEngine — real font metrics via measurer', () => {
+  // A measurer that advances 0.8em per glyph — distinguishable from both the
+  // atlas and the 0.5em hard fallback.
+  const measurer: GlyphMeasurer = { measure: (_char, fontSize) => fontSize * 0.8 };
+
+  it('uses the injected measurer for glyphs missing from the atlas (not the 0.5em fallback)', () => {
+    const engine = new LayoutEngine(1000, 1000, measurer);
+    const result = engine.layoutText('AB', {}, 10); // empty atlas
+    expect(result.nodes[0].width).toBeCloseTo(8); // 10 * 0.8, not 5
+    expect(result.nodes[1].x).toBeCloseTo(8); // B advanced past A's measured width
+  });
+
+  it('falls back to 0.5em only when neither atlas nor measurer has the glyph', () => {
+    const engine = new LayoutEngine(1000, 1000); // no measurer
+    const result = engine.layoutText('A', {}, 10);
+    expect(result.nodes[0].width).toBeCloseTo(5); // 10 * 0.5
+  });
+
+  it('prefers the atlas over the measurer when both can resolve the glyph', () => {
+    const atlas: GlyphAtlas = { A: { width: 4, baseSize: 10, ast: null } };
+    const engine = new LayoutEngine(1000, 1000, measurer);
+    const result = engine.layoutText('A', atlas, 10);
+    expect(result.nodes[0].width).toBeCloseTo(4); // atlas exact, not measurer's 8
+  });
+
+  it('applies the measurer in layoutTextIntoBuffer too', () => {
+    const engine = new LayoutEngine(1000, 1000, measurer);
+    const buffer = new LayoutResultBuffer();
+    engine.layoutTextIntoBuffer('AB', {}, 10, buffer);
+    expect(buffer.ws[0]).toBeCloseTo(8);
+    expect(buffer.xs[1]).toBeCloseTo(8);
   });
 });

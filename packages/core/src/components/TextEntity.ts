@@ -1,6 +1,16 @@
 import { Entity } from '../tree/Entity';
-import { LayoutEngine } from '../layout/LayoutEngine';
+import { LayoutEngine, type GlyphMeasurer } from '../layout/LayoutEngine';
+import { createCanvasMeasurer } from '../layout/measure';
 import { IRenderer } from '../renderer/IRenderer';
+
+// Shared across all TextEntity instances so the per-glyph measurement cache is
+// reused. Matches the `sans-serif` family used by the native fillText fallback
+// in render(), so measured widths agree with what's actually drawn.
+let sharedMeasurer: GlyphMeasurer | null | undefined;
+function defaultMeasurer(): GlyphMeasurer | null {
+  if (sharedMeasurer === undefined) sharedMeasurer = createCanvasMeasurer('sans-serif');
+  return sharedMeasurer;
+}
 
 export class TextEntity extends Entity {
   public text: string;
@@ -21,7 +31,7 @@ export class TextEntity extends Entity {
     this.text = text;
     this.atlas = atlas;
     this.fontSize = fontSize;
-    this.layout = new LayoutEngine(maxWidth, 10000);
+    this.layout = new LayoutEngine(maxWidth, 10000, defaultMeasurer());
     this.updateLayout();
 
     // Enable Agent Accessibility Semantic Layer
