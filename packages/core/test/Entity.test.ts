@@ -104,4 +104,21 @@ describe('Entity Component System', () => {
     entity.update(50, 100);
     expect(entity.x).toBe(200);
   });
+
+  it('should compute global position under parent scale and rotation', () => {
+    const parent = new Entity();
+    parent.setPosition(100, 100);
+    parent.scaleX = 2;
+    parent.scaleY = 0.5;
+    parent.rotation = Math.PI / 2;
+
+    const child = new Entity();
+    child.setPosition(50, 0);
+
+    parent.add(child);
+
+    const pos = child.getGlobalPosition();
+    expect(pos.x).toBeCloseTo(100);
+    expect(pos.y).toBeCloseTo(200);
+  });
 });

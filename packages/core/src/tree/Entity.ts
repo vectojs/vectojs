@@ -218,7 +218,7 @@ export abstract class Entity {
 
   /**
    * Compute the entity's position in world/canvas space by accumulating
-   * local offsets up the scene-graph hierarchy.
+   * local offsets up the scene-graph hierarchy using affine transformations (scale and rotation).
    *
    * @returns World-space {@link Point} for this entity.
    */
@@ -227,8 +227,12 @@ export abstract class Entity {
     let py = this.y;
     let curr = this.parent;
     while (curr && curr.id !== 'root') {
-      px += curr.x;
-      py += curr.y;
+      const cos = Math.cos(curr.rotation);
+      const sin = Math.sin(curr.rotation);
+      const rx = px * curr.scaleX * cos - py * curr.scaleY * sin;
+      const ry = px * curr.scaleX * sin + py * curr.scaleY * cos;
+      px = curr.x + rx;
+      py = curr.y + ry;
       curr = curr.parent;
     }
     return { x: px, y: py };

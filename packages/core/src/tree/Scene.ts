@@ -24,6 +24,7 @@ export class Scene {
   // A11y / Automation Layer
   private a11yRoot: HTMLDivElement;
   private a11yElements: Map<string, HTMLElement> = new Map();
+  private resizeHandler: () => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -51,6 +52,10 @@ export class Scene {
       canvas.parentElement.appendChild(this.a11yRoot);
     }
 
+    this.resizeHandler = () => {
+      this.renderer.resize(window.innerWidth, window.innerHeight);
+    };
+
     this.setupEvents();
   }
 
@@ -75,28 +80,42 @@ export class Scene {
     return this;
   }
 
+  private removeA11yRecursively(node: Entity) {
+    const el = this.a11yElements.get(node.id);
+    if (el) {
+      el.remove();
+      this.a11yElements.delete(node.id);
+    }
+    for (const child of node.children) {
+      this.removeA11yRecursively(child);
+    }
+  }
+
   /**
    * Remove a top-level entity from the scene graph and clean up its
-   * accessibility shadow element.
+   * accessibility shadow elements recursively.
    *
    * @param entity - The entity to detach from the scene root.
    * @returns `this` for method chaining.
    */
   public remove(entity: Entity): this {
     this.root.remove(entity);
-    // Clean up A11y shadow element
-    const el = this.a11yElements.get(entity.id);
-    if (el) {
-      el.remove();
-      this.a11yElements.delete(entity.id);
-    }
+    this.removeA11yRecursively(entity);
     return this;
   }
 
+  /**
+   * Tear down the Scene, halt the loop, and clean up event listeners and DOM elements.
+   */
+  public destroy(): void {
+    this.stop();
+    window.removeEventListener('resize', this.resizeHandler);
+    this.a11yRoot.remove();
+    this.a11yElements.clear();
+  }
+
   private setupEvents(): void {
-    window.addEventListener('resize', () => {
-      this.renderer.resize(window.innerWidth, window.innerHeight);
-    });
+    window.addEventListener('resize', this.resizeHandler);
   }
 
   /**
@@ -143,6 +162,9 @@ export class Scene {
           el!.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
           node.emit('pointerleave', e);
         });
+        el.addEventListener('pointerdown', (e) => node.emit('pointerdown', e));
+        el.addEventListener('pointerup', (e) => node.emit('pointerup', e));
+        el.addEventListener('pointermove', (e) => node.emit('pointermove', e));
 
         this.a11yRoot.appendChild(el);
         this.a11yElements.set(node.id, el);

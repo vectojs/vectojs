@@ -42,6 +42,8 @@ export class LayoutEngine {
   public maxHeight: number;
   private wordSegmenter: Intl.Segmenter;
   private charSegmenter: Intl.Segmenter;
+  private wordCache: Map<string, Array<{ segment: string; isWordLike: boolean }>> = new Map();
+  private graphemeCache: Map<string, string[]> = new Map();
 
   constructor(maxWidth: number, maxHeight: number) {
     this.maxWidth = maxWidth;
@@ -52,6 +54,29 @@ export class LayoutEngine {
 
     this.wordSegmenter = new Intl.Segmenter(locale, { granularity: 'word' });
     this.charSegmenter = new Intl.Segmenter(locale, { granularity: 'grapheme' });
+  }
+
+  private getWordSegments(paragraph: string): Array<{ segment: string; isWordLike: boolean }> {
+    let cached = this.wordCache.get(paragraph);
+    if (!cached) {
+      cached = Array.from(this.wordSegmenter.segment(paragraph)).map((s) => ({
+        segment: s.segment,
+        isWordLike: s.isWordLike,
+      }));
+      if (this.wordCache.size > 500) this.wordCache.clear();
+      this.wordCache.set(paragraph, cached);
+    }
+    return cached;
+  }
+
+  private getGraphemes(word: string): string[] {
+    let cached = this.graphemeCache.get(word);
+    if (!cached) {
+      cached = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
+      if (this.graphemeCache.size > 2000) this.graphemeCache.clear();
+      this.graphemeCache.set(word, cached);
+    }
+    return cached;
   }
 
   /**
@@ -93,13 +118,13 @@ export class LayoutEngine {
         continue;
       }
 
-      const segments = this.wordSegmenter.segment(paragraph);
+      const segments = this.getWordSegments(paragraph);
 
       for (const segment of segments) {
         const word = segment.segment;
 
         let wordWidth = 0;
-        const graphemes = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
+        const graphemes = this.getGraphemes(word);
 
         // 1. Measure the entire word first
         for (const char of graphemes) {
@@ -209,13 +234,13 @@ export class LayoutEngine {
         continue;
       }
 
-      const segments = this.wordSegmenter.segment(paragraph);
+      const segments = this.getWordSegments(paragraph);
 
       for (const segment of segments) {
         const word = segment.segment;
 
         let wordWidth = 0;
-        const graphemes = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
+        const graphemes = this.getGraphemes(word);
 
         for (const char of graphemes) {
           const glyphInfo = fontAtlas[char];
