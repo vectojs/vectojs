@@ -27,4 +27,4 @@ export default class AsyncReader extends Reader {
     private _handleEntry;
     private _emitEntry;
 }
-export {};
+

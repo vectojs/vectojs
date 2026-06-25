@@ -2647,9 +2647,9 @@ var slash = () => {
 
 // node_modules/zeptomatch/dist/parse/grammar.js
 var Escaped2 = match(/\\./, regex2);
-var Escape = match(/[$.*+?^(){}[\]\|]/, (char) => regex2(`\\${char}`));
-var Slash = match(/[\\\/]/, slash);
-var Passthrough2 = match(/[^$.*+?^(){}[\]\|\\\/]+/, regex2);
+var Escape = match(/[$.*+?^(){}[\]|]/, (char) => regex2(`\\${char}`));
+var Slash = match(/[\\/]/, slash);
+var Passthrough2 = match(/[^$.*+?^(){}[\]|\\/]+/, regex2);
 var NegationOdd = match(/^(?:!!)*!(.*)$/, (_, glob) => regex2(`(?!^${dist_default19.compile(glob).source}$).*?`));
 var NegationEven = match(/^(!!)+/);
 var Negation = or([NegationOdd, NegationEven]);
@@ -2667,9 +2667,9 @@ var ClassClose = match("]", identity2);
 var ClassNegation = match(/[!^]/, "^\\\\/");
 var ClassRange = match(/[a-z]-[a-z]|[0-9]-[0-9]/i, identity2);
 var ClassEscaped = match(/\\./, identity2);
-var ClassEscape = match(/[$.*+?^(){}[\|]/, (char) => `\\${char}`);
-var ClassSlash = match(/[\\\/]/, "\\\\/");
-var ClassPassthrough = match(/[^$.*+?^(){}[\]\|\\\/]+/, identity2);
+var ClassEscape = match(/[$.*+?^(){}[|]/, (char) => `\\${char}`);
+var ClassSlash = match(/[\\/]/, "\\\\/");
+var ClassPassthrough = match(/[^$.*+?^(){}[\]|\\/]+/, identity2);
 var ClassValue = or([ClassEscaped, ClassEscape, ClassSlash, ClassRange, ClassPassthrough]);
 var Class = and([ClassOpen, optional(ClassNegation), star(ClassValue), ClassClose], (_) => regex2(_.join("")));
 var RangeOpen = match("{", "(?:");
@@ -2683,9 +2683,9 @@ var BracesOpen = match("{");
 var BracesClose = match("}");
 var BracesComma = match(",");
 var BracesEscaped = match(/\\./, regex2);
-var BracesEscape = match(/[$.*+?^(){[\]\|]/, (char) => regex2(`\\${char}`));
-var BracesSlash = match(/[\\\/]/, slash);
-var BracesPassthrough = match(/[^$.*+?^(){}[\]\|\\\/,]+/, regex2);
+var BracesEscape = match(/[$.*+?^(){[\]|]/, (char) => regex2(`\\${char}`));
+var BracesSlash = match(/[\\/]/, slash);
+var BracesPassthrough = match(/[^$.*+?^(){}[\]|\\/,]+/, regex2);
 var BracesNested = lazy(() => Braces);
 var BracesEmptyValue = match("", () => regex2("(?:)"));
 var BracesFullValue = plus(or([StarStar, Star, Question, Class, Range, BracesNested, BracesEscaped, BracesEscape, BracesSlash, BracesPassthrough]), sequence);

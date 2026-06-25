@@ -361,7 +361,7 @@ var init_dist5 = __esm({
       });
     };
     parseCharSeparator = (argv) => {
-      const re = /^-([a-zA-Z0-9\.]{2,})([^]*)$/;
+      const re = /^-([a-zA-Z0-9.]{2,})([^]*)$/;
       return parseWithRegExp(argv, re, (_, chars2) => chars2.split("").map((char) => `-${char}`));
     };
     parseEqualsSeparator = (argv) => {
@@ -370,7 +370,7 @@ var init_dist5 = __esm({
       return parseWithRegExp(argv, re, (_, key2, value) => [key2, shieldValue(value)]);
     };
     parseImplicitSeparator = (argv) => {
-      const re = /^(--?(?:no-)?\S*?[a-zA-Z]\S*?)((?:[0-9\/]|-(?=$))[^]*)$/;
+      const re = /^(--?(?:no-)?\S*?[a-zA-Z]\S*?)((?:[0-9/]|-(?=$))[^]*)$/;
       return parseWithRegExp(argv, re, (_, key2, value) => [key2, value]);
     };
     parseProto = (argv) => {
@@ -1442,9 +1442,7 @@ var init_options = __esm({
                   ...option.data.longs.sort().map((long) => dist_default4.green(`--${long}`)),
                   ...option.data.shorts.sort().map((short) => dist_default4.green(`-${short}`))
                 ].join(", "),
-                [
-                  ...option.data.args.sort().map((arg) => dist_default4.blue(`<${arg}>`))
-                ].join(" ")
+                option.data.args.sort().map((arg) => dist_default4.blue(`<${arg}>`)).join(" ")
               ].join(" "),
               option.description
             ].map(withDeprecated);
@@ -1843,7 +1841,7 @@ var init_option = __esm({
         const longs = [];
         const shorts = [];
         const args = [];
-        const re = /--([a-z0-9-\.]+)|-([a-zA-Z\.])|<([^>.]+(?:\.\.\.)?)>|([\s,])|([^])/g;
+        const re = /--([a-z0-9-.]+)|-([a-zA-Z.])|<([^>.]+(?:\.\.\.)?)>|([\s,])|([^])/g;
         name.replace(re, (_, long, short, arg, spacer, invalid) => {
           if (long && long.startsWith("no-"))
             longsPositive.push(long.slice(3));
@@ -4428,9 +4426,9 @@ var init_grammar2 = __esm({
     init_dist21();
     init_utils13();
     Escaped2 = match(/\\./, regex2);
-    Escape = match(/[$.*+?^(){}[\]\|]/, (char) => regex2(`\\${char}`));
-    Slash = match(/[\\\/]/, slash);
-    Passthrough2 = match(/[^$.*+?^(){}[\]\|\\\/]+/, regex2);
+    Escape = match(/[$.*+?^(){}[\]|]/, (char) => regex2(`\\${char}`));
+    Slash = match(/[\\/]/, slash);
+    Passthrough2 = match(/[^$.*+?^(){}[\]|\\/]+/, regex2);
     NegationOdd = match(/^(?:!!)*!(.*)$/, (_, glob) => regex2(`(?!^${dist_default19.compile(glob).source}$).*?`));
     NegationEven = match(/^(!!)+/);
     Negation = or([NegationOdd, NegationEven]);
@@ -4448,9 +4446,9 @@ var init_grammar2 = __esm({
     ClassNegation = match(/[!^]/, "^\\\\/");
     ClassRange = match(/[a-z]-[a-z]|[0-9]-[0-9]/i, identity2);
     ClassEscaped = match(/\\./, identity2);
-    ClassEscape = match(/[$.*+?^(){}[\|]/, (char) => `\\${char}`);
-    ClassSlash = match(/[\\\/]/, "\\\\/");
-    ClassPassthrough = match(/[^$.*+?^(){}[\]\|\\\/]+/, identity2);
+    ClassEscape = match(/[$.*+?^(){}[|]/, (char) => `\\${char}`);
+    ClassSlash = match(/[\\/]/, "\\\\/");
+    ClassPassthrough = match(/[^$.*+?^(){}[\]|\\/]+/, identity2);
     ClassValue = or([ClassEscaped, ClassEscape, ClassSlash, ClassRange, ClassPassthrough]);
     Class = and([ClassOpen, optional(ClassNegation), star(ClassValue), ClassClose], (_) => regex2(_.join("")));
     RangeOpen = match("{", "(?:");
@@ -4464,9 +4462,9 @@ var init_grammar2 = __esm({
     BracesClose = match("}");
     BracesComma = match(",");
     BracesEscaped = match(/\\./, regex2);
-    BracesEscape = match(/[$.*+?^(){[\]\|]/, (char) => regex2(`\\${char}`));
-    BracesSlash = match(/[\\\/]/, slash);
-    BracesPassthrough = match(/[^$.*+?^(){}[\]\|\\\/,]+/, regex2);
+    BracesEscape = match(/[$.*+?^(){[\]|]/, (char) => regex2(`\\${char}`));
+    BracesSlash = match(/[\\/]/, slash);
+    BracesPassthrough = match(/[^$.*+?^(){}[\]|\\/,]+/, regex2);
     BracesNested = lazy(() => Braces);
     BracesEmptyValue = match("", () => regex2("(?:)"));
     BracesFullValue = plus(or([StarStar, Star, Question, Class, Range, BracesNested, BracesEscaped, BracesEscape, BracesSlash, BracesPassthrough]), sequence);
@@ -6307,7 +6305,7 @@ var init_grammar3 = __esm({
     escape3 = (char) => `\\${char}`;
     passthrough = (match2) => match2;
     Escaped3 = match(/\\./, passthrough);
-    Escape2 = match(/[$.*+?^(){}[\]\|]/, escape3);
+    Escape2 = match(/[$.*+?^(){}[\]|]/, escape3);
     Passthrough3 = match(/./, passthrough);
     Star2 = match(/\*+/, ".*");
     Question2 = match("?", ".?");
@@ -6315,7 +6313,7 @@ var init_grammar3 = __esm({
     ClassClose2 = match("]", passthrough);
     ClassNegation2 = match(/[!^]/, "^");
     ClassRange2 = match(/[0-9a-z]-[0-9a-z]/i, passthrough);
-    ClassEscape2 = match(/[$.*+?^(){}[\|]/, escape3);
+    ClassEscape2 = match(/[$.*+?^(){}[|]/, escape3);
     ClassPassthrough2 = match(/[^\]]/, passthrough);
     ClassValue2 = or([Escaped3, ClassEscape2, ClassRange2, ClassPassthrough2]);
     Class2 = and([ClassOpen2, optional(ClassNegation2), star(ClassValue2), ClassClose2]);
@@ -10337,9 +10335,9 @@ var init_js_yaml = __esm({
     CHOMPING_KEEP = 3;
     PATTERN_NON_PRINTABLE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x84\x86-\x9F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
     PATTERN_NON_ASCII_LINE_BREAKS = /[\x85\u2028\u2029]/;
-    PATTERN_FLOW_INDICATORS = /[,\[\]\{\}]/;
-    PATTERN_TAG_HANDLE = /^(?:!|!!|![a-z\-]+!)$/i;
-    PATTERN_TAG_URI = /^(?:!|[^,\[\]\{\}])(?:%[0-9a-f]{2}|[0-9a-z\-#;\/\?:@&=\+\$,_\.!~\*'\(\)\[\]])*$/i;
+    PATTERN_FLOW_INDICATORS = /[,[\]{}]/;
+    PATTERN_TAG_HANDLE = /^(?:!|!!|![a-z-]+!)$/i;
+    PATTERN_TAG_URI = /^(?:!|[^,[\]{}])(?:%[0-9a-f]{2}|[0-9a-z\-#;/?:@&=+$,_.!~*'()[\]])*$/i;
     simpleEscapeCheck = new Array(256);
     simpleEscapeMap = new Array(256);
     for (i = 0; i < 256; i++) {

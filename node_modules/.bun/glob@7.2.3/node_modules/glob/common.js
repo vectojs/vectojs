@@ -157,7 +157,7 @@ function finish (self) {
     }
     if (self.nodir) {
       all = all.filter(function (e) {
-        var notDir = !(/\/$/.test(e))
+        var notDir = !(e.endsWith('/'))
         var c = self.cache[e] || self.cache[makeAbs(self, e)]
         if (notDir && c)
           notDir = c !== 'DIR' && !Array.isArray(c)

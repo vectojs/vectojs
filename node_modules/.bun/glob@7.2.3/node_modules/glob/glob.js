@@ -688,7 +688,7 @@ Glob.prototype._processSimple2 = function (prefix, index, er, exists, cb) {
     return cb()
 
   if (prefix && isAbsolute(prefix) && !this.nomount) {
-    var trail = /[\/\\]$/.test(prefix)
+    var trail = /[/\\]$/.test(prefix)
     if (prefix.charAt(0) === '/') {
       prefix = path.join(this.root, prefix)
     } else {

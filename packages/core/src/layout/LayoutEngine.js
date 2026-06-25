@@ -8,7 +8,7 @@ export class LayoutEngine {
     this.maxWidth = maxWidth;
     this.maxHeight = maxHeight;
     // Intl.Segmenter is used to split text accurately without breaking emojis or graphemes.
-    this.segmenter = new Intl.Segmenter(navigator.language, { granularity: "word" });
+    this.segmenter = new Intl.Segmenter(navigator.language, { granularity: 'word' });
   }
 
   /**

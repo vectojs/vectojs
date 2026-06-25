@@ -784,9 +784,9 @@ const HelpFormatter = _camelcase_alias(_callable(class HelpFormatter {
         let text = parts.filter(Boolean).join(' ')
 
         // clean up separators for mutually exclusive groups
-        text = text.replace(/([\[(]) /g, '$1')
+        text = text.replace(/([[(]) /g, '$1')
         text = text.replace(/ ([\])])/g, '$1')
-        text = text.replace(/[\[(] *[\])]/g, '')
+        text = text.replace(/[[(] *[\])]/g, '')
         text = text.replace(/\(([^|]*)\)/g, '$1', text)
         text = text.trim()
 

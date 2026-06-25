@@ -13,6 +13,7 @@ We strictly follow a linear, heavily-gated Git workflow:
 6. **Merge**: PRs are merged via "Squash and Merge".
 
 ## Coding Standards
+
 - **Linter**: `oxlint` (Zero-config, extreme performance). No ESLint.
 - **Formatter**: `prettier`.
 - **Dependencies**: Analyzed by `knip`. No dead code allowed.

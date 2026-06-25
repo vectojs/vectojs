@@ -71,16 +71,16 @@ var normalize = pathModule.normalize;
 // Regexp that finds the next partion of a (partial) path
 // result is [base_with_slash, base], e.g. ['somedir/', 'somedir']
 if (isWindows) {
-  var nextPartRe = /(.*?)(?:[\/\\]+|$)/g;
+  var nextPartRe = /(.*?)(?:[/\\]+|$)/g;
 } else {
-  var nextPartRe = /(.*?)(?:[\/]+|$)/g;
+  var nextPartRe = /(.*?)(?:[/]+|$)/g;
 }
 
 // Regex to find the device root, including trailing slash. E.g. 'c:\\'.
 if (isWindows) {
-  var splitRootRe = /^(?:[a-zA-Z]:|[\\\/]{2}[^\\\/]+[\\\/][^\\\/]+)?[\\\/]*/;
+  var splitRootRe = /^(?:[a-zA-Z]:|[\\/]{2}[^\\/]+[\\/][^\\/]+)?[\\/]*/;
 } else {
-  var splitRootRe = /^[\/]*/;
+  var splitRootRe = /^[/]*/;
 }
 
 exports.realpathSync = function realpathSync(p, cache) {

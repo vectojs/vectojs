@@ -6,7 +6,7 @@
 // Add `export {}` here to shut off automatic exporting from index.d.ts. There
 // are quite a few utility types here that don't need to be shipped with the
 // exported module.
-export {};
+
 
 import { builders, printer, utils } from "./doc.js";
 

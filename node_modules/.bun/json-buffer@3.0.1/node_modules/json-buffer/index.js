@@ -38,7 +38,7 @@ exports.stringify = function stringify (o) {
 
     return s
   } else if ('string' === typeof o) {
-    return JSON.stringify(/^:/.test(o) ? ':' + o : o)
+    return JSON.stringify(o.startsWith(':') ? ':' + o : o)
   } else if ('undefined' === typeof o) {
     return 'null';
   } else
@@ -48,10 +48,10 @@ exports.stringify = function stringify (o) {
 exports.parse = function (s) {
   return JSON.parse(s, function (key, value) {
     if('string' === typeof value) {
-      if(/^:base64:/.test(value))
+      if(value.startsWith(':base64:'))
         return Buffer.from(value.substring(8), 'base64')
       else
-        return /^:/.test(value) ? value.substring(1) : value 
+        return value.startsWith(':') ? value.substring(1) : value 
     }
     return value
   })

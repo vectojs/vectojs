@@ -60,7 +60,7 @@ const which = (cmd, opt, cb) => {
     const pathPart = /^".*"$/.test(ppRaw) ? ppRaw.slice(1, -1) : ppRaw
 
     const pCmd = path.join(pathPart, cmd)
-    const p = !pathPart && /^\.[\\\/]/.test(cmd) ? cmd.slice(0, 2) + pCmd
+    const p = !pathPart && /^\.[\\/]/.test(cmd) ? cmd.slice(0, 2) + pCmd
       : pCmd
 
     resolve(subStep(p, i, 0))
@@ -95,7 +95,7 @@ const whichSync = (cmd, opt) => {
     const pathPart = /^".*"$/.test(ppRaw) ? ppRaw.slice(1, -1) : ppRaw
 
     const pCmd = path.join(pathPart, cmd)
-    const p = !pathPart && /^\.[\\\/]/.test(cmd) ? cmd.slice(0, 2) + pCmd
+    const p = !pathPart && /^\.[\\/]/.test(cmd) ? cmd.slice(0, 2) + pCmd
       : pCmd
 
     for (let j = 0; j < pathExt.length; j ++) {

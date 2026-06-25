@@ -316,9 +316,9 @@ var require_glob_parent = __commonJS({
     var isWin32 = __require("os").platform() === "win32";
     var slash2 = "/";
     var backslash = /\\/g;
-    var enclosure = /[\{\[].*[\}\]]$/;
-    var globby = /(^|[^\\])([\{\[]|\([^\)]+$)/;
-    var escaped = /\\([\!\*\?\|\[\]\(\)\{\}])/g;
+    var enclosure = /[{[].*[}\]]$/;
+    var globby = /(^|[^\\])([{[]|\([^)]+$)/;
+    var escaped = /\\([!*?|[\](){}])/g;
     module.exports = function globParent(str, opts) {
       var options8 = Object.assign({ flipBackslashes: true }, opts);
       if (options8.flipBackslashes && isWin32 && str.indexOf(slash2) < 0) {
@@ -7223,7 +7223,7 @@ var require_fnmatch = __commonJS({
           escaping = false;
           continue;
         }
-        SWITCH: switch (c2) {
+        switch (c2) {
           case "/":
             return false;
           case "\\":
@@ -7645,7 +7645,7 @@ var require_ini = __commonJS({
     var fs4 = __importStar(__require("fs"));
     var regex = {
       section: /^\s*\[(([^#;]|\\#|\\;)+)\]\s*([#;].*)?$/,
-      param: /^\s*([\w\.\-\_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$/,
+      param: /^\s*([\w.\-_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$/,
       comment: /^\s*[#;].*$/
     };
     function parse7(file) {
@@ -8113,8 +8113,8 @@ var require_js_tokens = __commonJS({
     var TokensPrecedingExpression;
     var WhiteSpace;
     var jsTokens2;
-    RegularExpressionLiteral = /\/(?![*\/])(?:\[(?:[^\]\\\n\r\u2028\u2029]+|\\.)*\]|[^\/\\\n\r\u2028\u2029]+|\\.)*(\/[$_\u200C\u200D\p{ID_Continue}]*|\\)?/yu;
-    Punctuator = /--|\+\+|=>|\.{3}|\??\.(?!\d)|(?:&&|\|\||\?\?|[+\-%&|^]|\*{1,2}|<{1,2}|>{1,3}|!=?|={1,2}|\/(?![\/*]))=?|[?~,:;[\](){}]/y;
+    RegularExpressionLiteral = /\/(?![*/])(?:\[(?:[^\]\\\n\r\u2028\u2029]+|\\.)*\]|[^/\\\n\r\u2028\u2029]+|\\.)*(\/[$_\u200C\u200D\p{ID_Continue}]*|\\)?/yu;
+    Punctuator = /--|\+\+|=>|\.{3}|\??\.(?!\d)|(?:&&|\|\||\?\?|[+\-%&|^]|\*{1,2}|<{1,2}|>{1,3}|!=?|={1,2}|\/(?![/*]))=?|[?~,:;[\](){}]/y;
     Identifier = /(\x23?)(?=[$_\p{ID_Start}\\])(?:[$_\u200C\u200D\p{ID_Continue}]+|\\u[\da-fA-F]{4}|\\u\{[\da-fA-F]+\})+/yu;
     StringLiteral = /(['"])(?:[^'"\\\n\r]+|(?!\1)['"]|\\(?:\r\n|[^]))*(\1)?/y;
     NumericLiteral = /(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*)n?|0n|[1-9](?:_?\d)*n|(?:(?:0(?!\d)|0\d*[89]\d*|[1-9](?:_?\d)*)(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?|0[0-7]+/y;
@@ -8123,11 +8123,11 @@ var require_js_tokens = __commonJS({
     LineTerminatorSequence = /\r?\n|[\r\u2028\u2029]/y;
     MultiLineComment = /\/\*(?:[^*]+|\*(?!\/))*(\*\/)?/y;
     SingleLineComment = /\/\/.*/y;
-    JSXPunctuator = /[<>.:={}]|\/(?![\/*])/y;
+    JSXPunctuator = /[<>.:={}]|\/(?![/*])/y;
     JSXIdentifier = /[$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}-]*/yu;
     JSXString = /(['"])(?:[^'"]+|(?!\1)['"])*(\1)?/y;
     JSXText = /[^<>{}]+/y;
-    TokensPrecedingExpression = /^(?:[\/+-]|\.{3}|\?(?:InterpolationIn(?:JSX|Template)|NoLineTerminatorHere|NonExpressionParenEnd|UnaryIncDec))?$|[{}([,;<>=*%&|^!~?:]$/;
+    TokensPrecedingExpression = /^(?:[/+-]|\.{3}|\?(?:InterpolationIn(?:JSX|Template)|NoLineTerminatorHere|NonExpressionParenEnd|UnaryIncDec))?$|[{}([,;<>=*%&|^!~?:]$/;
     TokensNotPrecedingObjectLiteral = /^(?:=>|[;\]){}]|else|\?(?:NoLineTerminatorHere|NonExpressionParenEnd))?$/;
     KeywordsWithExpressionAfter = /^(?:await|case|default|delete|do|else|instanceof|new|return|throw|typeof|void|yield)$/;
     KeywordsWithNoLineTerminatorAfter = /^(?:return|throw|yield)$/;
@@ -8804,7 +8804,7 @@ var require_ignore = __commonJS({
         // 'js*' will not match 'a.js'
         // 'js/' will not match 'a.js'
         // 'js' will match 'a.js' and 'a.js/'
-        (match) => /\/$/.test(match) ? `${match}$` : `${match}(?=$|\\/$)`
+        (match) => match.endsWith('/') ? `${match}$` : `${match}(?=$|\\/$)`
       ]
     ];
     var REGEX_REPLACE_TRAILING_WILDCARD = /(^|\\\/)?\\\*$/;
@@ -9061,7 +9061,7 @@ var require_ignore = __commonJS({
     var factory = (options8) => new Ignore(options8);
     var isPathValid = (path15) => checkPath(path15 && checkPath.convert(path15), path15, RETURN_FALSE);
     var setupWindows = () => {
-      const makePosix = (str) => /^\\\\\?\\/.test(str) || /["<>|\u0000-\u001F]+/u.test(str) ? str : str.replace(/\\/g, "/");
+      const makePosix = (str) => str.startsWith('\\\\?\\') || /["<>|\u0000-\u001F]+/u.test(str) ? str : str.replace(/\\/g, "/");
       checkPath.convert = makePosix;
       const REGEX_TEST_WINDOWS_PATH_ABSOLUTE = /^[a-z]:\//i;
       checkPath.isNotRelative = (path15) => REGEX_TEST_WINDOWS_PATH_ABSOLUTE.test(path15) || isNotRelative(path15);
