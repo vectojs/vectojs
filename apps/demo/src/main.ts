@@ -60,6 +60,9 @@ async function bootstrap() {
   offCanvas.height = ROWS;
   const ctx = offCanvas.getContext('2d', { willReadFrequently: true })!;
 
+  // 修复重叠幻影：关闭硬件双线性插值，保持极致锐利的像素边缘
+  ctx.imageSmoothingEnabled = false;
+
   // 暴力劫持 ECS 的逐帧 Update 钩子
   const originalUpdate = grid.update.bind(grid);
   grid.update = (dt: number, time: number) => {
@@ -80,8 +83,11 @@ async function bootstrap() {
           // RGB 取平均值计算明度
           const brightness = (imageData[idx] + imageData[idx + 1] + imageData[idx + 2]) / 3;
 
+          // 修复重叠幻影：二值化处理，强制消除 mp4 的灰阶压缩噪点
+          const contrast = brightness > 127 ? 255 : 0;
+
           // 明度 (0-255) 映射到 DENSITY 字符串表
-          const charIdx = Math.floor((brightness / 255) * (DENSITY.length - 1));
+          const charIdx = Math.floor((contrast / 255) * (DENSITY.length - 1));
           rowStr += DENSITY[charIdx];
         }
         asciiGrid.push(rowStr);
