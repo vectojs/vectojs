@@ -4,5 +4,6 @@ export * from './tree/Entity';
 export * from './tree/Scene';
 export * from './components/TextEntity';
 export * from './components/GridTextEntity';
+export * from './components/SplineEntity';
 export * from './layout/LayoutEngine';
 export * from './math/SpatialHashGrid';
