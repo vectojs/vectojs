@@ -1,4 +1,4 @@
-import { Scene, Entity, LayoutEngine, LayoutResultBuffer } from '@vecto/core';
+import { Scene, Entity, LayoutEngine, LayoutResultBuffer } from '@vecto-ui/core';
 import { setupNavBar } from './shared/navBar';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 

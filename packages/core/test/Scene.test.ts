@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // Scene requires a real canvas, so we mock the DOM
 const mockCtx = {
@@ -40,10 +40,18 @@ if (typeof HTMLCanvasElement !== 'undefined') {
 import { Scene } from '../src/tree/Scene';
 import { Entity } from '../src/tree/Entity';
 
+// Entity is abstract; use a minimal concrete subclass for tests.
+class TestEntity extends Entity {
+  isPointInside(): boolean {
+    return false;
+  }
+  render(): void {}
+}
+
 describe('Scene', () => {
   it('add() increases root child count', () => {
     const scene = new Scene(mockCanvas as any);
-    const e = new Entity();
+    const e = new TestEntity();
     scene.add(e);
     // Access root via the private scene graph
     expect((scene as any).root.children.length).toBe(1);
@@ -51,7 +59,7 @@ describe('Scene', () => {
 
   it('remove() decreases root child count', () => {
     const scene = new Scene(mockCanvas as any);
-    const e = new Entity();
+    const e = new TestEntity();
     scene.add(e);
     scene.remove(e);
     expect((scene as any).root.children.length).toBe(0);
@@ -79,7 +87,7 @@ describe('Scene', () => {
 
     const scene = new Scene(canvas);
 
-    const e1 = new Entity('child1');
+    const e1 = new TestEntity('child1');
     e1.interactive = true;
     e1.width = 100;
     e1.height = 100;
@@ -100,12 +108,12 @@ describe('Scene', () => {
 
     const scene = new Scene(canvas);
 
-    const parentEntity = new Entity('parent');
+    const parentEntity = new TestEntity('parent');
     parentEntity.interactive = true;
     parentEntity.width = 100;
     parentEntity.height = 100;
 
-    const childEntity = new Entity('child');
+    const childEntity = new TestEntity('child');
     childEntity.interactive = true;
     childEntity.width = 50;
     childEntity.height = 50;

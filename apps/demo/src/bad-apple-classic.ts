@@ -1,4 +1,4 @@
-import { Scene, GridTextEntity } from '@vecto/core';
+import { Scene, GridTextEntity } from '@vecto-ui/core';
 import { setupNavBar } from './shared/navBar';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 
@@ -82,7 +82,7 @@ async function bootstrap() {
   ctx.imageSmoothingEnabled = false;
 
   // 预分配 asciiGrid 数组，消除每帧 GC
-  const asciiGrid = Array.from({ length: ROWS });
+  const asciiGrid: string[] = Array.from({ length: ROWS }, () => '');
 
   // 暴力劫持 ECS 的逐帧 Update 钩子
   const originalUpdate = grid.update.bind(grid);
