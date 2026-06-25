@@ -14,6 +14,9 @@ build/
 # Test coverage
 coverage/
 
+# Benchmark output
+scripts/.bench-results.json
+
 # Logs
 *.log
 npm-debug.log*

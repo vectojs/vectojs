@@ -9,11 +9,21 @@
 
 Traditional DOM frameworks (React, Vue) cause Reflow/Repaint bottlenecks when animating thousands of elements. VectoUI bypasses the DOM entirely: layout, hit-testing, animations, and physics are calculated as pure mathematics on a **Virtual Math Tree (VMT)**, then dispatched to a `<canvas>` renderer.
 
-| Entities | DOM (React) | VectoUI Canvas |
-| -------- | ----------- | -------------- |
-| 1,000    | ~30 FPS     | 60 FPS         |
-| 10,000   | <5 FPS      | 60 FPS         |
-| 100,000  | Crash       | 60 FPS         |
+### Measured performance
+
+Reproduce with `bun run benchmark` (headless Chrome, Canvas 2D, simple filled-circle
+entities, vsync/frame-rate cap disabled; every entity is re-rendered each frame — there is
+no dirty-checking or culling yet). Numbers are per-machine and entity-complexity dependent.
+
+| Entities | mean ms/frame | max FPS | sustains 60 FPS |
+| -------- | ------------- | ------- | --------------- |
+| 1,000    | ~5 ms         | ~180    | yes             |
+| 10,000   | ~23 ms        | ~44     | not yet         |
+| 100,000  | ~180 ms       | ~6      | not yet         |
+
+> These are early, unoptimized numbers. Pushing 10k+ entities back to 60 FPS is active
+> work — see the roadmap (viewport culling via the spatial hash, dirty-region rendering,
+> off-thread `OffscreenCanvas`, and a WebGL/WebGPU backend behind `IRenderer`).
 
 ## Architecture
 
