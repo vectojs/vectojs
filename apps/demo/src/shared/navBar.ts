@@ -4,6 +4,7 @@
  */
 
 export type DemoHash =
+  | '#ui-components'
   | '#tight-bubbles'
   | '#physics'
   | '#bad-apple-lyrics'
@@ -11,6 +12,7 @@ export type DemoHash =
   | '#bad-apple-variable';
 
 const DEMOS: { hash: DemoHash; label: string }[] = [
+  { hash: '#ui-components', label: '🧩 UI Components' },
   { hash: '#tight-bubbles', label: '💬 Tight Bubbles' },
   { hash: '#physics', label: '📚 Physics Text' },
   { hash: '#bad-apple-lyrics', label: '🎵 Lyrics Reflow' },

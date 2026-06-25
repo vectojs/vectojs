@@ -1,7 +1,9 @@
 const hash = window.location.hash || '#physics';
 
 async function loadDemo() {
-  if (hash === '#physics') {
+  if (hash === '#ui-components') {
+    await import('./ui-components.ts');
+  } else if (hash === '#physics') {
     await import('./physics.ts');
   } else if (hash === '#bad-apple-lyrics') {
     await import('./bad-apple-lyrics.ts');

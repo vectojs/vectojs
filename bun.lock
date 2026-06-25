@@ -28,9 +28,21 @@
     },
     "packages/core": {
       "name": "@vecto-ui/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.9",
+        "jsdom": "^29.1.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.9",
+      },
+    },
+    "packages/ui": {
+      "name": "@vecto-ui/ui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@vecto-ui/core": "workspace:*",
+      },
+      "devDependencies": {
         "jsdom": "^29.1.1",
         "tsup": "^8.3.5",
         "vitest": "^4.1.9",
@@ -443,6 +455,8 @@
     "@types/node": ["@types/node@12.20.55", "", {}, "sha512-J8xLz7q2OFulZ2cyGTLE1TbbZcjpno7FaN6zdJNrgAdrJ+DZzh/uFR6YrTb4C+nXakvud8Q4+rbhoIWlYQbUFQ=="],
 
     "@vecto-ui/core": ["@vecto-ui/core@workspace:packages/core"],
+
+    "@vecto-ui/ui": ["@vecto-ui/ui@workspace:packages/ui"],
 
     "@vitest/coverage-v8": ["@vitest/coverage-v8@4.1.9", "", { "dependencies": { "@bcoe/v8-coverage": "^1.0.2", "@vitest/utils": "4.1.9", "ast-v8-to-istanbul": "^1.0.0", "istanbul-lib-coverage": "^3.2.2", "istanbul-lib-report": "^3.0.1", "istanbul-reports": "^3.2.0", "magicast": "^0.5.2", "obug": "^2.1.1", "std-env": "^4.0.0-rc.1", "tinyrainbow": "^3.1.0" }, "peerDependencies": { "@vitest/browser": "4.1.9", "vitest": "4.1.9" }, "optionalPeers": ["@vitest/browser"] }, "sha512-G9/lgqibheLVBDRuya45EbsEXTYcWoSG+TLg7i2axuzx0Eq62eXn+aWXyaVdV5vKvFSWd6ywcX8hA7la9Pvu8g=="],
 

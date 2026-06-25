@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@vecto-ui/core': new URL('../../packages/core/src/index.ts', import.meta.url).pathname,
+      '@vecto-ui/ui': new URL('../../packages/ui/src/index.ts', import.meta.url).pathname,
     },
   },
 });
