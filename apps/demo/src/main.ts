@@ -1,5 +1,14 @@
 import { Scene, GridTextEntity } from '@vecto/core';
 
+// HMR 热更新终极杀手：全局拦截并销毁旧的死循环
+if ((window as any).__VECTO_HMR_CLEANUP) {
+  (window as any).__VECTO_HMR_CLEANUP();
+}
+let isRunning = true;
+(window as any).__VECTO_HMR_CLEANUP = () => {
+  isRunning = false;
+};
+
 // 字符密度表：从最亮到最暗 (越亮的像素用越密集的字符表示)
 const DENSITY = '@%#*+=-:. ';
 
@@ -131,7 +140,7 @@ function setupFPSMonitor() {
   fpsEl.style.right = '10px';
   fpsEl.style.color = '#38bdf8';
   fpsEl.style.fontFamily = 'monospace';
-  fpsEl.style.fontSize = '24px';
+  fpsEl.style.fontSize = '20px';
   fpsEl.style.pointerEvents = 'none';
   fpsEl.style.zIndex = '99';
   document.body.appendChild(fpsEl);
@@ -140,10 +149,15 @@ function setupFPSMonitor() {
   let lastTime = performance.now();
 
   function update() {
+    if (!isRunning) return; // HMR GC: 立即退出旧实例循环
     frames++;
     const now = performance.now();
     if (now - lastTime >= 1000) {
-      fpsEl.textContent = `FPS: ${frames} | Bad Apple 9,600 Math Entities`;
+      // 获取 V8 引擎真实堆内存大小 (仅 Chrome/Edge 支持)
+      const mem = (performance as any).memory;
+      const memStr = mem ? ` | Mem: ${(mem.usedJSHeapSize / 1048576).toFixed(1)}MB` : '';
+
+      fpsEl.textContent = `FPS: ${frames}${memStr} | Bad Apple 9,600 Entities`;
       frames = 0;
       lastTime = now;
     }
