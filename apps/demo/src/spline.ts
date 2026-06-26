@@ -26,7 +26,8 @@ async function bootstrap() {
 
   // A vectomancy "Spline" document: text "Vecto" converted to math curves.
   const doc = await loadSpline('/ast/spline-vecto.json');
-  const spline = new SplineEntity(doc, { lineWidth: 2 });
+  // Curve-accurate picking: grab the strokes themselves (not the bounding box).
+  const spline = new SplineEntity(doc, { lineWidth: 2, hitTolerance: 4 });
   spline.scaleX = 6;
   spline.scaleY = 6;
   spline.setPosition(120, 240);
@@ -56,7 +57,8 @@ async function bootstrap() {
   const hint = document.createElement('div');
   hint.style.cssText =
     'position:absolute;left:50%;bottom:40px;transform:translateX(-50%);color:#94a3b8;font:14px sans-serif;pointer-events:none';
-  hint.textContent = 'Pure math curves from vectomancy — drag to move.';
+  hint.textContent =
+    'Pure math curves from vectomancy — grab a stroke to drag (curve-accurate hit-test).';
   parent.appendChild(hint);
 }
 
