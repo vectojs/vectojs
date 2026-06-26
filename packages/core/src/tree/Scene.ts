@@ -292,6 +292,30 @@ export class Scene {
       // Fully skip invisible leaf nodes (no transform, no render, no recursion).
       if (!visible && node.children.length === 0) return;
 
+      // Batch fast-path: a uniform-scaled leaf circle draws through the renderer
+      // batch in the parent's transform space (center = local pos, radius scaled),
+      // skipping its own save/translate/scale/rotate/render/restore. Runs of
+      // same-color siblings coalesce into one fill(). Rotation is irrelevant for
+      // a circle; non-uniform scale would shear it, so fall back in that case.
+      if (node.children.length === 0 && node.scaleX === node.scaleY) {
+        const bc = node.getBatchCircle();
+        if (bc) {
+          if (visible) {
+            this.renderer.fillCircle(
+              node.x,
+              node.y,
+              bc.radius * node.scaleX,
+              bc.color,
+              node.opacity,
+            );
+          }
+          return;
+        }
+      }
+
+      // Any normal (non-batched) draw must commit the pending batch first so
+      // painter's order is preserved across the sibling group.
+      this.renderer.flush();
       this.renderer.save();
       this.renderer.translate(node.x, node.y);
       this.renderer.scale(node.scaleX, node.scaleY);
@@ -303,10 +327,13 @@ export class Scene {
       for (const child of node.children) {
         renderNode(child, a, b, c, d, te, tf);
       }
+      // Commit any batched leaf children before popping this node's transform.
+      this.renderer.flush();
       this.renderer.restore();
     };
 
     renderNode(this.root, 1, 0, 0, 1, 0, 0);
+    this.renderer.flush();
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
     if (this.hasAnyInteractive(this.root)) {

@@ -29,6 +29,7 @@ const COUNTS = (args.get('n') ?? '1000,10000,100000').split(',').map(Number);
 const FRAMES = Number(args.get('frames') ?? 120);
 const WORLD = args.get('world') ?? '1';
 const RENDER = args.get('render') ?? 'always';
+const BATCH = args.get('batch') ?? '0';
 
 function loadPlaywright() {
   const pkgDir = dirname(execSync('readlink -f "$(which playwright)"').toString().trim());
@@ -94,7 +95,7 @@ async function main() {
     for (const n of COUNTS) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
       await page.goto(
-        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}`,
+        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}&batch=${BATCH}`,
         {
           waitUntil: 'load',
         },

@@ -19,6 +19,18 @@ export interface Bounds {
 }
 
 /**
+ * Describes an entity that renders as a single filled circle at its local
+ * origin, returned from {@link Entity.getBatchCircle} to opt into the renderer's
+ * draw-call batching fast-path.
+ */
+export interface BatchCircle {
+  /** Circle radius in the entity's local space. */
+  radius: number;
+  /** CSS fill color. */
+  color: string;
+}
+
+/**
  * Semantic attributes an {@link Entity} can project into the accessibility /
  * automation shadow layer maintained by {@link Scene}.
  *
@@ -305,6 +317,23 @@ export abstract class Entity {
    * @returns The local bounds, or `null` to opt out of culling.
    */
   public getBounds(): Bounds | null {
+    return null;
+  }
+
+  /**
+   * Opt into the renderer's draw-call batching fast-path for point-cloud /
+   * particle entities that draw as a single filled circle at their local origin.
+   *
+   * When a leaf entity returns a {@link BatchCircle} and has uniform scale, the
+   * {@link Scene} skips its per-entity `save`/`translate`/`scale`/`rotate`/
+   * `restore` and {@link render}, emitting the circle through
+   * {@link IRenderer.fillCircle} so runs of same-color siblings coalesce into a
+   * single `fill()`. Returns `null` by default (normal render path). Read each
+   * frame, so an animated color/radius is honored.
+   *
+   * @returns The circle to batch, or `null` to use the normal {@link render} path.
+   */
+  public getBatchCircle(): BatchCircle | null {
     return null;
   }
 

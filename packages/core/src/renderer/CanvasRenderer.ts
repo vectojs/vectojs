@@ -14,10 +14,27 @@ import { IRenderer } from './IRenderer';
  * renderer.beginPath();
  * renderer.fill('#38bdf8');
  */
+const TWO_PI = Math.PI * 2;
+
 export class CanvasRenderer implements IRenderer {
   private ctx: CanvasRenderingContext2D;
   private width: number;
   private height: number;
+
+  /**
+   * Max circles per batched `fill()`. A single Canvas 2D `fill()` over a path is
+   * superlinear in sub-path count, so an unbounded batch is *slower* than many
+   * small fills at high entity counts. Capping bounds each fill's path
+   * complexity while still amortizing per-draw overhead. Tuned via the benchmark.
+   */
+  static readonly MAX_BATCH = 64;
+
+  // Order-preserving batch state for fillCircle(): a run of same-style circles
+  // accumulates into one path and is committed by a single fill() on flush().
+  private batchActive: boolean = false;
+  private batchColor: string = '';
+  private batchAlpha: number = 1;
+  private batchCount: number = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     const dpr = window.devicePixelRatio || 1;
@@ -63,14 +80,17 @@ export class CanvasRenderer implements IRenderer {
 
   /** @inheritdoc */
   clear(): void {
+    this.flush();
     this.ctx.clearRect(0, 0, this.width, this.height);
   }
   /** @inheritdoc */
   save(): void {
+    this.flush();
     this.ctx.save();
   }
   /** @inheritdoc */
   restore(): void {
+    this.flush();
     this.ctx.restore();
   }
   /** @inheritdoc */
@@ -92,6 +112,7 @@ export class CanvasRenderer implements IRenderer {
 
   /** @inheritdoc */
   beginPath(): void {
+    this.flush();
     this.ctx.beginPath();
   }
   /** @inheritdoc */
@@ -137,17 +158,49 @@ export class CanvasRenderer implements IRenderer {
 
   /** @inheritdoc */
   drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
+    this.flush();
     this.ctx.drawImage(source, dx, dy, dw, dh);
   }
 
   /** @inheritdoc */
+  fillCircle(cx: number, cy: number, radius: number, color: string, alpha: number = 1): void {
+    if (this.batchActive && (color !== this.batchColor || alpha !== this.batchAlpha)) {
+      this.flush();
+    }
+    if (!this.batchActive) {
+      this.ctx.beginPath();
+      this.batchActive = true;
+      this.batchColor = color;
+      this.batchAlpha = alpha;
+    }
+    // moveTo before arc starts a fresh sub-path so circles don't connect.
+    this.ctx.moveTo(cx + radius, cy);
+    this.ctx.arc(cx, cy, radius, 0, TWO_PI);
+    this.batchCount++;
+    if (this.batchCount >= CanvasRenderer.MAX_BATCH) this.flush();
+  }
+
+  /** @inheritdoc */
+  flush(): void {
+    if (!this.batchActive) return;
+    this.ctx.globalAlpha = this.batchAlpha;
+    this.ctx.fillStyle = this.batchColor;
+    this.ctx.fill();
+    this.ctx.globalAlpha = 1;
+    this.batchActive = false;
+    this.batchCount = 0;
+  }
+
+  /** @inheritdoc */
   fill(color: string | any): void {
+    this.flush();
     this.ctx.fillStyle = color;
     this.ctx.fill();
   }
 
   /** @inheritdoc */
   stroke(color: string | any, lineWidth: number = 1): void {
+    this.flush();
     this.ctx.strokeStyle = color;
     this.ctx.lineWidth = lineWidth;
     this.ctx.lineCap = 'round';
@@ -157,6 +210,7 @@ export class CanvasRenderer implements IRenderer {
 
   /** @inheritdoc */
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
+    this.flush();
     this.ctx.font = font;
     this.ctx.fillStyle = color;
     this.ctx.fillText(text, x, y);

@@ -17,14 +17,38 @@ const WARMUP = Number(params.get('warmup') ?? 30);
 // `world=<k>` spreads entities across a k×viewport world (k>1 ⇒ most are
 // off-screen) and gives each a getBounds(), exercising viewport culling.
 const WORLD = Number(params.get('world') ?? 1);
+// `batch=1` opts each circle into the renderer draw-call batching fast-path
+// (getBatchCircle), coalescing same-color circles into a single fill().
+const BATCH = params.get('batch') === '1';
+// `sprite=1` experiment: blit a pre-rendered circle bitmap via drawImage
+// (the canonical Canvas2D particle technique) instead of arc+fill.
+const SPRITE = params.get('sprite') === '1';
+
+let spriteCanvas: HTMLCanvasElement | null = null;
+function getSprite(radius: number): HTMLCanvasElement {
+  if (spriteCanvas) return spriteCanvas;
+  const s = document.createElement('canvas');
+  const d = Math.ceil(radius * 2) + 2;
+  s.width = d;
+  s.height = d;
+  const c = s.getContext('2d')!;
+  c.beginPath();
+  c.arc(d / 2, d / 2, radius, 0, Math.PI * 2);
+  c.fillStyle = '#38bdf8';
+  c.fill();
+  spriteCanvas = s;
+  return s;
+}
 
 class BenchCircle extends Entity {
   private radius: number;
   private culled: boolean;
-  constructor(radius: number, culled: boolean) {
+  private batch: boolean;
+  constructor(radius: number, culled: boolean, batch: boolean) {
     super();
     this.radius = radius;
     this.culled = culled;
+    this.batch = batch;
   }
   isPointInside(): boolean {
     return false;
@@ -34,7 +58,15 @@ class BenchCircle extends Entity {
       ? { x: -this.radius, y: -this.radius, width: this.radius * 2, height: this.radius * 2 }
       : null;
   }
+  getBatchCircle() {
+    return this.batch ? { radius: this.radius, color: '#38bdf8' } : null;
+  }
   render(r: IRenderer): void {
+    if (SPRITE) {
+      const d = Math.ceil(this.radius * 2) + 2;
+      r.drawImage(getSprite(this.radius), -d / 2, -d / 2, d, d);
+      return;
+    }
     r.beginPath();
     r.arc(0, 0, this.radius, 0, Math.PI * 2);
     r.fill('#38bdf8');
@@ -60,7 +92,7 @@ for (let i = 0; i < N; i++) {
   const col = i % cols;
   const row = Math.floor(i / cols);
   scene.add(
-    new BenchCircle(Math.min(3, cellW / 2), WORLD > 1).setPosition(
+    new BenchCircle(Math.min(3, cellW / 2), WORLD > 1, BATCH).setPosition(
       col * cellW + cellW / 2,
       row * cellH + cellH / 2,
     ),

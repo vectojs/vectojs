@@ -142,6 +142,31 @@ export interface IRenderer {
   fillText(text: string, x: number, y: number, font: string, color: string | any): void;
 
   /**
+   * Draw a filled circle through the order-preserving batch.
+   *
+   * Consecutive calls sharing the same `color` and `alpha` are coalesced into a
+   * single path and committed with one `fill()` on {@link flush} (or when the
+   * style changes / another draw call intervenes). Coordinates are in the
+   * current transform space. This collapses the per-entity
+   * `beginPath`/`arc`/`fill` of large point clouds into a handful of draw calls
+   * while preserving painter's-order semantics.
+   *
+   * @param cx - Center X in the current transform space.
+   * @param cy - Center Y in the current transform space.
+   * @param radius - Circle radius.
+   * @param color - CSS color string.
+   * @param alpha - Opacity in `[0, 1]` (default `1`).
+   */
+  fillCircle(cx: number, cy: number, radius: number, color: string, alpha?: number): void;
+
+  /**
+   * Commit any pending batched draws (see {@link fillCircle}). Safe to call when
+   * no batch is active (no-op). The {@link Scene} flushes at the end of each
+   * sibling group and frame.
+   */
+  flush(): void;
+
+  /**
    * Create a linear gradient between two points with the given color stops.
    *
    * @param x0 - X of the gradient start point.
