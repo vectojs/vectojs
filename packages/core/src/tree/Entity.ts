@@ -286,6 +286,25 @@ export abstract class Entity {
   }
 
   /**
+   * Accumulated world scale factors: this entity's own `scaleX`/`scaleY` times
+   * those of every ancestor (excluding the scene root). Useful for mapping a
+   * world-space point back into local space for hit-testing.
+   *
+   * @returns The world scale `{ x, y }`.
+   */
+  public getWorldScale(): { x: number; y: number } {
+    let sx = this.scaleX;
+    let sy = this.scaleY;
+    let curr = this.parent;
+    while (curr && curr.id !== 'root') {
+      sx *= curr.scaleX;
+      sy *= curr.scaleY;
+      curr = curr.parent;
+    }
+    return { x: sx, y: sy };
+  }
+
+  /**
    * Return `true` when the given world-space point lies within this entity's
    * interactive hit area.
    *

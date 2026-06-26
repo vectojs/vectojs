@@ -43,6 +43,15 @@ export interface SplineOptions {
   cache?: boolean;
   /** Color used when an equation's `color_rgb` is `null`. Default `#e2e8f0`. */
   defaultColor?: string;
+  /**
+   * Hit-test strategy:
+   * - `'curve'` (default): precise — a point hits only within `lineWidth/2 +
+   *   hitTolerance` of an actual curve.
+   * - `'aabb'`: coarse — anywhere in the bounding box hits.
+   */
+  hitTest?: 'curve' | 'aabb';
+  /** Extra pick padding (local units) added to `lineWidth/2` in `'curve'` mode. Default `0`. */
+  hitTolerance?: number;
 }
 
 /** Cubic Bézier control points produced from a {@link SplineSegment}. */
@@ -92,6 +101,49 @@ function rgbToCss(rgb: [number, number, number]): string {
   return `rgb(${Math.round(rgb[0] * 255)}, ${Math.round(rgb[1] * 255)}, ${Math.round(rgb[2] * 255)})`;
 }
 
+/** Samples per Bézier segment when flattening for hit-testing. */
+const HIT_SAMPLES = 16;
+
+/**
+ * Flatten a cubic Bézier into a polyline of `samples + 1` points, returned as a
+ * flat `[x0,y0,x1,y1,…]` Float32Array.
+ */
+function flattenBezier(b: BezierControlPoints, samples: number): Float32Array {
+  const pts = new Float32Array((samples + 1) * 2);
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const mt = 1 - t;
+    const a = mt * mt * mt;
+    const c1 = 3 * mt * mt * t;
+    const c2 = 3 * mt * t * t;
+    const d = t * t * t;
+    pts[i * 2] = a * b.x0 + c1 * b.cp1x + c2 * b.cp2x + d * b.x3;
+    pts[i * 2 + 1] = a * b.y0 + c1 * b.cp1y + c2 * b.cp2y + d * b.y3;
+  }
+  return pts;
+}
+
+/** Squared distance from point `(px,py)` to the segment `(x1,y1)-(x2,y2)`. */
+function distSqToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const cx = x1 + t * dx;
+  const cy = y1 + t * dy;
+  const ex = px - cx;
+  const ey = py - cy;
+  return ex * ex + ey * ey;
+}
+
 /**
  * Renders a native vectomancy `Spline` document (piecewise-cubic curves) to canvas.
  *
@@ -108,10 +160,14 @@ export class SplineEntity extends Entity {
   public doc: SplineDocument;
   public lineWidth: number;
   public defaultColor: string;
+  public hitTolerance: number;
   private cache: boolean;
+  private hitMode: 'curve' | 'aabb';
   private bounds: Bounds;
   private offscreen: HTMLCanvasElement | OffscreenCanvas | null = null;
   private baked = false;
+  /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
+  private polylines: Float32Array[] | null = null;
 
   constructor(doc: SplineDocument, opts: SplineOptions = {}) {
     super();
@@ -119,6 +175,8 @@ export class SplineEntity extends Entity {
     this.lineWidth = opts.lineWidth ?? 2;
     this.cache = opts.cache ?? true;
     this.defaultColor = opts.defaultColor ?? '#e2e8f0';
+    this.hitMode = opts.hitTest ?? 'curve';
+    this.hitTolerance = opts.hitTolerance ?? 0;
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
@@ -166,8 +224,10 @@ export class SplineEntity extends Entity {
    */
   public isPointInside(globalX: number, globalY: number): boolean {
     const pos = this.getGlobalPosition();
-    const lx = globalX - pos.x;
-    const ly = globalY - pos.y;
+    const scale = this.getWorldScale();
+    // Map the world point into the spline's unscaled local space.
+    const lx = (globalX - pos.x) / (scale.x || 1);
+    const ly = (globalY - pos.y) / (scale.y || 1);
     const inAabb =
       lx >= this.bounds.x &&
       lx <= this.bounds.x + this.bounds.width &&
@@ -179,18 +239,42 @@ export class SplineEntity extends Entity {
   }
 
   /**
-   * Optional curve-accurate refinement of {@link isPointInside}.
+   * Curve-accurate refinement of {@link isPointInside}: hit only when the local
+   * point lies within `lineWidth/2 + hitTolerance` of an actual curve.
    *
-   * Returns `null` by default (AABB result is used as-is). Override to test the
-   * local point against the actual curves (e.g. distance-to-bezier within a
-   * tolerance) for precise picking.
+   * Returns `null` in `hitTest: 'aabb'` mode (keep the bounding-box result).
+   * Curves are flattened to polylines once and cached. Override for custom logic.
    *
-   * @param _localX - X in the entity's local space.
-   * @param _localY - Y in the entity's local space.
-   * @returns `true`/`false` to refine, or `null` to keep the AABB result.
+   * @param localX - X in the entity's local space.
+   * @param localY - Y in the entity's local space.
+   * @returns `true`/`false`, or `null` to keep the AABB result.
    */
-  protected hitTestCurve(_localX: number, _localY: number): boolean | null {
-    return null;
+  protected hitTestCurve(localX: number, localY: number): boolean | null {
+    if (this.hitMode === 'aabb') return null;
+    const tol = this.lineWidth / 2 + this.hitTolerance;
+    const tol2 = tol * tol;
+    const polylines = this.getPolylines();
+    for (const pts of polylines) {
+      for (let i = 0; i + 3 < pts.length; i += 2) {
+        if (distSqToSegment(localX, localY, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]) <= tol2) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Flatten every Bézier segment into a sampled polyline once, then cache. */
+  private getPolylines(): Float32Array[] {
+    if (this.polylines) return this.polylines;
+    const out: Float32Array[] = [];
+    for (const eq of this.doc.equations) {
+      for (const seg of eq.data) {
+        out.push(flattenBezier(polySegmentToBezier(seg), HIT_SAMPLES));
+      }
+    }
+    this.polylines = out;
+    return out;
   }
 
   private resolveColor(color: SplineColor, r: IRenderer): string | unknown {
