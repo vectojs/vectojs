@@ -473,6 +473,43 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(captured).toEqual([7]);
     expect(released).toEqual([7]);
   });
+
+  it('syncs the a11y shadow layer every frame by default', () => {
+    const scene = makeScene();
+    const e = new SpyEntity('s', { x: 0, y: 0, width: 50, height: 50 }) as SpyEntity;
+    e.interactive = true;
+    e.width = 50;
+    e.height = 50;
+    scene.add(e);
+    const root = (scene as unknown as { root: Entity }).root;
+    const spy = vi.spyOn(scene as unknown as { syncA11y: (n: Entity) => void }, 'syncA11y');
+    const frames = () => spy.mock.calls.filter((c) => c[0] === root).length; // one root call per synced frame
+
+    (scene as unknown as { loop: (t: number) => void }).loop(1000);
+    (scene as unknown as { loop: (t: number) => void }).loop(1001);
+
+    expect(frames()).toBe(2);
+  });
+
+  it('throttles the a11y shadow sync to a11ySyncInterval', () => {
+    const scene = makeScene();
+    scene.a11ySyncInterval = 100;
+    const e = new SpyEntity('s2', { x: 0, y: 0, width: 50, height: 50 }) as SpyEntity;
+    e.interactive = true;
+    e.width = 50;
+    e.height = 50;
+    scene.add(e);
+    const root = (scene as unknown as { root: Entity }).root;
+    const spy = vi.spyOn(scene as unknown as { syncA11y: (n: Entity) => void }, 'syncA11y');
+    const frames = () => spy.mock.calls.filter((c) => c[0] === root).length;
+
+    const loop = (scene as unknown as { loop: (t: number) => void }).loop.bind(scene);
+    loop(1000); // first frame → sync
+    loop(1050); // +50ms, within interval → skipped
+    loop(1200); // +200ms, past interval → sync
+
+    expect(frames()).toBe(2);
+  });
 });
 
 describe('Scene syncA11y — text input IME / selection / focus forwarding', () => {
