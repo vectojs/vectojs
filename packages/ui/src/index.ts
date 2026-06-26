@@ -8,4 +8,5 @@ export * from './Stack';
 export * from './Input';
 export * from './Checkbox';
 export * from './Toggle';
+export * from './ScrollView';
 export { measureText, wrapLines } from './measure';
