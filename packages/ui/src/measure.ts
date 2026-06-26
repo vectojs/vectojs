@@ -27,20 +27,48 @@ export function fontSizePx(font: string): number {
   return m ? parseFloat(m[1]) : 16;
 }
 
+// Cache `(font, text) → width`. Native `measureText` forces a layout/context
+// switch each call — wasteful for hot paths that re-measure the same strings
+// every frame: `wrapLines` (per-word candidates) and `Input` caret positioning
+// (growing prefixes). A bounded LRU keeps the working set hot while capping
+// memory (dynamic text would otherwise grow an unbounded map). A `Map` preserves
+// insertion order, so the first key is the least-recently-used.
+const MEASURE_CACHE_MAX = 1000;
+const measureCache = new Map<string, number>();
+
 /**
- * Measure the rendered width of `text` in the given CSS `font`.
+ * Measure the rendered width of `text` in the given CSS `font`, memoized via a
+ * bounded LRU.
  *
  * @param text - The string to measure.
  * @param font - A CSS font shorthand, e.g. `'16px sans-serif'`.
  * @returns Pixel width; a rough `0.5em`-per-char estimate when no DOM is available.
  */
 export function measureText(text: string, font: string): number {
-  const ctx = getCtx();
-  if (!ctx) {
-    return text.length * fontSizePx(font) * 0.5;
+  const key = `${font} ${text}`;
+  const cached = measureCache.get(key);
+  if (cached !== undefined) {
+    // Promote to most-recently-used (delete + re-insert moves it to the end).
+    measureCache.delete(key);
+    measureCache.set(key, cached);
+    return cached;
   }
-  ctx.font = font;
-  return ctx.measureText(text).width;
+
+  const ctx = getCtx();
+  let width: number;
+  if (!ctx) {
+    width = text.length * fontSizePx(font) * 0.5;
+  } else {
+    ctx.font = font;
+    width = ctx.measureText(text).width;
+  }
+
+  measureCache.set(key, width);
+  if (measureCache.size > MEASURE_CACHE_MAX) {
+    // Evict the least-recently-used entry (oldest insertion-order key).
+    measureCache.delete(measureCache.keys().next().value!);
+  }
+  return width;
 }
 
 /**
