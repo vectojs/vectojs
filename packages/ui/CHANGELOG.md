@@ -1,5 +1,27 @@
 # @vecto-ui/ui
 
+## 0.2.2
+
+### Patch Changes
+
+- 7c9e40c: Docs: rewrite READMEs for accurate positioning and honest, reproducible numbers.
+
+  Removes the fabricated "React vs core" comparison table (1k/10k/100k → React
+  "Crash" vs "60 FPS") and the misleading "60 FPS with 100,000+ entities" tagline.
+  READMEs now describe VectoUI as a Zero-DOM canvas UI runtime with the a11y/agent
+  moat, cite measured benchmark numbers, list the full component set, document the
+  IME-capable `Input`, and state where the framework does and doesn't fit.
+
+- 88c08c5: Route `Text` through the shared `LayoutEngine` instead of its own ad-hoc
+  `wrapLines`. `Text` now uses the same `Intl.Segmenter` measurement path as
+  `TextEntity`, with the cold/hot split: `setText` re-measures (cold), the new
+  `setMaxWidth` re-wraps via the hot path only (no re-segmentation/re-measurement).
+  Blank lines and explicit newlines are preserved. Public `measureText` /
+  `wrapLines` / `fontSizePx` are unchanged and still exported.
+- Updated dependencies [715693b]
+- Updated dependencies [7c9e40c]
+  - @vecto-ui/core@0.5.2
+
 ## 0.2.1
 
 ### Patch Changes
