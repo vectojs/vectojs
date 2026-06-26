@@ -172,6 +172,12 @@ function bootstrap() {
   const scene = new Scene(canvas);
 
   const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+
+  // The text takes ~230px vertically, and the card takes 320px.
+  // We use startY to center the whole group vertically.
+  const startY = cy - 290;
+
   const text = new MagneticText(
     [
       { text: 'VectoUI', size: 96 },
@@ -179,7 +185,7 @@ function bootstrap() {
       { text: 'every glyph is math — move your cursor', size: 22 },
     ],
     cx,
-    window.innerHeight / 2 - 250,
+    startY,
   );
   scene.add(text);
 
@@ -193,7 +199,7 @@ function bootstrap() {
 
   const card = new Card({ width: 360, height: 320, border: '#334155', padding: 24 });
   card.add(form.setPosition(24, 24));
-  scene.add(card.setPosition(cx - 180, window.innerHeight / 2 - 50));
+  scene.add(card.setPosition(cx - 180, startY + 260));
 
   scene.start();
 
