@@ -41,12 +41,12 @@ export class Modal extends UIComponent {
     this.card.add(titleText.setPosition(24, 24));
 
     const closeBtn = new Button('Close', {
-      width: 80,
-      height: 36,
       bg: 'rgba(255, 255, 255, 0.1)',
       color: '#fff',
       radius: 8,
     });
+    closeBtn.width = 80;
+    closeBtn.height = 36;
     closeBtn.on('click', (e: VectoUIEvent) => {
       e.stopPropagation();
       this.close();
