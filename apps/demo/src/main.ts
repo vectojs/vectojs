@@ -600,6 +600,356 @@ scene.start();
   currentResizeHandler = resizeHandler;
 }
 
+class DashboardParticle extends Entity {
+  public vx: number;
+  public vy: number;
+  constructor(
+    public radius: number,
+    public color: string,
+  ) {
+    super();
+    this.vx = (Math.random() - 0.5) * 300;
+    this.vy = (Math.random() - 0.5) * 300;
+  }
+  isPointInside(): boolean {
+    return false;
+  }
+  getBatchCircle() {
+    return { radius: this.radius, color: this.color };
+  }
+  render(r: IRenderer): void {
+    r.beginPath();
+    r.arc(0, 0, this.radius, 0, Math.PI * 2);
+    r.fill(this.color);
+  }
+}
+
+class DashboardChartEntity extends Entity {
+  public fpsData: number[] = [];
+  public maxPoints: number = 60;
+
+  constructor(
+    public width: number,
+    public height: number,
+  ) {
+    super();
+  }
+
+  public pushData(val: number) {
+    this.fpsData.push(val);
+    if (this.fpsData.length > this.maxPoints) {
+      this.fpsData.shift();
+    }
+  }
+
+  isPointInside(): boolean {
+    return false;
+  }
+
+  render(r: IRenderer): void {
+    // Background Grid
+    r.beginPath();
+    r.save();
+    r.translate(this.x, this.y);
+
+    // Draw grid lines
+    for (let i = 0; i <= 4; i++) {
+      const cy = (this.height / 4) * i;
+      r.beginPath();
+      r.moveTo(0, cy);
+      r.lineTo(this.width, cy);
+      r.stroke('rgba(255, 255, 255, 0.08)', 1);
+    }
+
+    if (this.fpsData.length < 2) {
+      r.restore();
+      return;
+    }
+
+    // Draw glowing line chart
+    const maxVal = 160; // Max coordinate 160fps
+    const getX = (idx: number) => (idx / (this.maxPoints - 1)) * this.width;
+    const getY = (val: number) => this.height - (Math.min(val, maxVal) / maxVal) * this.height;
+
+    r.beginPath();
+    r.moveTo(getX(0), getY(this.fpsData[0]));
+    for (let i = 1; i < this.fpsData.length; i++) {
+      r.lineTo(getX(i), getY(this.fpsData[i]));
+    }
+    r.stroke('#00f0ff', 3); // Neon blue line
+
+    // Semi-transparent area fill
+    r.lineTo(getX(this.fpsData.length - 1), this.height);
+    r.lineTo(getX(0), this.height);
+    r.closePath();
+    r.fill('rgba(0, 240, 255, 0.12)');
+
+    // Active indicator point at the end
+    const lastIdx = this.fpsData.length - 1;
+    const lastVal = this.fpsData[lastIdx];
+    r.beginPath();
+    r.arc(getX(lastIdx), getY(lastVal), 5, 0, Math.PI * 2);
+    r.fill('#00f0ff');
+    r.stroke('#ffffff', 2);
+
+    r.restore();
+  }
+}
+
+function initDashboardDemo() {
+  cleanup();
+
+  document.body.style.cssText =
+    'margin:0;overflow:hidden;background:#030014;font-family:"Outfit",sans-serif;color:#fff';
+
+  const parent = document.createElement('div');
+  parent.id = 'demo-container';
+  parent.style.cssText = 'position:relative;width:100vw;height:100vh';
+  document.body.appendChild(parent);
+
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:absolute;top:0;left:0;width:100vw;height:100vh;z-index:1';
+  parent.appendChild(canvas);
+
+  let pointBackend: 'webgl' | 'canvas' = 'canvas';
+  let particleCount = 10000;
+  const particles: DashboardParticle[] = [];
+  let isBenchmarking = false;
+
+  const scene = new Scene(canvas, pointBackend === 'webgl' ? { pointBackend: 'webgl' } : {});
+  currentScene = scene;
+
+  // Custom Title
+  const title = document.createElement('div');
+  title.style.cssText =
+    'position:fixed;top:20px;left:40px;display:flex;align-items:center;gap:12px;z-index:20;font-family:"Outfit",sans-serif;pointer-events:none;';
+  title.innerHTML = `
+    <span style="font-weight:800;font-size:24px;color:#fff;">VectoUI</span>
+    <span style="font-size:12px;padding:4px 10px;border-radius:12px;border:1px solid #00f0ff;color:#00f0ff;background:rgba(0,240,255,0.1);">Performance Lab</span>
+  `;
+  parent.appendChild(title);
+
+  // 1. Control Panel Card (Left Panel)
+  const controlCard = new Card({
+    width: 320,
+    height: 520,
+    bg: 'rgba(15, 15, 25, 0.75)',
+    border: 'rgba(255, 255, 255, 0.1)',
+    padding: 24,
+    radius: 16,
+  });
+
+  const controlStack = new Stack({ direction: 'vertical', gap: 16 });
+  controlStack.add(
+    new Text('Test Settings', { font: '600 22px "Outfit", sans-serif', color: '#fff' }),
+  );
+
+  // Backend selection dropdown
+  controlStack.add(
+    new Text('Renderer Backend', {
+      font: '600 13px "Outfit", sans-serif',
+      color: 'rgba(255,255,255,0.5)',
+    }),
+  );
+  const backendDropdown = new Dropdown(['Canvas 2D (Batching)', 'WebGL Point Cloud'], {
+    width: 272,
+    height: 36,
+    value: 'Canvas 2D (Batching)',
+    bg: 'rgba(255, 255, 255, 0.1)',
+    font: '600 13px "Outfit", sans-serif',
+    radius: 8,
+  });
+  backendDropdown.on('change', (e: any) => {
+    pointBackend = e.value.startsWith('WebGL') ? 'webgl' : 'canvas';
+  });
+  controlStack.add(backendDropdown);
+
+  // Particle count slider
+  const sliderLabel = new Text('Particle Entities: 10000', {
+    font: '600 13px "Outfit", sans-serif',
+    color: 'rgba(255,255,255,0.5)',
+  });
+  controlStack.add(sliderLabel);
+  const countSlider = new Slider({
+    min: 1000,
+    max: 50000,
+    value: 10000,
+    width: 272,
+    height: 24,
+    progressColor: '#00f0ff',
+  });
+  countSlider.on('change', (e: any) => {
+    particleCount = e.value;
+    sliderLabel.setText(`Particle Entities: ${particleCount}`);
+  });
+  controlStack.add(countSlider);
+
+  // Benchmark toggle action
+  const toggleBtn = new Button('Run Benchmark Simulation', {
+    bg: 'linear-gradient(135deg, #00f0ff, #aa3bff)',
+    hoverBg: 'linear-gradient(135deg, #33f3ff, #be63ff)',
+    color: '#fff',
+    radius: 10,
+    font: '600 14px "Outfit", sans-serif',
+  });
+  toggleBtn.width = 272;
+  toggleBtn.height = 42;
+
+  toggleBtn.on('click', () => {
+    if (isBenchmarking) {
+      // Stop
+      isBenchmarking = false;
+      toggleBtn.label = 'Run Benchmark Simulation';
+      // Remove all particles
+      for (const p of particles) {
+        scene.remove(p);
+      }
+      particles.length = 0;
+    } else {
+      // Start
+      isBenchmarking = true;
+      toggleBtn.label = 'Stop Simulation';
+
+      // Re-initialize Scene with selected backend if WebGL is requested
+      scene.destroy();
+      const newScene = new Scene(canvas, pointBackend === 'webgl' ? { pointBackend: 'webgl' } : {});
+      currentScene = newScene;
+
+      // Add UI controls back onto the new scene tree
+      newScene.add(controlCard);
+      newScene.add(statsCard);
+
+      // Spawn particles
+      const colors = ['#00f0ff', '#ff00aa', '#aa3bff', '#ffffff', '#38bdf8'];
+      for (let i = 0; i < particleCount; i++) {
+        const color = colors[i % colors.length];
+        const p = new DashboardParticle(Math.max(1.5, Math.random() * 3.5), color);
+        p.setPosition(Math.random() * window.innerWidth, Math.random() * window.innerHeight);
+        particles.push(p);
+        newScene.add(p);
+      }
+
+      newScene.start();
+    }
+  });
+  controlStack.add(toggleBtn);
+
+  controlCard.add(controlStack.setPosition(24, 24));
+  scene.add(controlCard.setPosition(40, window.innerHeight / 2 - 260));
+
+  // 2. Metrics & Chart Panel Card (Right Panel)
+  const statsCard = new Card({
+    width: 480,
+    height: 520,
+    bg: 'rgba(15, 15, 25, 0.75)',
+    border: 'rgba(255, 255, 255, 0.1)',
+    padding: 24,
+    radius: 16,
+  });
+
+  const statsStack = new Stack({ direction: 'vertical', gap: 14 });
+  statsStack.add(
+    new Text('Engine Diagnostics', { font: '600 22px "Outfit", sans-serif', color: '#fff' }),
+  );
+
+  const metricsRow = new Stack({ direction: 'horizontal', gap: 20 });
+  const fpsLabel = new Text('FPS: --', { font: '600 18px "Outfit", monospace', color: '#00f0ff' });
+  const latencyLabel = new Text('Frame Cost: -- ms', {
+    font: '600 18px "Outfit", monospace',
+    color: '#ff00aa',
+  });
+  metricsRow.add(fpsLabel);
+  metricsRow.add(latencyLabel);
+  statsStack.add(metricsRow);
+
+  // Add the custom live line chart entity
+  const chart = new DashboardChartEntity(432, 260);
+  statsStack.add(chart.setPosition(0, 0));
+
+  const gcText = new Text('Memory Footprint: -- MB (Zero-GC Mode)', {
+    font: '400 13px "Outfit", sans-serif',
+    color: 'rgba(255, 255, 255, 0.4)',
+  });
+  statsStack.add(gcText);
+
+  statsCard.add(statsStack.setPosition(24, 24));
+  scene.add(statsCard.setPosition(window.innerWidth - 520, window.innerHeight / 2 - 260));
+
+  scene.start();
+
+  // Metrics update tick loop
+  let frames = 0;
+  let lastTime = performance.now();
+  let lastFrameTime = performance.now();
+
+  const tickStats = () => {
+    if (!currentScene || currentScene !== scene) return;
+
+    frames++;
+    const now = performance.now();
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    // Simulate simple particle physics bounds check if benchmark is running
+    if (isBenchmarking) {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const dtSec = Math.min(0.032, dt / 1000);
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.x += p.vx * dtSec;
+        p.y += p.vy * dtSec;
+        if (p.x < 0) {
+          p.x = 0;
+          p.vx *= -1;
+        } else if (p.x > w) {
+          p.x = w;
+          p.vx *= -1;
+        }
+        if (p.y < 0) {
+          p.y = 0;
+          p.vy *= -1;
+        } else if (p.y > h) {
+          p.y = h;
+          p.vy *= -1;
+        }
+      }
+    }
+
+    if (now - lastTime >= 500) {
+      const fps = Math.round((frames * 1000) / (now - lastTime));
+      fpsLabel.setText(`FPS: ${fps}`);
+      latencyLabel.setText(`Frame Cost: ${(1000 / fps).toFixed(1)} ms`);
+      chart.pushData(fps);
+
+      const mem = (performance as any).memory;
+      if (mem) {
+        gcText.setText(
+          `Memory Footprint: ${(mem.usedJSHeapSize / 1024 / 1024).toFixed(1)} MB (Zero-GC Mode)`,
+        );
+      } else {
+        gcText.setText(`Memory Status: Flat allocations (Zero-GC Mode)`);
+      }
+
+      frames = 0;
+      lastTime = now;
+    }
+
+    currentAnimationFrame = requestAnimationFrame(tickStats);
+  };
+
+  currentAnimationFrame = requestAnimationFrame(tickStats);
+
+  // Resize handler
+  const resizeHandler = () => {
+    controlCard.y = window.innerHeight / 2 - 260;
+    statsCard.x = window.innerWidth - 520;
+    statsCard.y = window.innerHeight / 2 - 260;
+  };
+  window.addEventListener('resize', resizeHandler);
+  currentResizeHandler = resizeHandler;
+}
+
 function setupSelector() {
   const container = document.createElement('div');
   container.className = 'backend-selector';
@@ -624,8 +974,19 @@ function setupSelector() {
     initThreeDemo();
   };
 
+  const btnDashboard = document.createElement('button');
+  btnDashboard.className = 'backend-btn';
+  btnDashboard.innerText = 'Performance Dashboard';
+  btnDashboard.onclick = () => {
+    if (btnDashboard.classList.contains('active')) return;
+    document.querySelectorAll('.backend-btn').forEach((btn) => btn.classList.remove('active'));
+    btnDashboard.classList.add('active');
+    initDashboardDemo();
+  };
+
   container.appendChild(btnCanvas);
   container.appendChild(btnThree);
+  container.appendChild(btnDashboard);
   document.body.appendChild(container);
 }
 
