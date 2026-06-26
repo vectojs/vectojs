@@ -1,5 +1,13 @@
 # @vecto-ui/ui
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [a888e97]
+- Updated dependencies [f68ade4]
+  - @vecto-ui/core@0.4.0
+
 ## 0.1.3
 
 ### Patch Changes

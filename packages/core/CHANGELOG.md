@@ -1,5 +1,37 @@
 # @vecto-ui/core
 
+## 0.4.0
+
+### Minor Changes
+
+- a888e97: Add GPU rectangle batching to the WebGL point layer.
+
+  - `Entity.getBatchRect()` (default `null`): a leaf entity that draws as a single
+    solid rectangle returns `{ width, height, color }` to opt in. Honors world
+    position, uniform scale, rotation, and opacity.
+  - `PointRenderer.addRect(...)`: rectangles are batched as an expanded triangle
+    list (6 vertices/rect, rotation applied on the CPU) and drawn with one
+    `drawArrays(TRIANGLES)`, alongside the existing `gl.POINTS` circles.
+
+  Only active with `pointBackend: 'webgl'`; otherwise these entities render
+  normally. Benchmarked ~1.9× over Canvas2D at 100k rects. (Implemented as a
+  triangle batch rather than instanced quads, which were dramatically slower on
+  software GL while equivalent on hardware.)
+
+- f68ade4: Curve-accurate hit-testing for `SplineEntity`, and a new `Entity.getWorldScale()`.
+
+  - `SplineEntity` now picks against the actual curves by default: a point hits
+    only within `lineWidth/2 + hitTolerance` of a flattened Bézier (cached), instead
+    of anywhere in the bounding box. Options: `hitTest: 'curve' | 'aabb'` (default
+    `'curve'`) and `hitTolerance` (extra local-unit pick padding).
+  - Fixes a scale bug: `isPointInside` now maps the world point into the entity's
+    unscaled local space via the new `Entity.getWorldScale()`, so hit-testing is
+    correct for scaled/nested splines (previously the click area didn't track the
+    visual size under scale).
+
+  Note: `'curve'` is the new default, so clicks between strokes inside the bounding
+  box no longer register — pass `hitTest: 'aabb'` for the old behavior.
+
 ## 0.3.0
 
 ### Minor Changes
