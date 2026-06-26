@@ -1,6 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
-  <!-- Background -->
-  <rect width="100" height="100" rx="20" fill="#0a0a0f" />
+  <!-- Grid Floor (Mathematical Coordinate System) -->
+  <g stroke="#ffffff" stroke-width="0.3" opacity="0.15" stroke-dasharray="2 2">
+    <!-- Isometric Grid Lines -->
+    <line x1="20" y1="90" x2="80" y2="55" />
+    <line x1="80" y1="55" x2="50" y2="38" />
+    <line x1="20" y1="90" x2="8" y2="83" />
+  </g>
 
   <g stroke="#ffffff" stroke-width="0.5" stroke-linejoin="round">
     <!-- 1. Inner Left Face (Drawn first to be correctly occluded by the right arm of the front face) -->
