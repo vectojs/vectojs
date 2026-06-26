@@ -14,7 +14,7 @@ function boldMeasurer(): GlyphMeasurer | null {
     measure(char: string, fontSize: number): number {
       let w = cache.get(char);
       if (w === undefined) {
-        ctx.font = `${RENDER_WEIGHT} ${base}px sans-serif`;
+        ctx.font = `${RENDER_WEIGHT} ${base}px "Outfit", sans-serif`;
         w = ctx.measureText(char).width;
         cache.set(char, w);
       }
@@ -101,17 +101,17 @@ class Glyph extends Entity {
 
     const off = Math.hypot(this.x - this.homeX, this.y - this.homeY);
     const lit = time < this.litUntil;
-    this._fill = lit ? '#fbbf24' : off > 4 ? '#f472b6' : this.color;
+    this._fill = lit ? '#38bdf8' : off > 4 ? this.color : '#f8fafc';
   }
 
-  private _fill = '#e2e8f0';
+  private _fill = '#f8fafc';
 
   getBounds() {
     return { x: 0, y: -this.height, width: this.width, height: this.height };
   }
 
   render(r: IRenderer): void {
-    r.fillText(this.char, 0, 0, `${RENDER_WEIGHT} ${this.size}px sans-serif`, this._fill);
+    r.fillText(this.char, 0, 0, `${RENDER_WEIGHT} ${this.size}px "Outfit", sans-serif`, this._fill);
   }
 }
 
@@ -131,12 +131,14 @@ class MagneticText extends Entity {
       const startX = cx - lineWidth / 2;
       for (const node of laid.nodes) {
         if (node.char.trim().length === 0) continue;
+        const colors = ['#38bdf8', '#818cf8', '#c084fc', '#e879f9', '#2dd4bf'];
+        const neonColor = colors[Math.floor(Math.random() * colors.length)];
         const g = new Glyph(
           node.char,
           startX + node.x,
           y + node.y + line.size,
           line.size,
-          '#e2e8f0',
+          neonColor,
         );
         this.glyphs.push(g);
         this.add(g);
@@ -166,7 +168,7 @@ class MagneticText extends Entity {
 
 function bootstrap() {
   document.body.innerHTML = '';
-  document.body.style.cssText = 'margin:0;overflow-x:hidden;background:#0b1020';
+  document.body.style.cssText = 'margin:0;overflow-x:hidden;background:transparent';
 
   const proxy = document.createElement('div');
   proxy.style.cssText =
@@ -201,15 +203,69 @@ function bootstrap() {
   );
   scene.add(text);
 
-  const form = new Stack({ direction: 'vertical', gap: 18 });
-  form.add(new Text('Try the A11y UI', { font: '600 20px sans-serif', color: '#e2e8f0' }));
-  form.add(new Input({ width: 300, placeholder: 'you@example.com' }));
-  form.add(new Input({ width: 300, placeholder: 'Password' }));
-  form.add(new Checkbox({ label: 'I accept the terms' }));
-  form.add(new Toggle({ label: 'Subscribe to updates', checked: true }));
-  form.add(new Button('Create account', { onClick: () => console.log('[gallery] submit') }));
+  const form = new Stack({ direction: 'vertical', gap: 20 });
+  form.add(
+    new Text('Try the A11y UI', { font: '600 24px "Outfit", sans-serif', color: '#f8fafc' }),
+  );
+  form.add(
+    new Input({
+      width: 312,
+      placeholder: 'you@example.com',
+      font: '400 15px "Outfit", sans-serif',
+      bg: 'rgba(15, 23, 42, 0.4)',
+      border: 'rgba(255, 255, 255, 0.1)',
+      color: '#f8fafc',
+      placeholderColor: '#64748b',
+      radius: 10,
+    }),
+  );
+  form.add(
+    new Input({
+      width: 312,
+      placeholder: 'Password',
+      font: '400 15px "Outfit", sans-serif',
+      bg: 'rgba(15, 23, 42, 0.4)',
+      border: 'rgba(255, 255, 255, 0.1)',
+      color: '#f8fafc',
+      placeholderColor: '#64748b',
+      radius: 10,
+    }),
+  );
+  form.add(
+    new Checkbox({
+      label: 'I accept the terms',
+      font: '400 14px "Outfit", sans-serif',
+      color: '#cbd5e1',
+      accent: '#6366f1',
+    }),
+  );
+  form.add(
+    new Toggle({
+      label: 'Subscribe to updates',
+      checked: true,
+      font: '400 14px "Outfit", sans-serif',
+      color: '#cbd5e1',
+      accent: '#6366f1',
+    }),
+  );
+  form.add(
+    new Button('Create account', {
+      bg: '#4f46e5',
+      hoverBg: '#6366f1',
+      color: '#ffffff',
+      radius: 10,
+      font: '600 15px "Outfit", sans-serif',
+    }),
+  );
 
-  const card = new Card({ width: 360, height: 320, border: '#334155', padding: 24 });
+  const card = new Card({
+    width: 360,
+    height: 350,
+    bg: 'rgba(30, 41, 59, 0.4)',
+    border: 'rgba(255, 255, 255, 0.08)',
+    radius: 16,
+    padding: 24,
+  });
   card.add(form.setPosition(24, 24));
   scene.add(card.setPosition(cx - 180, startY + 260));
 
@@ -255,7 +311,7 @@ function bootstrap() {
 
   const hint = document.createElement('div');
   hint.style.cssText =
-    'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);color:#64748b;font:14px sans-serif;pointer-events:none;z-index:20';
+    'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);color:#94a3b8;font:400 14px "Outfit", sans-serif;letter-spacing:1px;pointer-events:none;z-index:20';
   hint.textContent = 'Move the cursor to repel glyphs · Scroll down to reveal UI';
   parent.appendChild(hint);
 
