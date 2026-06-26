@@ -30,6 +30,7 @@ const FRAMES = Number(args.get('frames') ?? 120);
 const WORLD = args.get('world') ?? '1';
 const RENDER = args.get('render') ?? 'always';
 const BATCH = args.get('batch') ?? '0';
+const BACKEND = args.get('backend') ?? 'canvas';
 
 function loadPlaywright() {
   const pkgDir = dirname(execSync('readlink -f "$(which playwright)"').toString().trim());
@@ -63,6 +64,7 @@ type BenchResult = {
   p95Ms: number;
   maxFps: number;
   sustains60: boolean;
+  glActive?: boolean;
 };
 
 async function main() {
@@ -95,7 +97,7 @@ async function main() {
     for (const n of COUNTS) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
       await page.goto(
-        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}&batch=${BATCH}`,
+        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}&batch=${BATCH}&backend=${BACKEND}`,
         {
           waitUntil: 'load',
         },
@@ -112,7 +114,7 @@ async function main() {
       )) as BenchResult;
       results.push(r);
       console.log(
-        `n=${String(n).padStart(7)}  mean=${r.meanMs.toFixed(2)}ms  p95=${r.p95Ms.toFixed(2)}ms  maxFps=${r.maxFps}  60fps=${r.sustains60 ? 'yes' : 'no'}`,
+        `n=${String(n).padStart(7)}  mean=${r.meanMs.toFixed(2)}ms  p95=${r.p95Ms.toFixed(2)}ms  maxFps=${r.maxFps}  60fps=${r.sustains60 ? 'yes' : 'no'}  gl=${r.glActive ? 'on' : 'off'}`,
       );
       await page.close();
     }

@@ -3,6 +3,8 @@ const hash = window.location.hash || '#physics';
 async function loadDemo() {
   if (hash === '#ui-components') {
     await import('./ui-components.ts');
+  } else if (hash === '#webgl-points') {
+    await import('./webgl-points.ts');
   } else if (hash === '#spline') {
     await import('./spline.ts');
   } else if (hash === '#physics') {
