@@ -36,6 +36,14 @@ export interface SceneOptions {
    * Set `false` to ignore the OS setting.
    */
   respectReducedMotion?: boolean;
+  /**
+   * Throttle the accessibility/automation shadow-DOM sync to at most once per this
+   * many milliseconds. `0` (default) syncs every rendered frame. During heavy
+   * animation, a small value (e.g. `100`) keeps the a11y layer eventually
+   * consistent while sparing the per-frame DOM writes that can drag Canvas FPS.
+   * Also settable later via {@link Scene.a11ySyncInterval}.
+   */
+  a11ySyncInterval?: number;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -81,6 +89,14 @@ export class Scene {
   /** Cached media-query list; `.matches` is read live each frame. */
   private reducedMotionQuery: MediaQueryList | null = null;
 
+  /**
+   * Throttle interval (ms) for the a11y/automation shadow sync. `0` = every
+   * frame. See {@link SceneOptions.a11ySyncInterval}.
+   */
+  public a11ySyncInterval: number = 0;
+  /** Timestamp of the last a11y sync, for throttling. */
+  private lastA11ySync: number = -Infinity;
+
   // A11y / Automation Layer
   private a11yRoot: HTMLDivElement;
   private a11yElements: Map<string, HTMLElement> = new Map();
@@ -96,6 +112,7 @@ export class Scene {
     this.debugA11y = options.debugA11y ?? false;
     this.maxFPS = options.maxFPS ?? 0;
     this.respectReducedMotion = options.respectReducedMotion ?? true;
+    this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -628,8 +645,14 @@ export class Scene {
     this.renderer.flush();
     this.pointRenderer?.flush();
 
-    // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
-    if (this.hasAnyInteractive(this.root)) {
+    // Sync Automation Shadow DOM (skip the whole walk when nothing is
+    // interactive). Throttled to a11ySyncInterval so heavy animation doesn't pay
+    // per-frame DOM writes — the a11y layer just becomes eventually consistent.
+    if (
+      (this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval) &&
+      this.hasAnyInteractive(this.root)
+    ) {
+      this.lastA11ySync = time;
       this.syncA11y(this.root);
     }
 
