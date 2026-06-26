@@ -1,33 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Markdown } from '../src/Markdown';
-
-// Minimal renderer mock
-function mockRenderer() {
-  return {
-    save: vi.fn(),
-    restore: vi.fn(),
-    translate: vi.fn(),
-    scale: vi.fn(),
-    rotate: vi.fn(),
-    setGlobalAlpha: vi.fn(),
-    beginPath: vi.fn(),
-    moveTo: vi.fn(),
-    lineTo: vi.fn(),
-    bezierCurveTo: vi.fn(),
-    closePath: vi.fn(),
-    arc: vi.fn(),
-    roundRect: vi.fn(),
-    drawImage: vi.fn(),
-    fill: vi.fn(),
-    stroke: vi.fn(),
-    fillText: vi.fn(),
-    fillCircle: vi.fn(),
-    clip: vi.fn(),
-    flush: vi.fn(),
-    createLinearGradient: vi.fn(() => ({})),
-  };
-}
 
 describe('Markdown', () => {
   it('creates child entities from heading tokens', () => {

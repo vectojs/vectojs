@@ -113,9 +113,13 @@ export class Scene {
   private pointRenderer: PointRenderer | null = null;
   private glCanvas: HTMLCanvasElement | null = null;
   private debugA11y: boolean;
+  public width: number;
+  public height: number;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
+    this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
+    this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
     this.debugA11y = options.debugA11y ?? false;
     this.maxFPS = options.maxFPS ?? 0;
     this.respectReducedMotion = options.respectReducedMotion ?? true;
@@ -181,6 +185,8 @@ export class Scene {
     }
 
     this.resizeHandler = () => {
+      this.width = window.innerWidth;
+      this.height = window.innerHeight;
       if (typeof (this.renderer as any).resize === 'function') {
         (this.renderer as any).resize(window.innerWidth, window.innerHeight);
       }

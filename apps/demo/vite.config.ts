@@ -9,6 +9,7 @@ export default defineConfig({
     alias: {
       '@vecto-ui/core': new URL('../../packages/core/src/index.ts', import.meta.url).pathname,
       '@vecto-ui/ui': new URL('../../packages/ui/src/index.ts', import.meta.url).pathname,
+      '@vecto-ui/three': new URL('../../packages/three/src/index.ts', import.meta.url).pathname,
     },
   },
 });

@@ -565,7 +565,7 @@ export class Markdown extends UIComponent {
         const listStack = new Stack({ direction: 'vertical', gap: 6 });
         for (let i = 0; i < listToken.items.length; i++) {
           const item = listToken.items[i];
-          const bullet = listToken.ordered ? `${(listToken.start ?? 1) + i}. ` : '• ';
+          const bullet = listToken.ordered ? `${Number(listToken.start ?? 1) + i}. ` : '• ';
           const itemText = new Text(bullet + item.text, {
             font: bodyFont,
             color: t.textColor,
