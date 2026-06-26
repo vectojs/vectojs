@@ -1,6 +1,6 @@
 import { A11yAttributes, IRenderer } from '@vecto-ui/core';
 import { UIComponent } from './UIComponent';
-import { measureText } from './measure';
+import { measureText, fontSizePx } from './measure';
 
 /** Construction options for {@link Button}. */
 export interface ButtonOptions {
@@ -50,7 +50,7 @@ export class Button extends UIComponent {
     this.interactive = true;
 
     this.width = measureText(this.label, this.font) + this.padding * 2;
-    this.height = (parseFloat(this.font) || 16) + this.padding * 2;
+    this.height = fontSizePx(this.font) + this.padding * 2;
 
     this.on('hover', () => (this.hovered = true));
     this.on('pointerleave', () => (this.hovered = false));
