@@ -26,6 +26,32 @@ export interface PointRenderer {
     alpha?: number,
     rotation?: number,
   ): void;
+  /**
+   * Upload a texture atlas used by {@link addSprite}. Pass any `TexImageSource`
+   * (HTMLImageElement, HTMLCanvasElement, ImageBitmap, …). Call once (or whenever
+   * the atlas changes) before adding sprites.
+   */
+  setTexture(source: TexImageSource): void;
+  /**
+   * Add one textured sprite sampling the atlas region `[u0,v0]–[u1,v1]` (UVs in
+   * `0..1`): top-left at world `(x, y)`, `width × height` in world units, rotated
+   * `rotation` radians about `(x, y)`. `color` multiplies the sampled texel
+   * (white = unchanged; use it to tint white glyphs); `alpha` multiplies further.
+   * No-op until a texture is set via {@link setTexture}.
+   */
+  addSprite(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    u0: number,
+    v0: number,
+    u1: number,
+    v1: number,
+    color?: string,
+    alpha?: number,
+    rotation?: number,
+  ): void;
   /** Clear the layer and draw all accumulated primitives. */
   flush(): void;
   /** Release GL resources. */
@@ -41,6 +67,11 @@ const POINT_STRIDE = FLOATS_PER_POINT * 4;
 const FLOATS_PER_RECT_VERT = 6; // x, y, r, g, b, a
 const RECT_VERT_STRIDE = FLOATS_PER_RECT_VERT * 4;
 const VERTS_PER_RECT = 6; // two triangles
+// Sprites: same expanded-triangle batch, plus UVs to sample a texture atlas and
+// a multiply tint. Each vertex: x, y, u, v, r, g, b, a.
+const FLOATS_PER_SPRITE_VERT = 8;
+const SPRITE_VERT_STRIDE = FLOATS_PER_SPRITE_VERT * 4;
+const VERTS_PER_SPRITE = 6;
 
 const POINT_VERT = `#version 300 es
 in vec2 a_pos;
@@ -86,6 +117,31 @@ in vec4 v_color;
 out vec4 outColor;
 void main() {
   outColor = vec4(v_color.rgb, v_color.a);
+}`;
+
+const SPRITE_VERT = `#version 300 es
+in vec2 a_pos;
+in vec2 a_uv;
+in vec4 a_tint;
+uniform vec2 u_resolution;
+out vec2 v_uv;
+out vec4 v_tint;
+void main() {
+  vec2 clip = (a_pos / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_uv = a_uv;
+  v_tint = a_tint;
+}`;
+
+const SPRITE_FRAG = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+in vec4 v_tint;
+out vec4 outColor;
+void main() {
+  vec4 t = texture(u_tex, v_uv);
+  outColor = vec4(t.rgb * v_tint.rgb, t.a * v_tint.a);
 }`;
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
@@ -141,7 +197,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
   const pointProgram = link(gl, POINT_VERT, POINT_FRAG);
   const rectProgram = link(gl, RECT_VERT, RECT_FRAG);
-  if (!pointProgram || !rectProgram) return null;
+  const spriteProgram = link(gl, SPRITE_VERT, SPRITE_FRAG);
+  if (!pointProgram || !rectProgram || !spriteProgram) return null;
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -175,12 +232,33 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.vertexAttribPointer(rAPos, 2, gl.FLOAT, false, RECT_VERT_STRIDE, 0);
   gl.enableVertexAttribArray(rAColor);
   gl.vertexAttribPointer(rAColor, 4, gl.FLOAT, false, RECT_VERT_STRIDE, 8);
+
+  // --- Sprite program state (textured-quad triangle batch) ---
+  const sAPos = gl.getAttribLocation(spriteProgram, 'a_pos');
+  const sAUv = gl.getAttribLocation(spriteProgram, 'a_uv');
+  const sATint = gl.getAttribLocation(spriteProgram, 'a_tint');
+  const sURes = gl.getUniformLocation(spriteProgram, 'u_resolution');
+  const sUTex = gl.getUniformLocation(spriteProgram, 'u_tex');
+  const spriteBuffer = gl.createBuffer();
+  const spriteVAO = gl.createVertexArray();
+  gl.bindVertexArray(spriteVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
+  gl.enableVertexAttribArray(sAPos);
+  gl.vertexAttribPointer(sAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.enableVertexAttribArray(sAUv);
+  gl.vertexAttribPointer(sAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.enableVertexAttribArray(sATint);
+  gl.vertexAttribPointer(sATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
   gl.bindVertexArray(null);
+
+  let texture: WebGLTexture | null = null;
 
   let pointData: Float32Array = new Float32Array(FLOATS_PER_POINT * 1024);
   let pointCount = 0;
   let rectData: Float32Array = new Float32Array(FLOATS_PER_RECT_VERT * VERTS_PER_RECT * 256);
   let rectCount = 0;
+  let spriteData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 256);
+  let spriteCount = 0;
   let logicalW = 0;
   let logicalH = 0;
   let dpr = 1;
@@ -200,6 +278,57 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     begin() {
       pointCount = 0;
       rectCount = 0;
+      spriteCount = 0;
+    },
+
+    setTexture(source) {
+      if (!texture) {
+        texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+      }
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    },
+
+    addSprite(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
+      if (!texture) return; // nothing to sample yet
+      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+      spriteData = grow(spriteData, (spriteCount + 1) * stride);
+      const [r, g, b, a] = parseColorToRGBA(color);
+      const al = a * alpha;
+      const s = Math.sin(rotation);
+      const c = Math.cos(rotation);
+      const corner = (lx: number, ly: number): [number, number] => [
+        x + lx * c - ly * s,
+        y + lx * s + ly * c,
+      ];
+      // Quad corners + their UVs (TL, TR, BR, BL).
+      const quad: [[number, number], [number, number]][] = [
+        [corner(0, 0), [u0, v0]],
+        [corner(width, 0), [u1, v0]],
+        [corner(width, height), [u1, v1]],
+        [corner(0, height), [u0, v1]],
+      ];
+      const order = [0, 1, 2, 0, 2, 3]; // two triangles
+      let o = spriteCount * stride;
+      for (const i of order) {
+        const [[vx, vy], [vu, vv]] = quad[i];
+        spriteData[o] = vx;
+        spriteData[o + 1] = vy;
+        spriteData[o + 2] = vu;
+        spriteData[o + 3] = vv;
+        spriteData[o + 4] = r;
+        spriteData[o + 5] = g;
+        spriteData[o + 6] = b;
+        spriteData[o + 7] = al;
+        o += FLOATS_PER_SPRITE_VERT;
+      }
+      spriteCount++;
     },
 
     addCircle(x, y, radius, color, alpha = 1) {
@@ -275,16 +404,33 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.drawArrays(gl.POINTS, 0, pointCount);
       }
 
+      if (spriteCount > 0 && texture) {
+        const floats = spriteCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+        gl.useProgram(spriteProgram);
+        gl.bindVertexArray(spriteVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, spriteData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(sUTex, 0);
+        gl.uniform2f(sURes, logicalW, logicalH);
+        gl.drawArrays(gl.TRIANGLES, 0, spriteCount * VERTS_PER_SPRITE);
+      }
+
       gl.bindVertexArray(null);
     },
 
     destroy() {
       gl.deleteBuffer(pointBuffer);
       gl.deleteBuffer(rectBuffer);
+      gl.deleteBuffer(spriteBuffer);
       gl.deleteVertexArray(pointVAO);
       gl.deleteVertexArray(rectVAO);
+      gl.deleteVertexArray(spriteVAO);
       gl.deleteProgram(pointProgram);
       gl.deleteProgram(rectProgram);
+      gl.deleteProgram(spriteProgram);
+      if (texture) gl.deleteTexture(texture);
     },
   };
 }

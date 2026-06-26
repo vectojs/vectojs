@@ -11,6 +11,8 @@ function mockGL() {
     divisors: [] as number[],
     viewport: [] as number[][],
     clearCount: 0,
+    textureBinds: [] as unknown[],
+    texUploads: 0,
   };
   let loc = 0;
   const gl = {
@@ -67,6 +69,26 @@ function mockGL() {
     drawArraysInstanced: vi.fn((mode: number, first: number, vcount: number, icount: number) =>
       captures.drawInstanced.push({ mode, first, vcount, icount }),
     ),
+    // Texture path (for sprites)
+    TEXTURE_2D: 16,
+    TEXTURE0: 17,
+    RGBA: 18,
+    UNSIGNED_BYTE: 19,
+    LINEAR: 20,
+    CLAMP_TO_EDGE: 21,
+    TEXTURE_MIN_FILTER: 22,
+    TEXTURE_MAG_FILTER: 23,
+    TEXTURE_WRAP_S: 24,
+    TEXTURE_WRAP_T: 25,
+    createTexture: vi.fn(() => ({})),
+    bindTexture: vi.fn((_t: number, tex: unknown) => captures.textureBinds.push(tex)),
+    texImage2D: vi.fn(() => captures.texUploads++),
+    texParameteri: vi.fn(),
+    activeTexture: vi.fn(),
+    uniform1i: vi.fn(),
+    deleteTexture: vi.fn(),
+    pixelStorei: vi.fn(),
+    UNPACK_FLIP_Y_WEBGL: 26,
     TRIANGLE_STRIP: 13,
     STATIC_DRAW: 14,
     TRIANGLES: 15,
@@ -166,5 +188,57 @@ describe('createWebGLPointRenderer', () => {
     expect(canvas.width).toBe(1600); // 800 * dpr
     expect(canvas.height).toBe(1200);
     expect(captures.viewport.at(-1)).toEqual([0, 0, 1600, 1200]);
+  });
+
+  it('setTexture uploads the atlas image to a GL texture', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const img = {} as TexImageSource;
+    r.setTexture(img);
+    expect(captures.texUploads).toBe(1);
+    expect(captures.textureBinds.length).toBeGreaterThan(0);
+  });
+
+  it('addSprite expands to a textured triangle batch and one TRIANGLES draw', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.setTexture({} as TexImageSource);
+
+    r.begin();
+    r.addSprite(10, 20, 30, 40, 0, 0, 0.5, 0.5); // default white tint, alpha 1, no rotation
+    r.addSprite(50, 60, 10, 10, 0.5, 0.5, 1, 1);
+    r.flush();
+
+    // sprites drawn as TRIANGLES, 6 verts/sprite → 12 for 2 sprites
+    const spriteDraw = captures.drawArrays.find((d) => d.mode === gl.TRIANGLES && d.count === 12);
+    expect(spriteDraw).toBeTruthy();
+
+    // 8 floats/vertex (x,y,u,v,r,g,b,a) × 6 verts × 2 sprites = 96 floats
+    const buf = captures.bufferData.find((b) => b.data.length === 96)!;
+    expect(buf).toBeTruthy();
+    // First vertex of sprite 0: pos (10,20), uv (0,0), white tint (1,1,1,1).
+    expect(Array.from(buf.data.slice(0, 8))).toEqual([10, 20, 0, 0, 1, 1, 1, 1]);
+    // Third vertex (bottom-right): pos (40,60), uv (0.5,0.5).
+    expect(Array.from(buf.data.slice(16, 20))).toEqual([40, 60, 0.5, 0.5]);
+  });
+
+  it('addSprite applies a tint color and alpha', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.setTexture({} as TexImageSource);
+    r.begin();
+    r.addSprite(0, 0, 10, 10, 0, 0, 1, 1, '#ff0000', 0.5);
+    r.flush();
+    const buf = captures.bufferData.find((b) => b.data.length === 48)!; // 1 sprite × 6 × 8
+    expect(Array.from(buf.data.slice(4, 8))).toEqual([1, 0, 0, 0.5]); // red, alpha 0.5
+  });
+
+  it('does not draw sprites when no texture is set', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.begin();
+    r.addSprite(0, 0, 10, 10, 0, 0, 1, 1); // no setTexture → skipped
+    r.flush();
+    expect(captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(0);
   });
 });
