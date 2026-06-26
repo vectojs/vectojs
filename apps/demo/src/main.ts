@@ -33,17 +33,24 @@ function bootstrap() {
   leftStack.add(
     new Text('Glassmorphism', { font: '600 24px "Outfit", sans-serif', color: '#fff' }),
   );
-  leftStack.add(
-    new Input({
-      width: 272,
-      placeholder: 'Search node...',
-      font: '400 15px "Outfit", sans-serif',
-      bg: 'rgba(0,0,0,0.4)',
-      border: 'rgba(255,255,255,0.1)',
-      color: '#fff',
-      radius: 8,
-    }),
-  );
+  const searchInput = new Input({
+    width: 272,
+    placeholder: 'Search node index (e.g. 404)...',
+    font: '400 15px "Outfit", sans-serif',
+    bg: 'rgba(0,0,0,0.4)',
+    border: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+    radius: 8,
+  });
+  searchInput.on('change', (e: any) => {
+    const val = parseInt(e.value);
+    if (!isNaN(val) && val >= 0 && val < nexus.nodes.length) {
+      nexus.setHighlight(val);
+    } else {
+      nexus.setHighlight(-1); // Clear
+    }
+  });
+  leftStack.add(searchInput);
 
   const physicsToggle = new Toggle({
     label: 'Physics Engine',
