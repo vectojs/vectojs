@@ -216,7 +216,12 @@ function bootstrap() {
   const finalCardY = startY + 260;
   const cardStartOffset = 400;
 
-  const uiController = new Entity();
+  const uiController = new (class extends Entity {
+    isPointInside() {
+      return false;
+    }
+    render() {}
+  })();
   uiController.update = () => {
     const uiProgress = Math.max(0, Math.min(1, (scrollProgress - 0.4) / 0.6));
     card.y = finalCardY + cardStartOffset * (1 - uiProgress);
