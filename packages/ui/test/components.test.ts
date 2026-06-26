@@ -12,7 +12,7 @@ import {
   Checkbox,
   Toggle,
 } from '../src/index';
-import type { IRenderer } from '@vecto-ui/core';
+import { LayoutEngine, type IRenderer } from '@vecto-ui/core';
 
 // jsdom has no canvas getContext; measure.ts falls back to its estimate. Stub to
 // keep the test output free of "Not implemented" noise.
@@ -69,6 +69,39 @@ describe('Text', () => {
       lineHeight: 20,
     });
     expect(t.height).toBeGreaterThan(20); // more than one line
+  });
+
+  it('honors explicit newlines as separate lines', () => {
+    const t = new Text('line one\nline two\nline three', { lineHeight: 20 });
+    expect(t.height).toBe(60); // 3 lines * 20
+  });
+
+  it('runs the cold layout pass through LayoutEngine', () => {
+    const prep = vi.spyOn(LayoutEngine.prototype, 'prepare');
+    new Text('hello world', { maxWidth: 200 });
+    expect(prep).toHaveBeenCalled(); // Text is a real LayoutEngine consumer now
+    prep.mockRestore();
+  });
+
+  it('setMaxWidth reflows via the hot path only; setText re-prepares', () => {
+    const prep = vi.spyOn(LayoutEngine.prototype, 'prepare');
+    const hot = vi.spyOn(LayoutEngine.prototype, 'layoutPrepared');
+
+    const t = new Text('aaaa bbbb cccc dddd', { font: '16px sans-serif', maxWidth: 400 });
+    const prepAfterCtor = prep.mock.calls.length;
+    const hotAfterCtor = hot.mock.calls.length;
+    expect(prepAfterCtor).toBeGreaterThan(0);
+
+    t.setMaxWidth(40); // resize → hot only
+    expect(prep.mock.calls.length).toBe(prepAfterCtor); // no re-prepare
+    expect(hot.mock.calls.length).toBe(hotAfterCtor + 1);
+    expect(t.height).toBeGreaterThan(20); // narrower now wraps
+
+    t.setText('different text'); // content change → re-prepare
+    expect(prep.mock.calls.length).toBe(prepAfterCtor + 1);
+
+    prep.mockRestore();
+    hot.mockRestore();
   });
 });
 
