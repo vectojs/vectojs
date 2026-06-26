@@ -1,5 +1,39 @@
 # @vecto-ui/core
 
+## 0.3.0
+
+### Minor Changes
+
+- 42819e7: Add opt-in draw-call batching for point-cloud / particle entities.
+
+  - `IRenderer.fillCircle(cx, cy, radius, color, alpha?)` + `flush()`: an
+    order-preserving batch that coalesces consecutive same-color circles into a
+    single `beginPath` + N `arc` + one `fill()`. Capped at `MAX_BATCH` (64) so a
+    single Canvas 2D `fill()` never grows large enough to hit its superlinear
+    multi-subpath cost.
+  - `Entity.getBatchCircle()` (default `null`): a leaf entity that draws as a
+    uniform-scaled filled circle returns `{ radius, color }` to opt in.
+  - `Scene` draws such leaves through the batch, skipping their per-entity
+    `save`/`translate`/`scale`/`rotate`/`restore` and `render()`, flushing per
+    sibling group so painter's order is preserved.
+
+  Measured: ~34% faster at 10k circles (60→91 fps), neutral at 1k and at 100k
+  (no regression). Default entities are unaffected.
+
+- 3eb0910: Add an opt-in WebGL2 point-cloud layer — the GPU lever for 100k+ point clouds
+  that Canvas2D can't reach.
+
+  - `new Scene(canvas, { pointBackend: 'webgl' })` renders every `getBatchCircle()`
+    entity through a stacked WebGL2 `gl.POINTS` layer in a single draw call. Defaults
+    to `'canvas'`; auto-falls back to the Canvas2D batch when WebGL2 is unavailable.
+  - New `createWebGLPointRenderer(canvas)` / `PointRenderer` and `parseColorToRGBA`
+    exports.
+  - Benchmarked (software GL): 100k circles 7→25 fps (3.5×); 500k–1M point clouds
+    become feasible. Hardware GPU is faster still.
+
+  Tradeoff: GL points form one composited layer above the 2D content (no per-entity
+  painter interleaving with 2D draws). Default scenes are unaffected.
+
 ## 0.2.0
 
 ### Minor Changes

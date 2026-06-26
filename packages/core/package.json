@@ -1,6 +1,6 @@
 {
   "name": "@vecto-ui/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A zero-DOM, Canvas 2D Entity Component System (ECS) rendering framework — 60 FPS with 100,000+ entities.",
   "keywords": [
     "canvas",
