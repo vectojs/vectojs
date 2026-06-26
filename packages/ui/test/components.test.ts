@@ -11,6 +11,7 @@ import {
   Input,
   Checkbox,
   Toggle,
+  Markdown,
 } from '../src/index';
 import { LayoutEngine, type IRenderer } from '@vecto-ui/core';
 
@@ -450,5 +451,14 @@ describe('UIComponent hit-testing', () => {
     expect(b.isPointInside(99, 99)).toBe(false);
     expect(b.isPointInside(100 + b.width + 1, 100)).toBe(false);
     expect(b instanceof UIComponent).toBe(true);
+  });
+});
+
+describe('Markdown', () => {
+  it('renders markdown headers and paragraphs into Text and Stack', () => {
+    const md = new Markdown('# Title\n\nSome text.', { maxWidth: 400 });
+    expect(md.content.children.length).toBe(2);
+    expect((md.content.children[0] as Text).text).toBe('Title');
+    expect((md.content.children[1] as Text).text).toBe('Some text.');
   });
 });

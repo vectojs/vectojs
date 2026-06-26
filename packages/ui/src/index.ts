@@ -9,4 +9,5 @@ export * from './Input';
 export * from './Checkbox';
 export * from './Toggle';
 export * from './ScrollView';
+export * from './Markdown';
 export { measureText, wrapLines } from './measure';
