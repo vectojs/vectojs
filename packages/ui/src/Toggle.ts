@@ -55,8 +55,15 @@ export class Toggle extends UIComponent {
     this.height = this.trackH;
     this.width = this.trackW + (this.label ? 8 + measureText(this.label, this.font) : 0);
 
-    this.on('click', () => {
-      this.checked = !this.checked;
+    // Unified event model (matches Input/Checkbox): a click requests a state
+    // change via `emit('change')`; the single 'change' handler is the source of
+    // truth, so external `on('change', …)` listeners and the `onChange` callback
+    // both fire. (role="switch" is a div, so the Scene doesn't forward a native
+    // change for it — the component emits its own.)
+    this.on('click', () => this.emit('change', { checked: !this.checked }));
+    this.on('change', (e: { checked: boolean }) => {
+      if (e.checked === this.checked) return;
+      this.checked = e.checked;
       opts.onChange?.(this.checked);
     });
   }
