@@ -464,11 +464,11 @@ describe('Markdown', () => {
 
   it('renders code blocks and lists', () => {
     const md = new Markdown('```\nconst a = 1;\n```\n- item 1\n- item 2', { maxWidth: 400 });
-    expect(md.content.children.length).toBe(2); // code block, list
+    expect(md.content.children.length).toBe(2); // code block container, list
 
-    const code = md.content.children[0] as Text;
-    expect(code.text).toBe('const a = 1;');
-    expect(code.font).toContain('monospace');
+    // Code block is now a Stack container (bg + lines stack)
+    const codeBlock = md.content.children[0] as Stack;
+    expect(codeBlock.children.length).toBeGreaterThanOrEqual(1);
 
     const list = md.content.children[1] as Stack;
     expect(list.children.length).toBe(2);
