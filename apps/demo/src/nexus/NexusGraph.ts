@@ -216,10 +216,10 @@ export class NexusGraph extends Entity {
         else if (dy < -domainH / 2) dy += domainH;
 
         const dist = Math.hypot(dx, dy) || 0.1;
-        const radius = this.pointerDown ? 450 : 350;
+        const radius = this.pointerDown ? 250 : 150;
         if (dist < radius) {
           const intensity = Math.pow(1 - dist / radius, 2);
-          const force = intensity * (this.pointerDown ? 15 : 8);
+          const force = intensity * (this.pointerDown ? 12 : 5);
           node.vx += (dx / dist) * force * frames;
           node.vy += (dy / dist) * force * frames;
         }
