@@ -7,6 +7,8 @@ async function loadDemo() {
     await import('./ui-gallery.ts');
   } else if (hash === '#webgl-points') {
     await import('./webgl-points.ts');
+  } else if (hash === '#magnetic-type') {
+    await import('./magnetic-type.ts');
   } else if (hash === '#spline') {
     await import('./spline.ts');
   } else if (hash === '#physics') {

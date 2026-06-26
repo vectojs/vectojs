@@ -7,6 +7,7 @@ export type DemoHash =
   | '#ui-components'
   | '#ui-gallery'
   | '#webgl-points'
+  | '#magnetic-type'
   | '#spline'
   | '#tight-bubbles'
   | '#physics'
@@ -18,6 +19,7 @@ const DEMOS: { hash: DemoHash; label: string }[] = [
   { hash: '#ui-components', label: '🧩 UI Components' },
   { hash: '#ui-gallery', label: '🎛️ UI Gallery' },
   { hash: '#webgl-points', label: '⚡ WebGL Points' },
+  { hash: '#magnetic-type', label: '🧲 Magnetic Type' },
   { hash: '#spline', label: '🌀 Spline (vectomancy)' },
   { hash: '#tight-bubbles', label: '💬 Tight Bubbles' },
   { hash: '#physics', label: '📚 Physics Text' },
