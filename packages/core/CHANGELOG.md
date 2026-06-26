@@ -1,5 +1,18 @@
 # @vecto-ui/core
 
+## 0.5.2
+
+### Patch Changes
+
+- 715693b: Fix: Add keyboard accessibility (tabindex and Enter/Space keydown events) for non-natively focusable elements with interactive roles (like `role="switch"`) in the a11y shadow DOM.
+- 7c9e40c: Docs: rewrite READMEs for accurate positioning and honest, reproducible numbers.
+
+  Removes the fabricated "React vs core" comparison table (1k/10k/100k → React
+  "Crash" vs "60 FPS") and the misleading "60 FPS with 100,000+ entities" tagline.
+  READMEs now describe VectoUI as a Zero-DOM canvas UI runtime with the a11y/agent
+  moat, cite measured benchmark numbers, list the full component set, document the
+  IME-capable `Input`, and state where the framework does and doesn't fit.
+
 ## 0.5.1
 
 ### Patch Changes
