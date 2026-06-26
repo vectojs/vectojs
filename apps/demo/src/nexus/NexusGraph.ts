@@ -39,6 +39,7 @@ export class NexusGraph extends Entity {
   private lastW = window.innerWidth;
   private lastH = window.innerHeight;
   private currentColors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
+  public highlightedIndex: number = -1;
 
   constructor(count: number) {
     super('NexusGraph');
@@ -154,6 +155,26 @@ export class NexusGraph extends Entity {
     }
   }
 
+  setHighlight(index: number) {
+    this.highlightedIndex = index;
+    for (let i = 0; i < this.nodes.length; i++) {
+      if (index === -1) {
+        this.nodes[i].opacity = 1;
+        this.nodes[i].scaleX = 1;
+        this.nodes[i].scaleY = 1;
+      } else {
+        if (i === index) {
+          this.nodes[i].opacity = 1;
+          this.nodes[i].scaleX = 4; // Make it huge
+          this.nodes[i].scaleY = 4;
+          this.nodes[i].color = '#ffffff'; // Flash white
+        } else {
+          this.nodes[i].opacity = 0.1; // Dim others
+        }
+      }
+    }
+  }
+
   update(dt: number) {
     // Handle Window Resize explicitly to stretch the universe
     // This prevents the particles from clustering in the top-left when maximizing
@@ -246,7 +267,8 @@ export class NexusGraph extends Entity {
 
   render(r: IRenderer) {
     r.beginPath();
-    r.setGlobalAlpha(0.15);
+    // Dim edges if a node is highlighted
+    r.setGlobalAlpha(this.highlightedIndex !== -1 ? 0.02 : 0.15);
 
     let count = 0;
     for (const edge of this.edges) {
