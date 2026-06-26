@@ -12,4 +12,5 @@ export * from './ScrollView';
 export * from './Markdown';
 export * from './Flow';
 export * from './Dropdown';
+export * from './Slider';
 export { measureText, wrapLines } from './measure';
