@@ -262,7 +262,7 @@ export class Scene {
   }
 
   private syncA11y(node: Entity) {
-    if (node.interactive && node.width > 0) {
+    if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
       if (!el) {
@@ -280,7 +280,9 @@ export class Scene {
         }
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
-        el.style.cursor = 'pointer';
+        // A full-viewport background surface uses the default cursor (it's not a
+        // button); discrete controls show the pointer cursor.
+        el.style.cursor = node.a11yFullViewport ? 'default' : 'pointer';
         el.style.margin = '0';
         el.style.padding = '0';
         if (this.debugA11y) {
@@ -381,7 +383,13 @@ export class Scene {
           el.addEventListener('blur', () => node.emit('blur', {}));
         }
 
-        this.a11yRoot.appendChild(el);
+        // Full-viewport surfaces mount behind other shadow nodes so on-top
+        // components stay clickable; discrete controls append on top.
+        if (node.a11yFullViewport) {
+          this.a11yRoot.insertBefore(el, this.a11yRoot.firstChild);
+        } else {
+          this.a11yRoot.appendChild(el);
+        }
         this.a11yElements.set(node.id, el);
       }
 
@@ -400,12 +408,22 @@ export class Scene {
         el.value = attrs.value;
       }
 
-      const pos = node.getGlobalPosition();
-      el.style.left = `${pos.x + node.a11yOffsetX}px`;
-      el.style.top = `${pos.y + node.a11yOffsetY}px`;
-      el.style.width = `${node.width * node.scaleX}px`;
-      el.style.height = `${node.height * node.scaleY}px`;
-      el.style.transform = `rotate(${node.rotation}rad)`;
+      if (node.a11yFullViewport) {
+        const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
+        const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
+        el.style.left = '0px';
+        el.style.top = '0px';
+        el.style.width = `${vw}px`;
+        el.style.height = `${vh}px`;
+        el.style.transform = '';
+      } else {
+        const pos = node.getGlobalPosition();
+        el.style.left = `${pos.x + node.a11yOffsetX}px`;
+        el.style.top = `${pos.y + node.a11yOffsetY}px`;
+        el.style.width = `${node.width * node.scaleX}px`;
+        el.style.height = `${node.height * node.scaleY}px`;
+        el.style.transform = `rotate(${node.rotation}rad)`;
+      }
     }
 
     for (const child of node.children) this.syncA11y(child);
