@@ -169,6 +169,7 @@ export class SplineEntity extends Entity {
   private baked = false;
   /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
   private polylines: Float32Array[] | null = null;
+  public showBounds: boolean = false;
 
   constructor(doc: SplineDocument, opts: SplineOptions = {}) {
     super();
@@ -411,8 +412,8 @@ export class SplineEntity extends Entity {
     this.offscreen = canvas;
   }
 
-  /** @inheritdoc */
   public render(r: IRenderer): void {
+    let rendered = false;
     if (this.cache) {
       if (!this.baked) this.bake();
       if (this.offscreen) {
@@ -424,10 +425,18 @@ export class SplineEntity extends Entity {
           (this.offscreen as { width: number }).width,
           (this.offscreen as { height: number }).height,
         );
-        return;
+        rendered = true;
       }
     }
-    this.strokeEquations(r);
+    if (!rendered) {
+      this.strokeEquations(r);
+    }
+
+    if (this.showBounds) {
+      r.beginPath();
+      r.roundRect(this.bounds.x, this.bounds.y, this.bounds.width, this.bounds.height, 4);
+      r.stroke('rgba(0, 150, 255, 0.8)', 2);
+    }
   }
 }
 
