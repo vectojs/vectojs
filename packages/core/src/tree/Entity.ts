@@ -99,6 +99,101 @@ export type VectoEvent =
   // native `WheelEvent` (call `preventDefault()` to stop the page scrolling).
   | 'wheel';
 
+/** Options for {@link Entity.on} / {@link Entity.off}. */
+export interface ListenerOptions {
+  /** Register the listener for the capture phase (root→target) instead of bubble. */
+  capture?: boolean;
+}
+
+/**
+ * A propagating event dispatched through the entity tree by
+ * {@link Entity.dispatchEvent} (DOM-like capture + bubble).
+ *
+ * It wraps the originating browser event (`nativeEvent`) and adds tree-aware
+ * fields: `target` (where it originated), `currentTarget` (the node currently
+ * handling it), and `stopPropagation()`. Common native fields (`deltaY`,
+ * `clientX`, `key`, …) and `preventDefault()` pass through to `nativeEvent`, so
+ * handlers written against the raw DOM event keep working.
+ */
+export class VectoUIEvent<N = unknown> {
+  /** The event name. */
+  readonly type: VectoEvent;
+  /** The entity the event originated on. */
+  readonly target: Entity;
+  /** The entity whose listeners are currently running (updated per node). */
+  currentTarget: Entity;
+  /** The wrapped browser event, if any. */
+  readonly nativeEvent: N | undefined;
+  /** Whether the event bubbles past its target (capture always runs). */
+  readonly bubbles: boolean;
+  private stopped = false;
+  private stoppedImmediate = false;
+
+  constructor(type: VectoEvent, target: Entity, nativeEvent?: N, bubbles: boolean = true) {
+    this.type = type;
+    this.target = target;
+    this.currentTarget = target;
+    this.nativeEvent = nativeEvent;
+    this.bubbles = bubbles;
+  }
+
+  /** Stop the event from reaching the next node in the propagation path. */
+  stopPropagation(): void {
+    this.stopped = true;
+  }
+
+  /** Stop propagation AND skip any remaining listeners on the current node. */
+  stopImmediatePropagation(): void {
+    this.stopped = true;
+    this.stoppedImmediate = true;
+  }
+
+  /** Forward to the native event's `preventDefault` (e.g. stop page scroll). */
+  preventDefault(): void {
+    (this.nativeEvent as { preventDefault?: () => void })?.preventDefault?.();
+  }
+
+  /** Whether {@link stopPropagation} has been called. */
+  get propagationStopped(): boolean {
+    return this.stopped;
+  }
+
+  /** Whether {@link stopImmediatePropagation} has been called. */
+  get immediatePropagationStopped(): boolean {
+    return this.stoppedImmediate;
+  }
+
+  /** Whether the native event's default action was prevented. */
+  get defaultPrevented(): boolean {
+    return !!(this.nativeEvent as { defaultPrevented?: boolean })?.defaultPrevented;
+  }
+
+  /** Native horizontal wheel delta, if this wraps a `WheelEvent`. */
+  get deltaX(): number | undefined {
+    return (this.nativeEvent as { deltaX?: number })?.deltaX;
+  }
+
+  /** Native vertical wheel delta, if this wraps a `WheelEvent`. */
+  get deltaY(): number | undefined {
+    return (this.nativeEvent as { deltaY?: number })?.deltaY;
+  }
+
+  /** Native pointer X, if this wraps a pointer/mouse event. */
+  get clientX(): number | undefined {
+    return (this.nativeEvent as { clientX?: number })?.clientX;
+  }
+
+  /** Native pointer Y, if this wraps a pointer/mouse event. */
+  get clientY(): number | undefined {
+    return (this.nativeEvent as { clientY?: number })?.clientY;
+  }
+
+  /** Native key, if this wraps a keyboard event. */
+  get key(): string | undefined {
+    return (this.nativeEvent as { key?: string })?.key;
+  }
+}
+
 /**
  * Base class for every node in the Virtual Math Tree (VMT).
  *
