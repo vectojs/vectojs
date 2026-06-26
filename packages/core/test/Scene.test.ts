@@ -569,3 +569,86 @@ describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
     }
   });
 });
+
+describe('Scene syncA11y — boundless / full-viewport interactive entities', () => {
+  class Boundless extends Entity {
+    constructor(id: string) {
+      super(id);
+      this.interactive = true;
+      this.a11yFullViewport = true; // width/height stay 0
+    }
+    isPointInside() {
+      return true;
+    }
+    render() {}
+  }
+
+  function makeScene() {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    return new Scene(canvas);
+  }
+
+  it('mounts a shadow node for a width=0 entity when a11yFullViewport is set', () => {
+    const scene = makeScene();
+    const g = new Boundless('graph');
+    scene.add(g);
+    (scene as any).syncA11y((scene as any).root);
+    const el = (scene as any).a11yElements.get('graph') as HTMLElement;
+    expect(el).toBeTruthy();
+    expect(el.style.width).toBe('800px'); // window mock viewport
+    expect(el.style.height).toBe('600px');
+    expect(el.style.left).toBe('0px');
+  });
+
+  it('still skips a width=0 interactive entity without the flag', () => {
+    const scene = makeScene();
+    class Zero extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+    }
+    const z = new Zero('zero');
+    z.interactive = true; // width stays 0, no flag
+    scene.add(z);
+    (scene as any).syncA11y((scene as any).root);
+    expect((scene as any).a11yElements.get('zero')).toBeUndefined();
+  });
+
+  it('inserts the full-viewport node behind other shadow nodes', () => {
+    const scene = makeScene();
+    class Btn extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { tag: 'button' as const, label: 'Top' };
+      }
+    }
+    const btn = new Btn('btn');
+    btn.interactive = true;
+    btn.width = 80;
+    btn.height = 30;
+    scene.add(btn); // added first
+    const g = new Boundless('graph');
+    scene.add(g); // added second, but must end up behind
+    (scene as any).syncA11y((scene as any).root);
+    const root = (scene as any).a11yRoot as HTMLElement;
+    expect(root.firstChild).toBe((scene as any).a11yElements.get('graph'));
+  });
+
+  it('forwards pointermove from the full-viewport node to the entity', () => {
+    const scene = makeScene();
+    const g = new Boundless('graph');
+    let moved = 0;
+    g.on('pointermove', () => moved++);
+    scene.add(g);
+    (scene as any).syncA11y((scene as any).root);
+    const el = (scene as any).a11yElements.get('graph') as HTMLElement;
+    el.dispatchEvent(new Event('pointermove'));
+    expect(moved).toBe(1);
+  });
+});

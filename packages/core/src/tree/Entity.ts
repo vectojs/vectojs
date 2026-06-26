@@ -132,6 +132,14 @@ export abstract class Entity {
   public height: number = 0;
   public a11yOffsetX: number = 0;
   public a11yOffsetY: number = 0;
+  /**
+   * Opt in to a viewport-filling accessibility/automation shadow node even when
+   * this entity has no intrinsic box (`width`/`height` of `0`). Use for
+   * full-screen, boundless interaction surfaces (e.g. an infinite-canvas graph)
+   * that need global pointer events. The node is mounted behind all other shadow
+   * nodes, so on-top components stay clickable.
+   */
+  public a11yFullViewport: boolean = false;
 
   protected listeners: Map<VectoEvent, Array<(e: any) => void>> = new Map();
   private animations: Array<any> = [];
