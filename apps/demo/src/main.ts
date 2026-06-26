@@ -132,8 +132,8 @@ function bootstrap() {
     frames++;
     const now = performance.now();
     if (now - lastTime >= 1000) {
-      fpsText.text = `FPS: ${frames}`;
-      countText.text = `Entity Count: ${nexus.nodes.length}`;
+      fpsText.setText(`FPS: ${frames}`);
+      countText.setText(`Entity Count: ${nexus.nodes.length}`);
       frames = 0;
       lastTime = now;
     }
