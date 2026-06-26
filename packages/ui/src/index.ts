@@ -13,4 +13,5 @@ export * from './Markdown';
 export * from './Flow';
 export * from './Dropdown';
 export * from './Slider';
+export * from './Modal';
 export { measureText, wrapLines } from './measure';
