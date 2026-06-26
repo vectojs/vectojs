@@ -9,6 +9,11 @@ export interface StackOptions {
   gap?: number;
   /** Cross-axis alignment of children. Default `'start'`. */
   align?: 'start' | 'center' | 'end';
+  /** Whether to wrap children to the next line when exceeding maxWidth/maxHeight. Default `false`. */
+  wrap?: boolean;
+  /** Maximum size along the main axis before wrapping (requires wrap: true). */
+  maxWidth?: number;
+  maxHeight?: number;
 }
 
 /**
@@ -29,12 +34,18 @@ export class Stack extends UIComponent {
   public direction: 'vertical' | 'horizontal';
   public gap: number;
   public align: 'start' | 'center' | 'end';
+  public wrap: boolean;
+  public maxWidth: number;
+  public maxHeight: number;
 
   constructor(opts: StackOptions = {}) {
-    super();
+    super('Stack');
     this.direction = opts.direction ?? 'vertical';
     this.gap = opts.gap ?? 0;
     this.align = opts.align ?? 'start';
+    this.wrap = opts.wrap ?? false;
+    this.maxWidth = opts.maxWidth ?? Infinity;
+    this.maxHeight = opts.maxHeight ?? Infinity;
   }
 
   /** Add a child and re-run layout. */
@@ -50,34 +61,64 @@ export class Stack extends UIComponent {
    */
   public layout(): void {
     const vertical = this.direction === 'vertical';
-    // Cross-axis extent = the largest child's cross size.
-    let cross = 0;
+    const limit = vertical ? this.maxHeight : this.maxWidth;
+
+    // Pass 1: group into lines if wrapping
+    const lines: Entity[][] = [];
+    let currentLine: Entity[] = [];
+    let currentMain = 0;
+
     for (const c of this.children) {
-      cross = Math.max(cross, vertical ? c.width : c.height);
-    }
-
-    let main = 0;
-    for (let i = 0; i < this.children.length; i++) {
-      const c = this.children[i];
-      if (i > 0) main += this.gap;
-      const childCross = vertical ? c.width : c.height;
-      let offset = 0;
-      if (this.align === 'center') offset = (cross - childCross) / 2;
-      else if (this.align === 'end') offset = cross - childCross;
-
-      if (vertical) {
-        c.x = offset;
-        c.y = main;
-        main += c.height;
+      const childMain = vertical ? c.height : c.width;
+      if (this.wrap && currentLine.length > 0 && currentMain + this.gap + childMain > limit) {
+        lines.push(currentLine);
+        currentLine = [c];
+        currentMain = childMain;
       } else {
-        c.x = main;
-        c.y = offset;
-        main += c.width;
+        currentLine.push(c);
+        currentMain += currentLine.length > 1 ? this.gap + childMain : childMain;
       }
     }
+    if (currentLine.length > 0) lines.push(currentLine);
 
-    this.width = vertical ? cross : main;
-    this.height = vertical ? main : cross;
+    // Pass 2: layout lines
+    let totalCross = 0;
+    let maxTotalMain = 0;
+
+    for (const line of lines) {
+      let lineCross = 0;
+      let lineMain = 0;
+      for (const c of line) {
+        lineCross = Math.max(lineCross, vertical ? c.width : c.height);
+        lineMain += vertical ? c.height : c.width;
+      }
+      lineMain += (line.length - 1) * this.gap;
+      maxTotalMain = Math.max(maxTotalMain, lineMain);
+
+      let currentMain = 0;
+      for (const c of line) {
+        const childCross = vertical ? c.width : c.height;
+        let offset = totalCross;
+        if (this.align === 'center') offset += (lineCross - childCross) / 2;
+        else if (this.align === 'end') offset += lineCross - childCross;
+
+        if (vertical) {
+          c.x = offset;
+          c.y = currentMain;
+          currentMain += c.height + this.gap;
+        } else {
+          c.x = currentMain;
+          c.y = offset;
+          currentMain += c.width + this.gap;
+        }
+      }
+      totalCross += lineCross + this.gap;
+    }
+    // Remove trailing gap
+    if (lines.length > 0) totalCross -= this.gap;
+
+    this.width = vertical ? totalCross : maxTotalMain;
+    this.height = vertical ? maxTotalMain : totalCross;
   }
 
   /** Structural container — draws nothing itself. */

@@ -224,6 +224,32 @@ describe('Stack', () => {
     // b is centered within the tallest child's height
     expect(b.y).toBeCloseTo((a.height - b.height) / 2);
   });
+
+  it('wraps children to the next line when wrap is true', () => {
+    const stack = new Stack({
+      direction: 'horizontal',
+      wrap: true,
+      gap: 10,
+      align: 'start',
+      maxWidth: 100,
+    });
+    const a = new Button('A', { padding: 0 }); // 16px font + padding 0 = width ~16
+    const b = new Button('B', { padding: 0 });
+    a.width = 60;
+    a.height = 20;
+    b.width = 60;
+    b.height = 20;
+    stack.add(a);
+    stack.add(b);
+
+    expect(a.x).toBe(0);
+    expect(a.y).toBe(0);
+    // b should wrap to the next line because 60 + 10 + 60 = 130 > 100
+    expect(b.x).toBe(0);
+    expect(b.y).toBe(20 + 10); // a.height + gap
+    expect(stack.height).toBe(20 + 10 + 20); // two rows + gap
+    expect(stack.width).toBe(60); // max row width
+  });
 });
 
 describe('Input', () => {
