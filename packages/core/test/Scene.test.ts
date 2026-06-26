@@ -161,6 +161,69 @@ describe('Scene', () => {
     expect((el as HTMLAnchorElement).href).toContain('example.com');
   });
 
+  it('syncA11y builds an <img> with src/alt', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    class ImgLike extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { tag: 'img' as const, src: 'https://example.com/logo.png', alt: 'Logo' };
+      }
+    }
+    const img = new ImgLike('img');
+    img.interactive = true;
+    img.width = 64;
+    img.height = 64;
+    scene.add(img);
+
+    (scene as any).syncA11y((scene as any).root);
+    const el = (scene as any).a11yElements.get('img') as HTMLImageElement;
+    expect(el.tagName).toBe('IMG');
+    expect(el.src).toContain('logo.png');
+    expect(el.alt).toBe('Logo');
+  });
+
+  it('syncA11y builds an <input> and refreshes value/checked each frame', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    let checked = false;
+    class CheckLike extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { tag: 'input' as const, inputType: 'checkbox', label: 'Agree', checked };
+      }
+    }
+    const c = new CheckLike('chk');
+    c.interactive = true;
+    c.width = 20;
+    c.height = 20;
+    scene.add(c);
+
+    (scene as any).syncA11y((scene as any).root);
+    const el = (scene as any).a11yElements.get('chk') as HTMLInputElement;
+    expect(el.tagName).toBe('INPUT');
+    expect(el.type).toBe('checkbox');
+    expect(el.checked).toBe(false);
+
+    // State change is reflected on the next sync (single element, refreshed).
+    checked = true;
+    (scene as any).syncA11y((scene as any).root);
+    expect(el.checked).toBe(true);
+    expect((scene as any).a11yElements.size).toBe(1);
+  });
+
   it('syncA11y defaults to a div when getA11yAttributes is not overridden', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');

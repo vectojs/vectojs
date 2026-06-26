@@ -16,6 +16,13 @@ export interface SceneOptions {
    *   points don't interleave per-entity with 2D draws.
    */
   pointBackend?: 'canvas' | 'webgl';
+  /**
+   * Render the accessibility/automation shadow nodes with a visible blue dashed
+   * outline (development aid). Default `false`: shadow nodes are transparent
+   * (`opacity:0`) — still operable by Playwright/assistive tech, but the canvas
+   * is the only thing seen.
+   */
+  debugA11y?: boolean;
 }
 
 /**
@@ -55,9 +62,11 @@ export class Scene {
   // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
   private pointRenderer: PointRenderer | null = null;
   private glCanvas: HTMLCanvasElement | null = null;
+  private debugA11y: boolean;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
+    this.debugA11y = options.debugA11y ?? false;
     this.root = new (class RootEntity extends Entity {
       isPointInside() {
         return false;
@@ -222,36 +231,78 @@ export class Scene {
   private syncA11y(node: Entity) {
     if (node.interactive && node.width > 0) {
       let el = this.a11yElements.get(node.id);
+      const attrs = node.getA11yAttributes();
       if (!el) {
-        const attrs = node.getA11yAttributes();
         el = document.createElement(attrs.tag || 'div');
         el.setAttribute('data-vecto-id', node.id);
         if (attrs.role) el.setAttribute('role', attrs.role);
-        if (attrs.label) el.setAttribute('aria-label', attrs.label);
         if (attrs.href && el instanceof HTMLAnchorElement) el.href = attrs.href;
+        if (el instanceof HTMLImageElement) {
+          if (attrs.src) el.src = attrs.src;
+          if (attrs.alt) el.alt = attrs.alt;
+        }
+        if (el instanceof HTMLInputElement) {
+          el.type = attrs.inputType || 'text';
+          if (attrs.placeholder) el.placeholder = attrs.placeholder;
+        }
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
         el.style.cursor = 'pointer';
-        // Debug visibility: semi-transparent blue dashed border
-        el.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
-        el.style.border = '1px dashed rgba(56, 189, 248, 0.4)';
+        el.style.margin = '0';
+        el.style.padding = '0';
+        if (this.debugA11y) {
+          // Debug visibility: semi-transparent blue dashed border.
+          el.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
+          el.style.border = '1px dashed rgba(56, 189, 248, 0.4)';
+        } else {
+          // Production: the canvas IS the visual; the shadow node is the
+          // semantic/automation layer only. opacity:0 keeps it operable by
+          // Playwright/AT (not display:none) without rendering native chrome
+          // (input text, checkbox, broken-img) over the canvas.
+          el.style.opacity = '0';
+          el.style.border = 'none';
+          el.style.background = 'transparent';
+        }
 
         // Map DOM events to Canvas ECS Engine
         el.addEventListener('click', (e) => node.emit('click', e));
         el.addEventListener('mouseenter', (e) => {
-          el!.style.backgroundColor = 'rgba(56, 189, 248, 0.2)';
+          if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.2)';
           node.emit('hover', e);
         });
         el.addEventListener('mouseleave', (e) => {
-          el!.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
+          if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
           node.emit('pointerleave', e);
         });
         el.addEventListener('pointerdown', (e) => node.emit('pointerdown', e));
         el.addEventListener('pointerup', (e) => node.emit('pointerup', e));
         el.addEventListener('pointermove', (e) => node.emit('pointermove', e));
 
+        // Form-control changes (text input / checkbox) flow back to the entity.
+        if (el instanceof HTMLInputElement) {
+          const input = el;
+          const forward = () => node.emit('change', { value: input.value, checked: input.checked });
+          el.addEventListener('input', forward);
+          el.addEventListener('change', forward);
+        }
+
         this.a11yRoot.appendChild(el);
         this.a11yElements.set(node.id, el);
+      }
+
+      // Dynamic attributes refreshed every frame (content can change at runtime).
+      if (attrs.label !== undefined) el.setAttribute('aria-label', attrs.label);
+      if (attrs.checked !== undefined) {
+        if (el instanceof HTMLInputElement) el.checked = attrs.checked;
+        else el.setAttribute('aria-checked', String(attrs.checked));
+      }
+      // Don't clobber the field the user is actively typing in.
+      if (
+        attrs.value !== undefined &&
+        el instanceof HTMLInputElement &&
+        document.activeElement !== el
+      ) {
+        el.value = attrs.value;
       }
 
       const pos = node.getGlobalPosition();

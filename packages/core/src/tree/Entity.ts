@@ -54,13 +54,28 @@ export interface BatchRect {
  */
 export interface A11yAttributes {
   /** Shadow element tag to create. Defaults to `'div'`. */
-  tag?: 'div' | 'a' | 'button';
+  tag?: 'div' | 'a' | 'button' | 'img' | 'input';
   /** ARIA role applied via the `role` attribute. */
   role?: string;
   /** Accessible name applied via `aria-label`. */
   label?: string;
   /** Destination URL; only meaningful for `tag: 'a'`. */
   href?: string;
+  /** Image source; only meaningful for `tag: 'img'`. */
+  src?: string;
+  /** Alternative text; only meaningful for `tag: 'img'`. */
+  alt?: string;
+  /** Input type (e.g. `'text'`, `'checkbox'`); only meaningful for `tag: 'input'`. */
+  inputType?: string;
+  /** Placeholder text; only meaningful for `tag: 'input'`. */
+  placeholder?: string;
+  /** Current value; refreshed each frame for `tag: 'input'` (text fields). */
+  value?: string;
+  /**
+   * Checked state — sets `input.checked` for checkbox inputs and `aria-checked`
+   * for `role: 'switch'`/`'checkbox'`. Refreshed each frame.
+   */
+  checked?: boolean;
 }
 
 /**
@@ -72,7 +87,10 @@ export type VectoEvent =
   | 'pointerdown'
   | 'pointerup'
   | 'pointermove'
-  | 'pointerleave';
+  | 'pointerleave'
+  // Emitted from a form-control shadow node (`<input>`) when its value/checked
+  // changes; payload `{ value, checked }`.
+  | 'change';
 
 /**
  * Base class for every node in the Virtual Math Tree (VMT).

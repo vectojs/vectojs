@@ -1,6 +1,6 @@
 import { A11yAttributes, IRenderer } from '@vecto-ui/core';
 import { UIComponent } from './UIComponent';
-import { measureText } from './measure';
+import { measureText, fontSizePx } from './measure';
 
 /** Construction options for {@link Link}. */
 export interface LinkOptions {
@@ -39,7 +39,7 @@ export class Link extends UIComponent {
     this.interactive = true;
 
     this.width = measureText(this.label, this.font);
-    this.height = parseFloat(this.font) || 16;
+    this.height = fontSizePx(this.font);
 
     this.on('click', () => {
       if (this.href && typeof window !== 'undefined') {

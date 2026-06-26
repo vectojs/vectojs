@@ -14,6 +14,20 @@ function getCtx(): CanvasRenderingContext2D | null {
 }
 
 /**
+ * Extract the pixel font size from a CSS font shorthand.
+ *
+ * Must match the `<number>px` token — NOT a leading `parseFloat`, which would
+ * wrongly return the font *weight* for shorthands like `'600 16px sans-serif'`.
+ *
+ * @param font - A CSS font shorthand, e.g. `'600 16px sans-serif'`.
+ * @returns The px size, or `16` when none is found.
+ */
+export function fontSizePx(font: string): number {
+  const m = /(\d+(?:\.\d+)?)px/.exec(font);
+  return m ? parseFloat(m[1]) : 16;
+}
+
+/**
  * Measure the rendered width of `text` in the given CSS `font`.
  *
  * @param text - The string to measure.
@@ -23,8 +37,7 @@ function getCtx(): CanvasRenderingContext2D | null {
 export function measureText(text: string, font: string): number {
   const ctx = getCtx();
   if (!ctx) {
-    const px = parseFloat(font) || 16;
-    return text.length * px * 0.5;
+    return text.length * fontSizePx(font) * 0.5;
   }
   ctx.font = font;
   return ctx.measureText(text).width;
