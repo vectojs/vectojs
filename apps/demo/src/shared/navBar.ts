@@ -5,6 +5,7 @@
 
 export type DemoHash =
   | '#ui-components'
+  | '#webgl-points'
   | '#spline'
   | '#tight-bubbles'
   | '#physics'
@@ -14,6 +15,7 @@ export type DemoHash =
 
 const DEMOS: { hash: DemoHash; label: string }[] = [
   { hash: '#ui-components', label: '🧩 UI Components' },
+  { hash: '#webgl-points', label: '⚡ WebGL Points' },
   { hash: '#spline', label: '🌀 Spline (vectomancy)' },
   { hash: '#tight-bubbles', label: '💬 Tight Bubbles' },
   { hash: '#physics', label: '📚 Physics Text' },

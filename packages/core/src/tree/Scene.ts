@@ -1,6 +1,22 @@
 import { Entity } from './Entity';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { IRenderer } from '../renderer/IRenderer';
+import { createWebGLPointRenderer, type PointRenderer } from '../renderer/WebGLPointRenderer';
+
+/**
+ * Options for {@link Scene}.
+ */
+export interface SceneOptions {
+  /**
+   * Backend for `getBatchCircle()` point-cloud entities:
+   * - `'canvas'` (default): the Canvas2D order-preserving same-color batch.
+   * - `'webgl'`: a stacked WebGL2 layer drawing all such circles in one draw
+   *   call (10–100× throughput for 100k+). Auto-falls back to `'canvas'` when
+   *   WebGL2 is unavailable. The GL layer composites above the 2D content, so its
+   *   points don't interleave per-entity with 2D draws.
+   */
+  pointBackend?: 'canvas' | 'webgl';
+}
 
 /**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
@@ -36,7 +52,11 @@ export class Scene {
   private a11yElements: Map<string, HTMLElement> = new Map();
   private resizeHandler: () => void;
 
-  constructor(canvas: HTMLCanvasElement) {
+  // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
+  private pointRenderer: PointRenderer | null = null;
+  private glCanvas: HTMLCanvasElement | null = null;
+
+  constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
     this.root = new (class RootEntity extends Entity {
       isPointInside() {
@@ -62,8 +82,28 @@ export class Scene {
       canvas.parentElement.appendChild(this.a11yRoot);
     }
 
+    // Optional WebGL2 point-cloud layer, stacked above the 2D canvas (below a11y).
+    if (options.pointBackend === 'webgl') {
+      const gl = document.createElement('canvas');
+      gl.style.position = 'absolute';
+      gl.style.top = '0';
+      gl.style.left = '0';
+      gl.style.pointerEvents = 'none';
+      gl.style.zIndex = '5';
+      if (canvas.parentElement) canvas.parentElement.appendChild(gl);
+      const pr = createWebGLPointRenderer(gl);
+      if (pr) {
+        pr.resize(window.innerWidth, window.innerHeight);
+        this.glCanvas = gl;
+        this.pointRenderer = pr;
+      } else {
+        gl.remove(); // WebGL2 unavailable → fall back to the Canvas2D batch
+      }
+    }
+
     this.resizeHandler = () => {
       this.renderer.resize(window.innerWidth, window.innerHeight);
+      this.pointRenderer?.resize(window.innerWidth, window.innerHeight);
     };
 
     this.setupEvents();
@@ -122,6 +162,8 @@ export class Scene {
     window.removeEventListener('resize', this.resizeHandler);
     this.a11yRoot.remove();
     this.a11yElements.clear();
+    this.pointRenderer?.destroy();
+    this.glCanvas?.remove();
   }
 
   private setupEvents(): void {
@@ -236,6 +278,7 @@ export class Scene {
     }
 
     this.renderer.clear();
+    this.pointRenderer?.begin();
 
     const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
     const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
@@ -301,13 +344,25 @@ export class Scene {
         const bc = node.getBatchCircle();
         if (bc) {
           if (visible) {
-            this.renderer.fillCircle(
-              node.x,
-              node.y,
-              bc.radius * node.scaleX,
-              bc.color,
-              node.opacity,
-            );
+            if (this.pointRenderer) {
+              // GPU layer: emit in world coords (center = (te,tf), radius scaled
+              // by the accumulated uniform scale = hypot(a,b)).
+              this.pointRenderer.addCircle(
+                te,
+                tf,
+                bc.radius * Math.hypot(a, b),
+                bc.color,
+                node.opacity,
+              );
+            } else {
+              this.renderer.fillCircle(
+                node.x,
+                node.y,
+                bc.radius * node.scaleX,
+                bc.color,
+                node.opacity,
+              );
+            }
           }
           return;
         }
@@ -334,6 +389,7 @@ export class Scene {
 
     renderNode(this.root, 1, 0, 0, 1, 0, 0);
     this.renderer.flush();
+    this.pointRenderer?.flush();
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
     if (this.hasAnyInteractive(this.root)) {

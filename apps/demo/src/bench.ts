@@ -19,7 +19,10 @@ const WARMUP = Number(params.get('warmup') ?? 30);
 const WORLD = Number(params.get('world') ?? 1);
 // `batch=1` opts each circle into the renderer draw-call batching fast-path
 // (getBatchCircle), coalescing same-color circles into a single fill().
-const BATCH = params.get('batch') === '1';
+// `backend=webgl` routes those circles to the WebGL2 point-cloud layer instead.
+const BACKEND = params.get('backend') ?? 'canvas';
+const WEBGL = BACKEND === 'webgl';
+const BATCH = params.get('batch') === '1' || WEBGL;
 // `sprite=1` experiment: blit a pre-rendered circle bitmap via drawImage
 // (the canonical Canvas2D particle technique) instead of arc+fill.
 const SPRITE = params.get('sprite') === '1';
@@ -76,7 +79,7 @@ class BenchCircle extends Entity {
 const app = document.getElementById('app')!;
 const canvas = document.createElement('canvas');
 app.appendChild(canvas);
-const scene = new Scene(canvas);
+const scene = new Scene(canvas, WEBGL ? { pointBackend: 'webgl' } : {});
 // `render=onDemand` exercises the on-demand redraw path: a static scene renders
 // once then idles, so frame cost should collapse regardless of N.
 if (params.get('render') === 'onDemand') scene.renderMode = 'onDemand';
@@ -135,6 +138,8 @@ function tick(): void {
     p95Ms: Number(pick(0.95).toFixed(3)),
     maxFps: Number((1000 / mean).toFixed(1)),
     sustains60: mean <= 1000 / 60,
+    // 2 canvases (2D + GL) ⇒ the WebGL point layer is actually active.
+    glActive: WEBGL && app.querySelectorAll('canvas').length > 1,
   };
   (window as Window & { __BENCH_DONE__?: boolean }).__BENCH_DONE__ = true;
 }
