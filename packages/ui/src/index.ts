@@ -11,4 +11,5 @@ export * from './Toggle';
 export * from './ScrollView';
 export * from './Markdown';
 export * from './Flow';
+export * from './Dropdown';
 export { measureText, wrapLines } from './measure';
