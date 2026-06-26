@@ -1,11 +1,11 @@
 ---
-'@vecto-ui/core': minor
+'@vecto-ui/core': patch
 ---
 
 Add a cold/hot layout split to `LayoutEngine` to kill per-frame layout thrashing.
 
 - **Cold pass** `prepare(text, atlas, fontSize): PreparedText` runs `Intl.Segmenter`
-  - glyph measurement once and returns a constraint-independent, reusable result.
+  plus glyph measurement once and returns a constraint-independent, reusable result.
 - **Hot pass** `layoutPrepared(prepared, mask?)` / `layoutPreparedIntoBuffer(...)`
   does only wrap/positioning arithmetic — no re-segmentation, no re-measurement —
   so reflow on resize/reposition is cheap. `layoutText`/`layoutTextIntoBuffer` now
