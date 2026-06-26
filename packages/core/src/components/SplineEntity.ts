@@ -181,6 +181,7 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
+    this.interactive = true;
   }
 
   private computeBounds(): Bounds {
