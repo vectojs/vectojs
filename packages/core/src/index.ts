@@ -11,3 +11,4 @@ export * from './layout/LayoutEngine';
 export * from './layout/measure';
 export * from './text/MSDFFont';
 export * from './math/SpatialHashGrid';
+export * from './math/SpringPhysics';
