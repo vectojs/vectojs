@@ -43,6 +43,8 @@ export class NexusGraph extends Entity {
   constructor(count: number) {
     super('NexusGraph');
     this.interactive = true; // Receive pointer events
+    this.width = window.innerWidth;
+    this.height = window.innerHeight;
 
     // Create Nodes
     for (let i = 0; i < count; i++) {
@@ -162,6 +164,8 @@ export class NexusGraph extends Entity {
         node.x *= scaleX;
         node.y *= scaleY;
       }
+      this.width = window.innerWidth;
+      this.height = window.innerHeight;
       this.lastW = window.innerWidth;
       this.lastH = window.innerHeight;
     }
