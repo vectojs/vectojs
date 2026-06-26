@@ -1,5 +1,38 @@
 # @vecto-ui/core
 
+## 0.5.1
+
+### Patch Changes
+
+- 1de96df: Add a cold/hot layout split to `LayoutEngine` to kill per-frame layout thrashing.
+
+  - **Cold pass** `prepare(text, atlas, fontSize): PreparedText` runs `Intl.Segmenter`
+    plus glyph measurement once and returns a constraint-independent, reusable result.
+  - **Hot pass** `layoutPrepared(prepared, mask?)` / `layoutPreparedIntoBuffer(...)`
+    does only wrap/positioning arithmetic — no re-segmentation, no re-measurement —
+    so reflow on resize/reposition is cheap. `layoutText`/`layoutTextIntoBuffer` now
+    delegate to these (behavior unchanged).
+  - `TextEntity` caches its `PreparedText`: new `setText()` re-prepares (content
+    changed) while new `setMaxWidth()` reflows via the hot path only.
+
+  Micro-benchmark (472-char Latin+CJK paragraph, warm caches): reflow is **~3.5×**
+  faster on the hot path (0.021 → 0.006 ms/reflow). Exports `PreparedText`,
+  `PreparedParagraph`, `PreparedWord`, `PreparedGlyph`.
+
+- 0362f14: IME / text-selection moat for the canvas `Input` (canvas-mirror approach).
+
+  The real, transparent `<input>` shadow node already handles all native input
+  (IME composition, selection, clipboard, undo); the canvas now mirrors it visually.
+
+  - **core**: `IRenderer.clip(x, y, w, h)` (rect clip, implemented in `CanvasRenderer`).
+    `Scene.syncA11y` forwards IME composition (`{ start, length } | null`), selection
+    (`selectionStart`/`selectionEnd`), and new `focus`/`blur` events from text `<input>`
+    shadow nodes; the `change` payload is extended accordingly.
+  - **ui**: `Input` renders a blinking caret (when focused), a selection highlight, the
+    IME composing segment (underlined), and scrolls horizontally to keep the caret in
+    view for overflowing text. A human can now type CJK into a pure-canvas field; agents
+    still drive it by role.
+
 ## 0.5.0
 
 ### Minor Changes
