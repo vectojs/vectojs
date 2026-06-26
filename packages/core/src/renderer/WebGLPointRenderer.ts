@@ -52,6 +52,33 @@ export interface PointRenderer {
     alpha?: number,
     rotation?: number,
   ): void;
+  /**
+   * Upload an MSDF (multi-channel signed distance field) glyph atlas used by
+   * {@link addGlyph}, kept separate from the {@link setTexture} atlas so both can
+   * be active. `distanceRange` is the field's pixel range (the atlas JSON's
+   * `atlas.distanceRange`) — it drives the shader's edge sharpness. Pair with
+   * `MSDFFont.layout` to position the glyphs.
+   */
+  setMSDFTexture(source: TexImageSource, distanceRange: number): void;
+  /**
+   * Add one MSDF glyph quad sampling `[u0,v0]–[u1,v1]` (UVs in `0..1`): top-left
+   * at world `(x, y)`, `width × height` in world units. The fragment shader
+   * reconstructs a crisp, resolution-independent edge from the distance field, so
+   * glyphs stay sharp at any scale. `color` tints the glyph (default white);
+   * `alpha` multiplies coverage. No-op until {@link setMSDFTexture} is called.
+   */
+  addGlyph(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    u0: number,
+    v0: number,
+    u1: number,
+    v1: number,
+    color?: string,
+    alpha?: number,
+  ): void;
   /** Clear the layer and draw all accumulated primitives. */
   flush(): void;
   /** Release GL resources. */
@@ -144,6 +171,32 @@ void main() {
   outColor = vec4(t.rgb * v_tint.rgb, t.a * v_tint.a);
 }`;
 
+// MSDF glyphs reuse the sprite vertex layout (pos + uv + tint) but reconstruct a
+// resolution-independent edge from the distance field: median of the 3 channels
+// is the signed distance, and a screen-space-derivative range gives crisp AA at
+// any zoom (Chlumsky's method). Tint colors the glyph; coverage scales its alpha.
+const MSDF_FRAG = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_distanceRange;
+in vec2 v_uv;
+in vec4 v_tint;
+out vec4 outColor;
+float median(float r, float g, float b) {
+  return max(min(r, g), min(max(r, g), b));
+}
+void main() {
+  vec3 msd = texture(u_tex, v_uv).rgb;
+  float sd = median(msd.r, msd.g, msd.b);
+  vec2 unitRange = vec2(u_distanceRange) / vec2(textureSize(u_tex, 0));
+  vec2 screenTexSize = vec2(1.0) / fwidth(v_uv);
+  float screenPxRange = max(0.5 * dot(unitRange, screenTexSize), 1.0);
+  float screenPxDistance = screenPxRange * (sd - 0.5);
+  float opacity = clamp(screenPxDistance + 0.5, 0.0, 1.0);
+  if (opacity <= 0.0) discard;
+  outColor = vec4(v_tint.rgb, v_tint.a * opacity);
+}`;
+
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
   const sh = gl.createShader(type);
   if (!sh) return null;
@@ -198,7 +251,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   const pointProgram = link(gl, POINT_VERT, POINT_FRAG);
   const rectProgram = link(gl, RECT_VERT, RECT_FRAG);
   const spriteProgram = link(gl, SPRITE_VERT, SPRITE_FRAG);
-  if (!pointProgram || !rectProgram || !spriteProgram) return null;
+  const msdfProgram = link(gl, SPRITE_VERT, MSDF_FRAG); // shares the sprite vertex layout
+  if (!pointProgram || !rectProgram || !spriteProgram || !msdfProgram) return null;
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -249,9 +303,29 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.vertexAttribPointer(sAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
   gl.enableVertexAttribArray(sATint);
   gl.vertexAttribPointer(sATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
+
+  // --- MSDF glyph program state (same vertex layout as sprites) ---
+  const gAPos = gl.getAttribLocation(msdfProgram, 'a_pos');
+  const gAUv = gl.getAttribLocation(msdfProgram, 'a_uv');
+  const gATint = gl.getAttribLocation(msdfProgram, 'a_tint');
+  const gURes = gl.getUniformLocation(msdfProgram, 'u_resolution');
+  const gUTex = gl.getUniformLocation(msdfProgram, 'u_tex');
+  const gURange = gl.getUniformLocation(msdfProgram, 'u_distanceRange');
+  const glyphBuffer = gl.createBuffer();
+  const glyphVAO = gl.createVertexArray();
+  gl.bindVertexArray(glyphVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
+  gl.enableVertexAttribArray(gAPos);
+  gl.vertexAttribPointer(gAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.enableVertexAttribArray(gAUv);
+  gl.vertexAttribPointer(gAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.enableVertexAttribArray(gATint);
+  gl.vertexAttribPointer(gATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
   gl.bindVertexArray(null);
 
   let texture: WebGLTexture | null = null;
+  let msdfTexture: WebGLTexture | null = null;
+  let distanceRange = 4;
 
   let pointData: Float32Array = new Float32Array(FLOATS_PER_POINT * 1024);
   let pointCount = 0;
@@ -259,6 +333,9 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   let rectCount = 0;
   let spriteData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 256);
   let spriteCount = 0;
+  // Glyphs reuse the sprite vertex layout (8 floats/vert, 6 verts/quad).
+  let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 1024);
+  let glyphCount = 0;
   let logicalW = 0;
   let logicalH = 0;
   let dpr = 1;
@@ -279,6 +356,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       pointCount = 0;
       rectCount = 0;
       spriteCount = 0;
+      glyphCount = 0;
     },
 
     setTexture(source) {
@@ -329,6 +407,63 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         o += FLOATS_PER_SPRITE_VERT;
       }
       spriteCount++;
+    },
+
+    setMSDFTexture(source, range) {
+      distanceRange = range;
+      if (!msdfTexture) {
+        msdfTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
+      }
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    },
+
+    addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1) {
+      if (!msdfTexture) return; // no glyph atlas yet
+      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+      glyphData = grow(glyphData, (glyphCount + 1) * stride);
+      const [r, g, b, a] = parseColorToRGBA(color);
+      const al = a * alpha;
+      // Axis-aligned quad corners + UVs (TL, TR, BR, BL).
+      const quad: [[number, number], [number, number]][] = [
+        [
+          [x, y],
+          [u0, v0],
+        ],
+        [
+          [x + width, y],
+          [u1, v0],
+        ],
+        [
+          [x + width, y + height],
+          [u1, v1],
+        ],
+        [
+          [x, y + height],
+          [u0, v1],
+        ],
+      ];
+      const order = [0, 1, 2, 0, 2, 3]; // two triangles
+      let o = glyphCount * stride;
+      for (const i of order) {
+        const [[vx, vy], [vu, vv]] = quad[i];
+        glyphData[o] = vx;
+        glyphData[o + 1] = vy;
+        glyphData[o + 2] = vu;
+        glyphData[o + 3] = vv;
+        glyphData[o + 4] = r;
+        glyphData[o + 5] = g;
+        glyphData[o + 6] = b;
+        glyphData[o + 7] = al;
+        o += FLOATS_PER_SPRITE_VERT;
+      }
+      glyphCount++;
     },
 
     addCircle(x, y, radius, color, alpha = 1) {
@@ -417,6 +552,20 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.drawArrays(gl.TRIANGLES, 0, spriteCount * VERTS_PER_SPRITE);
       }
 
+      if (glyphCount > 0 && msdfTexture) {
+        const floats = glyphCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+        gl.useProgram(msdfProgram);
+        gl.bindVertexArray(glyphVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, glyphData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
+        gl.uniform1i(gUTex, 0);
+        gl.uniform2f(gURes, logicalW, logicalH);
+        gl.uniform1f(gURange, distanceRange);
+        gl.drawArrays(gl.TRIANGLES, 0, glyphCount * VERTS_PER_SPRITE);
+      }
+
       gl.bindVertexArray(null);
     },
 
@@ -424,13 +573,17 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       gl.deleteBuffer(pointBuffer);
       gl.deleteBuffer(rectBuffer);
       gl.deleteBuffer(spriteBuffer);
+      gl.deleteBuffer(glyphBuffer);
       gl.deleteVertexArray(pointVAO);
       gl.deleteVertexArray(rectVAO);
       gl.deleteVertexArray(spriteVAO);
+      gl.deleteVertexArray(glyphVAO);
       gl.deleteProgram(pointProgram);
       gl.deleteProgram(rectProgram);
       gl.deleteProgram(spriteProgram);
+      gl.deleteProgram(msdfProgram);
       if (texture) gl.deleteTexture(texture);
+      if (msdfTexture) gl.deleteTexture(msdfTexture);
     },
   };
 }

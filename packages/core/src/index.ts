@@ -9,4 +9,5 @@ export * from './components/GridTextEntity';
 export * from './components/SplineEntity';
 export * from './layout/LayoutEngine';
 export * from './layout/measure';
+export * from './text/MSDFFont';
 export * from './math/SpatialHashGrid';
