@@ -30,8 +30,9 @@ and [xuepoo.xyz](https://xuepoo.xyz) (a near-Zero-DOM site whose `<body>` is one
 ## Measured performance
 
 Honest, reproducible numbers — no fabricated comparisons. Reproduce the entity benchmark with
-`bun run benchmark` (headless Chrome, Canvas 2D, simple filled-circle entities, vsync disabled).
-Numbers are per-machine and complexity-dependent.
+`bun run benchmark` (headless Chrome, Canvas 2D, simple filled-circle entities). It runs vsync-capped
+by default (CI/sandbox-safe; reports whether N sustains 60 fps); add `--uncapped` for the true
+sub-16 ms per-frame cost in the table below. Numbers are per-machine and complexity-dependent.
 
 | Entities | all on-screen   | mostly off-screen (culled) | static, idle (`onDemand`) |
 | -------- | --------------- | -------------------------- | ------------------------- |
