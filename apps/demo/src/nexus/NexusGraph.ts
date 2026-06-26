@@ -36,6 +36,8 @@ export class NexusGraph extends Entity {
   private rippleX = 0;
   private rippleY = 0;
   private pointerDown = false;
+  private lastW = window.innerWidth;
+  private lastH = window.innerHeight;
 
   constructor(count: number) {
     super('NexusGraph');
@@ -118,6 +120,19 @@ export class NexusGraph extends Entity {
   }
 
   update(dt: number) {
+    // Handle Window Resize explicitly to stretch the universe
+    // This prevents the particles from clustering in the top-left when maximizing
+    if (this.lastW !== window.innerWidth || this.lastH !== window.innerHeight) {
+      const scaleX = window.innerWidth / this.lastW;
+      const scaleY = window.innerHeight / this.lastH;
+      for (const node of this.nodes) {
+        node.x *= scaleX;
+        node.y *= scaleY;
+      }
+      this.lastW = window.innerWidth;
+      this.lastH = window.innerHeight;
+    }
+
     if (!this.physicsEnabled) return;
 
     const friction = 0.94;
@@ -195,6 +210,7 @@ export class NexusGraph extends Entity {
     r.beginPath();
     r.setGlobalAlpha(0.15);
 
+    let count = 0;
     for (const edge of this.edges) {
       let dx = edge.a.x - edge.b.x;
       let dy = edge.a.y - edge.b.y;
@@ -204,7 +220,18 @@ export class NexusGraph extends Entity {
       if (dx * dx + dy * dy > 60000) continue;
       r.moveTo(edge.a.x, edge.a.y);
       r.lineTo(edge.b.x, edge.b.y);
+
+      count++;
+      // Chunk the stroke path to fix Firefox's superlinear path rasterization performance
+      if (count >= 400) {
+        r.stroke('#00f0ff', 1);
+        r.beginPath();
+        count = 0;
+      }
     }
-    r.stroke('#00f0ff', 1);
+
+    if (count > 0) {
+      r.stroke('#00f0ff', 1);
+    }
   }
 }
