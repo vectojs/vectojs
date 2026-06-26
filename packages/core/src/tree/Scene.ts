@@ -342,6 +342,7 @@ export class Scene {
         el.addEventListener('pointerdown', (e) => node.emit('pointerdown', e));
         el.addEventListener('pointerup', (e) => node.emit('pointerup', e));
         el.addEventListener('pointermove', (e) => node.emit('pointermove', e));
+        el.addEventListener('wheel', (e) => node.emit('wheel', e));
 
         // Form-control changes (text input / checkbox) flow back to the entity.
         if (el instanceof HTMLInputElement) {
@@ -584,6 +585,10 @@ export class Scene {
       this.renderer.setGlobalAlpha(node.opacity);
 
       if (visible) node.render(this.renderer);
+
+      if (node.clipChildren) {
+        this.renderer.clip(0, 0, node.width, node.height);
+      }
 
       for (const child of node.children) {
         renderNode(child, a, b, c, d, te, tf);

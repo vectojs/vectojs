@@ -12,6 +12,8 @@ const mockCtx = {
   fillText: vi.fn(),
   beginPath: vi.fn(),
   fill: vi.fn(),
+  rect: vi.fn(),
+  clip: vi.fn(),
   set globalAlpha(_v: number) {},
 };
 
@@ -390,6 +392,55 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     tick(scene);
     tick(scene);
     expect(e.renders).toBe(2); // still rendering due to pending animation
+  });
+
+  it('clipChildren wraps the child render pass in a clip rect', () => {
+    const scene = makeScene();
+    mockCtx.clip.mockClear();
+    const parent = new SpyEntity('clip-p', { x: 0, y: 0, width: 100, height: 80 }) as SpyEntity;
+    parent.clipChildren = true;
+    parent.width = 100;
+    parent.height = 80;
+    const child = new SpyEntity('clip-c', null) as SpyEntity;
+    parent.add(child);
+    scene.add(parent);
+
+    tick(scene);
+
+    expect(mockCtx.clip).toHaveBeenCalled();
+    expect(child.renders).toBe(1); // child still rendered, just clipped
+  });
+
+  it('does not clip a normal (non-clipChildren) parent', () => {
+    const scene = makeScene();
+    mockCtx.clip.mockClear();
+    const parent = new SpyEntity('noclip-p', null) as SpyEntity;
+    parent.add(new SpyEntity('noclip-c', null));
+    scene.add(parent);
+
+    tick(scene);
+
+    expect(mockCtx.clip).not.toHaveBeenCalled();
+  });
+
+  it('forwards wheel events from the shadow node to the entity', () => {
+    const scene = makeScene();
+    const e = new SpyEntity('wheel-e', { x: 0, y: 0, width: 100, height: 100 }) as SpyEntity;
+    e.interactive = true;
+    e.width = 100;
+    e.height = 100;
+    let wheels = 0;
+    e.on('wheel', () => wheels++);
+    scene.add(e);
+
+    tick(scene); // mounts the shadow node + binds listeners
+    const el = (scene as unknown as { a11yElements: Map<string, HTMLElement> }).a11yElements.get(
+      'wheel-e',
+    )!;
+    expect(el).toBeTruthy();
+    el.dispatchEvent(new Event('wheel'));
+
+    expect(wheels).toBe(1);
   });
 });
 

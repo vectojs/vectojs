@@ -94,7 +94,10 @@ export type VectoEvent =
   | 'change'
   // Emitted when the shadow `<input>` gains/loses focus (caret blink, etc.).
   | 'focus'
-  | 'blur';
+  | 'blur'
+  // Mouse-wheel / trackpad scroll over the entity's shadow node; payload is the
+  // native `WheelEvent` (call `preventDefault()` to stop the page scrolling).
+  | 'wheel';
 
 /**
  * Base class for every node in the Virtual Math Tree (VMT).
@@ -140,6 +143,13 @@ export abstract class Entity {
    * nodes, so on-top components stay clickable.
    */
   public a11yFullViewport: boolean = false;
+  /**
+   * Clip this node's children to its local box (`[0,0]–[width,height]`) while
+   * rendering. Combined with translating a content child, this is how
+   * scroll/overflow containers (e.g. `ScrollView`) keep their content inside a
+   * fixed viewport. Off by default (children render unclipped). Canvas2D only.
+   */
+  public clipChildren: boolean = false;
 
   protected listeners: Map<VectoEvent, Array<(e: any) => void>> = new Map();
   private animations: Array<any> = [];
