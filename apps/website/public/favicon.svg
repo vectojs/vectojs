@@ -1,22 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
-  <!-- The Dual Engine 'V' -->
-  <!-- Top V (DOM/Canvas Engine) -->
-  <path 
-    d="M 18 20 L 50 58 L 82 20" 
-    fill="none" 
-    stroke="#ff00aa" 
-    stroke-width="14" 
-    stroke-linecap="round" 
-    stroke-linejoin="round" 
-  />
-  
-  <!-- Bottom V (WebGL Engine) -->
-  <path 
-    d="M 18 45 L 50 83 L 82 45" 
-    fill="none" 
-    stroke="#00f0ff" 
-    stroke-width="14" 
-    stroke-linecap="round" 
-    stroke-linejoin="round" 
-  />
+  <defs>
+    <!-- Cyan to Magenta Hybrid Gradient -->
+    <linearGradient id="vectoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f0ff" />
+      <stop offset="100%" stop-color="#ff00aa" />
+    </linearGradient>
+  </defs>
+
+  <!-- We use raw SVG paths to manually sculpt the Chinese character "矢" -->
+  <g fill="none" stroke="url(#vectoGrad)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    
+    <!-- Stroke 1: Top short sweep (丿) -->
+    <!-- Starting top-center, sweeping left -->
+    <path d="M 45 15 Q 35 25 25 28" />
+
+    <!-- Stroke 2: Top horizontal (一) -->
+    <path d="M 35 32 L 75 32" />
+
+    <!-- Stroke 3: Middle horizontal (the top of '大') -->
+    <path d="M 20 52 L 80 52" />
+
+    <!-- Stroke 4 & 5: The crossing sweep and right-falling stroke (the legs of '大') -->
+    <!-- We make them intersect perfectly at the center, echoing the 'V' shape -->
+    <path d="M 50 40 Q 45 75 22 85" />
+    <path d="M 50 60 Q 65 75 78 85" />
+  </g>
+
+  <!-- Neural Nodes to emphasize it's a Graph/Vector engine -->
+  <circle cx="45" cy="15" r="4" fill="#00f0ff" />
+  <circle cx="75" cy="32" r="4" fill="#ff00aa" />
+  <circle cx="20" cy="52" r="4" fill="#00f0ff" />
+  <circle cx="78" cy="85" r="4" fill="#ff00aa" />
+  <circle cx="50" cy="60" r="4" fill="#ffffff" />
 </svg>
