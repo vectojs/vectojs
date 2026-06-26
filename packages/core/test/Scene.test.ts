@@ -771,3 +771,61 @@ describe('Scene syncA11y — boundless / full-viewport interactive entities', ()
     expect(moved).toBe(1);
   });
 });
+
+describe('Scene SSR / no-DOM safety', () => {
+  // A minimal concrete entity for the SSR test.
+  class Leaf extends Entity {
+    isPointInside(): boolean {
+      return false;
+    }
+    render(): void {}
+  }
+
+  it('constructs, ticks, and tears down without document / window / rAF', () => {
+    const g = globalThis as unknown as {
+      document?: unknown;
+      window?: unknown;
+      requestAnimationFrame?: unknown;
+    };
+    const savedDoc = g.document;
+    const savedWin = g.window;
+    const savedRaf = g.requestAnimationFrame;
+
+    // A headless canvas: a working 2D context, but no surrounding DOM/window.
+    const fakeCanvas = {
+      getContext: () => mockCtx,
+      width: 800,
+      height: 600,
+      style: { width: '', height: '' },
+      parentElement: null,
+    } as unknown as HTMLCanvasElement;
+
+    try {
+      g.document = undefined;
+      g.window = undefined;
+      g.requestAnimationFrame = undefined;
+
+      let scene!: Scene;
+      expect(() => {
+        scene = new Scene(fakeCanvas);
+      }).not.toThrow();
+      // a11y projection degrades to a no-op (no DOM to mount into).
+      expect((scene as unknown as { a11yRoot: unknown }).a11yRoot).toBeNull();
+
+      const e = new Leaf('ssr');
+      e.interactive = true;
+      e.width = 10;
+      e.height = 10;
+      scene.add(e);
+
+      // A full frame must not throw: render runs via the ctx, a11y no-ops,
+      // and the next-frame schedule is skipped (no requestAnimationFrame).
+      expect(() => (scene as unknown as { loop: (t: number) => void }).loop(0)).not.toThrow();
+      expect(() => scene.destroy()).not.toThrow();
+    } finally {
+      g.document = savedDoc;
+      g.window = savedWin;
+      g.requestAnimationFrame = savedRaf;
+    }
+  });
+});

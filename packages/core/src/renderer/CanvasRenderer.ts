@@ -16,6 +16,11 @@ import { IRenderer } from './IRenderer';
  */
 const TWO_PI = Math.PI * 2;
 
+/** Device pixel ratio, or `1` in non-DOM (SSR/Node) environments. */
+function getDevicePixelRatio(): number {
+  return typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+}
+
 export class CanvasRenderer implements IRenderer {
   private ctx: CanvasRenderingContext2D;
   private width: number;
@@ -37,15 +42,18 @@ export class CanvasRenderer implements IRenderer {
   private batchCount: number = 0;
 
   constructor(canvas: HTMLCanvasElement) {
-    const dpr = window.devicePixelRatio || 1;
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
+    const dpr = getDevicePixelRatio();
+    // Fall back to the canvas's own size in SSR/Node where there is no window.
+    this.width = typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0;
+    this.height = typeof window !== 'undefined' ? window.innerHeight : canvas.height || 0;
 
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;
 
-    this.ctx = canvas.getContext('2d')!;
-    this.ctx.scale(dpr, dpr);
+    // getContext may be absent/return null in a headless canvas; stay constructible.
+    const ctx = canvas.getContext('2d');
+    this.ctx = ctx as CanvasRenderingContext2D;
+    if (ctx) ctx.scale(dpr, dpr);
   }
 
   /**
@@ -67,7 +75,7 @@ export class CanvasRenderer implements IRenderer {
    * @param height - New logical height in CSS pixels.
    */
   public resize(width: number, height: number): void {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = getDevicePixelRatio();
     this.width = width;
     this.height = height;
     this.ctx.canvas.width = width * dpr;

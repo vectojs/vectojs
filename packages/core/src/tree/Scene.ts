@@ -97,8 +97,10 @@ export class Scene {
   /** Timestamp of the last a11y sync, for throttling. */
   private lastA11ySync: number = -Infinity;
 
-  // A11y / Automation Layer
-  private a11yRoot: HTMLDivElement;
+  // A11y / Automation Layer. `null` in non-DOM (SSR/Node) environments — the
+  // whole projection degrades to a no-op so the engine's logic stays usable
+  // server-side (e.g. headless layout / vector export) without jsdom.
+  private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
   private resizeHandler: () => void;
 
@@ -127,22 +129,26 @@ export class Scene {
 
     this.renderer = new CanvasRenderer(canvas);
 
-    // Setup Agent / Automation Semantic Layer
-    this.a11yRoot = document.createElement('div');
-    this.a11yRoot.style.position = 'absolute';
-    this.a11yRoot.style.top = '0';
-    this.a11yRoot.style.left = '0';
-    this.a11yRoot.style.width = '100vw';
-    this.a11yRoot.style.height = '100vh';
-    this.a11yRoot.style.pointerEvents = 'none';
-    this.a11yRoot.style.overflow = 'hidden';
-    this.a11yRoot.style.zIndex = '10'; // Render above canvas
-    if (canvas.parentElement) {
-      canvas.parentElement.appendChild(this.a11yRoot);
+    // Setup Agent / Automation Semantic Layer (only where there's a DOM).
+    if (typeof document !== 'undefined') {
+      this.a11yRoot = document.createElement('div');
+      this.a11yRoot.style.position = 'absolute';
+      this.a11yRoot.style.top = '0';
+      this.a11yRoot.style.left = '0';
+      this.a11yRoot.style.width = '100vw';
+      this.a11yRoot.style.height = '100vh';
+      this.a11yRoot.style.pointerEvents = 'none';
+      this.a11yRoot.style.overflow = 'hidden';
+      this.a11yRoot.style.zIndex = '10'; // Render above canvas
+      if (canvas.parentElement) {
+        canvas.parentElement.appendChild(this.a11yRoot);
+      }
+    } else {
+      this.a11yRoot = null;
     }
 
     // Optional WebGL2 point-cloud layer, stacked above the 2D canvas (below a11y).
-    if (options.pointBackend === 'webgl') {
+    if (options.pointBackend === 'webgl' && typeof document !== 'undefined') {
       const gl = document.createElement('canvas');
       gl.style.position = 'absolute';
       gl.style.top = '0';
@@ -218,15 +224,15 @@ export class Scene {
    */
   public destroy(): void {
     this.stop();
-    window.removeEventListener('resize', this.resizeHandler);
-    this.a11yRoot.remove();
+    if (typeof window !== 'undefined') window.removeEventListener('resize', this.resizeHandler);
+    this.a11yRoot?.remove();
     this.a11yElements.clear();
     this.pointRenderer?.destroy();
     this.glCanvas?.remove();
   }
 
   private setupEvents(): void {
-    window.addEventListener('resize', this.resizeHandler);
+    if (typeof window !== 'undefined') window.addEventListener('resize', this.resizeHandler);
   }
 
   /**
@@ -237,8 +243,15 @@ export class Scene {
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.lastTime = performance.now();
-    requestAnimationFrame((t) => this.loop(t));
+    this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
+    this.scheduleFrame();
+  }
+
+  /** Schedule the next frame, or no-op where `requestAnimationFrame` is absent (SSR). */
+  private scheduleFrame(): void {
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame((t) => this.loop(t));
+    }
   }
 
   /**
@@ -279,6 +292,7 @@ export class Scene {
   }
 
   private syncA11y(node: Entity) {
+    if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
@@ -429,10 +443,11 @@ export class Scene {
 
         // Full-viewport surfaces mount behind other shadow nodes so on-top
         // components stay clickable; discrete controls append on top.
+        // (a11yRoot is guaranteed non-null by the early return at the top.)
         if (node.a11yFullViewport) {
-          this.a11yRoot.insertBefore(el, this.a11yRoot.firstChild);
+          this.a11yRoot!.insertBefore(el, this.a11yRoot!.firstChild);
         } else {
-          this.a11yRoot.appendChild(el);
+          this.a11yRoot!.appendChild(el);
         }
         this.a11yElements.set(node.id, el);
       }
@@ -493,7 +508,7 @@ export class Scene {
     // `lastTime` only advances on rendered frames, so `dt` stays accurate.
     const cap = this.effectiveMaxFPS();
     if (cap > 0 && time - this.lastTime < 1000 / cap - 1) {
-      requestAnimationFrame((t) => this.loop(t));
+      this.scheduleFrame();
       return;
     }
 
@@ -502,7 +517,7 @@ export class Scene {
 
     // onDemand: only redraw when dirty or an animation is in flight.
     if (this.renderMode === 'onDemand' && !this.dirty && !this.hasAnyPendingAnimation(this.root)) {
-      requestAnimationFrame((t) => this.loop(t));
+      this.scheduleFrame();
       return;
     }
 
@@ -658,6 +673,6 @@ export class Scene {
 
     this.dirty = false;
 
-    requestAnimationFrame((t) => this.loop(t));
+    this.scheduleFrame();
   }
 }
