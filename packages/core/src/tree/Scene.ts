@@ -23,7 +23,23 @@ export interface SceneOptions {
    * is the only thing seen.
    */
   debugA11y?: boolean;
+  /**
+   * Cap the render loop to at most this many frames per second (power saving —
+   * e.g. a quieter fan in a library). `0` (default) means uncapped (native
+   * refresh rate). Continuous animations still run, just less often. Also
+   * settable later via {@link Scene.maxFPS}.
+   */
+  maxFPS?: number;
+  /**
+   * When `true` (default), a system **prefers-reduced-motion** setting auto-caps
+   * the loop to {@link REDUCED_MOTION_FPS} (or the lower of that and `maxFPS`).
+   * Set `false` to ignore the OS setting.
+   */
+  respectReducedMotion?: boolean;
 }
+
+/** Frame-rate the loop is capped to when the OS requests reduced motion. */
+export const REDUCED_MOTION_FPS = 30;
 
 /**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
@@ -54,6 +70,17 @@ export class Scene {
   public renderMode: 'always' | 'onDemand' = 'always';
   private dirty: boolean = true;
 
+  /**
+   * Frame-rate cap (power saving). `0` = uncapped (native refresh). When set,
+   * the loop renders at most `maxFPS` times per second; animations still run,
+   * just less often. See {@link SceneOptions.maxFPS}.
+   */
+  public maxFPS: number = 0;
+  /** Whether the OS prefers-reduced-motion setting auto-caps the loop. */
+  public respectReducedMotion: boolean = true;
+  /** Cached media-query list; `.matches` is read live each frame. */
+  private reducedMotionQuery: MediaQueryList | null = null;
+
   // A11y / Automation Layer
   private a11yRoot: HTMLDivElement;
   private a11yElements: Map<string, HTMLElement> = new Map();
@@ -67,6 +94,12 @@ export class Scene {
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
     this.debugA11y = options.debugA11y ?? false;
+    this.maxFPS = options.maxFPS ?? 0;
+    this.respectReducedMotion = options.respectReducedMotion ?? true;
+    this.reducedMotionQuery =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
     this.root = new (class RootEntity extends Entity {
       isPointInside() {
         return false;
@@ -378,8 +411,29 @@ export class Scene {
     for (const child of node.children) this.syncA11y(child);
   }
 
+  /**
+   * The frame-rate cap actually in effect: the explicit {@link maxFPS}, further
+   * lowered to {@link REDUCED_MOTION_FPS} when the OS requests reduced motion
+   * (and {@link respectReducedMotion} is on). `0` means uncapped.
+   */
+  private effectiveMaxFPS(): number {
+    const reduced = this.respectReducedMotion && !!this.reducedMotionQuery?.matches;
+    if (reduced)
+      return this.maxFPS > 0 ? Math.min(this.maxFPS, REDUCED_MOTION_FPS) : REDUCED_MOTION_FPS;
+    return this.maxFPS;
+  }
+
   private loop(time: number): void {
     if (!this.isRunning) return;
+
+    // Frame-rate cap (power saving / prefers-reduced-motion): if this frame
+    // arrived sooner than the target interval, skip rendering this tick.
+    // `lastTime` only advances on rendered frames, so `dt` stays accurate.
+    const cap = this.effectiveMaxFPS();
+    if (cap > 0 && time - this.lastTime < 1000 / cap - 1) {
+      requestAnimationFrame((t) => this.loop(t));
+      return;
+    }
 
     const dt = time - this.lastTime;
     this.lastTime = time;

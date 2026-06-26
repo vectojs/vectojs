@@ -474,3 +474,98 @@ describe('Scene syncA11y — text input IME / selection / focus forwarding', () 
     expect(blurred).toBe(1);
   });
 });
+
+describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
+  class SpyEntity extends Entity {
+    public renders = 0;
+    isPointInside() {
+      return false;
+    }
+    render() {
+      this.renders++;
+    }
+  }
+
+  (globalThis as any).requestAnimationFrame = () => 0;
+
+  function makeScene() {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+    (scene as any).isRunning = true;
+    const spy = new SpyEntity('spy');
+    scene.add(spy);
+    return { scene, spy };
+  }
+
+  it('uncapped (maxFPS=0) renders on every frame', () => {
+    const { scene, spy } = makeScene();
+    (scene as any).lastTime = -1000;
+    (scene as any).loop(0);
+    (scene as any).loop(5);
+    (scene as any).loop(10);
+    expect(spy.renders).toBe(3);
+  });
+
+  it('maxFPS caps how often the scene renders', () => {
+    const { scene, spy } = makeScene();
+    scene.maxFPS = 30; // ~33.3ms interval
+    (scene as any).lastTime = -1000;
+    (scene as any).loop(0); // renders (renders=1), lastTime=0
+    (scene as any).loop(10); // 10ms < 33.3 → skip
+    (scene as any).loop(20); // skip
+    (scene as any).loop(40); // 40ms ≥ interval → render (renders=2)
+    expect(spy.renders).toBe(2);
+  });
+
+  it('accepts maxFPS via constructor options', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas, { maxFPS: 15 });
+    expect(scene.maxFPS).toBe(15);
+  });
+
+  it('prefers-reduced-motion auto-caps an uncapped scene', () => {
+    const prev = (globalThis as any).window.matchMedia;
+    (globalThis as any).window.matchMedia = (q: string) => ({
+      matches: q.includes('reduce'),
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    try {
+      const { scene, spy } = makeScene(); // maxFPS=0 but reduced-motion → ~30fps cap
+      (scene as any).lastTime = -1000;
+      (scene as any).loop(0); // renders=1
+      (scene as any).loop(10); // < 33.3 → skip despite maxFPS=0
+      expect(spy.renders).toBe(1);
+    } finally {
+      (globalThis as any).window.matchMedia = prev;
+    }
+  });
+
+  it('respectReducedMotion=false ignores the media query', () => {
+    const prev = (globalThis as any).window.matchMedia;
+    (globalThis as any).window.matchMedia = (q: string) => ({
+      matches: q.includes('reduce'),
+      addEventListener() {},
+      removeEventListener() {},
+    });
+    try {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      const scene = new Scene(canvas, { respectReducedMotion: false });
+      (scene as any).isRunning = true;
+      const spy = new SpyEntity('spy');
+      scene.add(spy);
+      (scene as any).lastTime = -1000;
+      (scene as any).loop(0);
+      (scene as any).loop(10);
+      expect(spy.renders).toBe(2); // not capped
+    } finally {
+      (globalThis as any).window.matchMedia = prev;
+    }
+  });
+});
