@@ -31,6 +31,7 @@ const WORLD = args.get('world') ?? '1';
 const RENDER = args.get('render') ?? 'always';
 const BATCH = args.get('batch') ?? '0';
 const BACKEND = args.get('backend') ?? 'canvas';
+const SHAPE = args.get('shape') ?? 'circle';
 
 function loadPlaywright() {
   const pkgDir = dirname(execSync('readlink -f "$(which playwright)"').toString().trim());
@@ -97,7 +98,7 @@ async function main() {
     for (const n of COUNTS) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
       await page.goto(
-        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}&batch=${BATCH}&backend=${BACKEND}`,
+        `${base}/bench.html?n=${n}&frames=${FRAMES}&world=${WORLD}&render=${RENDER}&batch=${BATCH}&backend=${BACKEND}&shape=${SHAPE}`,
         {
           waitUntil: 'load',
         },

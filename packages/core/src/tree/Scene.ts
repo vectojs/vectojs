@@ -366,6 +366,27 @@ export class Scene {
           }
           return;
         }
+        // GPU instanced rectangle (WebGL backend only; otherwise falls through
+        // to the normal render path below). Origin (te,tf), world scale hypot(a,b),
+        // rotation atan2(b,a).
+        if (this.pointRenderer) {
+          const br = node.getBatchRect();
+          if (br) {
+            if (visible) {
+              const ws = Math.hypot(a, b);
+              this.pointRenderer.addRect(
+                te,
+                tf,
+                br.width * ws,
+                br.height * ws,
+                br.color,
+                node.opacity,
+                Math.atan2(b, a),
+              );
+            }
+            return;
+          }
+        }
       }
 
       // Any normal (non-batched) draw must commit the pending batch first so

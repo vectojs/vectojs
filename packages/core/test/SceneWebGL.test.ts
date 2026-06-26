@@ -41,7 +41,12 @@ function recorderCtx() {
 
 /** Mock WebGL2 context capturing the last uploaded point buffer + draw count. */
 function mockGL() {
-  const captures = { buffer: null as Float32Array | null, drawCount: -1 };
+  const captures = {
+    buffer: null as Float32Array | null,
+    rectBuffer: null as Float32Array | null,
+    drawCount: -1,
+    rectInstances: -1,
+  };
   let loc = 0;
   return {
     captures,
@@ -73,9 +78,16 @@ function mockGL() {
       getUniformLocation: () => ({}),
       createBuffer: () => ({}),
       deleteBuffer: () => {},
+      createVertexArray: () => ({}),
+      bindVertexArray: () => {},
+      deleteVertexArray: () => {},
+      vertexAttribDivisor: () => {},
+      TRIANGLE_STRIP: 13,
+      STATIC_DRAW: 14,
+      TRIANGLES: 15,
       bindBuffer: () => {},
       bufferData: (_t: number, data: Float32Array) => {
-        captures.buffer = data.slice();
+        lastUpload = data.slice();
       },
       enableVertexAttribArray: () => {},
       vertexAttribPointer: () => {},
@@ -86,12 +98,21 @@ function mockGL() {
       viewport: () => {},
       clearColor: () => {},
       clear: () => {},
-      drawArrays: (_m: number, _f: number, count: number) => {
-        captures.drawCount = count;
+      drawArrays: (mode: number, _f: number, count: number) => {
+        if (mode === 4) {
+          // POINTS = circles
+          captures.drawCount = count;
+          captures.buffer = lastUpload;
+        } else {
+          // TRIANGLES = rects (6 verts/rect)
+          captures.rectInstances = count / 6;
+          captures.rectBuffer = lastUpload;
+        }
       },
     },
   };
 }
+let lastUpload: Float32Array | null = null;
 
 class BatchDot extends Entity {
   color: string;
@@ -114,6 +135,17 @@ class Group extends Entity {
     return false;
   }
   render() {}
+}
+class BatchBox extends Entity {
+  isPointInside() {
+    return false;
+  }
+  getBatchRect() {
+    return { width: 20, height: 10, color: '#00ff00' };
+  }
+  render() {
+    throw new Error('batch rect render() must not run on the GL backend');
+  }
 }
 
 let restoreCreate: (() => void) | null = null;
@@ -179,6 +211,22 @@ describe('Scene — WebGL point backend', () => {
     // batch entities did NOT touch the 2D arc/fill path
     expect(ctx.calls).not.toContain('arc');
     expect(ctx.calls.filter((c) => c === 'fill')).toHaveLength(0);
+  });
+
+  it('collects getBatchRect() entities into the GL instanced-rect draw (world coords)', () => {
+    const { gl, captures } = mockGL();
+    const { scene, ctx, tick } = makeScene(gl);
+
+    scene.add(new BatchBox('r').setPosition(40, 50));
+
+    tick();
+
+    expect(captures.rectInstances).toBe(1);
+    const buf = captures.rectBuffer!;
+    // Triangle batch: first vertex = top-left corner (40,50); third = bottom-right (60,60).
+    expect(Array.from(buf.slice(0, 2))).toEqual([40, 50]);
+    expect(Array.from(buf.slice(12, 14))).toEqual([60, 60]); // 40+20, 50+10
+    expect(ctx.calls).not.toContain('arc');
   });
 
   it('falls back to the Canvas2D batch when WebGL2 is unavailable', () => {

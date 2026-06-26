@@ -26,6 +26,10 @@ const BATCH = params.get('batch') === '1' || WEBGL;
 // `sprite=1` experiment: blit a pre-rendered circle bitmap via drawImage
 // (the canonical Canvas2D particle technique) instead of arc+fill.
 const SPRITE = params.get('sprite') === '1';
+// `shape=rect` benchmarks rectangles (GPU instanced quads on backend=webgl,
+// else Canvas2D roundRect+fill per entity).
+const SHAPE = params.get('shape') ?? 'circle';
+const RECT = SHAPE === 'rect';
 
 let spriteCanvas: HTMLCanvasElement | null = null;
 function getSprite(radius: number): HTMLCanvasElement {
@@ -62,9 +66,20 @@ class BenchCircle extends Entity {
       : null;
   }
   getBatchCircle() {
-    return this.batch ? { radius: this.radius, color: '#38bdf8' } : null;
+    return this.batch && !RECT ? { radius: this.radius, color: '#38bdf8' } : null;
+  }
+  getBatchRect() {
+    return this.batch && RECT
+      ? { width: this.radius * 2, height: this.radius * 2, color: '#38bdf8' }
+      : null;
   }
   render(r: IRenderer): void {
+    if (RECT) {
+      r.beginPath();
+      r.roundRect(0, 0, this.radius * 2, this.radius * 2, 0);
+      r.fill('#38bdf8');
+      return;
+    }
     if (SPRITE) {
       const d = Math.ceil(this.radius * 2) + 2;
       r.drawImage(getSprite(this.radius), -d / 2, -d / 2, d, d);

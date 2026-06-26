@@ -31,6 +31,20 @@ export interface BatchCircle {
 }
 
 /**
+ * Describes an entity that renders as a single filled rectangle from its local
+ * origin, returned from {@link Entity.getBatchRect} to opt into the GPU
+ * instanced-rectangle fast-path (WebGL `pointBackend` only).
+ */
+export interface BatchRect {
+  /** Rectangle width in the entity's local space. */
+  width: number;
+  /** Rectangle height in the entity's local space. */
+  height: number;
+  /** CSS fill color. */
+  color: string;
+}
+
+/**
  * Semantic attributes an {@link Entity} can project into the accessibility /
  * automation shadow layer maintained by {@link Scene}.
  *
@@ -353,6 +367,18 @@ export abstract class Entity {
    * @returns The circle to batch, or `null` to use the normal {@link render} path.
    */
   public getBatchCircle(): BatchCircle | null {
+    return null;
+  }
+
+  /**
+   * Opt into the GPU instanced-rectangle fast-path for a leaf entity that draws
+   * as a single filled rectangle from its local origin. Only used when the
+   * {@link Scene} runs a WebGL `pointBackend`; otherwise the entity renders
+   * normally via {@link render}. Returns `null` by default. Read each frame.
+   *
+   * @returns The rectangle to batch, or `null` for the normal render path.
+   */
+  public getBatchRect(): BatchRect | null {
     return null;
   }
 
