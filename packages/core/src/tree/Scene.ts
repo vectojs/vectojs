@@ -103,6 +103,8 @@ export class Scene {
   public a11ySyncInterval: number = 0;
   /** Timestamp of the last a11y sync, for throttling. */
   private lastA11ySync: number = -Infinity;
+  /** True if we skipped an a11y sync during animation and need to sync when at rest. */
+  private a11yPendingSyncAfterAnimation: boolean = false;
 
   // A11y / Automation Layer
   private a11yRoot: HTMLDivElement;
@@ -561,15 +563,25 @@ export class Scene {
 
     this.render(this.renderer, dt, time);
 
-    // Sync Automation Shadow DOM (skip the whole walk when nothing is
-    // interactive). Throttled to a11ySyncInterval so heavy animation doesn't pay
-    // per-frame DOM writes — the a11y layer just becomes eventually consistent.
-    if (
-      (this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval) &&
-      (this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot))
-    ) {
-      this.lastA11ySync = time;
-      this.syncA11y(this.root);
+    // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
+    // Performance Throttling: If an animation is currently flying, we freeze A11y writes
+    // to prevent DOM reflow from thrashing Canvas render loop. We sync once it's at rest.
+    const hasActiveAnimation =
+      this.hasAnyPendingAnimation(this.root) || this.hasAnyPendingAnimation(this.overlayRoot);
+
+    if (hasActiveAnimation) {
+      this.a11yPendingSyncAfterAnimation = true;
+    } else {
+      const hasInteractive =
+        this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+      const shouldSyncInterval =
+        this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
+
+      if (hasInteractive && (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)) {
+        this.lastA11ySync = time;
+        this.syncA11y(this.root);
+        this.a11yPendingSyncAfterAnimation = false;
+      }
     }
 
     this.dirty = false;
