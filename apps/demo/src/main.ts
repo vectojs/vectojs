@@ -1,5 +1,5 @@
 import { Scene, Entity, LayoutEngine, type GlyphMeasurer, type IRenderer } from '@vecto-ui/core';
-import { Text, Button, Link, Card, Stack, Input, Checkbox, Toggle, Image } from '@vecto-ui/ui';
+import { Text, Button, Card, Stack, Input, Checkbox, Toggle } from '@vecto-ui/ui';
 import { setupFPSMonitor } from './shared/fpsMonitor';
 
 const RENDER_WEIGHT = 600;
@@ -32,6 +32,7 @@ let isRunning = true;
 };
 
 const pointer = { x: -1e9, y: -1e9, down: false };
+export let scrollProgress = 0;
 
 class Glyph extends Entity {
   private homeX: number;
@@ -42,6 +43,8 @@ class Glyph extends Entity {
   private char: string;
   private color: string;
   private litUntil = 0;
+  private randX = (Math.random() - 0.5) * 2000;
+  private randY = (Math.random() - 0.5) * 2000;
 
   constructor(char: string, homeX: number, homeY: number, size: number, color: string) {
     super();
@@ -85,8 +88,12 @@ class Glyph extends Entity {
       this.vy += (dy / dist) * push * frames;
     }
 
-    this.vx += (this.homeX - this.x) * 0.06 * frames;
-    this.vy += (this.homeY - this.y) * 0.06 * frames;
+    const scatterStrength = Math.min(1, scrollProgress * 2.5);
+    const targetX = this.homeX + this.randX * scatterStrength;
+    const targetY = this.homeY + this.randY * scatterStrength;
+
+    this.vx += (targetX - this.x) * 0.06 * frames;
+    this.vy += (targetY - this.y) * 0.06 * frames;
     this.vx *= 0.82;
     this.vy *= 0.82;
     this.x += this.vx * frames;
@@ -161,12 +168,17 @@ function bootstrap() {
   document.body.innerHTML = '';
   document.body.style.cssText = 'margin:0;overflow:hidden;background:#0b1020';
 
+  const proxy = document.createElement('div');
+  proxy.style.cssText =
+    'position:absolute;top:0;left:0;width:1px;height:300vh;pointer-events:none;z-index:0';
+  document.body.appendChild(proxy);
+
   const parent = document.createElement('div');
   parent.style.cssText = 'position:relative;width:100vw;height:100vh';
   document.body.appendChild(parent);
 
   const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'position:absolute;top:0;left:0';
+  canvas.style.cssText = 'position:fixed;top:0;left:0;z-index:1';
   parent.appendChild(canvas);
 
   const scene = new Scene(canvas);
@@ -201,6 +213,20 @@ function bootstrap() {
   card.add(form.setPosition(24, 24));
   scene.add(card.setPosition(cx - 180, startY + 260));
 
+  const finalCardY = startY + 260;
+  const cardStartOffset = 400;
+
+  const uiController = new Entity();
+  uiController.update = () => {
+    const uiProgress = Math.max(0, Math.min(1, (scrollProgress - 0.4) / 0.6));
+    card.y = finalCardY + cardStartOffset * (1 - uiProgress);
+
+    const isInteractive = scrollProgress > 0.95;
+    form.interactive = isInteractive;
+    card.interactive = isInteractive;
+  };
+  scene.add(uiController);
+
   scene.start();
 
   const move = (e: PointerEvent) => {
@@ -224,10 +250,19 @@ function bootstrap() {
 
   const hint = document.createElement('div');
   hint.style.cssText =
-    'position:absolute;left:50%;bottom:20px;transform:translateX(-50%);color:#64748b;font:14px sans-serif;pointer-events:none;z-index:20';
-  hint.textContent =
-    'Move the cursor to repel glyphs · try keyboard Tab navigation on the form below.';
+    'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);color:#64748b;font:14px sans-serif;pointer-events:none;z-index:20';
+  hint.textContent = 'Move the cursor to repel glyphs · Scroll down to reveal UI';
   parent.appendChild(hint);
+
+  window.addEventListener('scroll', () => {
+    const maxScroll = document.body.scrollHeight - window.innerHeight;
+    scrollProgress = Math.max(0, Math.min(1, window.scrollY / (maxScroll || 1)));
+    if (hint) {
+      hint.style.opacity = Math.max(0, 1 - scrollProgress * 3).toString();
+    }
+  });
+  window.scrollTo(0, 0);
+  scrollProgress = 0;
 }
 
 bootstrap();
