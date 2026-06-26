@@ -248,3 +248,38 @@ describe('LayoutEngine — cold/hot split (prepare / layoutPrepared)', () => {
     }
   });
 });
+
+describe('LayoutEngine.prepare — paragraph memoization (streaming/incremental)', () => {
+  const atlas: GlyphAtlas = {
+    A: { width: 20, baseSize: 32, ast: null },
+    B: { width: 20, baseSize: 32, ast: null },
+    C: { width: 20, baseSize: 32, ast: null },
+  };
+
+  it('reuses unchanged paragraphs and only rebuilds the changed one', () => {
+    const engine = new LayoutEngine(1000, 1000);
+    const p1 = engine.prepare('AB\nCA', atlas, 32);
+    const p2 = engine.prepare('AB\nCAB', atlas, 32); // only the 2nd paragraph changed
+
+    expect(p2.paragraphs[0]).toBe(p1.paragraphs[0]); // unchanged → same object reused
+    expect(p2.paragraphs[1]).not.toBe(p1.paragraphs[1]); // changed → rebuilt
+  });
+
+  it('keys the cache on fontSize (different size → fresh, scaled widths)', () => {
+    const engine = new LayoutEngine(1000, 1000);
+    const a = engine.prepare('AB', atlas, 32).paragraphs[0];
+    const b = engine.prepare('AB', atlas, 16).paragraphs[0];
+
+    expect(b).not.toBe(a);
+    expect(b.words[0].glyphs[0].width).toBeCloseTo(10); // 20 * (16/32)
+  });
+
+  it('invalidates the cache when the font atlas changes', () => {
+    const engine = new LayoutEngine(1000, 1000);
+    const a = engine.prepare('A', { A: { width: 20, baseSize: 32, ast: null } }, 32).paragraphs[0];
+    const b = engine.prepare('A', { A: { width: 40, baseSize: 32, ast: null } }, 32).paragraphs[0];
+
+    expect(b).not.toBe(a);
+    expect(b.words[0].glyphs[0].width).toBeCloseTo(40);
+  });
+});
