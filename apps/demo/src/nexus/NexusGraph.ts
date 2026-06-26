@@ -38,18 +38,18 @@ export class NexusGraph extends Entity {
   private pointerDown = false;
   private lastW = window.innerWidth;
   private lastH = window.innerHeight;
+  private currentColors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
 
   constructor(count: number) {
     super('NexusGraph');
     this.interactive = true; // Receive pointer events
 
     // Create Nodes
-    const colors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
     for (let i = 0; i < count; i++) {
       const radius = Math.random() * 2 + 1;
       const x = Math.random() * window.innerWidth;
       const y = Math.random() * window.innerHeight;
-      const color = colors[Math.floor(Math.random() * colors.length)];
+      const color = this.currentColors[Math.floor(Math.random() * this.currentColors.length)];
       const node = new NexusNode(x, y, radius, color);
       this.nodes.push(node);
       this.add(node);
@@ -94,13 +94,12 @@ export class NexusGraph extends Entity {
   }
 
   addNodes(count: number) {
-    const colors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
     const startIndex = this.nodes.length;
     for (let i = 0; i < count; i++) {
       const radius = Math.random() * 2 + 1;
       const x = Math.random() * window.innerWidth;
       const y = Math.random() * window.innerHeight;
-      const color = colors[Math.floor(Math.random() * colors.length)];
+      const color = this.currentColors[Math.floor(Math.random() * this.currentColors.length)];
       const node = new NexusNode(x, y, radius, color);
       this.nodes.push(node);
       this.add(node);
@@ -116,6 +115,40 @@ export class NexusGraph extends Entity {
       if (dist < 400) {
         this.edges.push({ a, b, rest: dist * 0.8, alpha: Math.random() * 0.4 + 0.1 });
       }
+    }
+  }
+
+  removeNodes(count: number) {
+    const removeCount = Math.min(count, this.nodes.length);
+    if (removeCount <= 0) return;
+
+    const removed = this.nodes.splice(this.nodes.length - removeCount, removeCount);
+    for (const node of removed) {
+      this.remove(node);
+    }
+
+    const removedSet = new Set(removed);
+    this.edges = this.edges.filter((e) => !removedSet.has(e.a) && !removedSet.has(e.b));
+  }
+
+  changeTheme(theme: string) {
+    switch (theme) {
+      case 'Matrix':
+        this.currentColors = ['#00ff00', '#33ff33', '#00cc00', '#ccffcc'];
+        break;
+      case 'Fire':
+        this.currentColors = ['#ff0000', '#ff5a00', '#ff9a00', '#ffce00'];
+        break;
+      case 'Monochrome':
+        this.currentColors = ['#ffffff', '#cccccc', '#999999', '#666666'];
+        break;
+      case 'Cyberpunk':
+      default:
+        this.currentColors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
+        break;
+    }
+    for (const node of this.nodes) {
+      node.color = this.currentColors[Math.floor(Math.random() * this.currentColors.length)];
     }
   }
 
@@ -179,9 +212,10 @@ export class NexusGraph extends Entity {
         else if (dy < -domainH / 2) dy += domainH;
 
         const dist = Math.hypot(dx, dy) || 0.1;
-        const radius = this.pointerDown ? 400 : 250;
+        const radius = this.pointerDown ? 450 : 350;
         if (dist < radius) {
-          const force = (1 - dist / radius) * (this.pointerDown ? 8 : 2);
+          const intensity = Math.pow(1 - dist / radius, 2);
+          const force = intensity * (this.pointerDown ? 15 : 8);
           node.vx += (dx / dist) * force * frames;
           node.vy += (dy / dist) * force * frames;
         }

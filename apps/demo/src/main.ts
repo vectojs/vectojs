@@ -17,13 +17,13 @@ function bootstrap() {
   parent.appendChild(canvas);
 
   const scene = new Scene(canvas, { pointBackend: 'webgl' });
-  const nexus = new NexusGraph(8000); // 8,000 nodes
+  const nexus = new NexusGraph(15000); // 15,000 nodes
   scene.add(nexus);
 
   // Left Panel - Glassmorphism UI
   const leftCard = new Card({
     width: 320,
-    height: 420,
+    height: 460,
     bg: 'rgba(20, 20, 30, 0.65)',
     border: 'rgba(255, 255, 255, 0.1)',
     padding: 24,
@@ -55,20 +55,48 @@ function bootstrap() {
   physicsToggle.on('change', (e: any) => (nexus.physicsEnabled = e.checked));
   leftStack.add(physicsToggle);
 
-  const spawnBtn = new Button('Spawn 5000 Nodes', {
+  const btnRow = new Stack({ direction: 'horizontal', gap: 12 });
+  const spawnPlusBtn = new Button('+ 1000 Nodes', {
     bg: 'rgba(0, 240, 255, 0.2)',
     hoverBg: 'rgba(0, 240, 255, 0.4)',
     color: '#00f0ff',
     radius: 8,
     font: '600 14px "Outfit", sans-serif',
   });
-  spawnBtn.on('click', () => {
-    nexus.addNodes(5000);
+  spawnPlusBtn.on('click', () => nexus.addNodes(1000));
+
+  const spawnMinusBtn = new Button('- 1000 Nodes', {
+    bg: 'rgba(255, 0, 170, 0.2)',
+    hoverBg: 'rgba(255, 0, 170, 0.4)',
+    color: '#ff00aa',
+    radius: 8,
+    font: '600 14px "Outfit", sans-serif',
   });
-  leftStack.add(spawnBtn);
+  spawnMinusBtn.on('click', () => nexus.removeNodes(1000));
+
+  btnRow.add(spawnPlusBtn);
+  btnRow.add(spawnMinusBtn);
+  leftStack.add(btnRow);
+
+  const themes = ['Cyberpunk', 'Matrix', 'Fire', 'Monochrome'];
+  let themeIndex = 0;
+  const themeBtn = new Button('Theme: Cyberpunk', {
+    bg: 'rgba(255, 255, 255, 0.1)',
+    hoverBg: 'rgba(255, 255, 255, 0.2)',
+    color: '#ffffff',
+    radius: 8,
+    font: '600 14px "Outfit", sans-serif',
+  });
+  themeBtn.width = 240; // Ensure background covers text changes
+  themeBtn.on('click', () => {
+    themeIndex = (themeIndex + 1) % themes.length;
+    themeBtn.label = `Theme: ${themes[themeIndex]}`;
+    nexus.changeTheme(themes[themeIndex]);
+  });
+  leftStack.add(themeBtn);
 
   leftCard.add(leftStack.setPosition(24, 24));
-  scene.add(leftCard.setPosition(40, window.innerHeight / 2 - 210));
+  scene.add(leftCard.setPosition(40, window.innerHeight / 2 - 230));
 
   // Right Panel - Monitor
   const rightCard = new Card({
@@ -82,7 +110,7 @@ function bootstrap() {
   const rightStack = new Stack({ direction: 'vertical', gap: 16 });
 
   const fpsText = new Text('FPS: --', { font: '400 16px "Outfit", monospace', color: '#00f0ff' });
-  const countText = new Text('Entity Count: 8000', {
+  const countText = new Text('Entity Count: 15000', {
     font: '400 16px "Outfit", monospace',
     color: '#ff00aa',
   });
@@ -143,7 +171,7 @@ function bootstrap() {
 
   // Responsive resize
   window.addEventListener('resize', () => {
-    leftCard.y = window.innerHeight / 2 - 210;
+    leftCard.y = window.innerHeight / 2 - 230;
     rightCard.x = window.innerWidth - 320;
     rightCard.y = window.innerHeight / 2 - 100;
   });
