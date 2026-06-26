@@ -1,6 +1,12 @@
-import { A11yAttributes, IRenderer } from '@vecto-ui/core';
+import {
+  A11yAttributes,
+  IRenderer,
+  LayoutEngine,
+  type GlyphMeasurer,
+  type PreparedText,
+} from '@vecto-ui/core';
 import { UIComponent } from './UIComponent';
-import { measureText, wrapLines } from './measure';
+import { fontSizePx } from './measure';
 
 /** Construction options for {@link Text}. */
 export interface TextOptions {
@@ -15,9 +21,35 @@ export interface TextOptions {
 }
 
 /**
+ * A {@link GlyphMeasurer} that measures with the exact CSS `font` (so width
+ * matches what the renderer draws, weights included). Returns `null` without a
+ * DOM, so the {@link LayoutEngine} keeps its portable 0.5em fallback.
+ */
+function fontMeasurer(font: string): GlyphMeasurer | null {
+  if (typeof document === 'undefined') return null;
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx) return null;
+  const cache = new Map<string, number>();
+  return {
+    measure(char: string): number {
+      let w = cache.get(char);
+      if (w === undefined) {
+        ctx.font = font;
+        w = ctx.measureText(char).width;
+        cache.set(char, w);
+      }
+      return w;
+    },
+  };
+}
+
+/**
  * A multi-line text component rendered with native canvas `fillText`.
  *
- * Projects a `div` shadow node carrying the text as its accessible name.
+ * Wrapping and measurement go through the shared {@link LayoutEngine} (same
+ * `Intl.Segmenter` path as `TextEntity`), with its cold/hot split: {@link setText}
+ * re-measures (cold), {@link setMaxWidth} only re-wraps (hot). Projects a `div`
+ * shadow node carrying the text as its accessible name.
  *
  * @example new Text('Hello world', { maxWidth: 200 }).setPosition(20, 20);
  */
@@ -27,6 +59,10 @@ export class Text extends UIComponent {
   public color: string;
   public maxWidth?: number;
   public lineHeight: number;
+
+  private engine: LayoutEngine;
+  private prepared: PreparedText;
+  private fontSize: number;
   private lines: string[] = [];
 
   constructor(text: string, opts: TextOptions = {}) {
@@ -36,29 +72,55 @@ export class Text extends UIComponent {
     this.color = opts.color ?? '#e2e8f0';
     this.maxWidth = opts.maxWidth;
     this.lineHeight = opts.lineHeight ?? 20;
+    this.fontSize = fontSizePx(this.font);
+    this.engine = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, fontMeasurer(this.font));
+    this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
     this.interactive = true;
-    this.layout();
+    this.applyLayout();
   }
 
   /**
-   * Replace the text and re-run layout (updates wrapped lines and box size).
+   * Replace the text. Runs the **cold** pass (re-segment + re-measure), then re-lays out.
    *
    * @param text - The new text content.
    * @returns `this` for chaining.
    */
   public setText(text: string): this {
     this.text = text;
-    this.layout();
+    this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
+    this.applyLayout();
     return this;
   }
 
-  private layout(): void {
-    this.lines =
-      this.maxWidth != null
-        ? wrapLines(this.text, this.font, this.maxWidth)
-        : this.text.split('\n');
-    this.width = this.lines.reduce((max, l) => Math.max(max, measureText(l, this.font)), 0);
-    this.height = this.lines.length * this.lineHeight;
+  /**
+   * Change the wrap width and reflow via the cheap **hot** path (reuses the cached
+   * measured text — no re-segmentation or re-measurement).
+   *
+   * @returns `this` for chaining.
+   */
+  public setMaxWidth(maxWidth: number): this {
+    this.maxWidth = maxWidth;
+    this.engine.maxWidth = maxWidth;
+    this.applyLayout();
+    return this;
+  }
+
+  /** Hot pass: place the cached prepared text and regroup glyphs into lines. */
+  private applyLayout(): void {
+    const result = this.engine.layoutPrepared(this.prepared);
+    const lineQuantum = this.fontSize * 1.5; // the engine's internal line advance
+    const byLine = new Map<number, string>();
+    let maxIdx = -1;
+    for (const node of result.nodes) {
+      const idx = Math.round(node.y / lineQuantum);
+      byLine.set(idx, (byLine.get(idx) ?? '') + node.char);
+      if (idx > maxIdx) maxIdx = idx;
+    }
+    this.lines = [];
+    for (let i = 0; i <= maxIdx; i++) this.lines.push(byLine.get(i) ?? '');
+
+    this.width = result.totalWidth;
+    this.height = Math.max(maxIdx + 1, 1) * this.lineHeight;
   }
 
   public getA11yAttributes(): A11yAttributes {
@@ -67,7 +129,8 @@ export class Text extends UIComponent {
 
   public render(r: IRenderer): void {
     for (let i = 0; i < this.lines.length; i++) {
-      r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
+      if (this.lines[i])
+        r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
     }
   }
 }
