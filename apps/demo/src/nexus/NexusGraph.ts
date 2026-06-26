@@ -24,6 +24,8 @@ export class NexusNode extends Entity {
   getBounds() {
     return { x: -this.radius, y: -this.radius, width: this.radius * 2, height: this.radius * 2 };
   }
+
+  render() {}
 }
 
 export class NexusGraph extends Entity {
