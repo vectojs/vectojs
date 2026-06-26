@@ -1,18 +1,30 @@
 # @vecto-ui/core
 
-> A zero-DOM, Canvas 2D Entity Component System (ECS) rendering framework — 60 FPS with 100,000+ entities.
+> The Zero-DOM, Canvas-native rendering engine behind **VectoUI** — ECS + Virtual Math Tree,
+> with an accessibility/automation shadow layer.
 
-Part of the **VectoUI** ecosystem.
+Part of the [VectoUI](https://github.com/Xuepoo/vecto-ui) ecosystem.
 
-## Why @vecto-ui/core?
+## What it does
 
-Traditional DOM frameworks (React, Vue) cause Reflow/Repaint bottlenecks when animating thousands of elements. `@vecto-ui/core` bypasses the DOM entirely: layout, hit-testing, animations, and physics are calculated as pure mathematics on a **Virtual Math Tree (VMT)**, then dispatched to a `<canvas>` renderer.
+`@vecto-ui/core` renders a whole UI onto one `<canvas>`: layout, hit-testing, animation and
+physics are pure math on a Virtual Math Tree, dispatched to a Canvas 2D (or WebGL2) renderer —
+**no per-element DOM, no reflow, no style recalc**. Interactive entities project a real,
+transparent DOM node through the **`a11yRoot`** shadow layer, so a pure-canvas page stays
+accessible and drivable by assistive tech and AI agents.
 
-| Entities | DOM (React) | @vecto-ui/core Canvas |
-| -------- | ----------- | --------------------- |
-| 1,000    | ~30 FPS     | 60 FPS                |
-| 10,000   | <5 FPS      | 60 FPS                |
-| 100,000  | Crash       | 60 FPS                |
+Includes: `Scene` (render loop + a11y sync), `Entity` (ECS base), `LayoutEngine` (Intl.Segmenter
+with a cold/hot `prepare`/`layoutPrepared` split), `SpatialHashGrid`, `LayoutResultBuffer`
+(zero-GC), `SplineEntity` (native vectomancy math-curve rendering + curve-accurate hit-testing),
+`CanvasRenderer`, and a `WebGLPointRenderer` point/rect batch layer.
+
+## Performance
+
+See the [main README](https://github.com/Xuepoo/vecto-ui#measured-performance) for measured,
+reproducible numbers (`bun run benchmark` / `bun run compare:dom`). Headline levers: viewport
+culling, on-demand redraw, draw-call batching, a WebGL2 point layer, and a cold/hot text layout
+split (~3.5× faster reflow). No fabricated comparisons — numbers are per-machine and
+complexity-dependent.
 
 ## Quick Start
 
@@ -25,6 +37,7 @@ class CircleEntity extends Entity {
   }
   render(r: IRenderer) {
     r.beginPath();
+    r.arc(0, 0, 50, 0, Math.PI * 2);
     r.fill('#38bdf8');
   }
 }
@@ -35,6 +48,9 @@ scene.add(new CircleEntity().setPosition(100, 100));
 scene.start();
 ```
 
+For high-level accessible components (Button, Input, Card…), see
+[`@vecto-ui/ui`](https://www.npmjs.com/package/@vecto-ui/ui).
+
 ## License
 
-MIT (c) 2026 Xuepoo
+MIT © 2026 Xuepoo
