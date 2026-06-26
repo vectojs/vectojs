@@ -398,6 +398,22 @@ describe('Toggle', () => {
     t.emit('click', {});
     expect(t.checked).toBe(false);
   });
+
+  it('emits change on toggle so external on("change") works', () => {
+    const t = new Toggle({});
+    const seen: boolean[] = [];
+    t.on('change', (e: { checked: boolean }) => seen.push(e.checked));
+    t.emit('click', {});
+    t.emit('click', {});
+    expect(seen).toEqual([true, false]);
+  });
+
+  it('still invokes the onChange callback', () => {
+    const onChange = vi.fn();
+    const t = new Toggle({ onChange });
+    t.emit('click', {});
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
 });
 
 describe('UIComponent hit-testing', () => {
