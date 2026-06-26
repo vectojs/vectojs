@@ -20,13 +20,13 @@ export class Dropdown extends UIComponent {
     this.height = props.height ?? 36;
 
     this.button = new Button(this.selectedValue, {
-      width: this.width,
-      height: this.height,
       bg: props.bg ?? 'rgba(30, 41, 59, 0.85)',
       color: props.color ?? '#fff',
       radius: props.radius ?? 8,
       font: props.font ?? '14px sans-serif',
     });
+    this.button.width = this.width;
+    this.button.height = this.height;
     this.add(this.button);
 
     this.on('click', () => this.toggleMenu());
@@ -70,13 +70,13 @@ export class Dropdown extends UIComponent {
 
     this.options.forEach((opt) => {
       const item = new Button(opt, {
-        width: this.width,
-        height: 36,
         bg: opt === this.selectedValue ? 'rgba(0, 240, 255, 0.25)' : 'rgba(15, 23, 42, 0.95)',
         color: '#fff',
         radius: 4,
         font: '13px sans-serif',
       });
+      item.width = this.width;
+      item.height = 36;
       item.on('click', (e: VectoUIEvent) => {
         e.stopPropagation();
         this.selectedValue = opt;
@@ -105,4 +105,6 @@ export class Dropdown extends UIComponent {
     this.activeBackdrop = null;
     this.activeMenu = null;
   }
+
+  public render(_r: any): void {}
 }
