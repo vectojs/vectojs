@@ -173,17 +173,8 @@ export class NexusGraph extends Entity {
   }
 
   render(r: IRenderer) {
-    // WebGLPointRenderer handles the nodes!
-    // This render function only needs to draw the edges in 2D canvas.
-    // We batch all edges into a single path.
     r.beginPath();
-    let currentAlpha = -1;
-
-    // Group edges by approximate alpha to reduce context state changes
-    // But for super performance, just use a single globalAlpha and draw them all!
     r.setGlobalAlpha(0.15);
-    r.setStrokeStyle('#00f0ff');
-    r.setLineWidth(1);
 
     for (const edge of this.edges) {
       // Cull edges that are too long (they broke the spring and fly across the screen)
@@ -193,6 +184,6 @@ export class NexusGraph extends Entity {
       r.moveTo(edge.a.x, edge.a.y);
       r.lineTo(edge.b.x, edge.b.y);
     }
-    r.stroke();
+    r.stroke('#00f0ff', 1);
   }
 }
