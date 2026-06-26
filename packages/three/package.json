@@ -1,0 +1,12 @@
+{
+  "name": "@vecto-ui/three",
+  "version": "1.0.0",
+  "description": "WebGL/Three.js rendering backend for VectoUI",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@vecto-ui/core": "workspace:*",
+    "three": "^0.160.0"
+  }
+}
