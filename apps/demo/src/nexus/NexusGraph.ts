@@ -45,8 +45,8 @@ export class NexusGraph extends Entity {
     const colors = ['#00f0ff', '#ff00aa', '#0a84ff', '#bf5af2'];
     for (let i = 0; i < count; i++) {
       const radius = Math.random() * 2 + 1;
-      const x = (Math.random() - 0.5) * window.innerWidth * 2.5;
-      const y = (Math.random() - 0.5) * window.innerHeight * 2.5;
+      const x = Math.random() * window.innerWidth;
+      const y = Math.random() * window.innerHeight;
       const color = colors[Math.floor(Math.random() * colors.length)];
       const node = new NexusNode(x, y, radius, color);
       this.nodes.push(node);
@@ -96,8 +96,8 @@ export class NexusGraph extends Entity {
     const startIndex = this.nodes.length;
     for (let i = 0; i < count; i++) {
       const radius = Math.random() * 2 + 1;
-      const x = (Math.random() - 0.5) * window.innerWidth * 2.5;
-      const y = (Math.random() - 0.5) * window.innerHeight * 2.5;
+      const x = Math.random() * window.innerWidth;
+      const y = Math.random() * window.innerHeight;
       const color = colors[Math.floor(Math.random() * colors.length)];
       const node = new NexusNode(x, y, radius, color);
       this.nodes.push(node);
@@ -120,22 +120,28 @@ export class NexusGraph extends Entity {
   update(dt: number) {
     if (!this.physicsEnabled) return;
 
-    const friction = 0.92;
-    const centerGravity = 0.0005;
+    const friction = 0.94;
     const frames = Math.min(dt, 32) / 16.67;
 
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
+    const padding = 100;
+    const domainW = window.innerWidth + padding * 2;
+    const domainH = window.innerHeight + padding * 2;
 
-    // 1. Spring Forces (O(E))
+    // 1. Spring Forces (O(E)) with Toroidal Topology
     for (const edge of this.edges) {
-      const dx = edge.b.x - edge.a.x;
-      const dy = edge.b.y - edge.a.y;
+      let dx = edge.b.x - edge.a.x;
+      let dy = edge.b.y - edge.a.y;
+
+      if (dx > domainW / 2) dx -= domainW;
+      else if (dx < -domainW / 2) dx += domainW;
+      if (dy > domainH / 2) dy -= domainH;
+      else if (dy < -domainH / 2) dy += domainH;
+
       const dist = Math.hypot(dx, dy);
       if (dist > 0.1) {
         const diff = dist - edge.rest;
         // Hooke's law: F = -k * x
-        const force = diff * 0.001;
+        const force = diff * 0.0005;
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         edge.a.vx += fx * frames;
@@ -145,12 +151,18 @@ export class NexusGraph extends Entity {
       }
     }
 
-    // 2. Ripple & Gravity & Integration (O(N))
+    // 2. Ripple & Wandering & Integration (O(N))
     for (const node of this.nodes) {
       // Ripple (Mouse Repulsion)
       if (this.rippleActive) {
-        const dx = node.x - this.rippleX;
-        const dy = node.y - this.rippleY;
+        let dx = node.x - this.rippleX;
+        let dy = node.y - this.rippleY;
+        // Apply toroidal wrap to mouse interaction too!
+        if (dx > domainW / 2) dx -= domainW;
+        else if (dx < -domainW / 2) dx += domainW;
+        if (dy > domainH / 2) dy -= domainH;
+        else if (dy < -domainH / 2) dy += domainH;
+
         const dist = Math.hypot(dx, dy) || 0.1;
         const radius = this.pointerDown ? 400 : 250;
         if (dist < radius) {
@@ -160,15 +172,22 @@ export class NexusGraph extends Entity {
         }
       }
 
-      // Center Gravity
-      node.vx += (cx - node.x) * centerGravity * frames;
-      node.vy += (cy - node.y) * centerGravity * frames;
+      // Gentle drift
+      node.vx += (Math.random() - 0.5) * 0.1 * frames;
+      node.vy += (Math.random() - 0.5) * 0.1 * frames;
 
       // Integration
       node.vx *= friction;
       node.vy *= friction;
       node.x += node.vx * frames;
       node.y += node.vy * frames;
+
+      // Toroidal Wrap
+      if (node.x < -padding) node.x += domainW;
+      else if (node.x > window.innerWidth + padding) node.x -= domainW;
+
+      if (node.y < -padding) node.y += domainH;
+      else if (node.y > window.innerHeight + padding) node.y -= domainH;
     }
   }
 
@@ -177,9 +196,11 @@ export class NexusGraph extends Entity {
     r.setGlobalAlpha(0.15);
 
     for (const edge of this.edges) {
-      // Cull edges that are too long (they broke the spring and fly across the screen)
-      const dx = edge.a.x - edge.b.x;
-      const dy = edge.a.y - edge.b.y;
+      let dx = edge.a.x - edge.b.x;
+      let dy = edge.a.y - edge.b.y;
+      // Cull wrapped edges (they span across the screen)
+      if (Math.abs(dx) > window.innerWidth / 2 || Math.abs(dy) > window.innerHeight / 2) continue;
+      // Cull broken edges
       if (dx * dx + dy * dy > 60000) continue;
       r.moveTo(edge.a.x, edge.a.y);
       r.lineTo(edge.b.x, edge.b.y);
