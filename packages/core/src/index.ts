@@ -1,5 +1,6 @@
 export * from './renderer/IRenderer';
 export * from './renderer/CanvasRenderer';
+export * from './renderer/SVGRenderer';
 export * from './renderer/WebGLPointRenderer';
 export * from './renderer/colorParse';
 export * from './tree/Entity';
