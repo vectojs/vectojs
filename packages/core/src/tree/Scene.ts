@@ -44,6 +44,11 @@ export interface SceneOptions {
    * Also settable later via {@link Scene.a11ySyncInterval}.
    */
   a11ySyncInterval?: number;
+  /**
+   * Custom renderer implementation (e.g., ThreeRenderer from @vecto-ui/three).
+   * If provided, this renderer will be used for drawing rather than the default CanvasRenderer.
+   */
+  renderer?: IRenderer;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -63,7 +68,8 @@ export const REDUCED_MOTION_FPS = 30;
  */
 export class Scene {
   private root: Entity;
-  private renderer: CanvasRenderer;
+  public overlayRoot: Entity;
+  private renderer: IRenderer;
   private isRunning: boolean = false;
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
@@ -124,8 +130,21 @@ export class Scene {
       // Root renders nothing itself — renderNode() handles all child traversal.
       render(_r: any) {}
     })('root');
+    (this.root as any)._scene = this;
 
-    this.renderer = new CanvasRenderer(canvas);
+    this.overlayRoot = new (class OverlayRoot extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+    })('overlayRoot');
+    (this.overlayRoot as any)._scene = this;
+
+    if (options.renderer) {
+      this.renderer = options.renderer;
+    } else {
+      this.renderer = new CanvasRenderer(canvas);
+    }
 
     // Setup Agent / Automation Semantic Layer
     this.a11yRoot = document.createElement('div');
@@ -161,7 +180,9 @@ export class Scene {
     }
 
     this.resizeHandler = () => {
-      this.renderer.resize(window.innerWidth, window.innerHeight);
+      if (typeof (this.renderer as any).resize === 'function') {
+        (this.renderer as any).resize(window.innerWidth, window.innerHeight);
+      }
       this.pointRenderer?.resize(window.innerWidth, window.innerHeight);
     };
 
@@ -211,6 +232,23 @@ export class Scene {
     this.root.remove(entity);
     this.removeA11yRecursively(entity);
     return this;
+  }
+
+  /**
+   * Add an overlay entity to the overlay root, bypassing main tree clipping bounds.
+   */
+  public showOverlay(overlay: Entity): void {
+    this.overlayRoot.add(overlay);
+    this.markDirty();
+  }
+
+  /**
+   * Remove an overlay entity from the overlay root.
+   */
+  public hideOverlay(overlay: Entity): void {
+    this.overlayRoot.remove(overlay);
+    this.removeA11yRecursively(overlay);
+    this.markDirty();
   }
 
   /**
@@ -471,6 +509,9 @@ export class Scene {
     }
 
     for (const child of node.children) this.syncA11y(child);
+    if (node === this.root) {
+      for (const overlay of this.overlayRoot.children) this.syncA11y(overlay);
+    }
   }
 
   /**
@@ -501,7 +542,12 @@ export class Scene {
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
-    if (this.renderMode === 'onDemand' && !this.dirty && !this.hasAnyPendingAnimation(this.root)) {
+    if (
+      this.renderMode === 'onDemand' &&
+      !this.dirty &&
+      !this.hasAnyPendingAnimation(this.root) &&
+      !this.hasAnyPendingAnimation(this.overlayRoot)
+    ) {
       requestAnimationFrame((t) => this.loop(t));
       return;
     }
@@ -642,6 +688,9 @@ export class Scene {
     };
 
     renderNode(this.root, 1, 0, 0, 1, 0, 0);
+    for (const overlay of this.overlayRoot.children) {
+      renderNode(overlay, 1, 0, 0, 1, 0, 0);
+    }
     this.renderer.flush();
     this.pointRenderer?.flush();
 
@@ -650,7 +699,7 @@ export class Scene {
     // per-frame DOM writes — the a11y layer just becomes eventually consistent.
     if (
       (this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval) &&
-      this.hasAnyInteractive(this.root)
+      (this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot))
     ) {
       this.lastA11ySync = time;
       this.syncA11y(this.root);

@@ -423,6 +423,28 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(mockCtx.clip).not.toHaveBeenCalled();
   });
 
+  it('renders overlayRoot nodes unclipped even if main tree has clip regions', () => {
+    const scene = makeScene();
+    const parent = new (class TestEntity extends Entity {
+      render(r: any) {
+        r.clip(0, 0, 50, 50);
+      }
+    })('clipper');
+    scene.add(parent);
+
+    let renderedOverlay = false;
+    const overlay = new (class TestOverlay extends Entity {
+      render(_r: any) {
+        renderedOverlay = true;
+      }
+    })('overlay');
+    scene.showOverlay(overlay);
+
+    // Trigger loop render
+    (scene as any).loop(16);
+    expect(renderedOverlay).toBe(true);
+  });
+
   it('forwards wheel events from the shadow node to the entity', () => {
     const scene = makeScene();
     const e = new SpyEntity('wheel-e', { x: 0, y: 0, width: 100, height: 100 }) as SpyEntity;
