@@ -1,5 +1,33 @@
 # @vecto-ui/ui
 
+## 0.2.3
+
+### Patch Changes
+
+- 9253e61: Memoize `measureText` with a bounded LRU cache (`(font, text) → width`).
+
+  Native canvas `measureText` forces a layout/context switch on every call. Hot paths re-measure the same strings each frame — `wrapLines` (per-word candidates) and `Input` caret positioning (growing prefixes) — so a 1000-entry LRU keeps the working set hot while capping memory for dynamic text. Behavior is unchanged; repeated measurements are just served from cache.
+
+- c1d428f: Add a scrollable viewport (`ScrollView`) with clipping + wheel scrolling.
+
+  - `core`: `Entity.clipChildren` (Scene clips a node's children to its local box) and a forwarded `'wheel'` event from the shadow node (non-passive, so a scroll container can `preventDefault()` the page scroll).
+  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoUI.
+
+- 6f84f7f: `Toggle` now emits a `change` event, unifying the form-control event model.
+
+  Previously a `Toggle` only invoked its `onChange` constructor callback, so
+  external `on('change', …)` listeners never fired (its `role="switch"` shadow node
+  is a `div`, which the Scene doesn't forward native changes for — unlike `Input`
+  /`Checkbox`). Toggling now goes through a single `change` handler that drives both
+  `on('change')` and `onChange`, matching the other form components.
+
+- Updated dependencies [ac8b159]
+- Updated dependencies [59a2b64]
+- Updated dependencies [c1d428f]
+- Updated dependencies [7f5e403]
+- Updated dependencies [9d587db]
+  - @vecto-ui/core@0.5.3
+
 ## 0.2.2
 
 ### Patch Changes

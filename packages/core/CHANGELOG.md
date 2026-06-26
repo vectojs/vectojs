@@ -1,5 +1,47 @@
 # @vecto-ui/core
 
+## 0.5.3
+
+### Patch Changes
+
+- ac8b159: Support full-viewport / boundless interactive entities in the a11y layer.
+
+  Add `Entity.a11yFullViewport`: an interactive entity with no intrinsic box
+  (`width`/`height` of `0`) — e.g. an infinite-canvas graph — can now opt into a
+  viewport-filling shadow node so it receives global pointer events. Previously
+  `Scene.syncA11y` skipped any entity with `width === 0`, so such surfaces lost all
+  DOM-routed pointer events. The full-viewport node mounts behind all other shadow
+  nodes, so on-top components stay clickable, and uses the default cursor.
+
+- 59a2b64: Add power-saving render controls to `Scene`.
+
+  - `Scene.maxFPS` (and `SceneOptions.maxFPS`): cap the render loop to N frames per
+    second (`0` = uncapped). Continuous animations still run, just less often —
+    fewer GPU/CPU cycles (e.g. a quieter fan in a library). The loop skips frames
+    that arrive sooner than the target interval; `dt` stays accurate because
+    `lastTime` only advances on rendered frames.
+  - `respectReducedMotion` (default `true`): a system **prefers-reduced-motion**
+    setting auto-caps the loop to `REDUCED_MOTION_FPS` (30), or the lower of that
+    and `maxFPS`. Also an accessibility win. Set `false` to ignore the OS setting.
+
+- c1d428f: Add a scrollable viewport (`ScrollView`) with clipping + wheel scrolling.
+
+  - `core`: `Entity.clipChildren` (Scene clips a node's children to its local box) and a forwarded `'wheel'` event from the shadow node (non-passive, so a scroll container can `preventDefault()` the page scroll).
+  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoUI.
+
+- 7f5e403: Add MSDF (multi-channel signed distance field) GPU text rendering to the WebGL backend.
+
+  - `MSDFFont` parses the `msdf-atlas-gen` JSON layout and lays a string out into positioned quads (em→px geometry, atlas→UV with `yOrigin` flip, kerning, `\n`, letter spacing, codepoint-aware).
+  - `PointRenderer.setMSDFTexture(source, distanceRange)` + `addGlyph(...)` draw those quads as one `TRIANGLES` batch with the Chlumsky median/`fwidth` shader, so glyphs stay crisp at any scale. Kept separate from the `setTexture`/`addSprite` atlas so both can be active.
+
+- 9d587db: Add texture-atlas sprite support to the WebGL point layer.
+
+  `PointRenderer` gains `setTexture(source)` and `addSprite(x, y, w, h, u0, v0, u1,
+v1, color?, alpha?, rotation?)`: a textured-quad triangle batch that samples a
+  texture atlas with a multiply tint, drawn in one `TRIANGLES` call. This lets large
+  sets of custom glyphs / icons (e.g. emoji, `@`-style nodes) render on the GPU
+  instead of falling back to Canvas2D. `addSprite` is a no-op until a texture is set.
+
 ## 0.5.2
 
 ### Patch Changes
