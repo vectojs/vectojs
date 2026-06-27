@@ -102,4 +102,16 @@ describe('MSDFFont', () => {
     // pen after A = 5 + 0.6*100 + kern(−5) + letterSpacing(10) = 5 + 60 − 5 + 10 = 70
     expect(glyphs[1].x).toBeCloseTo(70 + 10); // B.left = pen + 0.1*100
   });
+
+  it('assigns unique font IDs and implements getGlyph lookup', () => {
+    const font1 = new MSDFFont(FONT);
+    const font2 = new MSDFFont(FONT);
+    expect(font1.id).toBeDefined();
+    expect(font2.id).toBeDefined();
+    expect(font1.id).not.toBe(font2.id);
+
+    const glyph = font1.getGlyph(65); // ASCII 'A'
+    expect(glyph).toBeDefined();
+    expect(glyph?.unicode).toBe(65);
+  });
 });

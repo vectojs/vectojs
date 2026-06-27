@@ -78,6 +78,7 @@ export interface PointRenderer {
     v1: number,
     color?: string,
     alpha?: number,
+    rotation?: number,
   ): void;
   /** Clear the layer and draw all accumulated primitives. */
   flush(): void;
@@ -424,30 +425,26 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     },
 
-    addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1) {
+    addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
       if (!msdfTexture) return; // no glyph atlas yet
       const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
       glyphData = grow(glyphData, (glyphCount + 1) * stride);
       const [r, g, b, a] = parseColorToRGBA(color);
       const al = a * alpha;
-      // Axis-aligned quad corners + UVs (TL, TR, BR, BL).
+
+      const s = Math.sin(rotation);
+      const c = Math.cos(rotation);
+      const corner = (lx: number, ly: number): [number, number] => [
+        x + lx * c - ly * s,
+        y + lx * s + ly * c,
+      ];
+
+      // Quad corners + UVs (TL, TR, BR, BL) rotated around (x, y)
       const quad: [[number, number], [number, number]][] = [
-        [
-          [x, y],
-          [u0, v0],
-        ],
-        [
-          [x + width, y],
-          [u1, v0],
-        ],
-        [
-          [x + width, y + height],
-          [u1, v1],
-        ],
-        [
-          [x, y + height],
-          [u0, v1],
-        ],
+        [corner(0, 0), [u0, v0]],
+        [corner(width, 0), [u1, v0]],
+        [corner(width, height), [u1, v1]],
+        [corner(0, height), [u0, v1]],
       ];
       const order = [0, 1, 2, 0, 2, 3]; // two triangles
       let o = glyphCount * stride;

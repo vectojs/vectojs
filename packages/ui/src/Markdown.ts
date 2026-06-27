@@ -1,5 +1,7 @@
-import { Entity, IRenderer } from '@vecto-ui/core';
+import { Entity, IRenderer, type StyledSpan, type TextStyle } from '@vecto-ui/core';
 import { marked, type Token, type Tokens } from 'marked';
+import { measureText } from './measure';
+import { RichText } from './RichText';
 import { Stack } from './Stack';
 import { Text } from './Text';
 import { UIComponent } from './UIComponent';
@@ -45,27 +47,6 @@ const DEFAULT_THEME: Required<MarkdownTheme> = {
 
 // ── Helper entities ──────────────────────────────────────────────────────────
 
-/** A filled rounded-rect card (used as code-block background). */
-class RoundedRect extends Entity {
-  color: string;
-  radius: number;
-  constructor(w: number, h: number, color: string, radius: number = 8) {
-    super();
-    this.width = w;
-    this.height = h;
-    this.color = color;
-    this.radius = radius;
-  }
-  isPointInside(): boolean {
-    return false;
-  }
-  render(r: IRenderer): void {
-    r.beginPath();
-    r.roundRect(0, 0, this.width, this.height, this.radius);
-    r.fill(this.color);
-  }
-}
-
 /** A thin horizontal line (for `<hr>`). */
 class HorizontalRule extends Entity {
   color: string;
@@ -103,14 +84,6 @@ class QuoteBorder extends Entity {
     r.roundRect(0, 0, this.width, this.height, 2);
     r.fill(this.color);
   }
-}
-
-/** A plain structural container for grouping entities without applying layout rules. */
-class Container extends UIComponent {
-  constructor(name?: string) {
-    super(name);
-  }
-  render(_r: IRenderer): void {}
 }
 
 // ── Code block with syntax-keyword highlighting ─────────────────────────────
@@ -376,22 +349,179 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
   return segments;
 }
 
-// ── Inline token → Text entities ─────────────────────────────────────────────
+// ── Single CodeBlock entity ─────────────────────────────────────────────────
 
-/** Parse inline markdown tokens and produce Text entities on a Stack line. */
-function renderInlineTokens(
+/**
+ * A single self-rendering entity for fenced code blocks.
+ *
+ * Replaces the old N×M child-entity explosion (Container → Stack → Text per
+ * segment per line) with a flat leaf that draws its own background + text.
+ */
+export class CodeBlock extends UIComponent {
+  private lines: CodeSegment[][];
+  private widths: number[][];
+  private lang: string;
+  private theme: Required<MarkdownTheme>;
+  private lineH = 20;
+  private pad = 16;
+  private codeFont: string;
+
+  constructor(code: string, lang: string, maxWidth: number, theme: Required<MarkdownTheme>) {
+    super();
+    this.lang = lang;
+    this.theme = theme;
+    this.codeFont = `14px ${theme.codeFont}`;
+    this.lines = [];
+    this.widths = [];
+    this.width = maxWidth;
+    this.buildLines(code);
+  }
+
+  /** Re-parse code content (e.g. for live editing). */
+  setCode(code: string, lang?: string): this {
+    if (lang !== undefined) this.lang = lang;
+    this.buildLines(code);
+    return this;
+  }
+
+  private buildLines(code: string): void {
+    const rawLines = code.split('\n');
+    this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
+    this.widths = this.lines.map((segs) => segs.map((seg) => measureText(seg.text, this.codeFont)));
+    this.height = this.pad * 2 + rawLines.length * this.lineH;
+  }
+
+  /** Code blocks are decorative — not interactive. */
+  isPointInside(): boolean {
+    return false;
+  }
+
+  render(r: IRenderer): void {
+    // Background
+    r.beginPath();
+    r.roundRect(0, 0, this.width, this.height, 8);
+    r.fill(this.theme.codeBgColor);
+
+    // Text lines
+    for (let row = 0; row < this.lines.length; row++) {
+      const segs = this.lines[row];
+      const ws = this.widths[row];
+      let xOff = this.pad;
+      const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
+      for (let col = 0; col < segs.length; col++) {
+        r.fillText(segs[col].text, xOff, yBaseline, this.codeFont, segs[col].color);
+        xOff += ws[col];
+      }
+    }
+  }
+}
+
+// ── Inline token → RichText entities ─────────────────────────────────────────
+
+/** Decode basic HTML entities that `marked` emits in token text. */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/**
+ * Recursively walk the inline token tree, accumulating {@link StyledSpan}s
+ * with inherited style overrides (bold, italic, etc.).
+ */
+function collectSpans(
+  tokens: Token[],
+  inherited: TextStyle,
+  theme: Required<MarkdownTheme>,
+  out: StyledSpan[],
+): void {
+  for (const token of tokens) {
+    switch (token.type) {
+      case 'strong': {
+        const t = token as Tokens.Strong;
+        if (t.tokens) {
+          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out);
+        } else {
+          out.push({ text: decodeEntities(t.text), style: { ...inherited, bold: true } });
+        }
+        break;
+      }
+      case 'em': {
+        const t = token as Tokens.Em;
+        if (t.tokens) {
+          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out);
+        } else {
+          out.push({ text: decodeEntities(t.text), style: { ...inherited, italic: true } });
+        }
+        break;
+      }
+      case 'codespan': {
+        const t = token as Tokens.Codespan;
+        out.push({ text: decodeEntities(t.text), style: { ...inherited, color: theme.codeColor } });
+        break;
+      }
+      case 'link': {
+        const t = token as Tokens.Link;
+        // Recurse into link children (they may contain bold/italic/code)
+        const linkStyle: TextStyle = { ...inherited, href: t.href, color: '#38bdf8' };
+        if (t.tokens && t.tokens.length > 0) {
+          collectSpans(t.tokens, linkStyle, theme, out);
+        } else {
+          out.push({ text: decodeEntities(t.text), style: linkStyle });
+        }
+        break;
+      }
+      case 'text': {
+        const t = token as Tokens.Text;
+        // Text tokens may themselves contain nested inline tokens (e.g. from
+        // paragraph splitting).  Recurse when present.
+        if ('tokens' in t && (t as any).tokens?.length) {
+          collectSpans((t as any).tokens, inherited, theme, out);
+        } else {
+          const decoded = decodeEntities(t.text);
+          if (decoded) {
+            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
+            out.push({ text: decoded, style });
+          }
+        }
+        break;
+      }
+      default: {
+        // Fallback: grab raw `.text` if available
+        if ('text' in token) {
+          const decoded = decodeEntities((token as any).text);
+          if (decoded) {
+            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
+            out.push({ text: decoded, style });
+          }
+        }
+        break;
+      }
+    }
+  }
+}
+
+/** Parse inline markdown tokens and produce a {@link RichText} entity. */
+function renderInlineToRichText(
   tokens: Token[] | undefined,
   fallbackText: string,
   font: string,
   color: string,
   maxWidth: number,
-): Text {
-  // For now: flatten to plain text. A full implementation would create
-  // separate Text entities for bold/italic/code spans and lay them out inline.
-  const plainText = tokens
-    ? tokens.map((t) => ('text' in t ? (t as any).text : '')).join('')
-    : fallbackText;
-  return new Text(plainText, { font, color, maxWidth, lineHeight: 24 });
+  theme: Required<MarkdownTheme>,
+): RichText {
+  const spans: StyledSpan[] = [];
+  if (tokens && tokens.length > 0) {
+    collectSpans(tokens, {}, theme, spans);
+  }
+  // Fallback: if no spans were produced, use the raw text
+  if (spans.length === 0) {
+    spans.push({ text: decodeEntities(fallbackText) });
+  }
+  return new RichText(spans, { font, color, maxWidth, linkColor: '#38bdf8' });
 }
 
 // ── Main Markdown component ─────────────────────────────────────────────────
@@ -421,6 +551,8 @@ export class Markdown extends UIComponent {
   public content: Stack;
   public maxWidth: number;
   public theme: Required<MarkdownTheme>;
+  private rawMarkdown: string;
+  private tokens: Token[];
 
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
@@ -430,11 +562,14 @@ export class Markdown extends UIComponent {
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
 
+    this.rawMarkdown = markdownText;
+    this.tokens = [];
     this.renderMarkdown(markdownText);
   }
 
   private renderMarkdown(text: string): void {
     const tokens = marked.lexer(text);
+    this.tokens = tokens;
     for (const token of tokens) {
       const el = this.renderToken(token);
       if (el) {
@@ -444,6 +579,97 @@ export class Markdown extends UIComponent {
 
     this.width = this.content.width;
     this.height = this.content.height;
+  }
+
+  /** Replace all markdown content (full rebuild). */
+  public setContent(markdown: string): this {
+    this.rawMarkdown = markdown;
+    // Remove all children from the content stack
+    while (this.content.children.length > 0) {
+      this.content.remove(this.content.children[this.content.children.length - 1]);
+    }
+    this.tokens = [];
+    this.renderMarkdown(markdown);
+    return this;
+  }
+
+  /** Append a markdown chunk incrementally. Reuses unchanged prefix entities. */
+  public appendMarkdown(chunk: string): this {
+    this.rawMarkdown += chunk;
+    const newTokens = marked.lexer(this.rawMarkdown);
+    const oldTokens = this.tokens;
+    const oldChildren = [...this.content.children]; // snapshot
+
+    // Find the matching prefix length (by comparing token raw source)
+    let matchLen = 0;
+    const minLen = Math.min(oldTokens.length, newTokens.length);
+    // Map from old token index to child entity index (skip 'space' tokens
+    // that produce null entities)
+    let childIdx = 0;
+    const oldTokenToChild: number[] = [];
+    for (let i = 0; i < oldTokens.length; i++) {
+      oldTokenToChild.push(childIdx);
+      if (oldTokens[i].type !== 'space') childIdx++;
+    }
+
+    // Compare tokens by raw source
+    for (let i = 0; i < minLen; i++) {
+      if (oldTokens[i].raw === newTokens[i].raw) {
+        matchLen++;
+      } else {
+        break;
+      }
+    }
+
+    // Handle the common streaming case: last token changed (paragraph grew)
+    // If only the last old token changed and it's the same type, update in-place
+    if (
+      matchLen === oldTokens.length - 1 &&
+      matchLen < newTokens.length &&
+      oldTokens[matchLen]?.type === newTokens[matchLen]?.type &&
+      newTokens[matchLen]?.type === 'paragraph'
+    ) {
+      // Update existing paragraph entity in-place via setSpans
+      const entityIdx = oldTokenToChild[matchLen];
+      const existingEntity = oldChildren[entityIdx];
+      if (existingEntity && 'setSpans' in existingEntity) {
+        // Re-render the paragraph's inline tokens
+        const pToken = newTokens[matchLen] as Tokens.Paragraph;
+        const t = this.theme;
+        // Build new spans from the token
+        const spans: StyledSpan[] = [];
+        if (pToken.tokens && pToken.tokens.length > 0) {
+          collectSpans(pToken.tokens, {}, t, spans);
+        }
+        if (spans.length === 0) {
+          spans.push({ text: pToken.text });
+        }
+        (existingEntity as any).setSpans(spans);
+        matchLen++; // This token is now handled
+      }
+    }
+
+    // Remove excess old entities (from matchLen onward)
+    for (let i = 0; i < oldTokens.length; i++) {
+      if (i >= matchLen && oldTokens[i].type !== 'space') {
+        const idx = oldTokenToChild[i];
+        if (idx < oldChildren.length) {
+          this.content.remove(oldChildren[idx]);
+        }
+      }
+    }
+
+    // Add new entities for tokens beyond matchLen
+    for (let i = matchLen; i < newTokens.length; i++) {
+      const el = this.renderToken(newTokens[i]);
+      if (el) this.content.add(el);
+    }
+
+    this.tokens = newTokens;
+    this.content.layout();
+    this.width = this.content.width;
+    this.height = this.content.height;
+    return this;
   }
 
   private renderToken(token: Token): Entity | null {
@@ -456,75 +682,35 @@ export class Markdown extends UIComponent {
         const hToken = token as Tokens.Heading;
         const sizes = [32, 28, 24, 20, 18, 16];
         const size = sizes[Math.min(hToken.depth - 1, 5)];
-        return new Text(hToken.text, {
-          font: `bold ${size}px ${t.bodyFont}`,
-          color: t.headingColor,
-          maxWidth: this.maxWidth,
-          lineHeight: size * 1.4,
-        });
+        const headingFont = `bold ${size}px ${t.bodyFont}`;
+        return renderInlineToRichText(
+          hToken.tokens,
+          hToken.text,
+          headingFont,
+          t.headingColor,
+          this.maxWidth,
+          t,
+        );
       }
 
       // ── Paragraphs ───────────────────────────────────────────────────
       case 'paragraph': {
         const pToken = token as Tokens.Paragraph;
-        return renderInlineTokens(pToken.tokens, pToken.text, bodyFont, t.textColor, this.maxWidth);
+        return renderInlineToRichText(
+          pToken.tokens,
+          pToken.text,
+          bodyFont,
+          t.textColor,
+          this.maxWidth,
+          t,
+        );
       }
 
       // ── Code blocks ──────────────────────────────────────────────────
       case 'code': {
         const codeToken = token as Tokens.Code;
         const lang = (codeToken.lang ?? '').toLowerCase();
-        const pad = 16;
-        const lineH = 20;
-        const codeFont = `14px ${t.codeFont}`;
-        const lines = codeToken.text.split('\n');
-
-        // Container for code block (plain Container, no automatic layout)
-        const codeContainer = new Container('CodeContainer');
-
-        // Render each line with syntax highlighting
-        const linesContainer = new Stack({ direction: 'vertical', gap: 0 });
-
-        for (const line of lines) {
-          const segments = highlightLine(line, lang, t);
-          const lineRow = new Stack({ direction: 'horizontal', gap: 0 });
-          if (!line.trim()) {
-            lineRow.add(
-              new Text(line || ' ', {
-                font: codeFont,
-                color: t.codeColor,
-                preserveLeadingSpaces: true,
-              }),
-            );
-          } else {
-            for (const seg of segments) {
-              lineRow.add(
-                new Text(seg.text, {
-                  font: codeFont,
-                  color: seg.color,
-                  preserveLeadingSpaces: true,
-                }),
-              );
-            }
-          }
-          lineRow.height = lineH;
-          linesContainer.add(lineRow);
-        }
-
-        const bgHeight = linesContainer.height + pad * 2;
-        const bg = new RoundedRect(this.maxWidth, bgHeight, t.codeBgColor, 8);
-        bg.x = 0;
-        bg.y = 0;
-        codeContainer.add(bg);
-
-        linesContainer.x = pad;
-        linesContainer.y = pad;
-        codeContainer.add(linesContainer);
-
-        codeContainer.width = this.maxWidth;
-        codeContainer.height = bgHeight;
-
-        return codeContainer;
+        return new CodeBlock(codeToken.text, lang, this.maxWidth, t);
       }
 
       // ── Blockquotes ──────────────────────────────────────────────────
@@ -566,14 +752,30 @@ export class Markdown extends UIComponent {
         for (let i = 0; i < listToken.items.length; i++) {
           const item = listToken.items[i];
           const bullet = listToken.ordered ? `${Number(listToken.start ?? 1) + i}. ` : '• ';
-          const itemText = new Text(bullet + item.text, {
+          // Build spans: bullet prefix + inline-formatted item content
+          const itemSpans: StyledSpan[] = [{ text: bullet }];
+          if (item.tokens && item.tokens.length > 0) {
+            // List item tokens are block-level; dig into paragraph children
+            for (const inner of item.tokens) {
+              if (inner.type === 'text' && 'tokens' in inner && (inner as any).tokens?.length) {
+                collectSpans((inner as any).tokens, {}, t, itemSpans);
+              } else if ('tokens' in inner && (inner as any).tokens?.length) {
+                collectSpans((inner as any).tokens, {}, t, itemSpans);
+              } else if ('text' in inner) {
+                itemSpans.push({ text: decodeEntities((inner as any).text) });
+              }
+            }
+          } else {
+            itemSpans.push({ text: decodeEntities(item.text) });
+          }
+          const itemRt = new RichText(itemSpans, {
             font: bodyFont,
             color: t.textColor,
             maxWidth: this.maxWidth - 24,
-            lineHeight: 24,
+            linkColor: '#38bdf8',
           });
-          itemText.x = 12; // Indent
-          listStack.add(itemText);
+          itemRt.x = 12; // Indent
+          listStack.add(itemRt);
         }
         return listStack;
       }

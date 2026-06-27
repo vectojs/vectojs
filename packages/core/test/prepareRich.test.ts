@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LayoutEngine, type GlyphMeasurer, type StyledSpan } from '../src/layout/LayoutEngine';
+import { LayoutEngine, type GlyphMeasurer } from '../src/layout/LayoutEngine';
 
 // Width ∝ fontSize so size differences are observable; every char is 0.5em wide.
 const measurer: GlyphMeasurer = { measure: (_char, fontSize) => fontSize * 0.5 };

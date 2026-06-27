@@ -121,11 +121,14 @@ function kernKey(a: number, b: number): number {
  * {@link MSDFFont.parse} to read the JSON string straight from `msdf-atlas-gen`.
  */
 export class MSDFFont {
+  private static idCounter = 0;
+  public readonly id: string;
   readonly data: MSDFFontData;
   private readonly byCode = new Map<number, MSDFGlyphDef>();
   private readonly kern = new Map<number, number>();
 
   constructor(data: MSDFFontData) {
+    this.id = `font-${MSDFFont.idCounter++}`;
     this.data = data;
     for (const g of data.glyphs) this.byCode.set(g.unicode, g);
     for (const k of data.kerning ?? []) this.kern.set(kernKey(k.unicode1, k.unicode2), k.advance);
@@ -134,6 +137,11 @@ export class MSDFFont {
   /** Parse the `msdf-atlas-gen` JSON (string or already-parsed object). */
   static parse(json: string | MSDFFontData): MSDFFont {
     return new MSDFFont(typeof json === 'string' ? (JSON.parse(json) as MSDFFontData) : json);
+  }
+
+  /** Get a glyph's definition by its unicode value in O(1) time. */
+  getGlyph(unicode: number): MSDFGlyphDef | undefined {
+    return this.byCode.get(unicode);
   }
 
   /** Distance field range in atlas pixels (for the shader's `u_distanceRange`). */

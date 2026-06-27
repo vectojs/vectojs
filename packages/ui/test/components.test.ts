@@ -12,6 +12,7 @@ import {
   Checkbox,
   Toggle,
   Markdown,
+  RichText,
 } from '../src/index';
 import { LayoutEngine, type IRenderer } from '@vecto-ui/core';
 
@@ -455,23 +456,26 @@ describe('UIComponent hit-testing', () => {
 });
 
 describe('Markdown', () => {
-  it('renders markdown headers and paragraphs into Text and Stack', () => {
+  it('renders markdown headers and paragraphs into RichText', () => {
     const md = new Markdown('# Title\n\nSome text.', { maxWidth: 400 });
     expect(md.content.children.length).toBe(2);
-    expect((md.content.children[0] as Text).text).toBe('Title');
-    expect((md.content.children[1] as Text).text).toBe('Some text.');
+    const heading = md.content.children[0] as RichText;
+    expect(heading.spans.map((s) => s.text).join('')).toBe('Title');
+    const para = md.content.children[1] as RichText;
+    expect(para.spans.map((s) => s.text).join('')).toBe('Some text.');
   });
 
   it('renders code blocks and lists', () => {
     const md = new Markdown('```\nconst a = 1;\n```\n- item 1\n- item 2', { maxWidth: 400 });
     expect(md.content.children.length).toBe(2); // code block container, list
 
-    // Code block is now a Stack container (bg + lines stack)
-    const codeBlock = md.content.children[0] as Stack;
-    expect(codeBlock.children.length).toBeGreaterThanOrEqual(1);
+    // CodeBlock is a single leaf entity (no child sub-tree)
+    const codeBlock = md.content.children[0];
+    expect(codeBlock.children.length).toBe(0);
 
     const list = md.content.children[1] as Stack;
     expect(list.children.length).toBe(2);
-    expect((list.children[0] as Text).text).toBe('• item 1');
+    const firstItem = list.children[0] as RichText;
+    expect(firstItem.spans.map((s) => s.text).join('')).toBe('• item 1');
   });
 });
