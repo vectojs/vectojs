@@ -16,3 +16,5 @@ export * from './math/SpringPhysics';
 export { MSDFTextEntity } from './text/MSDFTextEntity';
 export type { MSDFTextEntityOptions } from './text/MSDFTextEntity';
 export { LayoutWorkerManager } from './layout/LayoutWorkerManager';
+export { DOMPortalEntity } from './tree/DOMPortalEntity';
+export { SVGEntity } from './text/SVGEntity';

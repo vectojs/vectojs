@@ -15,8 +15,6 @@ export class SVGEntity extends Entity {
   private baseHeight: number = 100;
   private lastRasterizedScale: number = 1;
   private targetScale: number = 1;
-  private dirty: boolean = true;
-  private loading: boolean = false;
 
   constructor(svgSource: string, id?: string) {
     super(id);
@@ -26,7 +24,6 @@ export class SVGEntity extends Entity {
   public setSVGSource(svgSource: string): void {
     if (this.svgSource === svgSource) return;
     this.svgSource = svgSource;
-    this.dirty = true;
     this.cachedDoc = null;
 
     this.parseSVGDimensions();
@@ -96,7 +93,6 @@ export class SVGEntity extends Entity {
       this.currentImg.onerror = null;
       this.currentImg = null;
     }
-    this.loading = true;
 
     if (this.blobURL) {
       URL.revokeObjectURL(this.blobURL);
@@ -151,8 +147,6 @@ export class SVGEntity extends Entity {
       this.imageElement = img;
 
       if (typeof createImageBitmap === 'undefined') {
-        this.dirty = false;
-        this.loading = false;
         this.currentImg = null;
         if (this.scene) this.scene.markDirty();
         return;
@@ -168,23 +162,17 @@ export class SVGEntity extends Entity {
             this.imageBitmap.close();
           }
           this.imageBitmap = bitmap;
-          this.dirty = false;
-          this.loading = false;
           this.currentImg = null;
           if (this.scene) this.scene.markDirty();
         })
         .catch((e) => {
           console.error('Failed to create ImageBitmap from SVG:', e);
-          this.dirty = false;
-          this.loading = false;
           this.currentImg = null;
         });
     };
     img.onerror = (e) => {
       if (this.currentImg !== img) return;
       console.error('Failed to load SVG Image element:', e);
-      this.dirty = false;
-      this.loading = false;
       this.currentImg = null;
     };
     img.src = this.blobURL;
