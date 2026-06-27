@@ -17,7 +17,7 @@ export class MSDFTextEntity extends Entity {
   private texture: TexImageSource;
   private fallbackFont: string;
   private fontSize: number;
-  private color: string;
+  public color: string;
   private letterSpacing: number;
   private lineHeight?: number;
 

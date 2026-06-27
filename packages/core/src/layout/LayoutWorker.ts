@@ -101,7 +101,7 @@ self.onmessage = (e: MessageEvent) => {
     packedStyles: new Uint32Array(packedStyles),
   };
 
-  self.postMessage(response, [
+  (self as any).postMessage(response, [
     response.codePoints.buffer,
     response.xCoords.buffer,
     response.yCoords.buffer,
