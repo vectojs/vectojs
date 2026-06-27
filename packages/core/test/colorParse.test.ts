@@ -30,6 +30,33 @@ describe('parseColorToRGBA', () => {
     expect(a).toBeCloseTo(0.5);
   });
 
+  it('parses percentage alpha in rgba() (legacy comma syntax)', () => {
+    const [r, g, b, a] = parseColorToRGBA('rgba(255, 0, 0, 50%)');
+    expect(r).toBeCloseTo(1);
+    expect(g).toBeCloseTo(0);
+    expect(b).toBeCloseTo(0);
+    expect(a).toBeCloseTo(0.5); // 50% → 0.5, not 50
+  });
+
+  it('parses modern space-separated rgb() with slash alpha', () => {
+    const [r, g, b, a] = parseColorToRGBA('rgb(255 0 0 / 50%)');
+    expect(r).toBeCloseTo(1);
+    expect(g).toBeCloseTo(0);
+    expect(b).toBeCloseTo(0);
+    expect(a).toBeCloseTo(0.5);
+  });
+
+  it('parses modern slash alpha as a 0..1 number', () => {
+    const [, , , a] = parseColorToRGBA('rgb(0 0 0 / 0.25)');
+    expect(a).toBeCloseTo(0.25);
+  });
+
+  it('clamps out-of-range channels and alpha to [0, 1] (matching CSS/Canvas)', () => {
+    expect(parseColorToRGBA('rgb(300, -5, 0)')).toEqual([1, 0, 0, 1]);
+    const [, , , a] = parseColorToRGBA('rgba(0, 0, 0, 1.5)');
+    expect(a).toBe(1);
+  });
+
   it('caches repeated lookups (same array identity)', () => {
     const a = parseColorToRGBA('#123456');
     const b = parseColorToRGBA('#123456');
