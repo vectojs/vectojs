@@ -2,6 +2,7 @@ import {
   A11yAttributes,
   IRenderer,
   LayoutEngine,
+  type ExclusionRect,
   type GlyphMeasurer,
   type LayoutResult,
   type StyledSpan,
@@ -24,6 +25,8 @@ export interface RichTextOptions {
   linkColor?: string;
   /** Invoked with the `href` when a link run is activated (click / Enter via its shadow `<a>`). */
   onLinkClick?: (href: string) => void;
+  /** Rect regions (local space) the text flows around — "文字绕流" / floats. */
+  exclusions?: ExclusionRect[];
 }
 
 /**
@@ -99,6 +102,7 @@ export class RichText extends UIComponent {
   public maxWidth?: number;
 
   public linkColor: string;
+  public exclusions?: ExclusionRect[];
 
   private engine: LayoutEngine;
   private baseFontSize: number;
@@ -117,6 +121,7 @@ export class RichText extends UIComponent {
     this.baseStyle = opts.baseStyle;
     this.linkColor = opts.linkColor ?? '#38bdf8';
     this.onLinkClick = opts.onLinkClick;
+    this.exclusions = opts.exclusions;
     this.baseFontSize = fontSizePx(this.font);
     this.engine = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, baseMeasurer(this.font));
     this.interactive = true;
@@ -138,9 +143,16 @@ export class RichText extends UIComponent {
     return this;
   }
 
+  /** Set the rect regions the text flows around ("文字绕流") and re-lay out. */
+  public setExclusions(exclusions: ExclusionRect[]): this {
+    this.exclusions = exclusions;
+    this.result = this.layout();
+    return this;
+  }
+
   private layout(): LayoutResult {
     const prepared = this.engine.prepareRich(this.spans, {}, this.baseFontSize, this.baseStyle);
-    const result = this.engine.layoutPrepared(prepared);
+    const result = this.engine.layoutPrepared(prepared, undefined, this.exclusions);
     this.width = result.totalWidth;
     this.height = result.totalHeight;
     this.result = result;

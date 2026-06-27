@@ -107,6 +107,69 @@ export interface PreparedText {
 }
 
 /**
+ * A rectangular region (in the text's local coordinate space) that text must
+ * flow around — the v1 of "文字绕流" / exclusion shapes. A left/right rect acts
+ * like a CSS float; a centered rect splits the affected lines in two.
+ */
+export interface ExclusionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A free horizontal interval `[x0, x1)` available for text on one line. */
+export interface LineSegment {
+  x0: number;
+  x1: number;
+}
+
+/**
+ * The free horizontal segments left in `[0, maxWidth]` for a line whose box
+ * spans the vertical band `[top, bottom)`, after subtracting every
+ * {@link ExclusionRect} that overlaps that band. Returns the full width when
+ * nothing overlaps, and `[]` when an exclusion (or union of them) spans the
+ * whole width. Pure — the testable core of exclusion flow.
+ *
+ * Time O(n log n) in the number of overlapping exclusions; space O(n).
+ */
+export function computeLineSegments(
+  top: number,
+  bottom: number,
+  maxWidth: number,
+  exclusions: ExclusionRect[],
+): LineSegment[] {
+  // x-intervals of the exclusions that vertically overlap this band, clamped.
+  const blocks: Array<[number, number]> = [];
+  for (const r of exclusions) {
+    if (r.y < bottom && r.y + r.height > top) {
+      const x0 = Math.max(0, r.x);
+      const x1 = Math.min(maxWidth, r.x + r.width);
+      if (x1 > x0) blocks.push([x0, x1]);
+    }
+  }
+  if (blocks.length === 0) return [{ x0: 0, x1: maxWidth }];
+
+  // Merge overlapping/touching blocks, then take the complement within [0,maxWidth].
+  blocks.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const b of blocks) {
+    const last = merged[merged.length - 1];
+    if (last && b[0] <= last[1]) last[1] = Math.max(last[1], b[1]);
+    else merged.push([b[0], b[1]]);
+  }
+
+  const segs: LineSegment[] = [];
+  let cursor = 0;
+  for (const [bx0, bx1] of merged) {
+    if (bx0 > cursor) segs.push({ x0: cursor, x1: bx0 });
+    cursor = Math.max(cursor, bx1);
+  }
+  if (cursor < maxWidth) segs.push({ x0: cursor, x1: maxWidth });
+  return segs;
+}
+
+/**
  * VectoUI Global Layout Engine (Intl.Segmenter)
  * Advanced Typography Engine supporting CJK, Emoji, and Western Graphemes
  */
@@ -336,17 +399,47 @@ export class LayoutEngine {
    * and re-calling reflows the same prepared text.
    *
    * @param prepared - Output of {@link prepare}.
-   * @param exclusionMask - Optional collision callback (see {@link layoutText}).
+   * @param exclusionMask - Optional per-glyph collision callback (see {@link layoutText}).
+   * @param exclusions - Optional rect regions text flows around ("文字绕流"); each
+   *   line is split into the free x-segments left after subtracting them. Omitting
+   *   it (or passing `[]`) leaves the single-column path byte-for-byte unchanged.
    */
   public layoutPrepared(
     prepared: PreparedText,
     exclusionMask?: (x: number, y: number, w: number, h: number) => boolean,
+    exclusions?: ExclusionRect[],
   ): LayoutResult {
     const layoutNodes: LayoutNode[] = [];
     const fontSize = prepared.fontSize;
     let currentX = 0;
     let currentY = 0;
     let maxLineWidth = 0;
+
+    // Line state: the free segments of the current band and which one we're in.
+    // Without exclusions there is always exactly one full-width segment, so every
+    // segment-aware branch below collapses to the original single-column logic.
+    const hasEx = !!(exclusions && exclusions.length);
+    let segs: LineSegment[] = [{ x0: 0, x1: this.maxWidth }];
+    let si = 0;
+
+    // (Re)compute the segments for the line box starting at `currentY`, skipping
+    // bands an exclusion fully covers. Sets segs/si/currentX; advances currentY
+    // past blocked bands. Returns false when it runs past maxHeight.
+    const startLine = (lineHeight: number): boolean => {
+      while (currentY < this.maxHeight) {
+        const s = hasEx
+          ? computeLineSegments(currentY, currentY + lineHeight, this.maxWidth, exclusions!)
+          : segs;
+        if (s.length > 0) {
+          segs = s;
+          si = 0;
+          currentX = segs[0].x0;
+          return true;
+        }
+        currentY += lineHeight; // whole band excluded → drop to the next line
+      }
+      return false;
+    };
 
     for (const paragraph of prepared.paragraphs) {
       if (paragraph.isEmpty) {
@@ -366,13 +459,20 @@ export class LayoutEngine {
         }
       }
       const lineHeight = pMax * 1.5;
+      if (!startLine(lineHeight)) break; // out of vertical bounds
 
       for (const word of paragraph.words) {
-        // Word-level wrap
-        if (currentX + word.width > this.maxWidth && currentX > 0) {
+        // Word-level wrap: keep the word whole by jumping to the next free
+        // segment, or to the next line when this was the last one.
+        if (currentX + word.width > segs[si].x1 && currentX > segs[si].x0) {
           if (word.isWordLike === false && word.isWhitespace) continue;
-          currentX = 0;
-          currentY += lineHeight;
+          if (si < segs.length - 1) {
+            si++;
+            currentX = segs[si].x0;
+          } else {
+            currentY += lineHeight;
+            if (!startLine(lineHeight)) break;
+          }
         }
 
         for (const glyph of word.glyphs) {
@@ -381,9 +481,14 @@ export class LayoutEngine {
 
           let foundSpot = false;
           while (currentY < this.maxHeight) {
-            if (currentX + charWidth > this.maxWidth && currentX > 0) {
-              currentX = 0;
-              currentY += lineHeight;
+            if (currentX + charWidth > segs[si].x1 && currentX > segs[si].x0) {
+              if (si < segs.length - 1) {
+                si++;
+                currentX = segs[si].x0;
+              } else {
+                currentY += lineHeight;
+                if (!startLine(lineHeight)) break;
+              }
               continue;
             }
             if (exclusionMask && exclusionMask(currentX, currentY, charWidth, gfs)) {
@@ -396,8 +501,12 @@ export class LayoutEngine {
 
           if (!foundSpot || currentY >= this.maxHeight) break; // Out of bounds
 
-          // Don't render invisible leading characters at the START of a new line
-          if (currentX === 0 && glyph.char.trim().length === 0 && !this.preserveLeadingSpaces)
+          // Don't render invisible leading characters at the START of a segment
+          if (
+            currentX === segs[si].x0 &&
+            glyph.char.trim().length === 0 &&
+            !this.preserveLeadingSpaces
+          )
             continue;
 
           layoutNodes.push({

@@ -75,6 +75,21 @@ describe('RichText', () => {
     expect(calls.find((c) => c.text === 'L')?.color).toBe('#1199ff');
   });
 
+  it('flows around an exclusion rect (文字绕流): first line indents, later lines reclaim width', () => {
+    const { r, calls } = recordingRenderer();
+    // No DOM measurer → 0.5em fallback: at 16px each glyph is 8px wide, line 24px.
+    const rt = new RichText([{ text: 'aaaa bbbb cccc dddd eeee ffff' }], {
+      maxWidth: 160,
+      exclusions: [{ x: 0, y: 0, width: 64, height: 24 }], // left float over line 1 only
+    });
+    rt.render(r);
+    const firstLine = calls.filter((c) => c.y < 24);
+    const below = calls.filter((c) => c.y >= 24);
+    expect(Math.min(...firstLine.map((c) => c.x))).toBe(64); // pushed past the float
+    expect(below.length).toBeGreaterThan(0);
+    expect(Math.min(...below.map((c) => c.x))).toBe(0); // full width below it
+  });
+
   it('does not throw rendering a multi-run, wrapped paragraph', () => {
     const { r } = recordingRenderer();
     const rt = new RichText(
