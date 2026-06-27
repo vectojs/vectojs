@@ -1,5 +1,16 @@
 # @vecto-ui/ui
 
+## 0.4.0
+
+### Minor Changes
+
+- Add high-performance WebGPU Compute-Shader based particle system simulation and UAX #9 compliant bidirectional (BiDi) text layout engine with Arabic/Hebrew/Persian contextual shaping, along with caret navigation and visual highlights in Input and TextArea.
+
+### Patch Changes
+
+- Updated dependencies
+  - @vecto-ui/core@0.9.0
+
 ## 0.3.3
 
 ### Patch Changes

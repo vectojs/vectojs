@@ -11,7 +11,7 @@ This file keeps a curated, high-level history. Versioning follows
 
 ## Highlights
 
-### core 0.8.0 · ui 0.4.0 (unreleased)
+### core 0.9.0 · ui 0.4.0 (2026-06-28)
 
 High-performance WebGPU particle system and Native BiDi bidirectional text with complex shaping.
 
