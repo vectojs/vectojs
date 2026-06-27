@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Markdown } from '../src/Markdown';
+import { RichText } from '../src/RichText';
 
 describe('Markdown', () => {
   it('creates child entities from heading tokens', () => {
@@ -110,5 +111,44 @@ Plain paragraph at the end.
     expect(() => new Markdown(complexMd)).not.toThrow();
     const md = new Markdown(complexMd);
     expect(md.content.children.length).toBeGreaterThan(5);
+  });
+
+  // ── Inline style tests (RichText integration) ──────────────────────────
+
+  it('renders bold inline text as RichText with bold spans', () => {
+    const md = new Markdown('This is **bold** text.');
+    const paragraph = md.content.children[0];
+    expect(paragraph).toBeInstanceOf(RichText);
+  });
+
+  it('renders italic inline text as RichText with italic spans', () => {
+    const md = new Markdown('This is *italic* text.');
+    const paragraph = md.content.children[0];
+    expect(paragraph).toBeInstanceOf(RichText);
+    // The RichText should have spans with italic style
+    const rt = paragraph as RichText;
+    const italicSpan = rt.spans.find((s) => s.style?.italic);
+    expect(italicSpan).toBeDefined();
+    expect(italicSpan!.text).toBe('italic');
+  });
+
+  it('renders inline code with code styling', () => {
+    const md = new Markdown('Use `console.log` here.');
+    const paragraph = md.content.children[0];
+    expect(paragraph).toBeInstanceOf(RichText);
+    const rt = paragraph as RichText;
+    const codeSpan = rt.spans.find((s) => s.text === 'console.log');
+    expect(codeSpan).toBeDefined();
+  });
+
+  it('renders links with href in spans', () => {
+    const md = new Markdown('Visit [Google](https://google.com) now.');
+    const paragraph = md.content.children[0];
+    expect(paragraph).toBeInstanceOf(RichText);
+    const rt = paragraph as RichText;
+    const linkSpan = rt.spans.find((s) => s.style?.href);
+    expect(linkSpan).toBeDefined();
+    expect(linkSpan!.style!.href).toBe('https://google.com');
+    expect(linkSpan!.text).toBe('Google');
   });
 });
