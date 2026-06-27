@@ -51,6 +51,11 @@ export interface SceneOptions {
    * If provided, this renderer will be used for drawing rather than the default CanvasRenderer.
    */
   renderer?: IRenderer;
+  /**
+   * Disable the automatic registration of window resize listener.
+   * Useful when Vecto is running inside a custom layout container or offscreen canvas.
+   */
+  disableWindowResize?: boolean;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -125,12 +130,19 @@ export class Scene {
   private debugA11y: boolean;
   public width: number;
   public height: number;
+  private disableWindowResize: boolean = false;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
-    this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
-    this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
     this.debugA11y = options.debugA11y ?? false;
+    this.disableWindowResize = options.disableWindowResize ?? false;
+    if (this.disableWindowResize) {
+      this.width = canvas.width;
+      this.height = canvas.height;
+    } else {
+      this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
+      this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
+    }
     this.maxFPS = options.maxFPS ?? 0;
     this.respectReducedMotion = options.respectReducedMotion ?? true;
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
@@ -190,7 +202,7 @@ export class Scene {
       if (canvas.parentElement) canvas.parentElement.appendChild(gl);
       const pr = createWebGLPointRenderer(gl);
       if (pr) {
-        pr.resize(window.innerWidth, window.innerHeight);
+        pr.resize(this.width, this.height);
         this.glCanvas = gl;
         this.pointRenderer = pr;
       } else {
@@ -199,12 +211,7 @@ export class Scene {
     }
 
     this.resizeHandler = () => {
-      this.width = window.innerWidth;
-      this.height = window.innerHeight;
-      if (typeof (this.renderer as any).resize === 'function') {
-        (this.renderer as any).resize(window.innerWidth, window.innerHeight);
-      }
-      this.pointRenderer?.resize(window.innerWidth, window.innerHeight);
+      this.resize(window.innerWidth, window.innerHeight);
     };
 
     this.setupEvents();
@@ -293,7 +300,9 @@ export class Scene {
    */
   public destroy(): void {
     this.stop();
-    if (typeof window !== 'undefined') window.removeEventListener('resize', this.resizeHandler);
+    if (typeof window !== 'undefined' && !this.disableWindowResize) {
+      window.removeEventListener('resize', this.resizeHandler);
+    }
     this.a11yRoot?.remove();
     this.a11yElements.clear();
     this.pointRenderer?.destroy();
@@ -301,7 +310,9 @@ export class Scene {
   }
 
   private setupEvents(): void {
-    if (typeof window !== 'undefined') window.addEventListener('resize', this.resizeHandler);
+    if (typeof window !== 'undefined' && !this.disableWindowResize) {
+      window.addEventListener('resize', this.resizeHandler);
+    }
   }
 
   /**
@@ -543,12 +554,10 @@ export class Scene {
       }
 
       if (node.a11yFullViewport) {
-        const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
-        const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
         el.style.left = '0px';
         el.style.top = '0px';
-        el.style.width = `${vw}px`;
-        el.style.height = `${vh}px`;
+        el.style.width = `${this.width}px`;
+        el.style.height = `${this.height}px`;
         el.style.transform = '';
       } else {
         const pos = node.getGlobalPosition();
@@ -728,8 +737,8 @@ export class Scene {
       this.pointRenderer?.begin();
     }
 
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
+    const vw = this.width;
+    const vh = this.height;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
@@ -882,5 +891,59 @@ export class Scene {
     const renderer = new SVGRenderer(this.width, this.height);
     this.render(renderer, 0, 0);
     return renderer.toXMLString();
+  }
+
+  /**
+   * Manually resize the Scene's viewport.
+   */
+  public resize(width: number, height: number): void {
+    this.width = width;
+    this.height = height;
+    if (typeof (this.renderer as any).resize === 'function') {
+      (this.renderer as any).resize(width, height);
+    }
+    this.pointRenderer?.resize(width, height);
+    this.markDirty();
+  }
+
+  /**
+   * Gets the accessibility DOM element projected for the given entity ID.
+   */
+  public getA11yElement(entityId: string): HTMLElement | undefined {
+    return this.a11yElements.get(entityId);
+  }
+
+  /**
+   * Gets the root entity of the scene.
+   */
+  public getRoot(): Entity {
+    return this.root;
+  }
+
+  /**
+   * Finds the topmost interactive entity at the given coordinates.
+   */
+  public findEntityAt(x: number, y: number): Entity | null {
+    // 1. Search overlay root first (drawn on top)
+    const overlayHit = this.findHitRecursively(this.overlayRoot, x, y);
+    if (overlayHit) return overlayHit;
+
+    // 2. Search main scene tree
+    return this.findHitRecursively(this.root, x, y);
+  }
+
+  private findHitRecursively(node: Entity, x: number, y: number): Entity | null {
+    // Walk children in reverse order (drawn last/top-most first)
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      const hit = this.findHitRecursively(node.children[i], x, y);
+      if (hit) return hit;
+    }
+
+    // If the node itself has isPointInside and is hit
+    if (node.isPointInside && node.isPointInside(x, y)) {
+      return node;
+    }
+
+    return null;
   }
 }
