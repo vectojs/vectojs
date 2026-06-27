@@ -19,7 +19,7 @@
     "build": "tsup src/index.ts --format cjs,esm --dts --clean"
   },
   "dependencies": {
-    "@vecto-ui/core": "^0.5.3",
+    "@vecto-ui/core": "^0.6.0",
     "three": "^0.160.0"
   },
   "devDependencies": {
