@@ -1,0 +1,30 @@
+{
+  "name": "@vecto-ui/three",
+  "version": "0.1.0",
+  "description": "WebGL/Three.js rendering backend for VectoUI",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean"
+  },
+  "dependencies": {
+    "@vecto-ui/core": "^0.5.3",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.9"
+  }
+}

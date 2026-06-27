@@ -3,28 +3,37 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vecto-UI vs DOM Comparison</title>
+    <title>VectoUI vs DOM Comparison Page</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap"
+      rel="stylesheet"
+    />
     <style>
-      html,
       body {
         margin: 0;
-        height: 100%;
-        background: #0f172a;
+        padding: 0;
+        background-color: #030014;
+        color: #fff;
+        font-family: 'Outfit', sans-serif;
         overflow: hidden;
-        font: 13px monospace;
-        color: #e2e8f0;
       }
       #app {
+        width: 100vw;
+        height: 100vh;
         position: relative;
+      }
+      canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
         width: 100vw;
         height: 100vh;
       }
     </style>
   </head>
   <body>
-    <!-- VectoUI (single canvas) vs traditional DOM, same animated-text workload.
-         Driven by scripts/compare-dom.ts via Playwright + CDP Performance metrics.
-         Query params: ?mode=dom|vecto&n=<items>&frames=<measured>&warmup=<skipped> -->
     <div id="app"></div>
     <script type="module" src="/src/compare-dom.ts"></script>
   </body>

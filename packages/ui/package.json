@@ -38,9 +38,11 @@
     "build": "tsup src/index.ts --format cjs,esm --dts --clean"
   },
   "dependencies": {
-    "@vecto-ui/core": "^0.5.3"
+    "@vecto-ui/core": "^0.5.3",
+    "marked": "^18.0.5"
   },
   "devDependencies": {
+    "@types/marked": "^6.0.0",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
     "vitest": "^4.1.9"

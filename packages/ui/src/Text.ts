@@ -18,6 +18,8 @@ export interface TextOptions {
   maxWidth?: number;
   /** Line advance in pixels. Default `20`. */
   lineHeight?: number;
+  /** Whether to preserve leading spaces (default false). */
+  preserveLeadingSpaces?: boolean;
 }
 
 /**
@@ -74,6 +76,9 @@ export class Text extends UIComponent {
     this.lineHeight = opts.lineHeight ?? 20;
     this.fontSize = fontSizePx(this.font);
     this.engine = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, fontMeasurer(this.font));
+    if (opts.preserveLeadingSpaces) {
+      this.engine.preserveLeadingSpaces = true;
+    }
     this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
     this.interactive = true;
     this.applyLayout();
