@@ -20,18 +20,33 @@ function fromHex(hex: string): RGBA | null {
   return [hx(0), hx(1), hx(2), hasA ? hx(3) : 1];
 }
 
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 function fromRgbFunc(css: string): RGBA | null {
   const m = /^rgba?\(([^)]+)\)$/i.exec(css.trim());
   if (!m) return null;
-  const parts = m[1].split(/[,/]/).map((p) => p.trim());
+  // Modern syntax puts alpha after a slash (`r g b / a`); legacy uses a 4th
+  // comma value. Channels may be comma- or whitespace-separated in either.
+  const [rgbPart, alphaPart] = m[1].split('/');
+  const parts = rgbPart
+    .trim()
+    .split(/[\s,]+/)
+    .filter(Boolean);
   if (parts.length < 3) return null;
   const chan = (p: string) => (p.endsWith('%') ? (parseFloat(p) / 100) * 255 : parseFloat(p));
   const r = chan(parts[0]) / 255;
   const g = chan(parts[1]) / 255;
   const b = chan(parts[2]) / 255;
-  const a = parts[3] !== undefined ? parseFloat(parts[3]) : 1;
+  const alphaToken = alphaPart !== undefined ? alphaPart.trim() : parts[3];
+  const a =
+    alphaToken === undefined
+      ? 1
+      : alphaToken.endsWith('%')
+        ? parseFloat(alphaToken) / 100
+        : parseFloat(alphaToken);
   if ([r, g, b, a].some((v) => Number.isNaN(v))) return null;
-  return [r, g, b, a];
+  // CSS (and Canvas2D) clamp out-of-range values; the WebGL path needs [0,1] too.
+  return [clamp01(r), clamp01(g), clamp01(b), clamp01(a)];
 }
 
 function fromCanvas(css: string): RGBA | null {
