@@ -2,7 +2,7 @@ import { Entity, VectoEvent, VectoUIEvent } from './Entity';
 
 export class DOMPortalEntity extends Entity {
   public domElement: HTMLElement;
-  public readonly isDOMPortal = true;
+  public override isDOMPortal: boolean = true;
   private domListeners: Array<{ type: string; handler: (e: any) => void; capture: boolean }> = [];
 
   private resizeObserver: ResizeObserver | null = null;

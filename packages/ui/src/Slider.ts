@@ -1,5 +1,5 @@
 import { UIComponent } from './UIComponent';
-import { type IRenderer } from '@vecto-ui/core';
+import { type IRenderer, type A11yAttributes } from '@vecto-ui/core';
 
 export class Slider extends UIComponent {
   public min: number;
@@ -46,6 +46,15 @@ export class Slider extends UIComponent {
     const rawValue = this.min + fraction * (this.max - this.min);
     this.value = Math.round(rawValue);
     this.emit('change', { value: this.value });
+  }
+
+  public getA11yAttributes(): A11yAttributes {
+    return {
+      role: 'slider',
+      value: String(this.value),
+      valuemin: String(this.min),
+      valuemax: String(this.max),
+    };
   }
 
   public render(r: IRenderer): void {

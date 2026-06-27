@@ -76,6 +76,14 @@ export interface A11yAttributes {
    * for `role: 'switch'`/`'checkbox'`. Refreshed each frame.
    */
   checked?: boolean;
+  disabled?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  haspopup?: string;
+  selected?: boolean;
+  activedescendant?: string;
+  valuemin?: string;
+  valuemax?: string;
 }
 
 /**
@@ -97,7 +105,9 @@ export type VectoEvent =
   | 'blur'
   // Mouse-wheel / trackpad scroll over the entity's shadow node; payload is the
   // native `WheelEvent` (call `preventDefault()` to stop the page scrolling).
-  | 'wheel';
+  | 'wheel'
+  | 'keydown'
+  | 'keyup';
 
 /** Options for {@link Entity.on} / {@link Entity.off}. */
 export interface ListenerOptions {
@@ -231,9 +241,21 @@ export abstract class Entity {
   public scaleY: number = 1;
   public rotation: number = 0;
   public opacity: number = 1;
-
-  // A11y & Automation Agent Layer
-  public interactive: boolean = false;
+  public isDOMPortal: boolean = false;
+  private _interactive: boolean = false;
+  public get interactive(): boolean {
+    return this._interactive;
+  }
+  public set interactive(val: boolean) {
+    if (this._interactive !== val) {
+      this._interactive = val;
+      const s = this.scene;
+      if (s) {
+        s.a11yNeedsReorder = true;
+        s.markDirty();
+      }
+    }
+  }
   public width: number = 0;
   public height: number = 0;
   public a11yOffsetX: number = 0;
@@ -272,6 +294,11 @@ export abstract class Entity {
   public add(child: Entity): this {
     child.parent = this;
     this.children.push(child);
+    const s = this.scene;
+    if (s) {
+      s.a11yNeedsReorder = true;
+      s.markDirty();
+    }
     return this;
   }
 
@@ -286,6 +313,11 @@ export abstract class Entity {
     if (index !== -1) {
       this.children.splice(index, 1);
       child.parent = null;
+      const s = this.scene;
+      if (s) {
+        s.a11yNeedsReorder = true;
+        s.markDirty();
+      }
     }
     return this;
   }

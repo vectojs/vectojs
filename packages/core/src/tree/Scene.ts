@@ -61,6 +61,19 @@ export interface SceneOptions {
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
 export const REDUCED_MOTION_FPS = 30;
 
+export interface A11yTreeNode {
+  id: string;
+  tag: string;
+  role?: string;
+  label?: string;
+  value?: string;
+  checked?: boolean;
+  expanded?: boolean;
+  valuemin?: string;
+  valuemax?: string;
+  children: A11yTreeNode[];
+}
+
 /**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
  * and maintains the accessibility/automation shadow layer.
@@ -118,6 +131,13 @@ export class Scene {
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
   private resizeHandler: () => void;
+  private focusedA11yElement: HTMLElement | null = null;
+  private caretBlinkTimer: any = null;
+  public a11yNeedsReorder: boolean = true;
+  private portalRoot: HTMLDivElement | null = null;
+  private fullViewportElements: HTMLElement[] = [];
+  private normalElements: HTMLElement[] = [];
+  private activeIds: Set<string> = new Set<string>();
 
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
@@ -187,8 +207,22 @@ export class Scene {
       if (canvas.parentElement) {
         canvas.parentElement.appendChild(this.a11yRoot);
       }
+
+      this.portalRoot = document.createElement('div');
+      this.portalRoot.style.position = 'absolute';
+      this.portalRoot.style.top = '0';
+      this.portalRoot.style.left = '0';
+      this.portalRoot.style.width = '100vw';
+      this.portalRoot.style.height = '100vh';
+      this.portalRoot.style.pointerEvents = 'none';
+      this.portalRoot.style.overflow = 'hidden';
+      this.portalRoot.style.zIndex = '9'; // Placed below a11yRoot
+      if (canvas.parentElement) {
+        canvas.parentElement.appendChild(this.portalRoot);
+      }
     } else {
       this.a11yRoot = null;
+      this.portalRoot = null;
     }
 
     // Optional WebGL2 point-cloud layer, stacked above the 2D canvas (below a11y).
@@ -239,13 +273,24 @@ export class Scene {
   }
 
   private removeA11yRecursively(node: Entity) {
-    if ((node as any).isDOMPortal) {
+    if (node.isDOMPortal) {
       (node as any).domElement.remove();
+      this.portalEntities.delete(node.id);
+      this.activePortalsThisFrame.delete(node.id);
+      this.activePortalsPrevFrame.delete(node.id);
     }
     const el = this.a11yElements.get(node.id);
     if (el) {
+      if (el === this.focusedA11yElement) {
+        this.focusedA11yElement = null;
+        if (this.caretBlinkTimer) {
+          clearInterval(this.caretBlinkTimer);
+          this.caretBlinkTimer = null;
+        }
+      }
       el.remove();
       this.a11yElements.delete(node.id);
+      this.a11yNeedsReorder = true;
     }
     for (const child of node.children) {
       this.removeA11yRecursively(child);
@@ -304,6 +349,7 @@ export class Scene {
       window.removeEventListener('resize', this.resizeHandler);
     }
     this.a11yRoot?.remove();
+    this.portalRoot?.remove();
     this.a11yElements.clear();
     this.pointRenderer?.destroy();
     this.glCanvas?.remove();
@@ -325,6 +371,15 @@ export class Scene {
     this.isRunning = true;
     this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
     this.scheduleFrame();
+
+    const isTextFocused =
+      this.focusedA11yElement instanceof HTMLInputElement ||
+      this.focusedA11yElement instanceof HTMLTextAreaElement;
+    if (isTextFocused && this.renderMode === 'onDemand' && !this.caretBlinkTimer) {
+      this.caretBlinkTimer = setInterval(() => {
+        this.markDirty();
+      }, 500);
+    }
   }
 
   /** Schedule the next frame, or no-op where `requestAnimationFrame` is absent (SSR). */
@@ -341,6 +396,10 @@ export class Scene {
    */
   public stop(): void {
     this.isRunning = false;
+    if (this.caretBlinkTimer) {
+      clearInterval(this.caretBlinkTimer);
+      this.caretBlinkTimer = null;
+    }
   }
 
   /**
@@ -373,87 +432,58 @@ export class Scene {
 
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
-    if ((node as any).isDOMPortal) {
+    if (node.isDOMPortal) {
       return;
     }
     if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
+      const expectedTag = attrs.tag || 'div';
+
+      // If tag name changes at runtime, recreate the element
+      if (el && el.tagName.toLowerCase() !== expectedTag.toLowerCase()) {
+        if (el === this.focusedA11yElement) {
+          this.focusedA11yElement = null;
+          if (this.caretBlinkTimer) {
+            clearInterval(this.caretBlinkTimer);
+            this.caretBlinkTimer = null;
+          }
+        }
+        if (el.parentNode === this.a11yRoot) {
+          this.a11yRoot.removeChild(el);
+        }
+        this.a11yElements.delete(node.id);
+        el = undefined;
+        this.a11yNeedsReorder = true; // Mark reorder as DOM structure has mutated
+      }
+
       if (!el) {
-        el = document.createElement(attrs.tag || 'div');
+        el = document.createElement(expectedTag);
+        el.id = node.id;
         el.setAttribute('data-vecto-id', node.id);
-        if (attrs.role) el.setAttribute('role', attrs.role);
-        if (attrs.href && el instanceof HTMLAnchorElement) el.href = attrs.href;
-        if (el instanceof HTMLImageElement) {
-          if (attrs.src) el.src = attrs.src;
-          if (attrs.alt) el.alt = attrs.alt;
-        }
-        if (el instanceof HTMLInputElement) {
-          el.type = attrs.inputType || 'text';
-          if (attrs.placeholder) el.placeholder = attrs.placeholder;
-        }
-        if (el instanceof HTMLTextAreaElement && attrs.placeholder) {
-          el.placeholder = attrs.placeholder;
-        }
+
+        // Default shadow DOM styling (with outline disabled to let Vecto handle visual focus outlines)
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
-        // The canvas owns its gestures: stop the browser from claiming touch
-        // drags (scroll/zoom) that start on an interactive surface, so
-        // pointer-drag (e.g. ScrollView) works on touch devices.
         el.style.touchAction = 'none';
-        // A full-viewport background surface uses the default cursor (it's not a
-        // button); discrete controls show the pointer cursor.
-        el.style.cursor = node.a11yFullViewport ? 'default' : 'pointer';
         el.style.margin = '0';
         el.style.padding = '0';
+        el.style.outline = 'none';
+        el.style.cursor = node.a11yFullViewport ? 'default' : 'pointer';
+
         if (this.debugA11y) {
-          // Debug visibility: semi-transparent blue dashed border.
           el.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
           el.style.border = '1px dashed rgba(56, 189, 248, 0.4)';
         } else {
-          // Production: the canvas IS the visual; the shadow node is the
-          // semantic/automation layer only. opacity:0 keeps it operable by
-          // Playwright/AT (not display:none) without rendering native chrome
-          // (input text, checkbox, broken-img) over the canvas.
           el.style.opacity = '0';
           el.style.border = 'none';
           el.style.background = 'transparent';
         }
 
-        // Keyboard accessibility for non-natively-focusable interactive controls
-        // (e.g. a div with role="switch"): make them Tab-focusable and a
-        // Enter/Space. Native <button>/<a href>/<input> already handle this; landmark
-        // roles like "group" must stay non-focusable.
-        const INTERACTIVE_ROLES = new Set([
-          'button',
-          'switch',
-          'checkbox',
-          'radio',
-          'link',
-          'tab',
-          'menuitem',
-          'slider',
-        ]);
-        const nativelyFocusable =
-          el instanceof HTMLButtonElement ||
-          el instanceof HTMLInputElement ||
-          el instanceof HTMLSelectElement ||
-          el instanceof HTMLTextAreaElement ||
-          (el instanceof HTMLAnchorElement && !!attrs.href);
-        if (!nativelyFocusable && attrs.role && INTERACTIVE_ROLES.has(attrs.role)) {
-          el.setAttribute('tabindex', '0');
-          el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault(); // stop Space from scrolling the page
-              node.dispatchEvent(new VectoUIEvent('click', node, e));
-            }
-          });
-        }
-
-        // Map DOM events to the entity tree (capture + bubble). Pointer/wheel
-        // events bubble so an ancestor (e.g. a draggable list) can react and
-        // stopPropagation; enter/leave don't bubble, matching the DOM.
+        // Bind pointer click
         el.addEventListener('click', (e) => node.dispatchEvent(new VectoUIEvent('click', node, e)));
+
+        // Developer debugger mode hover feedback
         el.addEventListener('mouseenter', (e) => {
           if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.2)';
           node.dispatchEvent(new VectoUIEvent('hover', node, e, false));
@@ -462,10 +492,9 @@ export class Scene {
           if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
           node.dispatchEvent(new VectoUIEvent('pointerleave', node, e, false));
         });
+
         const capEl = el;
         el.addEventListener('pointerdown', (e) => {
-          // Capture so the drag keeps getting pointermove/up even once the
-          // pointer leaves this node's box (e.g. dragging a ScrollView fast).
           if (typeof capEl.setPointerCapture === 'function') capEl.setPointerCapture(e.pointerId);
           node.dispatchEvent(new VectoUIEvent('pointerdown', node, e));
         });
@@ -477,23 +506,24 @@ export class Scene {
         el.addEventListener('pointermove', (e) =>
           node.dispatchEvent(new VectoUIEvent('pointermove', node, e)),
         );
-        // Non-passive so a scroll container (e.g. ScrollView) can call
-        // preventDefault() to stop the page from scrolling underneath it.
         el.addEventListener(
           'wheel',
           (e) => node.dispatchEvent(new VectoUIEvent('wheel', node, e)),
-          {
-            passive: false,
-          },
+          { passive: false },
         );
+        el.addEventListener('keydown', (e) => {
+          node.dispatchEvent(new VectoUIEvent('keydown', node, e));
+        });
+        el.addEventListener('keyup', (e) => {
+          node.dispatchEvent(new VectoUIEvent('keyup', node, e));
+        });
 
-        // Form-control changes (text input / textarea / checkbox) flow back to the entity.
+        // Form integration listeners
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           const input = el;
-          // Active IME pre-edit range, tracked across composition events so the
-          // canvas can underline the composing segment.
           let composition: { start: number; length: number } | null = null;
-          const forward = () =>
+          const forward = () => {
+            (input as any)._lastSyncedValue = input.value;
             node.emit('change', {
               value: input.value,
               checked: input instanceof HTMLInputElement ? input.checked : undefined,
@@ -501,14 +531,13 @@ export class Scene {
               selectionEnd: input.selectionEnd ?? input.value.length,
               composition,
             });
+          };
           el.addEventListener('input', forward);
           el.addEventListener('change', forward);
-          // Caret/selection moves that don't change the value (arrows, click, drag).
           el.addEventListener('keyup', forward);
           el.addEventListener('click', forward);
           el.addEventListener('select', forward);
-          // IME composition: the real input holds the pre-edit text; we just track
-          // its [start, length) so the canvas can render it underlined.
+
           el.addEventListener('compositionstart', () => {
             composition = { start: input.selectionStart ?? input.value.length, length: 0 };
             forward();
@@ -522,37 +551,160 @@ export class Scene {
             composition = null;
             forward();
           });
-          // Focus state drives the canvas caret blink.
-          el.addEventListener('focus', () => node.emit('focus', {}));
-          el.addEventListener('blur', () => node.emit('blur', {}));
         }
 
-        // Full-viewport surfaces mount behind other shadow nodes so on-top
-        // components stay clickable; discrete controls append on top.
-        // (a11yRoot is guaranteed non-null by the early return at the top.)
+        // Focus / blur handlers (guard blink timer only on text inputs)
+        const isTextInput = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+        el.addEventListener('focus', () => {
+          this.focusedA11yElement = el!;
+          node.emit('focus', {});
+          if (
+            isTextInput &&
+            this.renderMode === 'onDemand' &&
+            this.isRunning &&
+            !this.caretBlinkTimer
+          ) {
+            this.caretBlinkTimer = setInterval(() => {
+              this.markDirty();
+            }, 500);
+          }
+        });
+        el.addEventListener('blur', () => {
+          if (this.focusedA11yElement === el) {
+            this.focusedA11yElement = null;
+          }
+          const isTextFocused =
+            this.focusedA11yElement instanceof HTMLInputElement ||
+            this.focusedA11yElement instanceof HTMLTextAreaElement;
+          if (!isTextFocused && this.caretBlinkTimer) {
+            clearInterval(this.caretBlinkTimer);
+            this.caretBlinkTimer = null;
+          }
+          node.emit('blur', {});
+        });
+
+        // Keyboard accessibility for non-natively-focusable interactive controls
+        const INTERACTIVE_ROLES = new Set([
+          'button',
+          'switch',
+          'checkbox',
+          'radio',
+          'link',
+          'tab',
+          'menuitem',
+          'slider',
+          'combobox',
+        ]);
+        const nativelyFocusable =
+          el instanceof HTMLButtonElement ||
+          el instanceof HTMLInputElement ||
+          el instanceof HTMLSelectElement ||
+          el instanceof HTMLTextAreaElement ||
+          (el instanceof HTMLAnchorElement && el.hasAttribute('href'));
+        if (!nativelyFocusable && attrs.role && INTERACTIVE_ROLES.has(attrs.role)) {
+          el.setAttribute('tabindex', '0');
+          el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              node.dispatchEvent(new VectoUIEvent('click', node, e));
+            }
+          });
+        }
+
+        // Initial insertion order placement
         if (node.a11yFullViewport) {
-          this.a11yRoot!.insertBefore(el, this.a11yRoot!.firstChild);
+          this.a11yRoot.insertBefore(el, this.a11yRoot.firstChild);
         } else {
-          this.a11yRoot!.appendChild(el);
+          this.a11yRoot.appendChild(el);
         }
         this.a11yElements.set(node.id, el);
+        this.a11yNeedsReorder = true;
       }
 
-      // Dynamic attributes refreshed every frame (content can change at runtime).
-      if (attrs.label !== undefined) el.setAttribute('aria-label', attrs.label);
-      if (attrs.checked !== undefined) {
-        if (el instanceof HTMLInputElement) el.checked = attrs.checked;
-        else el.setAttribute('aria-checked', String(attrs.checked));
+      // Refresh dynamic attributes (with Dirty Checking to minimize DOM API calls)
+      if (attrs.role !== undefined && el.getAttribute('role') !== attrs.role) {
+        el.setAttribute('role', attrs.role);
       }
-      // Don't clobber the field the user is actively typing in.
+      if (attrs.label !== undefined && el.getAttribute('aria-label') !== attrs.label) {
+        el.setAttribute('aria-label', attrs.label);
+      }
+      if (attrs.inputType !== undefined && el.getAttribute('type') !== attrs.inputType) {
+        el.setAttribute('type', attrs.inputType);
+      }
       if (
-        attrs.value !== undefined &&
-        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
-        document.activeElement !== el
+        attrs.placeholder !== undefined &&
+        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
       ) {
-        el.value = attrs.value;
+        if (el.placeholder !== attrs.placeholder) el.placeholder = attrs.placeholder;
+      }
+      if (attrs.href !== undefined && el instanceof HTMLAnchorElement) {
+        if (el.getAttribute('href') !== attrs.href) el.setAttribute('href', attrs.href);
+      }
+      if (el instanceof HTMLImageElement) {
+        if (attrs.src !== undefined && el.src !== attrs.src) el.src = attrs.src;
+        if (attrs.alt !== undefined && el.alt !== attrs.alt) el.alt = attrs.alt;
       }
 
+      if (attrs.checked !== undefined) {
+        if (el instanceof HTMLInputElement) {
+          if (el.checked !== attrs.checked) el.checked = attrs.checked;
+        } else if (el.getAttribute('aria-checked') !== String(attrs.checked)) {
+          el.setAttribute('aria-checked', String(attrs.checked));
+        }
+      }
+      if (attrs.disabled !== undefined) {
+        if ('disabled' in el) {
+          if ((el as any).disabled !== attrs.disabled) (el as any).disabled = attrs.disabled;
+        } else if (el.getAttribute('aria-disabled') !== String(attrs.disabled)) {
+          el.setAttribute('aria-disabled', String(attrs.disabled));
+        }
+      }
+      if (
+        attrs.expanded !== undefined &&
+        el.getAttribute('aria-expanded') !== String(attrs.expanded)
+      ) {
+        el.setAttribute('aria-expanded', String(attrs.expanded));
+      }
+      if (attrs.controls !== undefined && el.getAttribute('aria-controls') !== attrs.controls) {
+        el.setAttribute('aria-controls', attrs.controls);
+      }
+      if (attrs.haspopup !== undefined && el.getAttribute('aria-haspopup') !== attrs.haspopup) {
+        el.setAttribute('aria-haspopup', attrs.haspopup);
+      }
+      if (
+        attrs.selected !== undefined &&
+        el.getAttribute('aria-selected') !== String(attrs.selected)
+      ) {
+        el.setAttribute('aria-selected', String(attrs.selected));
+      }
+      if (
+        attrs.activedescendant !== undefined &&
+        el.getAttribute('aria-activedescendant') !== attrs.activedescendant
+      ) {
+        el.setAttribute('aria-activedescendant', attrs.activedescendant);
+      }
+      if (attrs.valuemin !== undefined && el.getAttribute('aria-valuemin') !== attrs.valuemin) {
+        el.setAttribute('aria-valuemin', attrs.valuemin);
+      }
+      if (attrs.valuemax !== undefined && el.getAttribute('aria-valuemax') !== attrs.valuemax) {
+        el.setAttribute('aria-valuemax', attrs.valuemax);
+      }
+
+      if (attrs.value !== undefined) {
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+          if (el.value !== attrs.value) {
+            const userTyped = (el as any)._lastSyncedValue;
+            if (attrs.value !== userTyped || document.activeElement !== el) {
+              el.value = attrs.value;
+              (el as any)._lastSyncedValue = attrs.value;
+            }
+          }
+        } else if (el.getAttribute('aria-valuenow') !== attrs.value) {
+          el.setAttribute('aria-valuenow', attrs.value);
+        }
+      }
+
+      // Sync position mappings
       if (node.a11yFullViewport) {
         el.style.left = '0px';
         el.style.top = '0px';
@@ -575,6 +727,127 @@ export class Scene {
     }
   }
 
+  private enforceA11yDomOrder(): void {
+    if (!this.a11yRoot) return;
+
+    // Zero-GC cleanups
+    this.fullViewportElements.length = 0;
+    this.normalElements.length = 0;
+    this.activeIds.clear();
+
+    const collect = (node: Entity) => {
+      if (node.isDOMPortal) return;
+      if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
+        const el = this.a11yElements.get(node.id);
+        if (el) {
+          this.activeIds.add(node.id);
+          if (node.a11yFullViewport) this.fullViewportElements.push(el);
+          else this.normalElements.push(el);
+        }
+      }
+      for (const child of node.children) collect(child);
+      if (node === this.root) {
+        for (const overlay of this.overlayRoot.children) collect(overlay);
+      }
+    };
+
+    collect(this.root);
+
+    // Prune removed/inactive elements and guard focus leaks
+    let elementsPruned = false;
+    for (const [id, el] of this.a11yElements.entries()) {
+      if (!this.activeIds.has(id)) {
+        elementsPruned = true;
+        if (el === this.focusedA11yElement) {
+          this.focusedA11yElement = null;
+          if (this.caretBlinkTimer) {
+            clearInterval(this.caretBlinkTimer);
+            this.caretBlinkTimer = null;
+          }
+        }
+        if (el.parentNode === this.a11yRoot) {
+          this.a11yRoot.removeChild(el);
+        }
+        this.a11yElements.delete(id);
+      }
+    }
+
+    if (elementsPruned) {
+      this.a11yNeedsReorder = true;
+    }
+
+    // Only reorder if the hierarchy flag is set
+    if (!this.a11yNeedsReorder) return;
+
+    const fullLen = this.fullViewportElements.length;
+    const normalLen = this.normalElements.length;
+    const totalLen = fullLen + normalLen;
+
+    // Reorder nodes with zero allocations (no expectedOrder array or concats)
+    for (let i = 0; i < totalLen; i++) {
+      const expected =
+        i < fullLen ? this.fullViewportElements[i] : this.normalElements[i - fullLen];
+      const current = this.a11yRoot.childNodes[i];
+      if (current !== expected) {
+        this.a11yRoot.insertBefore(expected, current || null);
+      }
+    }
+
+    this.a11yNeedsReorder = false;
+  }
+
+  public getA11yTree(): A11yTreeNode[] {
+    const map = new Map<string, A11yTreeNode>();
+    const roots: A11yTreeNode[] = [];
+
+    const traverse = (node: Entity, parentNode: Entity | null) => {
+      if (node.isDOMPortal) return;
+
+      let currentA11yNode: A11yTreeNode | null = null;
+
+      if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
+        const el = this.a11yElements.get(node.id);
+        if (el) {
+          const attrs = node.getA11yAttributes();
+          currentA11yNode = {
+            id: node.id,
+            tag: el.tagName.toLowerCase(),
+            role: el.getAttribute('role') || undefined,
+            label: el.getAttribute('aria-label') || undefined,
+            value: attrs.value,
+            checked: attrs.checked,
+            expanded: attrs.expanded,
+            valuemin: attrs.valuemin,
+            valuemax: attrs.valuemax,
+            children: [],
+          };
+          map.set(node.id, currentA11yNode);
+
+          // Find parent interactive container directly using the cached map
+          const parentA11y = parentNode ? map.get(parentNode.id) : null;
+          if (parentA11y) {
+            parentA11y.children.push(currentA11yNode);
+          } else {
+            roots.push(currentA11yNode);
+          }
+        }
+      }
+
+      for (const child of node.children) {
+        traverse(child, currentA11yNode ? node : parentNode);
+      }
+
+      if (node === this.root) {
+        for (const overlay of this.overlayRoot.children) {
+          traverse(overlay, currentA11yNode ? node : parentNode);
+        }
+      }
+    };
+
+    traverse(this.root, null);
+    return roots;
+  }
+
   private renderPortalDOM(
     portal: DOMPortalEntity,
     te: number,
@@ -584,13 +857,13 @@ export class Scene {
     c: number,
     d: number,
   ): void {
-    if (!this.a11yRoot) return;
+    if (!this.portalRoot) return;
 
     this.activePortalsThisFrame.add(portal.id);
     this.portalEntities.set(portal.id, portal);
 
-    if (portal.domElement.parentElement !== this.a11yRoot) {
-      this.a11yRoot.appendChild(portal.domElement);
+    if (portal.domElement.parentElement !== this.portalRoot) {
+      this.portalRoot.appendChild(portal.domElement);
     }
 
     if (!portal.domElement.hasAttribute('data-vecto-id')) {
@@ -626,14 +899,14 @@ export class Scene {
   }
 
   private reconcilePortals(): void {
-    if (!this.a11yRoot) return;
+    if (!this.portalRoot) return;
 
     for (const oldId of this.activePortalsPrevFrame) {
       if (!this.activePortalsThisFrame.has(oldId)) {
         const portal = this.portalEntities.get(oldId);
         if (portal) {
           if (
-            portal.domElement.parentElement === this.a11yRoot &&
+            portal.domElement.parentElement === this.portalRoot &&
             (!portal.scene || portal.scene === this)
           ) {
             portal.domElement.remove();
@@ -701,9 +974,15 @@ export class Scene {
       const shouldSyncInterval =
         this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
 
-      if (hasInteractive && (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)) {
+      if (
+        (hasInteractive || this.a11yElements.size > 0) &&
+        (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
+      ) {
         this.lastA11ySync = time;
-        this.syncA11y(this.root);
+        if (hasInteractive) {
+          this.syncA11y(this.root);
+        }
+        this.enforceA11yDomOrder();
         this.a11yPendingSyncAfterAnimation = false;
       }
     }

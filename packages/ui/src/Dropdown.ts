@@ -7,8 +7,9 @@ export class Dropdown extends UIComponent {
   private options: string[];
   private selectedValue: string;
   private button: Button;
-  private activeMenu: Entity | null = null;
+  private activeMenu: Stack | null = null;
   private activeBackdrop: Entity | null = null;
+  private highlightedIndex: number = -1;
 
   constructor(options: string[], props: any = {}) {
     super(props);
@@ -27,9 +28,72 @@ export class Dropdown extends UIComponent {
     });
     this.button.width = this.width;
     this.button.height = this.height;
+    // Disable inner button interactivity to delegate all pointer events and keyboard focus handling to parent Dropdown
+    this.button.interactive = false;
     this.add(this.button);
 
+    // Sync button focus and highlight state when parent receives focus
+    this.on('focus', () => {
+      this.button.focused = true;
+      this.scene?.markDirty();
+    });
+    this.on('blur', () => {
+      this.button.focused = false;
+      this.scene?.markDirty();
+    });
+
     this.on('click', () => this.toggleMenu());
+
+    this.on('keydown', (e: any) => {
+      const key = e.nativeEvent?.key;
+      if (!key) return;
+
+      if (key === 'ArrowDown' || key === 'ArrowUp') {
+        e.preventDefault();
+        e.nativeEvent?.stopImmediatePropagation();
+        if (!this.activeMenu) {
+          this.openMenu();
+          this.highlightedIndex = this.options.indexOf(this.selectedValue);
+          if (this.highlightedIndex === -1) this.highlightedIndex = 0;
+        } else {
+          const dir = key === 'ArrowDown' ? 1 : -1;
+          this.highlightedIndex =
+            (this.highlightedIndex + dir + this.options.length) % this.options.length;
+        }
+        this.updateMenuHighlight();
+        this.scene?.markDirty();
+      } else if (key === 'Enter' || key === ' ') {
+        e.preventDefault();
+        e.nativeEvent?.stopImmediatePropagation();
+        if (!this.activeMenu) {
+          this.openMenu();
+        } else {
+          if (this.highlightedIndex >= 0 && this.highlightedIndex < this.options.length) {
+            this.selectOption(this.options[this.highlightedIndex]);
+          }
+        }
+      } else if (key === 'Escape') {
+        e.preventDefault();
+        e.nativeEvent?.stopImmediatePropagation();
+        if (this.activeMenu) {
+          this.closeMenu();
+        }
+      }
+    });
+  }
+
+  public getA11yAttributes() {
+    return {
+      role: 'combobox',
+      expanded: this.activeMenu !== null,
+      controls: this.activeMenu ? this.activeMenu.id : undefined,
+      haspopup: 'listbox',
+      value: this.selectedValue,
+      activedescendant:
+        this.activeMenu && this.highlightedIndex >= 0 && this.highlightedIndex < this.options.length
+          ? `${this.id}-opt-${this.highlightedIndex}`
+          : undefined,
+    };
   }
 
   private toggleMenu() {
@@ -53,8 +117,8 @@ export class Dropdown extends UIComponent {
       }
       render() {} // Invisible
     })('dropdown-backdrop');
-    backdrop.width = window.innerWidth;
-    backdrop.height = window.innerHeight;
+    backdrop.width = typeof window !== 'undefined' ? window.innerWidth : 800;
+    backdrop.height = typeof window !== 'undefined' ? window.innerHeight : 600;
     backdrop.interactive = true;
 
     // Stop clicks outside from reaching underlying controls
@@ -67,22 +131,37 @@ export class Dropdown extends UIComponent {
     menu.x = globalPos.x;
     menu.y = globalPos.y + this.height + 4;
     menu.width = this.width;
+    menu.height = this.options.length * 36 + (this.options.length - 1) * 2;
+    menu.interactive = true;
 
-    this.options.forEach((opt) => {
+    // Listbox semantic accessibility
+    (menu as any).getA11yAttributes = () => ({
+      role: 'listbox',
+      label: 'Options',
+    });
+
+    this.options.forEach((opt, index) => {
       const item = new Button(opt, {
         bg: opt === this.selectedValue ? 'rgba(0, 240, 255, 0.25)' : 'rgba(15, 23, 42, 0.95)',
         color: '#fff',
         radius: 4,
         font: '13px sans-serif',
       });
+      item.id = `${this.id}-opt-${index}`;
       item.width = this.width;
       item.height = 36;
+      item.interactive = true;
+
+      // Option attributes
+      (item as any).getA11yAttributes = () => ({
+        role: 'option',
+        label: opt,
+        selected: opt === this.selectedValue,
+      });
+
       item.on('click', (e: VectoUIEvent) => {
         e.stopPropagation();
-        this.selectedValue = opt;
-        this.button.label = opt;
-        this.emit('change', { value: opt });
-        this.closeMenu();
+        this.selectOption(opt);
       });
       menu.add(item);
     });
@@ -91,6 +170,29 @@ export class Dropdown extends UIComponent {
     scene.showOverlay(menu);
     this.activeBackdrop = backdrop;
     this.activeMenu = menu;
+    this.highlightedIndex = this.options.indexOf(this.selectedValue);
+    this.updateMenuHighlight();
+  }
+
+  private updateMenuHighlight() {
+    if (!this.activeMenu) return;
+    this.activeMenu.children.forEach((child, idx) => {
+      if (child instanceof Button) {
+        child.bg =
+          idx === this.highlightedIndex
+            ? 'rgba(0, 240, 255, 0.4)'
+            : child.label === this.selectedValue
+              ? 'rgba(0, 240, 255, 0.25)'
+              : 'rgba(15, 23, 42, 0.95)';
+      }
+    });
+  }
+
+  private selectOption(opt: string) {
+    this.selectedValue = opt;
+    this.button.label = opt;
+    this.emit('change', { value: opt });
+    this.closeMenu();
   }
 
   private closeMenu() {
@@ -104,6 +206,8 @@ export class Dropdown extends UIComponent {
     }
     this.activeBackdrop = null;
     this.activeMenu = null;
+    this.highlightedIndex = -1;
+    this.scene?.markDirty();
   }
 
   public render(_r: any): void {}

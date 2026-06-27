@@ -36,6 +36,7 @@ export class Button extends UIComponent {
   public color: string;
   public font: string;
   public radius: number;
+  public focused = false;
   private hovered = false;
 
   constructor(label: string, opts: ButtonOptions = {}) {
@@ -65,6 +66,9 @@ export class Button extends UIComponent {
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, this.radius);
     r.fill(this.hovered ? this.hoverBg : this.bg);
+    if (this.focused) {
+      r.stroke('#00f0ff', 2);
+    }
     r.fillText(this.label, this.padding, this.height * 0.66, this.font, this.color);
   }
 }
