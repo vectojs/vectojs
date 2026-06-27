@@ -49,8 +49,8 @@ sub-16 ms per-frame cost in the table below. Numbers are per-machine and complex
 - **Cold/hot text layout**: `LayoutEngine.prepare()` measures once; `layoutPrepared()` re-wraps on
   resize with no re-measurement — ~3.5× faster reflow.
 - **vs DOM** (`bun run compare:dom`, CDP metrics): VectoUI keeps a flat ~29 DOM nodes with **0
-  layout / 0 style-recalc** while animating; the `Magnetic Type` demo runs 62 animated glyphs at
-  60 fps with **a single initial layout and zero reflow during interaction**.
+  layout / 0 style-recalc** while animating 62 glyphs at 60 fps — **a single initial layout and
+  zero reflow during interaction**, where the DOM equivalent thrashes layout every frame.
 
 > Not magic everywhere: 100k entities _fully on-screen_ in Canvas 2D is ~6 fps (per-draw-call
 > bound — use the WebGL layer). And document-style, selectable, SEO-heavy text is the DOM's home
@@ -58,11 +58,11 @@ sub-16 ms per-frame cost in the table below. Numbers are per-machine and complex
 
 ## Packages
 
-| Package           | Status  | Description                                                                                    |
-| ----------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `@vecto-ui/core`  | Active  | ECS engine, LayoutEngine (cold/hot), SpatialHashGrid, a11y shadow, Canvas2D + WebGL2 renderers |
-| `@vecto-ui/ui`    | Active  | High-level components (Text, Button, Link, Image, Card, Stack, Input, Checkbox, Toggle)        |
-| `@vecto-ui/three` | Planned | WebGL / Three.js adapter                                                                       |
+| Package           | Status  | Description                                                                                                                                                                                                                       |
+| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@vecto-ui/core`  | Active  | ECS engine, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, a11y shadow, Canvas2D + WebGL2 renderers                                                                      |
+| `@vecto-ui/ui`    | Active  | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
+| `@vecto-ui/three` | Planned | 3D-space / WebXR adapter (renders a Vecto scene to a texture; raycast → 2D hit-test) — milestone                                                                                                                                  |
 
 ## Install
 
@@ -113,18 +113,14 @@ scene.start();
 
 ## Demos
 
-```bash
-bun install
-bun run dev   # Vite dev server for apps/demo
-```
+Demos live in their own open-source repo so this one stays the lean engine — clone it to run
+them locally, or browse the deployed gallery:
 
-Open `http://localhost:5173/` and pick a demo from the top nav (or via URL hash):
+- **Repo & live gallery**: [vecto-website](https://github.com/Xuepoo/vecto-website) → https://vecto-ui.xuepoo.xyz
+- Planned showcases: magnetic type, infinite canvas / node editor, Bilibili-style danmaku,
+  knowledge-graph viewer, LLM streaming-output rendering, and 100k-point data visualization.
 
-- `#magnetic-type` — **Magnetic Type**: every glyph is a math entity; the cursor repels them and
-  they spring back, with per-glyph hit-testing. 60 fps, zero reflow.
-- `#ui-gallery` — the component set with a live, agent-drivable sign-up form.
-- `#webgl-points` — 100k+ GPU points/rects in one draw call.
-- `#spline` — native vectomancy `Spline` (math-curve) rendering with curve-accurate hit-testing.
+Each demo doubles as a real-world stress test for the engine.
 
 ## Where it fits
 
@@ -137,14 +133,26 @@ while being pure canvas**.
 deepest text correctness (bidi/complex shaping — pretext/HarfBuzz go further); tiny static UIs
 where the DOM's zero setup wins.
 
-## Development
+## Testing & quality
+
+VectoUI is validated across many dimensions — this is deliberate: reproducible data, not
+reputation, is the case for the engine. Every number above comes from a script in this repo.
+
+| Dimension            | How                                                    | Where                                    |
+| -------------------- | ------------------------------------------------------ | ---------------------------------------- |
+| Unit / integration   | Vitest (jsdom), core + ui                              | `packages/*/test`                        |
+| a11y / automation    | role/name/state contract; driven via shadow nodes      | `packages/ui/test/a11y-contract.test.ts` |
+| Stress / leak        | 50k–100k entities, churn, teardown                     | `packages/core/test/stress.test.ts`      |
+| Render benchmark     | headless Chrome, real frame-time at 1k/10k/100k        | `bun run benchmark`                      |
+| vs DOM (CDP)         | layout-count / style-recalc / heap while animating     | `bun run compare:dom`                    |
+| Text-layout accuracy | line-break + glyph positions vs ground truth / pretext | `bun run compare`                        |
 
 ```bash
 bun install
-bun run dev                       # demo dev server
-cd packages/core && bunx vitest run   # core tests
-cd packages/ui   && bunx vitest run   # ui tests
+bun run test                      # core + ui suites
 bun run lint                      # oxlint
+bun run benchmark                 # real frame-time numbers (headless Chrome)
+bun run compare:dom               # CDP layout/heap vs DOM
 ```
 
 ## License

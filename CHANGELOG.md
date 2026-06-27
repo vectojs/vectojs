@@ -1,35 +1,37 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+VectoUI is a monorepo. **Per-package, machine-generated changelogs are the source of truth:**
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+- [`@vecto-ui/core`](./packages/core/CHANGELOG.md)
+- [`@vecto-ui/ui`](./packages/ui/CHANGELOG.md)
 
-## [0.1.0] - 2026-06-25
+This file keeps a curated, high-level history. Versioning follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) via
+[Changesets](https://github.com/changesets/changesets).
 
-### Added
+## Highlights
 
-- **Core ECS Engine (`@vecto/core`)**: Initial release of the extreme performance Entity Component System.
-- **Rendering Engine**: Canvas 2D based extreme renderer supporting 10,000+ entities at 60 FPS.
-- **Layout Engine**: High-performance text reflow and line breaking engine using `Intl.Segmenter`.
-- **Physics Engine**: Hooke's Law spring physics implementation for interactive text dynamics.
-- **Off-Thread Physics**: Offload spring integrations to a dedicated Web Worker via `SharedArrayBuffer` with automatic main-thread fallback.
-- **Spatial Hash Grid**: Fixed-cell `SpatialHashGrid` for O(1) average-case AABB neighbor queries.
-- **Zero-GC Text Layout**: Added `LayoutResultBuffer` to eliminate GC allocation pressure in heavy text reflow environments.
-- **Scene & Lifecycle Management**: Added `Scene.remove()` for entity detaching, and `Entity.off()` and `Entity.destroy()` for listener and animation cleanup to prevent memory leaks.
-- **Drawing Methods**: Extended `IRenderer` and `CanvasRenderer` with native `arc()`, `roundRect()`, and `drawImage()` support.
-- **CI/CD Workflows**: Configured GitHub Actions pipelines for oxlint, formatting, unit tests, and Vite build validation.
-- **Demos (`@vecto/demo`)**:
-  - `Hooke's Law Physics Text`: Interactive drag-and-drop elastic text.
-  - `Lyrics Reflow`: 60 FPS real-time exclusion mask text reflow.
-  - `Classic Matrix`: High-contrast ASCII video rendering using ECS.
-  - `Variable Font ASCII (Pretext)`: 256-level grayscale mapping using variable font weights and opacities to simulate extreme visual fidelity without canvas filters.
+### core 0.6.0 · ui 0.3.0 (unreleased)
 
-### Fixed
+Rich typography, GPU text, and a leaner repo.
 
-- Hooke's Law instability issues when dragging nodes forcefully.
-- Hot Module Replacement (HMR) resource leaks during development.
-- Variable Font ASCII binary thresholding issues, restoring full grayscale mapping.
-- Canvas blurriness on HiDPI displays by syncing CSS dimensions in `CanvasRenderer.resize()`.
-- Memory pressure in `bad-apple-lyrics` by refactoring `LyricsMaskEntity` to use `LayoutResultBuffer`.
-- Memory pressure in `bad-apple-classic` by pre-allocating the character grid array.
+- **Inline rich text** — bold/italic/colored/differently-sized runs flowing and wrapping on a
+  shared baseline (`RichText`, `LayoutEngine.prepareRich`).
+- **Inline links with a11y** — an `href` run is underlined on canvas and projects a real,
+  operable `<a href>` shadow node (agent- and screen-reader-drivable).
+- **Text flow around exclusion rects** ("文字绕流") — `computeLineSegments` + per-line
+  segment flow, like CSS floats.
+- **Streaming / typewriter** — `prepareRich` paragraph memoization makes a growing styled
+  document re-lay out in O(changed paragraph); `RichText.appendSpans` / `Text.append`.
+- **MSDF GPU text + off-thread layout** — `MSDFFont`, `MSDFTextEntity` (WebGL median/`fwidth`
+  with a Canvas 2D fallback), `LayoutWorkerManager` (Web Worker reflow).
+- **Streaming Markdown** + components — `Markdown` (`appendMarkdown`), `Table`, `Dropdown`,
+  `Slider`, `Modal`, `Flow`, multi-line `TextArea`.
+- **Engine-only repo** — demos and docs moved to
+  [vecto-website](https://github.com/Xuepoo/vecto-website); the core repo stays lean.
+
+### 0.1.0 — 2026-06-25
+
+Initial public release of the Canvas 2D ECS engine: rendering runtime (10k+ entities),
+`LayoutEngine` (`Intl.Segmenter` reflow), spring physics (with off-thread `SharedArrayBuffer`
+fallback), `SpatialHashGrid`, zero-GC `LayoutResultBuffer`, and scene/lifecycle management.

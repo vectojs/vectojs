@@ -36,7 +36,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --dts --clean"
+    "build": "node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --dts --clean",
+    "test": "vitest run"
   },
   "dependencies": {},
   "devDependencies": {

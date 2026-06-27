@@ -3,18 +3,14 @@ import type { KnipConfig } from 'knip';
 const config: KnipConfig = {
   workspaces: {
     '.': {
-      entry: [],
-      project: ['**/*.{js,ts}'],
+      // Headless QA entries run via `bun run`: benchmark/comparison drivers and
+      // the bench page they build.
+      entry: ['scripts/*.ts', 'benchmarks/*.ts'],
+      project: ['scripts/**/*.{js,ts}', 'benchmarks/**/*.{js,ts}'],
     },
     'packages/*': {
       entry: ['src/index.{js,ts}'],
       project: ['src/**/*.{js,ts}'],
-    },
-    'apps/*': {
-      // src/main.ts is the demo router; src/bench.ts (bench.html) and
-      // src/compare-dom.ts (compare.html) are headless benchmark/comparison entries.
-      entry: ['src/main.{js,ts}', 'src/bench.ts', 'src/compare-dom.ts'],
-      project: ['**/*.{js,ts}'],
     },
   },
   // playwright is used from the global install by the benchmark/comparison scripts

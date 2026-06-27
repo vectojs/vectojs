@@ -24,6 +24,6 @@
     }
   },
 
-  "include": ["packages/**/*.ts", "packages/**/*.js", "apps/**/*.ts", "apps/**/*.js"],
+  "include": ["packages/**/*.ts", "packages/**/*.js", "scripts/**/*.ts", "benchmarks/**/*.ts"],
   "exclude": ["node_modules", "dist", "tmp"]
 }

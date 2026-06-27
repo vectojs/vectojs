@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*",
-    "apps/*"
+    "packages/*"
   ],
   "scripts": {
-    "dev": "bun --cwd apps/demo run dev",
+    "build": "bun run --filter '@vecto-ui/*' build",
+    "test": "bun run --filter '@vecto-ui/*' test",
     "format": "prettier --write \"**/*.{js,ts,json,md,html,yaml}\"",
     "lint": "oxlint --deny-warnings",
     "knip": "knip",
