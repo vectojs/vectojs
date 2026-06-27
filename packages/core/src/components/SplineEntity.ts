@@ -30,8 +30,9 @@ export interface SplineEquation {
 
 /** The native vectomancy `Spline` document. */
 export interface SplineDocument {
-  type: 'Spline';
-  equations: SplineEquation[];
+  type: 'Spline' | 'Polyline';
+  equations?: SplineEquation[];
+  paths?: { color_rgb: SplineColor; data: { x: number; y: number }[] }[];
   bounding_box?: [number, number, number, number];
 }
 
@@ -168,6 +169,7 @@ export class SplineEntity extends Entity {
   private baked = false;
   /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
   private polylines: Float32Array[] | null = null;
+  public showBounds: boolean = false;
 
   constructor(doc: SplineDocument, opts: SplineOptions = {}) {
     super();
@@ -180,6 +182,7 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
+    this.interactive = true;
   }
 
   private computeBounds(): Bounds {
@@ -191,19 +194,31 @@ export class SplineEntity extends Entity {
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (const eq of this.doc.equations) {
-      for (const seg of eq.data) {
-        const b = polySegmentToBezier(seg);
-        for (const [x, y] of [
-          [b.x0, b.y0],
-          [b.cp1x, b.cp1y],
-          [b.cp2x, b.cp2y],
-          [b.x3, b.y3],
-        ]) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
+    if (this.doc.equations) {
+      for (const eq of this.doc.equations) {
+        for (const seg of eq.data) {
+          const b = polySegmentToBezier(seg);
+          for (const [x, y] of [
+            [b.x0, b.y0],
+            [b.cp1x, b.cp1y],
+            [b.cp2x, b.cp2y],
+            [b.x3, b.y3],
+          ]) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    }
+    if (this.doc.paths) {
+      for (const path of this.doc.paths) {
+        for (const pt of path.data) {
+          if (pt.x < minX) minX = pt.x;
+          if (pt.x > maxX) maxX = pt.x;
+          if (pt.y < minY) minY = pt.y;
+          if (pt.y > maxY) maxY = pt.y;
         }
       }
     }
@@ -268,9 +283,21 @@ export class SplineEntity extends Entity {
   private getPolylines(): Float32Array[] {
     if (this.polylines) return this.polylines;
     const out: Float32Array[] = [];
-    for (const eq of this.doc.equations) {
-      for (const seg of eq.data) {
-        out.push(flattenBezier(polySegmentToBezier(seg), HIT_SAMPLES));
+    if (this.doc.equations) {
+      for (const eq of this.doc.equations) {
+        for (const seg of eq.data) {
+          out.push(flattenBezier(polySegmentToBezier(seg), HIT_SAMPLES));
+        }
+      }
+    }
+    if (this.doc.paths) {
+      for (const path of this.doc.paths) {
+        const pts = new Float32Array(path.data.length * 2);
+        for (let i = 0; i < path.data.length; i++) {
+          pts[i * 2] = path.data[i].x;
+          pts[i * 2 + 1] = path.data[i].y;
+        }
+        out.push(pts);
       }
     }
     this.polylines = out;
@@ -295,15 +322,30 @@ export class SplineEntity extends Entity {
   }
 
   private strokeEquations(r: IRenderer): void {
-    for (const eq of this.doc.equations) {
-      const stroke = this.resolveColor(eq.color_rgb, r);
-      r.beginPath();
-      for (const seg of eq.data) {
-        const b = polySegmentToBezier(seg);
-        r.moveTo(b.x0, b.y0);
-        r.bezierCurveTo(b.cp1x, b.cp1y, b.cp2x, b.cp2y, b.x3, b.y3);
+    if (this.doc.equations) {
+      for (const eq of this.doc.equations) {
+        const stroke = this.resolveColor(eq.color_rgb, r);
+        r.beginPath();
+        for (const seg of eq.data) {
+          const b = polySegmentToBezier(seg);
+          r.moveTo(b.x0, b.y0);
+          r.bezierCurveTo(b.cp1x, b.cp1y, b.cp2x, b.cp2y, b.x3, b.y3);
+        }
+        r.stroke(stroke, this.lineWidth);
       }
-      r.stroke(stroke, this.lineWidth);
+    }
+    if (this.doc.paths) {
+      for (const path of this.doc.paths) {
+        const stroke = this.resolveColor(path.color_rgb, r);
+        r.beginPath();
+        if (path.data.length > 0) {
+          r.moveTo(path.data[0].x, path.data[0].y);
+          for (let i = 1; i < path.data.length; i++) {
+            r.lineTo(path.data[i].x, path.data[i].y);
+          }
+        }
+        r.stroke(stroke, this.lineWidth);
+      }
     }
   }
 
@@ -332,26 +374,46 @@ export class SplineEntity extends Entity {
     ctx.lineWidth = this.lineWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    for (const eq of this.doc.equations) {
-      ctx.strokeStyle =
-        eq.color_rgb === null
-          ? this.defaultColor
-          : Array.isArray(eq.color_rgb)
-            ? rgbToCss(eq.color_rgb)
-            : this.defaultColor; // gradients use the per-frame path
-      ctx.beginPath();
-      for (const seg of eq.data) {
-        const b = polySegmentToBezier(seg);
-        ctx.moveTo(b.x0, b.y0);
-        ctx.bezierCurveTo(b.cp1x, b.cp1y, b.cp2x, b.cp2y, b.x3, b.y3);
+    if (this.doc.equations) {
+      for (const eq of this.doc.equations) {
+        ctx.strokeStyle =
+          eq.color_rgb === null
+            ? this.defaultColor
+            : Array.isArray(eq.color_rgb)
+              ? rgbToCss(eq.color_rgb)
+              : this.defaultColor; // gradients use the per-frame path
+        ctx.beginPath();
+        for (const seg of eq.data) {
+          const b = polySegmentToBezier(seg);
+          ctx.moveTo(b.x0, b.y0);
+          ctx.bezierCurveTo(b.cp1x, b.cp1y, b.cp2x, b.cp2y, b.x3, b.y3);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
+    }
+    if (this.doc.paths) {
+      for (const path of this.doc.paths) {
+        ctx.strokeStyle =
+          path.color_rgb === null
+            ? this.defaultColor
+            : Array.isArray(path.color_rgb)
+              ? rgbToCss(path.color_rgb)
+              : this.defaultColor;
+        ctx.beginPath();
+        if (path.data.length > 0) {
+          ctx.moveTo(path.data[0].x, path.data[0].y);
+          for (let i = 1; i < path.data.length; i++) {
+            ctx.lineTo(path.data[i].x, path.data[i].y);
+          }
+        }
+        ctx.stroke();
+      }
     }
     this.offscreen = canvas;
   }
 
-  /** @inheritdoc */
   public render(r: IRenderer): void {
+    let rendered = false;
     if (this.cache) {
       if (!this.baked) this.bake();
       if (this.offscreen) {
@@ -363,10 +425,18 @@ export class SplineEntity extends Entity {
           (this.offscreen as { width: number }).width,
           (this.offscreen as { height: number }).height,
         );
-        return;
+        rendered = true;
       }
     }
-    this.strokeEquations(r);
+    if (!rendered) {
+      this.strokeEquations(r);
+    }
+
+    if (this.showBounds) {
+      r.beginPath();
+      r.roundRect(this.bounds.x, this.bounds.y, this.bounds.width, this.bounds.height, 4);
+      r.stroke('rgba(0, 150, 255, 0.8)', 2);
+    }
   }
 }
 

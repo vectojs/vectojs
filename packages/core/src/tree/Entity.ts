@@ -217,6 +217,14 @@ export abstract class Entity {
   public children: Entity[] = [];
   public parent: Entity | null = null;
 
+  /**
+   * Walk up the parent chain to find the scene this entity is currently attached to.
+   */
+  public get scene(): any {
+    if ((this as any)._scene) return (this as any)._scene;
+    return this.parent ? this.parent.scene : null;
+  }
+
   public x: number = 0;
   public y: number = 0;
   public scaleX: number = 1;

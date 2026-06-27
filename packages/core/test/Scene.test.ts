@@ -53,6 +53,12 @@ class TestEntity extends Entity {
 }
 
 describe('Scene', () => {
+  it('should support export to SVG XML string via toSVG()', () => {
+    const scene = new Scene(mockCanvas as any);
+    const xml = scene.toSVG();
+    expect(xml).toContain('svg');
+  });
+
   it('add() increases root child count', () => {
     const scene = new Scene(mockCanvas as any);
     const e = new TestEntity();
@@ -421,6 +427,28 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     tick(scene);
 
     expect(mockCtx.clip).not.toHaveBeenCalled();
+  });
+
+  it('renders overlayRoot nodes unclipped even if main tree has clip regions', () => {
+    const scene = makeScene();
+    const parent = new (class TestEntity extends Entity {
+      render(r: any) {
+        r.clip(0, 0, 50, 50);
+      }
+    })('clipper');
+    scene.add(parent);
+
+    let renderedOverlay = false;
+    const overlay = new (class TestOverlay extends Entity {
+      render(_r: any) {
+        renderedOverlay = true;
+      }
+    })('overlay');
+    scene.showOverlay(overlay);
+
+    // Trigger loop render
+    (scene as any).loop(16);
+    expect(renderedOverlay).toBe(true);
   });
 
   it('forwards wheel events from the shadow node to the entity', () => {

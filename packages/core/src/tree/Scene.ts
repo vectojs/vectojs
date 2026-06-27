@@ -1,5 +1,6 @@
 import { Entity, VectoUIEvent } from './Entity';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
+import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
 import { createWebGLPointRenderer, type PointRenderer } from '../renderer/WebGLPointRenderer';
 
@@ -44,6 +45,11 @@ export interface SceneOptions {
    * Also settable later via {@link Scene.a11ySyncInterval}.
    */
   a11ySyncInterval?: number;
+  /**
+   * Custom renderer implementation (e.g., ThreeRenderer from @vecto-ui/three).
+   * If provided, this renderer will be used for drawing rather than the default CanvasRenderer.
+   */
+  renderer?: IRenderer;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -63,7 +69,8 @@ export const REDUCED_MOTION_FPS = 30;
  */
 export class Scene {
   private root: Entity;
-  private renderer: CanvasRenderer;
+  public overlayRoot: Entity;
+  private renderer: IRenderer;
   private isRunning: boolean = false;
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
@@ -96,6 +103,8 @@ export class Scene {
   public a11ySyncInterval: number = 0;
   /** Timestamp of the last a11y sync, for throttling. */
   private lastA11ySync: number = -Infinity;
+  /** True if we skipped an a11y sync during animation and need to sync when at rest. */
+  private a11yPendingSyncAfterAnimation: boolean = false;
 
   // A11y / Automation Layer. `null` in non-DOM (SSR/Node) environments — the
   // whole projection degrades to a no-op so the engine's logic stays usable
@@ -108,9 +117,13 @@ export class Scene {
   private pointRenderer: PointRenderer | null = null;
   private glCanvas: HTMLCanvasElement | null = null;
   private debugA11y: boolean;
+  public width: number;
+  public height: number;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
+    this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
+    this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
     this.debugA11y = options.debugA11y ?? false;
     this.maxFPS = options.maxFPS ?? 0;
     this.respectReducedMotion = options.respectReducedMotion ?? true;
@@ -126,8 +139,21 @@ export class Scene {
       // Root renders nothing itself — renderNode() handles all child traversal.
       render(_r: any) {}
     })('root');
+    (this.root as any)._scene = this;
 
-    this.renderer = new CanvasRenderer(canvas);
+    this.overlayRoot = new (class OverlayRoot extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+    })('overlayRoot');
+    (this.overlayRoot as any)._scene = this;
+
+    if (options.renderer) {
+      this.renderer = options.renderer;
+    } else {
+      this.renderer = new CanvasRenderer(canvas);
+    }
 
     // Setup Agent / Automation Semantic Layer (only where there's a DOM).
     if (typeof document !== 'undefined') {
@@ -167,7 +193,11 @@ export class Scene {
     }
 
     this.resizeHandler = () => {
-      this.renderer.resize(window.innerWidth, window.innerHeight);
+      this.width = window.innerWidth;
+      this.height = window.innerHeight;
+      if (typeof (this.renderer as any).resize === 'function') {
+        (this.renderer as any).resize(window.innerWidth, window.innerHeight);
+      }
       this.pointRenderer?.resize(window.innerWidth, window.innerHeight);
     };
 
@@ -217,6 +247,23 @@ export class Scene {
     this.root.remove(entity);
     this.removeA11yRecursively(entity);
     return this;
+  }
+
+  /**
+   * Add an overlay entity to the overlay root, bypassing main tree clipping bounds.
+   */
+  public showOverlay(overlay: Entity): void {
+    this.overlayRoot.add(overlay);
+    this.markDirty();
+  }
+
+  /**
+   * Remove an overlay entity from the overlay root.
+   */
+  public hideOverlay(overlay: Entity): void {
+    this.overlayRoot.remove(overlay);
+    this.removeA11yRecursively(overlay);
+    this.markDirty();
   }
 
   /**
@@ -486,6 +533,9 @@ export class Scene {
     }
 
     for (const child of node.children) this.syncA11y(child);
+    if (node === this.root) {
+      for (const overlay of this.overlayRoot.children) this.syncA11y(overlay);
+    }
   }
 
   /**
@@ -516,13 +566,57 @@ export class Scene {
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
-    if (this.renderMode === 'onDemand' && !this.dirty && !this.hasAnyPendingAnimation(this.root)) {
+    if (
+      this.renderMode === 'onDemand' &&
+      !this.dirty &&
+      !this.hasAnyPendingAnimation(this.root) &&
+      !this.hasAnyPendingAnimation(this.overlayRoot)
+    ) {
       this.scheduleFrame();
       return;
     }
 
-    this.renderer.clear();
-    this.pointRenderer?.begin();
+    this.render(this.renderer, dt, time);
+
+    // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
+    // Performance Throttling: If an animation is currently flying, we freeze A11y writes
+    // to prevent DOM reflow from thrashing Canvas render loop. We sync once it's at rest.
+    const hasActiveAnimation =
+      this.hasAnyPendingAnimation(this.root) || this.hasAnyPendingAnimation(this.overlayRoot);
+
+    if (hasActiveAnimation) {
+      this.a11yPendingSyncAfterAnimation = true;
+    } else {
+      const hasInteractive =
+        this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+      const shouldSyncInterval =
+        this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
+
+      if (hasInteractive && (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)) {
+        this.lastA11ySync = time;
+        this.syncA11y(this.root);
+        this.a11yPendingSyncAfterAnimation = false;
+      }
+    }
+
+    this.dirty = false;
+
+    this.scheduleFrame();
+  }
+
+  /**
+   * Render the entire scene graph onto the specified renderer.
+   *
+   * @param renderer - The renderer instance to draw to.
+   * @param dt - Delta time in milliseconds (default 0).
+   * @param time - Current absolute time in milliseconds (default 0).
+   */
+  public render(renderer: IRenderer, dt = 0, time = 0): void {
+    renderer.clear();
+    const isMainRenderer = renderer === this.renderer;
+    if (isMainRenderer) {
+      this.pointRenderer?.begin();
+    }
 
     const vw = typeof window !== 'undefined' ? window.innerWidth : 0;
     const vh = typeof window !== 'undefined' ? window.innerHeight : 0;
@@ -588,7 +682,7 @@ export class Scene {
         const bc = node.getBatchCircle();
         if (bc) {
           if (visible) {
-            if (this.pointRenderer) {
+            if (isMainRenderer && this.pointRenderer) {
               // GPU layer: emit in world coords (center = (te,tf), radius scaled
               // by the accumulated uniform scale = hypot(a,b)).
               this.pointRenderer.addCircle(
@@ -599,13 +693,7 @@ export class Scene {
                 node.opacity,
               );
             } else {
-              this.renderer.fillCircle(
-                node.x,
-                node.y,
-                bc.radius * node.scaleX,
-                bc.color,
-                node.opacity,
-              );
+              renderer.fillCircle(node.x, node.y, bc.radius * node.scaleX, bc.color, node.opacity);
             }
           }
           return;
@@ -613,7 +701,7 @@ export class Scene {
         // GPU instanced rectangle (WebGL backend only; otherwise falls through
         // to the normal render path below). Origin (te,tf), world scale hypot(a,b),
         // rotation atan2(b,a).
-        if (this.pointRenderer) {
+        if (isMainRenderer && this.pointRenderer) {
           const br = node.getBatchRect();
           if (br) {
             if (visible) {
@@ -635,44 +723,43 @@ export class Scene {
 
       // Any normal (non-batched) draw must commit the pending batch first so
       // painter's order is preserved across the sibling group.
-      this.renderer.flush();
-      this.renderer.save();
-      this.renderer.translate(node.x, node.y);
-      this.renderer.scale(node.scaleX, node.scaleY);
-      this.renderer.rotate(node.rotation);
-      this.renderer.setGlobalAlpha(node.opacity);
+      renderer.flush();
+      renderer.save();
+      renderer.translate(node.x, node.y);
+      renderer.scale(node.scaleX, node.scaleY);
+      renderer.rotate(node.rotation);
+      renderer.setGlobalAlpha(node.opacity);
 
-      if (visible) node.render(this.renderer);
+      if (visible) node.render(renderer);
 
       if (node.clipChildren) {
-        this.renderer.clip(0, 0, node.width, node.height);
+        renderer.clip(0, 0, node.width, node.height);
       }
 
       for (const child of node.children) {
         renderNode(child, a, b, c, d, te, tf);
       }
       // Commit any batched leaf children before popping this node's transform.
-      this.renderer.flush();
-      this.renderer.restore();
+      renderer.flush();
+      renderer.restore();
     };
 
     renderNode(this.root, 1, 0, 0, 1, 0, 0);
-    this.renderer.flush();
-    this.pointRenderer?.flush();
-
-    // Sync Automation Shadow DOM (skip the whole walk when nothing is
-    // interactive). Throttled to a11ySyncInterval so heavy animation doesn't pay
-    // per-frame DOM writes — the a11y layer just becomes eventually consistent.
-    if (
-      (this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval) &&
-      this.hasAnyInteractive(this.root)
-    ) {
-      this.lastA11ySync = time;
-      this.syncA11y(this.root);
+    for (const overlay of this.overlayRoot.children) {
+      renderNode(overlay, 1, 0, 0, 1, 0, 0);
     }
+    renderer.flush();
+    if (isMainRenderer) {
+      this.pointRenderer?.flush();
+    }
+  }
 
-    this.dirty = false;
-
-    this.scheduleFrame();
+  /**
+   * Export the current scene state to a lightweight, flat SVG XML string.
+   */
+  public toSVG(): string {
+    const renderer = new SVGRenderer(this.width, this.height);
+    this.render(renderer, 0, 0);
+    return renderer.toXMLString();
   }
 }
