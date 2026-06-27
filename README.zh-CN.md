@@ -44,55 +44,39 @@ scene.start();
 
 ## 性能实测
 
-用 `bun run benchmark` 复现(headless Chrome、Canvas 2D、简单填充圆形实体、关闭 vsync/帧率上限;当前每帧都全量重绘 —— 还没有 dirty-checking 或 culling)。数值与机器及实体复杂度相关。
+诚实、可复现,不做杜撰对比。用 `bun run benchmark` 复现(headless Chrome、Canvas 2D、简单填充圆形实体)。默认 vsync 受限(CI/sandbox 安全);加 `--uncapped` 得到下表的真实每帧成本。数值与机器及实体复杂度相关。
 
-| 实体数  | 每帧平均 ms | 最大 FPS | 稳定 60 FPS |
-| ------- | ----------- | -------- | ----------- |
-| 1,000   | ~5 ms       | ~180     | 是          |
-| 10,000  | ~23 ms      | ~44      | 暂未        |
-| 100,000 | ~180 ms     | ~6       | 暂未        |
+| 实体数  | 全部在屏       | 多数在屏外(culling)   | 静止空闲(`onDemand`) |
+| ------- | -------------- | --------------------- | -------------------- |
+| 1,000   | ~4 ms(240 fps) | ~2.4 ms(410 fps)      | ~0(帧成本 ⟂ N)       |
+| 10,000  | ~19 ms(52 fps) | **~16 ms(63 fps ✅)** | ~0(帧成本 ⟂ N)       |
+| 100,000 | ~156 ms(6 fps) | ~137 ms(7 fps)        | **~0(帧成本 ⟂ N)**   |
 
-> 这是早期、未优化的数据。把 10k+ 实体拉回 60 FPS 是正在进行的工作 —— 通过 spatial hash 做视口 culling、dirty-region 渲染、用 `OffscreenCanvas` 离屏计算,以及在 `IRenderer` 之下接入 WebGL/WebGPU 后端。
-
-## 架构
-
-```
-.----------------------------------------------.
-|          Demo Applications                   |
-|  (Hooke's Law / Bad Apple / Bubbles)         |
-'----------------------.------------------------'
-                       |
-.----------------------v------------------------.
-|            @vecto-ui/core                     |
-|  .----------.  .----------------------------. |
-|  |  Scene   |  |   LayoutEngine             | |
-|  |  Entity  |  |   SpatialHashGrid (O(1))   | |
-|  |  ECS     |  |   LayoutResultBuffer (GC0) | |
-|  '----------'  '----------------------------' |
-'----------------------.------------------------'
-                       |
-.----------------------v------------------------.
-|        CanvasRenderer (Canvas 2D)             |
-|              HTML <canvas>                    |
-'-----------------------------------------------'
-```
+- **视口 culling**(每实体 `getBounds()`):屏外实体跳过,10k 屏外场景稳定 60 FPS。
+- **按需重绘**(`scene.renderMode = 'onDemand'` + `markDirty()`):静止场景渲染一次后空闲,无变化时 100k 实体与空场景同价。
+- **WebGL2 点层**(`new Scene(canvas, { pointBackend: 'webgl' })`):批量圆形单次 draw call;100k 点 7→25 fps(软件 GL)。
+- 完整测试维度见英文 [README](./README.md#testing--quality)。
 
 ## 包
 
-| 包                | 状态   | 说明                                              |
-| ----------------- | ------ | ------------------------------------------------- |
-| `@vecto-ui/core`  | 活跃   | ECS 引擎、LayoutEngine、SpatialHashGrid、数学工具 |
-| `@vecto-ui/ui`    | 规划中 | 高层可交互组件                                    |
-| `@vecto-ui/three` | 规划中 | WebGL / Three.js 适配器                           |
+| 包                | 状态   | 说明                                                                                                                                      |
+| ----------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `@vecto-ui/core`  | 活跃   | ECS 引擎、LayoutEngine(冷/热 + 段落 memo)、MSDF GPU 文本、Web Worker 异步排版、a11y 影子层、Canvas2D + WebGL2 渲染器                      |
+| `@vecto-ui/ui`    | 活跃   | 高层组件:Text、RichText(行内样式/链接/绕流/流式)、Markdown(流式)、Button、Stack、Flow、Input、TextArea、Table、Dropdown、Slider、Modal 等 |
+| `@vecto-ui/three` | 规划中 | 3D 空间 / WebXR 适配器(里程碑)                                                                                                            |
+
+## 演示
+
+演示与文档站点放在独立的开源仓库 [vecto-website](https://github.com/Xuepoo/vecto-website)(→ https://vecto-ui.xuepoo.xyz),本仓库只保留精简引擎。每个 demo 同时是引擎的真实压力测试。
 
 ## 开发
 
 ```bash
-bun install                          # 安装依赖
-cd apps/demo && bun run dev          # 启动 demo 开发服务器
-cd packages/core && bunx vitest run  # 运行单元测试
-bun run benchmark                    # 渲染基准(headless Chrome)
-bun run compare                      # 与 pretext 的文字排版对比
+bun install          # 安装依赖
+bun run test    # core + ui 单元测试
+bun run lint         # oxlint
+bun run benchmark    # 渲染基准(headless Chrome,真实帧时间)
+bun run compare:dom  # 与 DOM 的 CDP 指标对比
 ```
 
 ## 贡献
