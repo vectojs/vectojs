@@ -3,6 +3,7 @@ import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
 import { createWebGLPointRenderer, type PointRenderer } from '../renderer/WebGLPointRenderer';
+import { DOMPortalEntity } from './DOMPortalEntity';
 
 /**
  * Options for {@link Scene}.
@@ -112,6 +113,11 @@ export class Scene {
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
   private resizeHandler: () => void;
+
+  private activePortalsThisFrame: Set<string> = new Set();
+  private activePortalsPrevFrame: Set<string> = new Set();
+  private portalEntities: Map<string, DOMPortalEntity> = new Map();
+  private renderOrderCounter: number = 0;
 
   // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
   private pointRenderer: PointRenderer | null = null;
@@ -226,6 +232,9 @@ export class Scene {
   }
 
   private removeA11yRecursively(node: Entity) {
+    if ((node as any).isDOMPortal) {
+      (node as any).domElement.remove();
+    }
     const el = this.a11yElements.get(node.id);
     if (el) {
       el.remove();
@@ -353,6 +362,9 @@ export class Scene {
 
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
+    if ((node as any).isDOMPortal) {
+      return;
+    }
     if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
@@ -554,6 +566,78 @@ export class Scene {
     }
   }
 
+  private renderPortalDOM(
+    portal: DOMPortalEntity,
+    te: number,
+    tf: number,
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ): void {
+    if (!this.a11yRoot) return;
+
+    this.activePortalsThisFrame.add(portal.id);
+    this.portalEntities.set(portal.id, portal);
+
+    if (portal.domElement.parentElement !== this.a11yRoot) {
+      this.a11yRoot.appendChild(portal.domElement);
+    }
+
+    if (!portal.domElement.hasAttribute('data-vecto-id')) {
+      portal.domElement.setAttribute('data-vecto-id', portal.id);
+    }
+
+    const transformStr = `matrix(${a}, ${b}, ${c}, ${d}, ${te}, ${tf})`;
+    let widthStr = '';
+    let heightStr = '';
+    if (portal.width > 0) widthStr = `${portal.width}px`;
+    if (portal.height > 0) heightStr = `${portal.height}px`;
+
+    const zIndexStr = String(this.renderOrderCounter++);
+
+    if (portal.lastWidth !== widthStr) {
+      portal.domElement.style.width = widthStr;
+      portal.lastWidth = widthStr;
+    }
+    if (portal.lastHeight !== heightStr) {
+      portal.domElement.style.height = heightStr;
+      portal.lastHeight = heightStr;
+    }
+    if (portal.lastTransform !== transformStr) {
+      portal.domElement.style.left = '0px';
+      portal.domElement.style.top = '0px';
+      portal.domElement.style.transform = transformStr;
+      portal.lastTransform = transformStr;
+    }
+    if (portal.lastZIndex !== zIndexStr) {
+      portal.domElement.style.zIndex = zIndexStr;
+      portal.lastZIndex = zIndexStr;
+    }
+  }
+
+  private reconcilePortals(): void {
+    if (!this.a11yRoot) return;
+
+    for (const oldId of this.activePortalsPrevFrame) {
+      if (!this.activePortalsThisFrame.has(oldId)) {
+        const portal = this.portalEntities.get(oldId);
+        if (portal) {
+          if (
+            portal.domElement.parentElement === this.a11yRoot &&
+            (!portal.scene || portal.scene === this)
+          ) {
+            portal.domElement.remove();
+          }
+          this.portalEntities.delete(oldId);
+        }
+      }
+    }
+
+    this.activePortalsPrevFrame = new Set(this.activePortalsThisFrame);
+    this.activePortalsThisFrame.clear();
+  }
+
   /**
    * The frame-rate cap actually in effect: the explicit {@link maxFPS}, further
    * lowered to {@link REDUCED_MOTION_FPS} when the OS requests reduced motion
@@ -628,6 +712,16 @@ export class Scene {
    * @param time - Current absolute time in milliseconds (default 0).
    */
   public render(renderer: IRenderer, dt = 0, time = 0): void {
+    if (this.a11yRoot && this.canvas.parentElement) {
+      const parentStyle = this.canvas.parentElement.style;
+      if (!parentStyle.position || parentStyle.position === 'static') {
+        parentStyle.position = 'relative';
+      }
+    }
+
+    this.renderOrderCounter = 0;
+    this.activePortalsThisFrame.clear();
+
     renderer.clear();
     const isMainRenderer = renderer === this.renderer;
     if (isMainRenderer) {
@@ -664,6 +758,16 @@ export class Scene {
       const b = pb * sxCos + pd * sxSin;
       const c = pa * -sySin + pc * syCos;
       const d = pb * -sySin + pd * syCos;
+
+      const a11yEl = this.a11yElements.get(node.id);
+      if (a11yEl) {
+        a11yEl.style.zIndex = String(this.renderOrderCounter++);
+      }
+
+      if ((node as any).isDOMPortal) {
+        this.renderPortalDOM(node as DOMPortalEntity, te, tf, a, b, c, d);
+        return;
+      }
 
       // Cull test: transform the local bounds box and check viewport overlap.
       let visible = true;
@@ -764,6 +868,7 @@ export class Scene {
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0);
     }
+    this.reconcilePortals();
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
