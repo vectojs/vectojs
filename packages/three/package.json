@@ -1,6 +1,6 @@
 {
   "name": "@vecto-ui/three",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "WebGL/Three.js rendering backend for VectoUI",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",

@@ -46,6 +46,7 @@ sub-16 ms per-frame cost in the table below. Numbers are per-machine and complex
   once then idles, so a 100k-entity UI costs the same as an empty one when nothing changes.
 - **WebGL2 point layer** (`new Scene(canvas, { pointBackend: 'webgl' })`): batch-circle entities
   render in one draw call — 100k points 7→25 fps (software GL); 1M feasible.
+- **WebGPU compute particle layer** (`ComputeParticleEntity`): simulates 1,000,000+ interactive particles entirely on the GPU via WGSL compute shaders, achieving zero-copy procedural quad rendering and 3-stage exponential backoff context recovery.
 - **Cold/hot text layout**: `LayoutEngine.prepare()` measures once; `layoutPrepared()` re-wraps on
   resize with no re-measurement — ~3.5× faster reflow.
 - **vs DOM** (`bun run compare:dom`, CDP metrics): VectoUI keeps a flat ~29 DOM nodes with **0
@@ -58,11 +59,11 @@ sub-16 ms per-frame cost in the table below. Numbers are per-machine and complex
 
 ## Packages
 
-| Package           | Status  | Description                                                                                                                                                                                                                       |
-| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@vecto-ui/core`  | Active  | ECS engine, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, a11y shadow, Canvas2D + WebGL2 renderers                                                                      |
-| `@vecto-ui/ui`    | Active  | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
-| `@vecto-ui/three` | Planned | 3D-space / WebXR adapter (renders a Vecto scene to a texture; raycast → 2D hit-test) — milestone                                                                                                                                  |
+| Package           | Status | Description                                                                                                                                                                                                                       |
+| ----------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@vecto-ui/core`  | Active | ECS engine, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, a11y shadow, Canvas2D + WebGL2 + WebGPU compute-driven particle system (WGSL compute + procedural rendering)  |
+| `@vecto-ui/ui`    | Active | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
+| `@vecto-ui/three` | Active | WebGL/Three.js 3D/WebXR space adapter — projects Vecto 2D canvas to 3D mesh texture, translates raycast intersects to 2D event routing, and manages XR pointers & hover boundaries                                                |
 
 ## Install
 
