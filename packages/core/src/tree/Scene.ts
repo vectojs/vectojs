@@ -4,6 +4,8 @@ import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
 import { createWebGLPointRenderer, type PointRenderer } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
+import { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
+import { ComputeParticleEntity } from './ComputeParticleEntity';
 
 /**
  * Options for {@link Scene}.
@@ -151,6 +153,21 @@ export class Scene {
   public width: number;
   public height: number;
   private disableWindowResize: boolean = false;
+
+  // WebGPU properties
+  private destroyed: boolean = false;
+  private device: GPUDevice | null = null;
+  private deviceLost: boolean = false;
+  private webgpuDisabled: boolean = false;
+  private recoveryTimerId: any = null;
+  private manager: WebGPUParticleSystemManager | null = null;
+  private initializingWebGPU: boolean = false;
+  private gpuCanvas: HTMLCanvasElement | null = null;
+  private gpuContext: any = null;
+  private mouseX: number = -9999;
+  private mouseY: number = -9999;
+  private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
+  private pointerLeaveListener: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
@@ -344,20 +361,53 @@ export class Scene {
    * Tear down the Scene, halt the loop, and clean up event listeners and DOM elements.
    */
   public destroy(): void {
+    this.destroyed = true;
     this.stop();
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
+    }
+    if (typeof window !== 'undefined' && this.canvas) {
+      if (this.pointerMoveListener) {
+        this.canvas.removeEventListener('pointermove', this.pointerMoveListener);
+      }
+      if (this.pointerLeaveListener) {
+        this.canvas.removeEventListener('pointerleave', this.pointerLeaveListener);
+      }
     }
     this.a11yRoot?.remove();
     this.portalRoot?.remove();
     this.a11yElements.clear();
     this.pointRenderer?.destroy();
     this.glCanvas?.remove();
+    this.gpuCanvas?.remove();
+    this.gpuCanvas = null;
+    this.gpuContext = null;
+    if (this.recoveryTimerId) {
+      clearTimeout(this.recoveryTimerId);
+      this.recoveryTimerId = null;
+    }
+    if (this.manager) {
+      this.manager.destroy();
+      this.manager = null;
+    }
   }
 
   private setupEvents(): void {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
+    }
+    if (typeof window !== 'undefined' && this.canvas) {
+      this.pointerMoveListener = (e: PointerEvent) => {
+        const rect = this.canvas.getBoundingClientRect();
+        this.mouseX = e.clientX - rect.left;
+        this.mouseY = e.clientY - rect.top;
+      };
+      this.pointerLeaveListener = () => {
+        this.mouseX = -9999;
+        this.mouseY = -9999;
+      };
+      this.canvas.addEventListener('pointermove', this.pointerMoveListener);
+      this.canvas.addEventListener('pointerleave', this.pointerLeaveListener);
     }
   }
 
@@ -1010,6 +1060,105 @@ export class Scene {
     this.renderOrderCounter = 0;
     this.activePortalsThisFrame.clear();
 
+    // Collect all ComputeParticleEntity instances in the tree
+    const computeEntities: ComputeParticleEntity[] = [];
+    const collectComputeEntities = (node: Entity) => {
+      if (node instanceof ComputeParticleEntity) {
+        computeEntities.push(node);
+      }
+      for (const child of node.children) {
+        collectComputeEntities(child);
+      }
+    };
+    collectComputeEntities(this.root);
+    for (const overlay of this.overlayRoot.children) {
+      collectComputeEntities(overlay);
+    }
+
+    if (computeEntities.length > 0) {
+      // Async initialize WebGPU context on the first frame we encounter a ComputeParticleEntity
+      if (!this.device && !this.webgpuDisabled && !this.initializingWebGPU && !this.deviceLost) {
+        this.initializingWebGPU = true;
+        this.initWebGPUContext(computeEntities)
+          .then((newDevice) => {
+            this.device = newDevice;
+            this.initializingWebGPU = false;
+            const format = navigator.gpu ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm';
+            this.manager = new WebGPUParticleSystemManager(newDevice);
+            this.manager.initPipelines(format);
+            for (const entity of computeEntities) {
+              this.manager.setupEntityResources(entity);
+              if (entity.gpuStorageBuffer) {
+                newDevice.queue.writeBuffer(entity.gpuStorageBuffer, 0, entity.particleData);
+              }
+            }
+          })
+          .catch((err) => {
+            console.error('Failed to initialize WebGPU:', err);
+            this.webgpuDisabled = true;
+            this.initializingWebGPU = false;
+          });
+      }
+
+      // Dispatch WebGPU Compute + Render passes OR run CPU physics updates fallback
+      if (this.device && this.manager && !this.deviceLost && !this.webgpuDisabled) {
+        try {
+          const commandEncoder = this.device.createCommandEncoder();
+
+          // Compute Pass
+          const computePass = commandEncoder.beginComputePass();
+          for (const entity of computeEntities) {
+            if (!entity.gpuStorageBuffer) {
+              this.manager.setupEntityResources(entity);
+              this.device.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+            }
+            this.manager.recordComputePass(
+              computePass,
+              entity,
+              dt / 1000,
+              this.mouseX,
+              this.mouseY,
+              this.width,
+              this.height,
+            );
+          }
+          computePass.end();
+
+          // Render Pass
+          if (this.gpuContext) {
+            const view = this.gpuContext.getCurrentTexture().createView();
+            const renderPassDescriptor: GPURenderPassDescriptor = {
+              colorAttachments: [
+                {
+                  view,
+                  clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
+                  loadOp: 'clear',
+                  storeOp: 'store',
+                },
+              ],
+            };
+            const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
+            for (const entity of computeEntities) {
+              this.manager.recordRenderPass(renderPass, entity);
+            }
+            renderPass.end();
+          }
+
+          this.device.queue.submit([commandEncoder.finish()]);
+        } catch (e) {
+          console.error('WebGPU frame execution failed. Falling back.', e);
+          this.deviceLost = true;
+          this.device = null;
+          this.recreateWebGPUDeviceWithRetry(computeEntities);
+        }
+      } else {
+        // Fallback updates
+        for (const entity of computeEntities) {
+          entity.updateCPU(dt / 1000, this.mouseX, this.mouseY, this.width, this.height);
+        }
+      }
+    }
+
     renderer.clear();
     const isMainRenderer = renderer === this.renderer;
     if (isMainRenderer) {
@@ -1138,7 +1287,15 @@ export class Scene {
       renderer.rotate(node.rotation);
       renderer.setGlobalAlpha(node.opacity);
 
-      if (visible) node.render(renderer);
+      if (visible) {
+        if (node instanceof ComputeParticleEntity) {
+          if (this.deviceLost || this.webgpuDisabled || !this.device || !this.manager) {
+            this.renderCPUParticles(renderer, node);
+          }
+        } else {
+          node.render(renderer);
+        }
+      }
 
       if (node.clipChildren) {
         renderer.clip(0, 0, node.width, node.height);
@@ -1209,6 +1366,134 @@ export class Scene {
 
     // 2. Search main scene tree
     return this.findHitRecursively(this.root, x, y);
+  }
+
+  private async initWebGPUContext(entities: ComputeParticleEntity[]): Promise<GPUDevice> {
+    if (!navigator.gpu) {
+      throw new Error('WebGPU not supported on this platform.');
+    }
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      throw new Error('No GPUAdapter found.');
+    }
+    const device = await adapter.requestDevice();
+
+    if (typeof document !== 'undefined' && !this.gpuCanvas) {
+      const gpuCanvas = document.createElement('canvas');
+      gpuCanvas.width = this.width;
+      gpuCanvas.height = this.height;
+      gpuCanvas.style.position = 'absolute';
+      gpuCanvas.style.top = '0';
+      gpuCanvas.style.left = '0';
+      gpuCanvas.style.pointerEvents = 'none';
+      gpuCanvas.style.zIndex = '6';
+      if (this.canvas.parentElement) {
+        this.canvas.parentElement.appendChild(gpuCanvas);
+      }
+      this.gpuCanvas = gpuCanvas;
+      this.gpuContext = gpuCanvas.getContext('webgpu');
+    }
+
+    if (this.gpuContext) {
+      this.gpuContext.configure({
+        device,
+        format: navigator.gpu.getPreferredCanvasFormat(),
+        alphaMode: 'premultiplied',
+      });
+    }
+
+    // Register context lost handler re-binding
+    this.setupDeviceLostHandler(device, entities);
+    return device;
+  }
+
+  private setupDeviceLostHandler(device: GPUDevice, entities: ComputeParticleEntity[]): void {
+    device.lost.then((info) => {
+      if (info.reason === 'destroyed') return;
+      console.warn(`WebGPU device lost: ${info.message}`);
+
+      this.deviceLost = true;
+      this.device = null;
+
+      this.recreateWebGPUDeviceWithRetry(entities);
+    });
+  }
+
+  private recreateWebGPUDeviceWithRetry(
+    entities: ComputeParticleEntity[],
+    attempt: number = 0,
+  ): void {
+    if (this.destroyed) return;
+
+    if (attempt >= 3) {
+      console.error(
+        'Failed to recover WebGPU device after 3 retries. Remaining on fallback renderer.',
+      );
+      this.webgpuDisabled = true;
+      this.deviceLost = true;
+      return;
+    }
+
+    // Destroy old entities and manager references
+    for (const entity of entities) {
+      entity.destroyGPUResources();
+    }
+    if (this.manager) {
+      this.manager.destroy();
+      this.manager = null;
+    }
+
+    const backoff = Math.pow(2, attempt) * 1000;
+    if (this.recoveryTimerId) clearTimeout(this.recoveryTimerId);
+
+    this.recoveryTimerId = setTimeout(() => {
+      if (this.destroyed) return;
+
+      this.initWebGPUContext(entities)
+        .then((newDevice) => {
+          if (this.destroyed) {
+            newDevice.destroy();
+            return;
+          }
+          console.log('Successfully recovered WebGPU device.');
+          this.device = newDevice;
+          this.deviceLost = false;
+
+          const format = navigator.gpu.getPreferredCanvasFormat();
+          this.manager = new WebGPUParticleSystemManager(newDevice);
+          this.manager.initPipelines(format);
+
+          for (const entity of entities) {
+            this.manager.setupEntityResources(entity);
+            // Re-upload particle fallback states
+            newDevice.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+          }
+        })
+        .catch(() => this.recreateWebGPUDeviceWithRetry(entities, attempt + 1));
+    }, backoff);
+  }
+
+  private renderCPUParticles(renderer: IRenderer, entity: ComputeParticleEntity): void {
+    const data = entity.particleData;
+    const size = entity.maxParticles;
+    const isMain = renderer === this.renderer;
+
+    for (let i = 0; i < size; i++) {
+      const idx = i * 8;
+      const x = data[idx];
+      const y = data[idx + 1];
+      const pSize = data[idx + 6];
+      const life = data[idx + 7];
+      if (life === 0.0) continue; // dead
+
+      const opacity = life < 0.0 ? entity.opacity : entity.opacity * Math.min(1.0, life);
+      const scale = life >= 0.0 ? Math.min(1.0, life) : 1.0;
+      if (isMain && this.pointRenderer) {
+        this.pointRenderer.addCircle(x, y, pSize * scale, entity.baseColor, opacity);
+      } else {
+        renderer.fillCircle(x, y, pSize * scale, entity.baseColor, opacity);
+      }
+    }
   }
 
   private findHitRecursively(node: Entity, x: number, y: number): Entity | null {
