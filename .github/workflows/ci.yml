@@ -27,5 +27,3 @@ jobs:
         run: |
           cd packages/core && bun run build
           cd ../ui && bun run build
-      - name: Build demo app
-        run: cd apps/demo && bun run build

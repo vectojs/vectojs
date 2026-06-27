@@ -21,7 +21,7 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BENCH_ENTRY = resolve(HERE, '../apps/demo/src/bench.ts');
+const BENCH_ENTRY = resolve(HERE, '../benchmarks/bench.ts');
 const CORE_SRC = resolve(HERE, '../packages/core/src/index.ts');
 
 const args = new Map(
