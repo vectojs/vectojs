@@ -114,11 +114,11 @@ export class ComputeParticleEntity extends Entity {
     this.pendingExplosion = { x, y, force };
   }
 
-  public override isPointInside(x: number, y: number): boolean {
+  public override isPointInside(_x: number, _y: number): boolean {
     return this.pointerEvents;
   }
 
-  public override render(r: IRenderer): void {
+  public override render(_r: IRenderer): void {
     // Canvas2D / WebGL Fallback pipeline handled inside scene
   }
 
