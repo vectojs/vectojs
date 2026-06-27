@@ -54,7 +54,7 @@ export interface BatchRect {
  */
 export interface A11yAttributes {
   /** Shadow element tag to create. Defaults to `'div'`. */
-  tag?: 'div' | 'a' | 'button' | 'img' | 'input';
+  tag?: 'div' | 'a' | 'button' | 'img' | 'input' | 'textarea';
   /** ARIA role applied via the `role` attribute. */
   role?: string;
   /** Accessible name applied via `aria-label`. */

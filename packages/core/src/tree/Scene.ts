@@ -356,6 +356,9 @@ export class Scene {
           el.type = attrs.inputType || 'text';
           if (attrs.placeholder) el.placeholder = attrs.placeholder;
         }
+        if (el instanceof HTMLTextAreaElement && attrs.placeholder) {
+          el.placeholder = attrs.placeholder;
+        }
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
         // The canvas owns its gestures: stop the browser from claiming touch
@@ -448,8 +451,8 @@ export class Scene {
           },
         );
 
-        // Form-control changes (text input / checkbox) flow back to the entity.
-        if (el instanceof HTMLInputElement) {
+        // Form-control changes (text input / textarea / checkbox) flow back to the entity.
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           const input = el;
           // Active IME pre-edit range, tracked across composition events so the
           // canvas can underline the composing segment.
@@ -457,7 +460,7 @@ export class Scene {
           const forward = () =>
             node.emit('change', {
               value: input.value,
-              checked: input.checked,
+              checked: input instanceof HTMLInputElement ? input.checked : undefined,
               selectionStart: input.selectionStart ?? input.value.length,
               selectionEnd: input.selectionEnd ?? input.value.length,
               composition,
@@ -508,7 +511,7 @@ export class Scene {
       // Don't clobber the field the user is actively typing in.
       if (
         attrs.value !== undefined &&
-        el instanceof HTMLInputElement &&
+        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
         document.activeElement !== el
       ) {
         el.value = attrs.value;
