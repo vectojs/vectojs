@@ -98,6 +98,18 @@ export class Text extends UIComponent {
   }
 
   /**
+   * Append text — the streaming / typewriter path. Goes through the same cold
+   * pass as {@link setText}, but the engine's paragraph memo reuses every
+   * untouched leading paragraph, so only the changed (last) paragraph is
+   * re-segmented + re-measured.
+   *
+   * @returns `this` for chaining.
+   */
+  public append(text: string): this {
+    return this.setText(this.text + text);
+  }
+
+  /**
    * Change the wrap width and reflow via the cheap **hot** path (reuses the cached
    * measured text — no re-segmentation or re-measurement).
    *

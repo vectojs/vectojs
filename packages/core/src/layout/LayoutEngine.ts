@@ -188,6 +188,10 @@ export class LayoutEngine {
   // O(document) into O(changed paragraph). Keyed by fontSize + text; invalidated
   // when the font atlas (which drives glyph widths) changes.
   private paragraphCache: Map<string, PreparedParagraph> = new Map();
+  // Same memo for the rich path ({@link prepareRich}); keyed by fontSize + text +
+  // a per-paragraph *value* signature of the inline styles, so a streaming
+  // typewriter that appends styled runs reuses its untouched paragraphs.
+  private richParagraphCache: Map<string, PreparedParagraph> = new Map();
   private lastAtlas: GlyphAtlas | null = null;
   private measurer: GlyphMeasurer | null;
 
@@ -281,6 +285,7 @@ export class LayoutEngine {
     // Glyph widths depend on the atlas; drop memoized paragraphs if it changed.
     if (fontAtlas !== this.lastAtlas) {
       this.paragraphCache.clear();
+      this.richParagraphCache.clear();
       this.lastAtlas = fontAtlas;
     }
 
@@ -346,6 +351,13 @@ export class LayoutEngine {
     baseFontSize: number = 32,
     baseStyle?: TextStyle,
   ): PreparedText {
+    // Glyph widths depend on the atlas; drop memoized paragraphs if it changed.
+    if (fontAtlas !== this.lastAtlas) {
+      this.paragraphCache.clear();
+      this.richParagraphCache.clear();
+      this.lastAtlas = fontAtlas;
+    }
+
     // Flatten to text + a per-UTF16-unit style map (one shared object per run).
     let fullText = '';
     const styleAt: Array<TextStyle | undefined> = [];
@@ -356,6 +368,32 @@ export class LayoutEngine {
       for (let i = 0; i < span.text.length; i++) styleAt.push(merged);
     }
 
+    // A compact, *value*-based RLE signature of the styles over [start, start+len)
+    // — so a cached paragraph is reused whether or not the caller reuses the same
+    // style object instances (it just has to apply the same fontSize/color/…).
+    const styleSig = (start: number, len: number): string => {
+      let sig = '';
+      let i = 0;
+      while (i < len) {
+        const s = styleAt[start + i];
+        const fp = s
+          ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}`
+          : '';
+        let run = 1;
+        while (i + run < len) {
+          const t = styleAt[start + i + run];
+          const tfp = t
+            ? `${t.fontSize ?? ''}/${t.color ?? ''}/${t.bold ? 1 : 0}/${t.italic ? 1 : 0}/${t.href ?? ''}`
+            : '';
+          if (tfp !== fp) break;
+          run++;
+        }
+        sig += `${fp}:${run};`;
+        i += run;
+      }
+      return sig;
+    };
+
     const paragraphs: PreparedParagraph[] = [];
     let offset = 0;
     for (const paragraph of fullText.split('\n')) {
@@ -364,6 +402,15 @@ export class LayoutEngine {
         offset += 1; // the consumed '\n'
         continue;
       }
+
+      const key = `${baseFontSize} ${paragraph} ${styleSig(offset, paragraph.length)}`;
+      const cached = this.richParagraphCache.get(key);
+      if (cached) {
+        paragraphs.push(cached);
+        offset += paragraph.length + 1;
+        continue;
+      }
+
       const words: PreparedWord[] = [];
       let pOff = offset;
       for (const segment of this.getWordSegments(paragraph)) {
@@ -384,7 +431,10 @@ export class LayoutEngine {
           isWhitespace: word.trim().length === 0,
         });
       }
-      paragraphs.push({ words, isEmpty: false });
+      const prepared: PreparedParagraph = { words, isEmpty: false };
+      if (this.richParagraphCache.size > 1000) this.richParagraphCache.clear();
+      this.richParagraphCache.set(key, prepared);
+      paragraphs.push(prepared);
       offset += paragraph.length + 1; // + the consumed '\n'
     }
 

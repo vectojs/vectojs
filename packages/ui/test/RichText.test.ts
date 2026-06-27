@@ -67,6 +67,16 @@ describe('RichText', () => {
     expect(rt.height).toBeGreaterThan(0);
   });
 
+  it('appendSpans streams new runs onto the layout and accessible name', () => {
+    const { r, calls } = recordingRenderer();
+    const rt = new RichText([{ text: 'a' }]);
+    rt.appendSpans([{ text: 'b', style: { color: '#00ff00' } }]);
+    rt.render(r);
+    expect(calls.map((c) => c.text).join('')).toBe('ab');
+    expect(calls.find((c) => c.text === 'b')?.color).toBe('#00ff00');
+    expect(rt.getA11yAttributes().label).toBe('ab');
+  });
+
   it('paints link runs in the link color by default', () => {
     const { r, calls } = recordingRenderer();
     new RichText([{ text: 'L', style: { href: 'https://x.dev' } }], {

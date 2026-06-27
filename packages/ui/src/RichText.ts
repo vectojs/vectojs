@@ -150,6 +150,17 @@ export class RichText extends UIComponent {
     return this;
   }
 
+  /**
+   * Append styled runs and re-lay out — the streaming / typewriter path. The
+   * engine's rich paragraph memo reuses every untouched leading paragraph, so a
+   * token-by-token stream re-prepares in O(changed paragraph), not O(document).
+   */
+  public appendSpans(spans: StyledSpan[]): this {
+    this.spans = [...this.spans, ...spans];
+    this.result = this.layout();
+    return this;
+  }
+
   private layout(): LayoutResult {
     const prepared = this.engine.prepareRich(this.spans, {}, this.baseFontSize, this.baseStyle);
     const result = this.engine.layoutPrepared(prepared, undefined, this.exclusions);
