@@ -7,6 +7,7 @@ export * from './Card';
 export * from './Stack';
 export * from './Input';
 export * from './TextArea';
+export * from './RichText';
 export * from './Checkbox';
 export * from './Toggle';
 export * from './ScrollView';

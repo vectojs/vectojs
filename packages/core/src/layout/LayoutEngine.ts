@@ -24,6 +24,29 @@ export interface GlyphMeasurer {
 }
 
 /**
+ * Per-run inline style for rich text ({@link LayoutEngine.prepareRich}). All
+ * fields are optional and inherited from the call's base style when omitted.
+ */
+export interface TextStyle {
+  /** Font size in px for this run; overrides the base size (affects width + line height). */
+  fontSize?: number;
+  /** Fill color, e.g. `'#38bdf8'`. */
+  color?: string;
+  /** Bold weight (rendering only; width still measured at base metrics). */
+  bold?: boolean;
+  /** Italic slant (rendering only). */
+  italic?: boolean;
+  /** Hyperlink destination; carried through to the positioned nodes for hit-testing / a11y. */
+  href?: string;
+}
+
+/** A run of text sharing one {@link TextStyle}, the input unit of {@link LayoutEngine.prepareRich}. */
+export interface StyledSpan {
+  text: string;
+  style?: TextStyle;
+}
+
+/**
  * A single positioned glyph produced by {@link LayoutEngine.layoutText}.
  */
 export interface LayoutNode {
@@ -32,6 +55,8 @@ export interface LayoutNode {
   y: number;
   width: number;
   height: number;
+  /** Inline style carried from rich text; `undefined` for plain (single-style) layout. */
+  style?: TextStyle;
 }
 
 /**
@@ -49,6 +74,8 @@ export interface PreparedGlyph {
   char: string;
   /** Advance width at the prepared `fontSize`. */
   width: number;
+  /** Inline style (rich text only); drives per-glyph size, color and baseline. */
+  style?: TextStyle;
 }
 
 /** A measured word/segment, ready to be placed without re-measuring. */
@@ -236,6 +263,72 @@ export class LayoutEngine {
   }
 
   /**
+   * **Cold pass for rich text.** Like {@link prepare}, but takes an array of
+   * {@link StyledSpan}s so different inline runs (bold / italic / color / size /
+   * links) compose on the same wrapped lines. Each grapheme carries the
+   * (base-merged) style of the span it came from — so a style change *mid-word*
+   * (e.g. `He` + **`llo`**) is honored. Run `fontSize` affects measured width and
+   * line height; the rest is rendering metadata carried through to the nodes.
+   *
+   * The result feeds the same {@link layoutPrepared} as plain text.
+   *
+   * @param spans - The styled runs, in document order.
+   * @param fontAtlas - Pre-measured glyph metrics keyed by grapheme character.
+   * @param baseFontSize - Size for runs without an explicit `fontSize` (default 32).
+   * @param baseStyle - Style inherited by every run (each run's own style wins).
+   */
+  public prepareRich(
+    spans: StyledSpan[],
+    fontAtlas: GlyphAtlas,
+    baseFontSize: number = 32,
+    baseStyle?: TextStyle,
+  ): PreparedText {
+    // Flatten to text + a per-UTF16-unit style map (one shared object per run).
+    let fullText = '';
+    const styleAt: Array<TextStyle | undefined> = [];
+    for (const span of spans) {
+      const merged: TextStyle | undefined =
+        span.style || baseStyle ? { ...baseStyle, ...span.style } : undefined;
+      fullText += span.text;
+      for (let i = 0; i < span.text.length; i++) styleAt.push(merged);
+    }
+
+    const paragraphs: PreparedParagraph[] = [];
+    let offset = 0;
+    for (const paragraph of fullText.split('\n')) {
+      if (paragraph.length === 0) {
+        paragraphs.push({ words: [], isEmpty: true });
+        offset += 1; // the consumed '\n'
+        continue;
+      }
+      const words: PreparedWord[] = [];
+      let pOff = offset;
+      for (const segment of this.getWordSegments(paragraph)) {
+        const word = segment.segment;
+        const glyphs: PreparedGlyph[] = [];
+        let width = 0;
+        for (const char of this.getGraphemes(word)) {
+          const style = styleAt[pOff];
+          const w = this.glyphWidth(char, fontAtlas, style?.fontSize ?? baseFontSize);
+          glyphs.push({ char, width: w, style });
+          width += w;
+          pOff += char.length;
+        }
+        words.push({
+          glyphs,
+          width,
+          isWordLike: segment.isWordLike,
+          isWhitespace: word.trim().length === 0,
+        });
+      }
+      paragraphs.push({ words, isEmpty: false });
+      offset += paragraph.length + 1; // + the consumed '\n'
+    }
+
+    return { paragraphs, fontSize: baseFontSize };
+  }
+
+  /**
    * **Hot pass.** Place an already-measured {@link PreparedText} into positioned
    * glyphs. Does only wrap/positioning arithmetic — no `Intl.Segmenter`, no
    * re-measurement — so it is cheap enough to call every frame or on every
@@ -251,17 +344,28 @@ export class LayoutEngine {
   ): LayoutResult {
     const layoutNodes: LayoutNode[] = [];
     const fontSize = prepared.fontSize;
-    const lineHeight = fontSize * 1.5;
     let currentX = 0;
     let currentY = 0;
     let maxLineWidth = 0;
 
     for (const paragraph of prepared.paragraphs) {
       if (paragraph.isEmpty) {
-        currentY += lineHeight;
+        currentY += fontSize * 1.5;
         currentX = 0;
         continue;
       }
+
+      // Tallest run in the paragraph drives line height + the shared baseline, so
+      // mixed-size inline runs sit on one baseline (plain text: pMax === fontSize,
+      // making every offset below collapse to the original behavior).
+      let pMax = fontSize;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const gfs = glyph.style?.fontSize ?? fontSize;
+          if (gfs > pMax) pMax = gfs;
+        }
+      }
+      const lineHeight = pMax * 1.5;
 
       for (const word of paragraph.words) {
         // Word-level wrap
@@ -273,6 +377,7 @@ export class LayoutEngine {
 
         for (const glyph of word.glyphs) {
           const charWidth = glyph.width;
+          const gfs = glyph.style?.fontSize ?? fontSize;
 
           let foundSpot = false;
           while (currentY < this.maxHeight) {
@@ -281,7 +386,7 @@ export class LayoutEngine {
               currentY += lineHeight;
               continue;
             }
-            if (exclusionMask && exclusionMask(currentX, currentY, charWidth, fontSize)) {
+            if (exclusionMask && exclusionMask(currentX, currentY, charWidth, gfs)) {
               currentX += charWidth;
               continue;
             }
@@ -298,9 +403,11 @@ export class LayoutEngine {
           layoutNodes.push({
             char: glyph.char,
             x: currentX,
-            y: currentY,
+            // Drop smaller glyphs to the shared baseline (no-op when gfs === pMax).
+            y: currentY + (pMax - gfs),
             width: charWidth,
-            height: fontSize,
+            height: gfs,
+            style: glyph.style,
           });
 
           currentX += charWidth;
