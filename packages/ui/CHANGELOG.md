@@ -1,5 +1,71 @@
 # @vecto-ui/ui
 
+## 0.3.0
+
+### Minor Changes
+
+- a964f1c: feat(ui): add Flow layout component and Stack wrap support
+
+  - `Stack` now accepts `wrap`, `maxWidth`, and `maxHeight` options. When
+    `wrap: true`, children overflow onto the next line when the main-axis
+    extent exceeds the limit — producing a CSS flexbox-like flow layout.
+    Existing non-wrapping Stacks are unaffected (backward compatible).
+  - Added `Flow` convenience component: a `Stack` pre-configured with
+    `direction: 'horizontal'` and `wrap: true` — the most common use case
+    for responsive tag/chip/card layouts.
+
+- aa5e473: Streaming Markdown plus a wider component suite.
+
+  - **`Markdown`**: a canvas Markdown renderer with `setContent()` and `appendMarkdown()` for streaming/LLM output — unchanged prefix paragraphs are reused and a growing paragraph is appended in place, activating the `LayoutEngine` paragraph memo so live output doesn't re-render the whole document. Inline tokens (bold/italic/code/links, with a11y projection) map to `RichText`; a highlighted code block collapses to a single `CodeBlock` leaf entity instead of N×M child entities.
+  - New components: `Table`, `Dropdown`, `Slider`, `Modal`.
+
+### Patch Changes
+
+- 382e34f: Text flow around exclusion rects (战役一, PR B — "文字绕流" v1): text can now wrap around rectangular regions, like CSS floats.
+
+  - **`@vecto-ui/core`**: new pure `computeLineSegments(top, bottom, maxWidth, exclusions)` returns the free horizontal segments left on a line after subtracting the `ExclusionRect`s that overlap its band (left/right floats narrow the line; a centered rect splits it in two; a full-width one skips the band). `LayoutEngine.layoutPrepared` takes an optional third `exclusions` argument and flows words across those per-line segments. New exports: `ExclusionRect`, `LineSegment`, `computeLineSegments`. The single-column path (no exclusions) is byte-for-byte unchanged.
+  - **`@vecto-ui/ui`**: `RichText` gains an `exclusions` option and a `setExclusions()` method.
+
+- b5e2c76: Inline rich-text flow (战役一, PR A): bold / italic / colored / differently-sized runs that flow and wrap on the same lines, sharing a baseline.
+
+  - **`@vecto-ui/core`**: new `LayoutEngine.prepareRich(spans, atlas, baseFontSize, baseStyle?)` cold pass taking `StyledSpan[]`. Each grapheme carries the (base-merged) `TextStyle` of the span it came from — so a style change _mid-word_ is honored — and is measured at its run's `fontSize`. `layoutPrepared` now baseline-aligns mixed sizes (tallest run on a line drives line height; smaller glyphs drop to the shared baseline) and carries `style` onto each `LayoutNode`. New exports: `TextStyle`, `StyledSpan`; `PreparedGlyph`/`LayoutNode` gain an optional `style`. Plain (single-style) layout is unchanged.
+  - **`@vecto-ui/ui`**: new `RichText` component — renders styled runs via the engine's rich path, drawing each glyph with its run's color and weight/slant.
+
+- 90a4339: Inline links in rich text (战役一, PR A.5): a `{ href }` run in a `RichText` is underlined and painted in the link color on the canvas, and projects a real, operable `<a href>` shadow node so screen readers announce it and automation agents (Playwright / AI) can find it by href and click it — routing back to `onLinkClick`.
+
+  - **`@vecto-ui/core`**: new public `Scene.detachA11y(entity)` to prune the shadow node(s) of an entity subtree on demand. Interactive _child_ entities (e.g. per-link hotspots) call this when they are removed, so the per-frame `syncA11y` (which only creates/updates) never leaks stale nodes.
+  - **`@vecto-ui/ui`**: `RichText` gains `linkColor` and `onLinkClick` options. Each contiguous `href` run gets one transparent `<a>` hotspot child, kept stable across re-wrap (one per run) and pruned when the links change. Link glyphs render with the link color plus an underline.
+
+- cd28e58: Streaming / typewriter rich text (战役一, PR C — "流式打字机"): re-laying out a growing styled document is now O(changed paragraph) instead of O(document).
+
+  - **`@vecto-ui/core`**: `LayoutEngine.prepareRich` now memoizes per paragraph (mirroring the plain `prepare` memo), keyed by `fontSize` + text + a _value_-based run-length signature of the inline styles. A streaming caller that appends styled runs reuses every untouched leading paragraph by reference — even if it passes fresh style objects with the same values. The memo is invalidated when the font atlas changes.
+  - **`@vecto-ui/ui`**: `RichText.appendSpans(spans)` and `Text.append(text)` for incremental streaming; both re-lay out through the paragraph memo.
+
+- 7a702a8: Add a multi-line `TextArea` component (战役二).
+
+  - **`@vecto-ui/ui`**: new `TextArea` — a multi-line field backed by a real, transparent `<textarea>` shadow node. The browser owns editing (keyboard, IME composition, selection, clipboard, undo, multi-line navigation); the canvas mirrors it, re-wrapping the value and drawing text, cross-line selection, and a blinking caret with vertical scroll-to-caret. Exposes a pure `wrapText(value, maxWidth, measure)` helper (offset-aware line wrapping with hard-newline + char-level breaking) and `lineOfOffset()` for caret mapping.
+  - **`@vecto-ui/core`**: the a11y/automation shadow layer now supports `tag: 'textarea'` — `Scene.syncA11y` projects a `<textarea>`, sets its placeholder, syncs its value, and forwards its `input`/`change`/selection/IME events back to the entity (previously only `<input>` was wired).
+
+- c1aebf2: Add touch / pointer-drag support.
+
+  - `core`: `Scene` calls `setPointerCapture` on `pointerdown` and releases it on `pointerup`, so a drag keeps receiving `pointermove`/`pointerup` after the pointer leaves the node's box; interactive shadow nodes get `touch-action: none` so the browser doesn't claim touch drags (the canvas owns its gestures).
+  - `ui`: `ScrollView` now scrolls by pointer-drag (touch & mouse), not just the wheel — content follows the finger 1:1 and clamps to the content bounds. The wheel/drag clamping is shared in one helper.
+
+- Updated dependencies [c98d3e3]
+- Updated dependencies [8faa813]
+- Updated dependencies [668e503]
+- Updated dependencies [382e34f]
+- Updated dependencies [b5e2c76]
+- Updated dependencies [90a4339]
+- Updated dependencies [aa5e473]
+- Updated dependencies [2a20b15]
+- Updated dependencies [2512008]
+- Updated dependencies [6ad07c7]
+- Updated dependencies [cd28e58]
+- Updated dependencies [7a702a8]
+- Updated dependencies [c1aebf2]
+  - @vecto-ui/core@0.6.0
+
 ## 0.2.3
 
 ### Patch Changes
