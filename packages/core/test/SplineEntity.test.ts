@@ -142,4 +142,40 @@ describe('SplineEntity', () => {
     e.render(r as any);
     expect(r.stroke).toHaveBeenCalledWith('rgb(255, 0, 0)', expect.any(Number));
   });
+
+  it('defaults to interactive = true for a11y shadow event dispatch', () => {
+    const e = new SplineEntity(sample);
+    expect(e.interactive).toBe(true);
+  });
+
+  it('showBounds defaults to false', () => {
+    const e = new SplineEntity(sample);
+    expect(e.showBounds).toBe(false);
+  });
+
+  it('renders bounding-box outline when showBounds is true', () => {
+    const e = new SplineEntity(sample, { cache: false });
+    e.showBounds = true;
+    const r = mockRenderer();
+    e.render(r as any);
+    // roundRect is called for the bounds overlay
+    expect(r.roundRect).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      4,
+    );
+    // stroke is called at least once for the bounding box
+    expect(r.stroke).toHaveBeenCalledWith('rgba(0, 150, 255, 0.8)', 2);
+  });
+
+  it('does NOT render bounding-box outline when showBounds is false', () => {
+    const e = new SplineEntity(sample, { cache: false });
+    e.showBounds = false;
+    const r = mockRenderer();
+    e.render(r as any);
+    // roundRect should not be called for bounds overlay
+    expect(r.roundRect).not.toHaveBeenCalled();
+  });
 });

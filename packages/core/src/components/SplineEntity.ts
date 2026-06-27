@@ -169,6 +169,12 @@ export class SplineEntity extends Entity {
   private baked = false;
   /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
   private polylines: Float32Array[] | null = null;
+
+  /**
+   * When `true`, the renderer draws a rounded-rect outline of the entity's
+   * local bounds after painting the curves. Useful for drag feedback and
+   * debugging hit areas. Defaults to `false`.
+   */
   public showBounds: boolean = false;
 
   constructor(doc: SplineDocument, opts: SplineOptions = {}) {
@@ -182,6 +188,7 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
+    // Enable a11y shadow layer by default so pointer events are dispatched.
     this.interactive = true;
   }
 
