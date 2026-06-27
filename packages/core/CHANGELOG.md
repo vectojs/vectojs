@@ -1,5 +1,11 @@
 # @vecto-ui/core
 
+## 0.8.0
+
+### Minor Changes
+
+- feat(particles): implement WebGPU compute-driven particle system with GPU-side physics simulation (WGSL) for 1,000,000+ particles, zero-copy buffer-less procedural quad rendering, automatic fallback to WebGL2/Canvas2D CPU integration, and robust GPUDevice lost recovery with exponential backoff.
+
 ## 0.7.1
 
 ### Patch Changes
