@@ -366,7 +366,11 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
-    if (typeof window !== 'undefined' && this.canvas) {
+    if (
+      typeof window !== 'undefined' &&
+      this.canvas &&
+      typeof this.canvas.removeEventListener === 'function'
+    ) {
       if (this.pointerMoveListener) {
         this.canvas.removeEventListener('pointermove', this.pointerMoveListener);
       }
@@ -396,7 +400,11 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
     }
-    if (typeof window !== 'undefined' && this.canvas) {
+    if (
+      typeof window !== 'undefined' &&
+      this.canvas &&
+      typeof this.canvas.addEventListener === 'function'
+    ) {
       this.pointerMoveListener = (e: PointerEvent) => {
         const rect = this.canvas.getBoundingClientRect();
         this.mouseX = e.clientX - rect.left;
