@@ -1,5 +1,14 @@
 # @vecto-ui/ui
 
+## 0.3.2
+
+### Patch Changes
+
+- feat(a11y): strengthen a11yRoot with strict DFS DOM ordering, typing synchronization protection, and full WAI-ARIA keyboard navigation for Dropdown.
+- Updated dependencies
+- Updated dependencies [cd3e3e8]
+  - @vecto-ui/core@0.7.1
+
 ## 0.3.1
 
 ### Patch Changes

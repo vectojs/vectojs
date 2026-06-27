@@ -1,5 +1,12 @@
 # @vecto-ui/core
 
+## 0.7.1
+
+### Patch Changes
+
+- feat(a11y): strengthen a11yRoot with strict DFS DOM ordering, typing synchronization protection, and full WAI-ARIA keyboard navigation for Dropdown.
+- cd3e3e8: feat(three): implement optimized ThreeAdapter with dynamic rendering intercept, multi-pointer WebXR support, and robust resource disposal.
+
 ## 0.7.0
 
 ### Minor Changes
