@@ -40,12 +40,14 @@ export class ScrollView extends UIComponent {
       e.preventDefault();
       this.targetY -= e.deltaY;
       this.clampTarget();
+      this.scene?.markDirty();
     });
 
     // Pointer-drag (touch & mouse): content follows the finger/cursor 1:1.
     this.on('pointerdown', (e: { clientY?: number }) => {
       this.dragging = true;
       this.lastPointerY = e.clientY ?? 0;
+      this.scene?.markDirty();
     });
     this.on('pointermove', (e: { clientY?: number }) => {
       if (!this.dragging) return;
@@ -53,6 +55,7 @@ export class ScrollView extends UIComponent {
       this.targetY += y - this.lastPointerY;
       this.lastPointerY = y;
       this.clampTarget();
+      this.scene?.markDirty();
     });
     const endDrag = () => {
       this.dragging = false;
