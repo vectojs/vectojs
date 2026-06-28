@@ -53,7 +53,7 @@ class LinkHotspot extends UIComponent {
 
 /** Extract the family portion of a CSS font shorthand (drops a leading `<n>px`). */
 function familyOf(font: string): string {
-  return font.replace(/^\s*(?:[a-z-]+\s+)*?[\d.]+px\s*/i, '').trim() || 'sans-serif';
+  return font.replace(/^.*?[\d.]+px\s*/i, '').trim() || 'sans-serif';
 }
 
 /**

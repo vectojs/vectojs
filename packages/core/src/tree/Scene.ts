@@ -523,7 +523,7 @@ export class Scene {
         // Default shadow DOM styling (with outline disabled to let Vecto handle visual focus outlines)
         el.style.position = 'absolute';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
-        el.style.touchAction = 'none';
+        el.style.touchAction = 'pinch-zoom';
         el.style.margin = '0';
         el.style.padding = '0';
         el.style.outline = 'none';
