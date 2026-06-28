@@ -131,4 +131,34 @@ describe('ScrollView', () => {
     settle(sv);
     expect(sv.content.y).toBeCloseTo(-200, 0);
   });
+
+  it('provides public scrollTo and scrollToBottom APIs', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300)); // maxScroll = 200
+
+    sv.scrollTo(120);
+    settle(sv);
+    expect(sv.content.y).toBeCloseTo(-120, 0);
+
+    sv.scrollToBottom();
+    settle(sv);
+    expect(sv.content.y).toBeCloseTo(-200, 0);
+  });
+
+  it('stays stable when targetY is set to a massive out-of-range value', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300)); // maxScroll = 200
+
+    // Set targetY directly to a colossal negative number
+    (sv as any).targetY = -1e9;
+
+    // Perform update tick
+    sv.update(16, 0);
+
+    // Verify targetY was clamped immediately in update and velocityY did not blow up
+    expect((sv as any).targetY).toBe(-200);
+    expect((sv as any).velocityY).toBeLessThan(100);
+    expect(sv.content.y).toBeLessThan(0);
+    expect(sv.content.y).toBeGreaterThanOrEqual(-200);
+  });
 });

@@ -61,7 +61,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let dt = clamp(params.dt, 0.0, 0.1);
   let safe_screen_size = max(params.screen_size, vec2<f32>(1.0, 1.0));
   
-  let spring_k = clamp(params.spring_k, 0.0, 1.0);
+  let spring_k = clamp(params.spring_k, 0.0, 10.0);
   let damping = clamp(params.damping, 0.0, 1.0);
   let bounce_damping = clamp(params.bounce_damping, 0.0, 1.0);
   let max_velocity = max(params.max_velocity, 1.0);
@@ -199,7 +199,8 @@ export class WebGPUParticleSystemManager {
   private device: GPUDevice;
   private computePipeline: GPUComputePipeline | null = null;
   private renderPipeline: GPURenderPipeline | null = null;
-  private bindGroupLayout: GPUBindGroupLayout | null = null;
+  private computeBindGroupLayout: GPUBindGroupLayout | null = null;
+  private renderBindGroupLayout: GPUBindGroupLayout | null = null;
 
   constructor(device: GPUDevice) {
     this.device = device;
@@ -209,32 +210,51 @@ export class WebGPUParticleSystemManager {
     const computeModule = this.device.createShaderModule({ code: COMPUTE_SHADER });
     const renderModule = this.device.createShaderModule({ code: RENDER_SHADER });
 
-    this.bindGroupLayout = this.device.createBindGroupLayout({
+    this.computeBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         {
           binding: 0,
-          visibility: GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX,
+          visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'uniform' },
         },
         {
           binding: 1,
-          visibility: GPUShaderStage.COMPUTE | GPUShaderStage.VERTEX,
+          visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'storage' },
         },
       ],
     });
 
-    const pipelineLayout = this.device.createPipelineLayout({
-      bindGroupLayouts: [this.bindGroupLayout],
+    this.renderBindGroupLayout = this.device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'uniform' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'read-only-storage' },
+        },
+      ],
+    });
+
+    const computePipelineLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.computeBindGroupLayout],
+    });
+
+    const renderPipelineLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.renderBindGroupLayout],
     });
 
     this.computePipeline = this.device.createComputePipeline({
-      layout: pipelineLayout,
+      layout: computePipelineLayout,
       compute: { module: computeModule, entryPoint: 'cs_main' },
     });
 
     this.renderPipeline = this.device.createRenderPipeline({
-      layout: pipelineLayout,
+      layout: renderPipelineLayout,
       vertex: { module: renderModule, entryPoint: 'vs_main' },
       fragment: {
         module: renderModule,
@@ -266,15 +286,20 @@ export class WebGPUParticleSystemManager {
     });
 
     entity.computeBindGroup = this.device.createBindGroup({
-      layout: this.bindGroupLayout!,
+      layout: this.computeBindGroupLayout!,
       entries: [
         { binding: 0, resource: { buffer: entity.gpuUniformBuffer } },
         { binding: 1, resource: { buffer: entity.gpuStorageBuffer } },
       ],
     });
 
-    // Reuse compute layout for vertex attributes reading in render pass
-    entity.renderBindGroup = entity.computeBindGroup;
+    entity.renderBindGroup = this.device.createBindGroup({
+      layout: this.renderBindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: entity.gpuUniformBuffer } },
+        { binding: 1, resource: { buffer: entity.gpuStorageBuffer } },
+      ],
+    });
   }
 
   public recordComputePass(
@@ -319,7 +344,7 @@ export class WebGPUParticleSystemManager {
 
     // Integrate parameters
     uniformArray[10] = isNaN(dt) ? 0.016 : dt;
-    uniformArray[11] = Math.max(0, Math.min(1, entity.springK));
+    uniformArray[11] = Math.max(0, Math.min(10, entity.springK));
     uniformArray[12] = Math.max(0, Math.min(1, entity.damping));
     uniformArray[14] = Math.max(0, Math.min(1, entity.bounceDamping));
     uniformArray[16] = Math.max(1.0, entity.maxVelocity);
@@ -346,6 +371,7 @@ export class WebGPUParticleSystemManager {
   public destroy(): void {
     this.computePipeline = null;
     this.renderPipeline = null;
-    this.bindGroupLayout = null;
+    this.computeBindGroupLayout = null;
+    this.renderBindGroupLayout = null;
   }
 }

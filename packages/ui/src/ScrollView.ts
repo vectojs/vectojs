@@ -72,6 +72,26 @@ export class ScrollView extends UIComponent {
     else if (this.targetY < -maxScroll) this.targetY = -maxScroll;
   }
 
+  /**
+   * Scroll to a specific Y offset (where 0 is top).
+   *
+   * @param y - The target scroll position in pixels.
+   */
+  public scrollTo(y: number): void {
+    this.targetY = -Math.max(0, y);
+    this.clampTarget();
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Scroll to the very bottom of the content.
+   */
+  public scrollToBottom(): void {
+    const maxScroll = Math.max(0, this.content.height - this.height);
+    this.targetY = -maxScroll;
+    this.scene?.markDirty();
+  }
+
   public add(child: Entity): this {
     this.content.add(child);
     this.updateContentSize();
@@ -106,6 +126,7 @@ export class ScrollView extends UIComponent {
 
   public update(dt: number, time: number): void {
     super.update(dt, time);
+    this.clampTarget();
 
     // Smooth scrolling integration
     const maxScroll = Math.max(0, this.content.height - this.height);

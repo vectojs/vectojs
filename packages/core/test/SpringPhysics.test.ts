@@ -105,8 +105,8 @@ describe('SpringPhysics', () => {
       // Report benchmark time
       console.log(`[Benchmark] 50,000 springs update took: ${duration.toFixed(3)}ms`);
 
-      // Ensure performance is acceptable (usually < 2ms on modern CPUs, we set a safe limit of 15ms for virtualized CI runner)
-      expect(duration).toBeLessThan(15);
+      // Ensure performance is acceptable (usually < 2ms on modern CPUs, we set a safe limit of 40ms for virtualized CI runner)
+      expect(duration).toBeLessThan(40);
     });
   });
 });

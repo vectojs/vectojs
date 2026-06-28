@@ -481,10 +481,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     return (scene as unknown as { a11yElements: Map<string, HTMLElement> }).a11yElements.get(id)!;
   }
 
-  it('sets touch-action:none on interactive shadow nodes (canvas owns gestures)', () => {
+  it('sets touch-action:pinch-zoom on interactive shadow nodes (to allow pinch-zoom gesture)', () => {
     const scene = makeScene();
     const el = mountInteractive(scene, 'ta');
-    expect(el.style.touchAction).toBe('none');
+    expect(el.style.touchAction).toBe('pinch-zoom');
   });
 
   it('captures the pointer on pointerdown and releases it on pointerup', () => {
@@ -635,11 +635,11 @@ describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
 
   (globalThis as any).requestAnimationFrame = () => 0;
 
-  function makeScene() {
+  function makeScene(options: any = { maxFPS: 0 }) {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
     parentDiv.appendChild(canvas);
-    const scene = new Scene(canvas);
+    const scene = new Scene(canvas, options);
     (scene as any).isRunning = true;
     const spy = new SpyEntity('spy');
     scene.add(spy);
@@ -659,9 +659,13 @@ describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
     const { scene, spy } = makeScene();
     scene.maxFPS = 30; // ~33.3ms interval
     (scene as any).lastTime = -1000;
+    scene.markDirty();
     (scene as any).loop(0); // renders (renders=1), lastTime=0
+    scene.markDirty();
     (scene as any).loop(10); // 10ms < 33.3 → skip
+    scene.markDirty();
     (scene as any).loop(20); // skip
+    scene.markDirty();
     (scene as any).loop(40); // 40ms ≥ interval → render (renders=2)
     expect(spy.renders).toBe(2);
   });
