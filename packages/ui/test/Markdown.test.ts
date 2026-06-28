@@ -192,5 +192,24 @@ Plain paragraph at the end.
       // The incomplete fence might be treated as text or partial code
       expect(md.content.children.length).toBeGreaterThanOrEqual(1);
     });
+    it('renders tables using the Table component', () => {
+      const tableMd = `
+| Header 1 | Header 2 |
+|----------|----------|
+| Row 1-1  | Row 1-2  |
+| Row 2-1  | Row 2-2  |
+`;
+      const md = new Markdown(tableMd);
+      expect(md.content.children.length).toBeGreaterThanOrEqual(1);
+      const table = md.content.children[0];
+
+      // Verify that it is indeed a Table component instance
+      expect(table.constructor.name).toBe('Table');
+      expect((table as any).headers).toEqual(['Header 1', 'Header 2']);
+      expect((table as any).rows).toEqual([
+        ['Row 1-1', 'Row 1-2'],
+        ['Row 2-1', 'Row 2-2'],
+      ]);
+    });
   });
 });

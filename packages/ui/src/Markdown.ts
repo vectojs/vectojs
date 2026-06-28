@@ -3,6 +3,7 @@ import { marked, type Token, type Tokens } from 'marked';
 import { measureText } from './measure';
 import { RichText } from './RichText';
 import { Stack } from './Stack';
+import { Table } from './Table';
 import { Text } from './Text';
 import { UIComponent } from './UIComponent';
 
@@ -778,6 +779,22 @@ export class Markdown extends UIComponent {
           listStack.add(itemRt);
         }
         return listStack;
+      }
+
+      // ── Table ────────────────────────────────────────────────────────
+      case 'table': {
+        const tblToken = token as any;
+        const headers = tblToken.header.map((cell: any) => cell.text);
+        const rows = tblToken.rows.map((row: any[]) => row.map((cell: any) => cell.text));
+        return new Table({
+          headers,
+          rows,
+          width: this.maxWidth,
+          textColor: t.textColor,
+          headerTextColor: t.headingColor,
+          font: `${t.fontSize - 2}px ${t.bodyFont}`,
+          borderColor: t.hrColor,
+        });
       }
 
       // ── Horizontal rule ──────────────────────────────────────────────

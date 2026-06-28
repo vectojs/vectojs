@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest';
-import { Scene, VectoUIEvent } from '@vecto-ui/core';
+import { describe, it, expect } from 'vitest';
+import { Scene } from '@vecto-ui/core';
 import { Slider, Dropdown } from '../src';
 
 function fakeCtx(): CanvasRenderingContext2D {

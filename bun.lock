@@ -18,7 +18,7 @@
     },
     "packages/core": {
       "name": "@vecto-ui/core",
-      "version": "0.5.3",
+      "version": "0.9.0",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.9",
         "esbuild": "^0.21.5",
@@ -29,29 +29,33 @@
     },
     "packages/three": {
       "name": "@vecto-ui/three",
-      "version": "0.1.0",
-      "dependencies": {
-        "@vecto-ui/core": "^0.5.3",
-        "three": "^0.160.0",
-      },
+      "version": "0.2.0",
       "devDependencies": {
         "@types/three": "^0.160.0",
+        "@vecto-ui/core": "workspace:*",
         "tsup": "^8.3.5",
         "vitest": "^4.1.9",
+      },
+      "peerDependencies": {
+        "@vecto-ui/core": ">=0.8.0",
+        "three": "^0.160.0",
       },
     },
     "packages/ui": {
       "name": "@vecto-ui/ui",
-      "version": "0.2.3",
+      "version": "0.4.0",
       "dependencies": {
-        "@vecto-ui/core": "^0.5.3",
         "marked": "^18.0.5",
       },
       "devDependencies": {
         "@types/marked": "^6.0.0",
+        "@vecto-ui/core": "workspace:*",
         "jsdom": "^29.1.1",
         "tsup": "^8.3.5",
         "vitest": "^4.1.9",
+      },
+      "peerDependencies": {
+        "@vecto-ui/core": ">=0.9.0",
       },
     },
   },

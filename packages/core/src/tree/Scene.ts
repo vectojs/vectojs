@@ -21,6 +21,13 @@ export interface SceneOptions {
    */
   pointBackend?: 'canvas' | 'webgl';
   /**
+   * Backend for particle simulation and rendering:
+   * - `'auto'` (default): tries WebGPU first, falls back to CPU if WebGPU is unavailable or fails.
+   * - `'webgpu'`: forces WebGPU.
+   * - `'cpu'`: forces CPU simulation and rendering (disabling WebGPU completely).
+   */
+  particleBackend?: 'auto' | 'webgpu' | 'cpu';
+  /**
    * Render the accessibility/automation shadow nodes with a visible blue dashed
    * outline (development aid). Default `false`: shadow nodes are transparent
    * (`opacity:0`) — still operable by Playwright/assistive tech, but the canvas
@@ -111,7 +118,7 @@ export class Scene {
    * the loop renders at most `maxFPS` times per second; animations still run,
    * just less often. See {@link SceneOptions.maxFPS}.
    */
-  public maxFPS: number = 0;
+  public maxFPS: number = 60;
   /** Whether the OS prefers-reduced-motion setting auto-caps the loop. */
   public respectReducedMotion: boolean = true;
   /** Cached media-query list; `.matches` is read live each frame. */
@@ -158,7 +165,14 @@ export class Scene {
   private destroyed: boolean = false;
   private device: GPUDevice | null = null;
   private deviceLost: boolean = false;
-  private webgpuDisabled: boolean = false;
+  public particleBackend: 'auto' | 'webgpu' | 'cpu' = 'auto';
+  private _webgpuDisabled: boolean = false;
+  public get webgpuDisabled(): boolean {
+    return this._webgpuDisabled || this.particleBackend === 'cpu';
+  }
+  public set webgpuDisabled(value: boolean) {
+    this._webgpuDisabled = value;
+  }
   private recoveryTimerId: any = null;
   private manager: WebGPUParticleSystemManager | null = null;
   private initializingWebGPU: boolean = false;
@@ -168,20 +182,33 @@ export class Scene {
   private mouseY: number = -9999;
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
   private pointerLeaveListener: (() => void) | null = null;
+  private hasWarnedZeroSize: boolean = false;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
     this.debugA11y = options.debugA11y ?? false;
     this.disableWindowResize = options.disableWindowResize ?? false;
     if (this.disableWindowResize) {
-      this.width = canvas.width;
-      this.height = canvas.height;
+      this.width = canvas.width || canvas.clientWidth || 0;
+      this.height = canvas.height || canvas.clientHeight || 0;
     } else {
-      this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
-      this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
+      this.width =
+        typeof window !== 'undefined'
+          ? window.innerWidth
+          : canvas.clientWidth || canvas.width || 800;
+      this.height =
+        typeof window !== 'undefined'
+          ? window.innerHeight
+          : canvas.clientHeight || canvas.height || 600;
     }
-    this.maxFPS = options.maxFPS ?? 0;
+    const globalProcess =
+      typeof globalThis !== 'undefined' ? (globalThis as any).process : undefined;
+    const isTest =
+      globalProcess &&
+      (globalProcess.env?.NODE_ENV === 'test' || globalProcess.env?.VITEST === 'true');
+    this.maxFPS = options.maxFPS ?? (isTest ? 0 : 60);
     this.respectReducedMotion = options.respectReducedMotion ?? true;
+    this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -426,6 +453,15 @@ export class Scene {
    */
   public start(): void {
     if (this.isRunning) return;
+
+    if ((this.width === 0 || this.height === 0) && !this.hasWarnedZeroSize) {
+      console.warn(
+        `[VectoUI] Scene started with width or height set to 0 (width: ${this.width}, height: ${this.height}). ` +
+          'Entities may not render or simulate correctly. Please call scene.resize(width, height) to set valid dimensions.',
+      );
+      this.hasWarnedZeroSize = true;
+    }
+
     this.isRunning = true;
     this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
     this.scheduleFrame();
@@ -1001,10 +1037,23 @@ export class Scene {
   private loop(time: number): void {
     if (!this.isRunning) return;
 
+    let cap = this.effectiveMaxFPS();
+
+    // Auto-throttle when idle: if in continuous render mode (always) but the scene is static
+    // (no pending animations and not marked dirty), drop the render rate to 2 FPS
+    // to save battery and GPU cycles.
+    const isStatic =
+      !this.dirty &&
+      !this.hasAnyPendingAnimation(this.root) &&
+      !this.hasAnyPendingAnimation(this.overlayRoot);
+
+    if (isStatic && this.renderMode === 'always' && this.maxFPS > 0) {
+      cap = Math.min(cap, 2);
+    }
+
     // Frame-rate cap (power saving / prefers-reduced-motion): if this frame
     // arrived sooner than the target interval, skip rendering this tick.
     // `lastTime` only advances on rendered frames, so `dt` stays accurate.
-    const cap = this.effectiveMaxFPS();
     if (cap > 0 && time - this.lastTime < 1000 / cap - 1) {
       this.scheduleFrame();
       return;
@@ -1014,12 +1063,7 @@ export class Scene {
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
-    if (
-      this.renderMode === 'onDemand' &&
-      !this.dirty &&
-      !this.hasAnyPendingAnimation(this.root) &&
-      !this.hasAnyPendingAnimation(this.overlayRoot)
-    ) {
+    if (this.renderMode === 'onDemand' && isStatic) {
       this.scheduleFrame();
       return;
     }
@@ -1124,9 +1168,12 @@ export class Scene {
           // Compute Pass
           const computePass = commandEncoder.beginComputePass();
           for (const entity of computeEntities) {
-            if (!entity.gpuStorageBuffer) {
-              this.manager.setupEntityResources(entity);
+            if (!entity.gpuStorageBuffer || entity.needsInit) {
+              if (!entity.gpuStorageBuffer) {
+                this.manager.setupEntityResources(entity);
+              }
               this.device.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+              entity.needsInit = false;
             }
             this.manager.recordComputePass(
               computePass,

@@ -23,18 +23,18 @@ export interface ComputeParticleOptions {
   pointerEvents?: boolean;
 }
 
+export const PARTICLE_STRIDE_FLOATS = 8;
+export const PARTICLE_OFFSET_POSITION_X = 0;
+export const PARTICLE_OFFSET_POSITION_Y = 1;
+export const PARTICLE_OFFSET_VELOCITY_X = 2;
+export const PARTICLE_OFFSET_VELOCITY_Y = 3;
+export const PARTICLE_OFFSET_ORIGIN_X = 4;
+export const PARTICLE_OFFSET_ORIGIN_Y = 5;
+export const PARTICLE_OFFSET_SIZE = 6;
+export const PARTICLE_OFFSET_LIFE = 7;
+
 /**
  * An entity representing a high-performance WebGPU/CPU particle simulation layer.
- *
- * Each particle consists of 8 floats in `particleData`:
- * - 0: position.x
- * - 1: position.y
- * - 2: velocity.x
- * - 3: velocity.y
- * - 4: origin.x
- * - 5: origin.y
- * - 6: size
- * - 7: life (remaining lifetime, -1.0 for perpetual particles)
  */
 export class ComputeParticleEntity extends Entity {
   public maxParticles: number;
@@ -73,7 +73,7 @@ export class ComputeParticleEntity extends Entity {
     this.baseColor = options.color ?? '#00f0ff';
     this.pointerEvents = options.pointerEvents ?? false;
 
-    this.particleData = new Float32Array(this.maxParticles * 8);
+    this.particleData = new Float32Array(this.maxParticles * PARTICLE_STRIDE_FLOATS);
     this.interactive = true;
   }
 
@@ -88,19 +88,81 @@ export class ComputeParticleEntity extends Entity {
     const safeW = Math.max(1, width);
     const safeH = Math.max(1, height);
     for (let i = 0; i < this.maxParticles; i++) {
-      const idx = i * 8;
+      const idx = i * PARTICLE_STRIDE_FLOATS;
       const x = Math.random() * safeW;
       const y = Math.random() * safeH;
-      this.particleData[idx] = x;
-      this.particleData[idx + 1] = y;
-      this.particleData[idx + 2] = 0; // vx
-      this.particleData[idx + 3] = 0; // vy
-      this.particleData[idx + 4] = x; // ox
-      this.particleData[idx + 5] = y; // oy
-      this.particleData[idx + 6] = this.size;
-      this.particleData[idx + 7] = -1.0; // perpetual
+      this.particleData[idx + PARTICLE_OFFSET_POSITION_X] = x;
+      this.particleData[idx + PARTICLE_OFFSET_POSITION_Y] = y;
+      this.particleData[idx + PARTICLE_OFFSET_VELOCITY_X] = 0;
+      this.particleData[idx + PARTICLE_OFFSET_VELOCITY_Y] = 0;
+      this.particleData[idx + PARTICLE_OFFSET_ORIGIN_X] = x;
+      this.particleData[idx + PARTICLE_OFFSET_ORIGIN_Y] = y;
+      this.particleData[idx + PARTICLE_OFFSET_SIZE] = this.size;
+      this.particleData[idx + PARTICLE_OFFSET_LIFE] = -1.0; // perpetual
     }
-    this.needsInit = false;
+    this.needsInit = true;
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Sets the origins (ox, oy) for a subset or all particles.
+   * Also sets position to origin if requestPositionReset is true.
+   *
+   * @param points - Flat Float32Array containing [x0, y0, x1, y1, ...]
+   * @param requestPositionReset - Whether to set current positions to the new origins. Defaults to true.
+   */
+  public setOrigins(points: Float32Array | number[], requestPositionReset: boolean = true): void {
+    const len = Math.min(this.maxParticles, Math.floor(points.length / 2));
+    for (let i = 0; i < len; i++) {
+      const idx = i * PARTICLE_STRIDE_FLOATS;
+      const ptIdx = i * 2;
+      const ox = points[ptIdx];
+      const oy = points[ptIdx + 1];
+      this.particleData[idx + PARTICLE_OFFSET_ORIGIN_X] = ox;
+      this.particleData[idx + PARTICLE_OFFSET_ORIGIN_Y] = oy;
+      if (requestPositionReset) {
+        this.particleData[idx + PARTICLE_OFFSET_POSITION_X] = ox;
+        this.particleData[idx + PARTICLE_OFFSET_POSITION_Y] = oy;
+        this.particleData[idx + PARTICLE_OFFSET_VELOCITY_X] = 0;
+        this.particleData[idx + PARTICLE_OFFSET_VELOCITY_Y] = 0;
+      }
+    }
+    this.needsInit = true;
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Sets the current positions (x, y) for a subset or all particles.
+   *
+   * @param positions - Flat Float32Array containing [x0, y0, x1, y1, ...]
+   */
+  public setPositions(positions: Float32Array | number[]): void {
+    const len = Math.min(this.maxParticles, Math.floor(positions.length / 2));
+    for (let i = 0; i < len; i++) {
+      const idx = i * PARTICLE_STRIDE_FLOATS;
+      const ptIdx = i * 2;
+      this.particleData[idx + PARTICLE_OFFSET_POSITION_X] = positions[ptIdx];
+      this.particleData[idx + PARTICLE_OFFSET_POSITION_Y] = positions[ptIdx + 1];
+    }
+    this.needsInit = true;
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Sets the current velocities (vx, vy) for a subset or all particles.
+   *
+   * @param velocities - Flat Float32Array containing [vx0, vy0, vx1, vy1, ...]
+   */
+  public setVelocities(velocities: Float32Array | number[]): void {
+    const len = Math.min(this.maxParticles, Math.floor(velocities.length / 2));
+    for (let i = 0; i < len; i++) {
+      const idx = i * PARTICLE_STRIDE_FLOATS;
+      const ptIdx = i * 2;
+      this.particleData[idx + PARTICLE_OFFSET_VELOCITY_X] = velocities[ptIdx];
+      this.particleData[idx + PARTICLE_OFFSET_VELOCITY_Y] = velocities[ptIdx + 1];
+    }
+    this.needsInit = true;
+    this.scene?.markDirty();
   }
 
   /**
@@ -144,7 +206,7 @@ export class ComputeParticleEntity extends Entity {
     const safeWidth = Math.max(1.0, width);
     const safeHeight = Math.max(1.0, height);
 
-    const springK = Math.max(0.0, Math.min(1.0, this.springK));
+    const springK = Math.max(0.0, Math.min(10.0, this.springK));
     const damping = Math.max(0.0, Math.min(1.0, this.damping));
     const bounceDamping = Math.max(0.0, Math.min(1.0, this.bounceDamping));
     const maxVelocity = Math.max(1.0, this.maxVelocity);

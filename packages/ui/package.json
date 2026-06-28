@@ -39,10 +39,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vecto-ui/core": "^0.9.0",
     "marked": "^18.0.5"
   },
+  "peerDependencies": {
+    "@vecto-ui/core": ">=0.9.0"
+  },
   "devDependencies": {
+    "@vecto-ui/core": "workspace:*",
     "@types/marked": "^6.0.0",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
