@@ -58,12 +58,6 @@ export interface SceneOptions {
    * Useful when Vecto is running inside a custom layout container or offscreen canvas.
    */
   disableWindowResize?: boolean;
-  /**
-   * Redraw strategy:
-   * - `'always'`: re-render every animation frame.
-   * - `'onDemand'` (default): only re-render when the scene is marked dirty or an animation is pending.
-   */
-  renderMode?: 'always' | 'onDemand';
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -104,20 +98,20 @@ export class Scene {
 
   /**
    * Redraw strategy:
-   * - `'always'`: re-render every animation frame (legacy behavior).
-   * - `'onDemand'` (default): only re-render when the scene is marked dirty (via
+   * - `'always'` (default): re-render every animation frame (legacy behavior).
+   * - `'onDemand'`: only re-render when the scene is marked dirty (via
    *   {@link markDirty}) or while an animation is pending. Ideal for static /
    *   event-driven UIs where idle frames should cost ~0.
    */
-  public renderMode: 'always' | 'onDemand' = 'onDemand';
+  public renderMode: 'always' | 'onDemand' = 'always';
   private dirty: boolean = true;
 
   /**
-   * Frame-rate cap (power saving). `60` = capped (native refresh up to 60fps). When set,
+   * Frame-rate cap (power saving). `0` = uncapped (native refresh). When set,
    * the loop renders at most `maxFPS` times per second; animations still run,
    * just less often. See {@link SceneOptions.maxFPS}.
    */
-  public maxFPS: number = 60;
+  public maxFPS: number = 0;
   /** Whether the OS prefers-reduced-motion setting auto-caps the loop. */
   public respectReducedMotion: boolean = true;
   /** Cached media-query list; `.matches` is read live each frame. */
@@ -186,8 +180,7 @@ export class Scene {
       this.width = typeof window !== 'undefined' ? window.innerWidth : 800;
       this.height = typeof window !== 'undefined' ? window.innerHeight : 600;
     }
-    this.maxFPS = options.maxFPS ?? 60;
-    this.renderMode = options.renderMode ?? 'onDemand';
+    this.maxFPS = options.maxFPS ?? 0;
     this.respectReducedMotion = options.respectReducedMotion ?? true;
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.reducedMotionQuery =
@@ -1023,7 +1016,6 @@ export class Scene {
       return;
     }
 
-    this.dirty = false;
     this.render(this.renderer, dt, time);
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
@@ -1052,6 +1044,8 @@ export class Scene {
         this.a11yPendingSyncAfterAnimation = false;
       }
     }
+
+    this.dirty = false;
 
     this.scheduleFrame();
   }

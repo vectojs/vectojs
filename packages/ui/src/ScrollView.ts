@@ -122,6 +122,7 @@ export class ScrollView extends UIComponent {
 
     if (Math.abs(this.velocityY) > 0.01 || Math.abs(diff) > 0.01) {
       this.content.y += this.velocityY;
+      this.scene?.markDirty();
     } else {
       this.content.y = this.targetY;
       this.velocityY = 0;
