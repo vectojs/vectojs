@@ -30,13 +30,28 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./layout": {
+      "types": "./dist/layout.d.ts",
+      "import": "./dist/layout.mjs",
+      "require": "./dist/layout.js"
+    },
+    "./renderer": {
+      "types": "./dist/renderer.d.ts",
+      "import": "./dist/renderer.mjs",
+      "require": "./dist/renderer.js"
+    },
+    "./text": {
+      "types": "./dist/text.d.ts",
+      "import": "./dist/text.mjs",
+      "require": "./dist/text.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "node scripts/build-worker.js && tsup",
     "test": "vitest run"
   },
   "dependencies": {},
