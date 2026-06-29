@@ -1,7 +1,17 @@
+import { Scene } from './tree/Scene';
+import { createWebGLPointRenderer } from './renderer/WebGLPointRenderer';
+import { WebGPUParticleSystemManager } from './renderer/WebGPUParticleSystemManager';
+
+// Automatically register default renderers/managers for backward compatibility
+Scene.registerWebGLPointRendererCreator(createWebGLPointRenderer);
+Scene.registerWebGPUParticleSystemManager(WebGPUParticleSystemManager);
+
+// Export everything
 export * from './renderer/IRenderer';
 export * from './renderer/CanvasRenderer';
 export * from './renderer/SVGRenderer';
 export * from './renderer/WebGLPointRenderer';
+export * from './renderer/WebGPUParticleSystemManager';
 export * from './renderer/colorParse';
 export * from './tree/Entity';
 export * from './tree/Scene';

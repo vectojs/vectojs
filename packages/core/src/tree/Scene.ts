@@ -1,10 +1,30 @@
+export interface IWebGLPointRenderer {
+  resize(width: number, height: number): void;
+}
+export type WebGLPointRendererCreator = (canvas: HTMLCanvasElement) => any;
+
+export interface IWebGPUParticleSystemManager {
+  new (device: GPUDevice): any;
+  initPipelines(format: GPUTextureFormat): Promise<void> | void;
+  setupEntityResources(entity: any): void;
+  recordComputePass(
+    commandEncoder: GPUCommandEncoder,
+    entity: any,
+    mouseX: number,
+    mouseY: number,
+    dt: number,
+  ): void;
+  recordRenderPass(renderPassEncoder: GPURenderPassEncoder, entity: any): void;
+  destroy(): void;
+}
+
 import { Entity, VectoUIEvent } from './Entity';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
-import { createWebGLPointRenderer, type PointRenderer } from '../renderer/WebGLPointRenderer';
+import type { PointRenderer } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
-import { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
+import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 
 /**
@@ -96,6 +116,17 @@ export interface A11yTreeNode {
  * scene.start();
  */
 export class Scene {
+  private static webglCreator: WebGLPointRendererCreator | null = null;
+  private static webgpuManagerClass: any = null;
+
+  public static registerWebGLPointRendererCreator(creator: WebGLPointRendererCreator) {
+    Scene.webglCreator = creator;
+  }
+
+  public static registerWebGPUParticleSystemManager(managerClass: any) {
+    Scene.webgpuManagerClass = managerClass;
+  }
+
   private root: Entity;
   public overlayRoot: Entity;
   private renderer: IRenderer;
@@ -278,7 +309,7 @@ export class Scene {
       gl.style.pointerEvents = 'none';
       gl.style.zIndex = '5';
       if (canvas.parentElement) canvas.parentElement.appendChild(gl);
-      const pr = createWebGLPointRenderer(gl);
+      const pr = Scene.webglCreator ? Scene.webglCreator(gl) : null;
       if (pr) {
         pr.resize(this.width, this.height);
         this.glCanvas = gl;
@@ -1144,12 +1175,20 @@ export class Scene {
             this.device = newDevice;
             this.initializingWebGPU = false;
             const format = navigator.gpu ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm';
-            this.manager = new WebGPUParticleSystemManager(newDevice);
-            this.manager.initPipelines(format);
-            for (const entity of computeEntities) {
-              this.manager.setupEntityResources(entity);
-              if (entity.gpuStorageBuffer) {
-                newDevice.queue.writeBuffer(entity.gpuStorageBuffer, 0, entity.particleData);
+            if (Scene.webgpuManagerClass) {
+              this.manager = new Scene.webgpuManagerClass(newDevice);
+            } else if (this.particleBackend === 'webgpu') {
+              throw new Error(
+                'WebGPU particle manager is not registered. Please call Scene.registerWebGPUParticleSystemManager(WebGPUParticleSystemManager) first.',
+              );
+            }
+            if (this.manager) {
+              this.manager.initPipelines(format);
+              for (const entity of computeEntities) {
+                this.manager.setupEntityResources(entity);
+                if (entity.gpuStorageBuffer) {
+                  newDevice.queue.writeBuffer(entity.gpuStorageBuffer, 0, entity.particleData);
+                }
               }
             }
           })
@@ -1523,13 +1562,21 @@ export class Scene {
           this.deviceLost = false;
 
           const format = navigator.gpu.getPreferredCanvasFormat();
-          this.manager = new WebGPUParticleSystemManager(newDevice);
-          this.manager.initPipelines(format);
+          if (Scene.webgpuManagerClass) {
+            this.manager = new Scene.webgpuManagerClass(newDevice);
+          } else if (this.particleBackend === 'webgpu') {
+            throw new Error(
+              'WebGPU particle manager is not registered. Please call Scene.registerWebGPUParticleSystemManager(WebGPUParticleSystemManager) first.',
+            );
+          }
+          if (this.manager) {
+            this.manager.initPipelines(format);
 
-          for (const entity of entities) {
-            this.manager.setupEntityResources(entity);
-            // Re-upload particle fallback states
-            newDevice.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+            for (const entity of entities) {
+              this.manager.setupEntityResources(entity);
+              // Re-upload particle fallback states
+              newDevice.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+            }
           }
         })
         .catch(() => this.recreateWebGPUDeviceWithRetry(entities, attempt + 1));

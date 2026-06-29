@@ -24,9 +24,6 @@ positioned over the canvas. So a pure-canvas page is:
 - **Real-input capable** — the canvas `Input` mirrors a real `<input>`, so **CJK IME
   composition**, selection, clipboard and undo all work, drawn on canvas.
 
-It grew out of [vectomancy](https://vectomancy.xuepoo.xyz) (image/text/video → math equations)
-and [xuepoo.xyz](https://xuepoo.xyz) (a near-Zero-DOM site whose `<body>` is one interactive canvas).
-
 ## Packages
 
 | Package           | Status | Description                                                                                                                                                                                                                       |
