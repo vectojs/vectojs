@@ -1,6 +1,6 @@
 {
   "name": "@vecto-ui/ui",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "High-level canvas UI components (Text, Button, Link) for VectoUI — rendered to canvas with an accessibility/automation shadow layer.",
   "keywords": [
     "canvas",
@@ -42,7 +42,7 @@
     "marked": "^18.0.5"
   },
   "peerDependencies": {
-    "@vecto-ui/core": ">=0.9.1"
+    "@vecto-ui/core": ">=0.9.2"
   },
   "devDependencies": {
     "@vecto-ui/core": "workspace:*",

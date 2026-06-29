@@ -1,5 +1,11 @@
 # @vecto-ui/core
 
+## 0.9.2
+
+### Patch Changes
+
+- Refactor core package into modular subpath exports (`./layout`, `./renderer`, `./text`) and introduce static registration APIs (`Scene.registerWebGLPointRendererCreator`, `Scene.registerWebGPUParticleSystemManager`) for pluggable backends.
+
 ## 0.9.1
 
 ### Patch Changes

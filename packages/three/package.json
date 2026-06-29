@@ -19,7 +19,7 @@
     "build": "tsup src/index.ts --format cjs,esm --dts --clean"
   },
   "peerDependencies": {
-    "@vecto-ui/core": ">=0.9.1",
+    "@vecto-ui/core": ">=0.9.2",
     "three": "^0.160.0"
   },
   "devDependencies": {
