@@ -83,7 +83,7 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
 
 /**
  * Multi-style inline text: bold / italic / colored / differently-sized runs flow
- * and wrap on the same lines, sharing a baseline (战役一). Layout goes through the
+ * and wrap on the same lines, sharing a baseline (Campaign 1). Layout goes through the
  * core {@link LayoutEngine}'s rich path (`prepareRich`); each positioned glyph is
  * drawn with its run's color and weight/slant via native `fillText`.
  *

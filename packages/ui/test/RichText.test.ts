@@ -85,7 +85,7 @@ describe('RichText', () => {
     expect(calls.find((c) => c.text === 'L')?.color).toBe('#1199ff');
   });
 
-  it('flows around an exclusion rect (文字绕流): first line indents, later lines reclaim width', () => {
+  it('flows around an exclusion rect (exclusion shapes): first line indents, later lines reclaim width', () => {
     const { r, calls } = recordingRenderer();
     // No DOM measurer → 0.5em fallback: at 16px each glyph is 8px wide, line 24px.
     const rt = new RichText([{ text: 'aaaa bbbb cccc dddd eeee ffff' }], {

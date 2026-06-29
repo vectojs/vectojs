@@ -6,7 +6,7 @@ const EMPTY_ATLAS = {};
 const engine = () => new LayoutEngine(1000, 1000, measurer);
 
 /**
- * Streaming / "流式打字机" (战役一, PR C): re-`prepareRich` of a growing styled
+ * Streaming / typewriter mode (Campaign 1, PR C): re-`prepareRich` of a growing styled
  * document reuses its untouched paragraphs by reference (the rich paragraph
  * memo), so per-token cost is O(changed paragraph), not O(document).
  */

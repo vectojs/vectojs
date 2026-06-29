@@ -4,7 +4,7 @@ import { Scene } from '@vecto-ui/core';
 import { RichText } from '../src/RichText';
 
 /**
- * Inline-link a11y / automation contract for {@link RichText} (战役一 A.5).
+ * Inline-link a11y / automation contract for {@link RichText} (Campaign 1 A.5).
  *
  * A link run inside flowing rich text must project a real, operable `<a href>`
  * shadow node — so a screen reader announces it and an automation agent
