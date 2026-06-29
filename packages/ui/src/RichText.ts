@@ -25,7 +25,7 @@ export interface RichTextOptions {
   linkColor?: string;
   /** Invoked with the `href` when a link run is activated (click / Enter via its shadow `<a>`). */
   onLinkClick?: (href: string) => void;
-  /** Rect regions (local space) the text flows around — "文字绕流" / floats. */
+  /** Rect regions (local space) the text flows around — exclusion shapes / CSS-like floats. */
   exclusions?: ExclusionRect[];
 }
 
@@ -143,7 +143,7 @@ export class RichText extends UIComponent {
     return this;
   }
 
-  /** Set the rect regions the text flows around ("文字绕流") and re-lay out. */
+  /** Set the rect regions the text flows around (exclusion shapes) and re-lay out. */
   public setExclusions(exclusions: ExclusionRect[]): this {
     this.exclusions = exclusions;
     this.result = this.layout();

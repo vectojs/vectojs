@@ -123,7 +123,7 @@ export interface PreparedText {
 
 /**
  * A rectangular region (in the text's local coordinate space) that text must
- * flow around — the v1 of "文字绕流" / exclusion shapes. A left/right rect acts
+ * flow around — the v1 of text flow exclusion shapes. A left/right rect acts
  * like a CSS float; a centered rect splits the affected lines in two.
  */
 export interface ExclusionRect {
@@ -579,7 +579,7 @@ export class LayoutEngine {
    *
    * @param prepared - Output of {@link prepare}.
    * @param exclusionMask - Optional per-glyph collision callback (see {@link layoutText}).
-   * @param exclusions - Optional rect regions text flows around ("文字绕流"); each
+   * @param exclusions - Optional rect regions text flows around (exclusion shapes); each
    *   line is split into the free x-segments left after subtracting them. Omitting
    *   it (or passing `[]`) leaves the single-column path byte-for-byte unchanged.
    */

@@ -44,7 +44,7 @@ export class GridTextEntity extends Entity {
         const x = c * this.charWidth;
         const y = r * this.charHeight;
 
-        // 纯等宽字体渲染，避免数学字体与原生字体由于字距不同产生的重叠错觉
+        // Pure monospace font rendering to prevent overlap issues caused by differing character spacing between mathematical and native fonts.
         renderer.save();
         renderer.translate(x, y + this.fontSize * 0.8);
         renderer.fillText(char, 0, 0, `bold ${this.fontSize}px monospace`, this.fillStyle);
