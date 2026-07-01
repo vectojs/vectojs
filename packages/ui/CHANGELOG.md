@@ -1,4 +1,4 @@
-# @vecto-ui/ui
+# @vectojs/ui
 
 ## 0.4.2
 
@@ -6,7 +6,7 @@
 
 - Refactor core package into modular subpath exports (`./layout`, `./renderer`, `./text`) and introduce static registration APIs (`Scene.registerWebGLPointRendererCreator`, `Scene.registerWebGPUParticleSystemManager`) for pluggable backends.
 - Updated dependencies
-  - @vecto-ui/core@0.9.2
+  - @vectojs/core@0.9.2
 
 ## 0.4.1
 
@@ -14,7 +14,7 @@
 
 - Fix WebGPU particle vertex storage binding and align CPU/GPU spring limits. Adjust Scene maxFPS to default to 60 with idle auto-throttling. Fix ScrollView stability and expose public scroll APIs. Add GFM Table support to Markdown component. Adjust UI peerDependencies.
 - Updated dependencies
-  - @vecto-ui/core@0.9.1
+  - @vectojs/core@0.9.1
 
 ## 0.4.0
 
@@ -25,14 +25,14 @@
 ### Patch Changes
 
 - Updated dependencies
-  - @vecto-ui/core@0.9.0
+  - @vectojs/core@0.9.0
 
 ## 0.3.3
 
 ### Patch Changes
 
 - Updated dependencies
-  - @vecto-ui/core@0.8.0
+  - @vectojs/core@0.8.0
 
 ## 0.3.2
 
@@ -41,14 +41,14 @@
 - feat(a11y): strengthen a11yRoot with strict DFS DOM ordering, typing synchronization protection, and full WAI-ARIA keyboard navigation for Dropdown.
 - Updated dependencies
 - Updated dependencies [cd3e3e8]
-  - @vecto-ui/core@0.7.1
+  - @vectojs/core@0.7.1
 
 ## 0.3.1
 
 ### Patch Changes
 
 - Updated dependencies [3dfbfd4]
-  - @vecto-ui/core@0.7.0
+  - @vectojs/core@0.7.0
 
 ## 0.3.0
 
@@ -73,28 +73,28 @@
 
 - 382e34f: Text flow around exclusion rects (战役一, PR B — "文字绕流" v1): text can now wrap around rectangular regions, like CSS floats.
 
-  - **`@vecto-ui/core`**: new pure `computeLineSegments(top, bottom, maxWidth, exclusions)` returns the free horizontal segments left on a line after subtracting the `ExclusionRect`s that overlap its band (left/right floats narrow the line; a centered rect splits it in two; a full-width one skips the band). `LayoutEngine.layoutPrepared` takes an optional third `exclusions` argument and flows words across those per-line segments. New exports: `ExclusionRect`, `LineSegment`, `computeLineSegments`. The single-column path (no exclusions) is byte-for-byte unchanged.
-  - **`@vecto-ui/ui`**: `RichText` gains an `exclusions` option and a `setExclusions()` method.
+  - **`@vectojs/core`**: new pure `computeLineSegments(top, bottom, maxWidth, exclusions)` returns the free horizontal segments left on a line after subtracting the `ExclusionRect`s that overlap its band (left/right floats narrow the line; a centered rect splits it in two; a full-width one skips the band). `LayoutEngine.layoutPrepared` takes an optional third `exclusions` argument and flows words across those per-line segments. New exports: `ExclusionRect`, `LineSegment`, `computeLineSegments`. The single-column path (no exclusions) is byte-for-byte unchanged.
+  - **`@vectojs/ui`**: `RichText` gains an `exclusions` option and a `setExclusions()` method.
 
 - b5e2c76: Inline rich-text flow (战役一, PR A): bold / italic / colored / differently-sized runs that flow and wrap on the same lines, sharing a baseline.
 
-  - **`@vecto-ui/core`**: new `LayoutEngine.prepareRich(spans, atlas, baseFontSize, baseStyle?)` cold pass taking `StyledSpan[]`. Each grapheme carries the (base-merged) `TextStyle` of the span it came from — so a style change _mid-word_ is honored — and is measured at its run's `fontSize`. `layoutPrepared` now baseline-aligns mixed sizes (tallest run on a line drives line height; smaller glyphs drop to the shared baseline) and carries `style` onto each `LayoutNode`. New exports: `TextStyle`, `StyledSpan`; `PreparedGlyph`/`LayoutNode` gain an optional `style`. Plain (single-style) layout is unchanged.
-  - **`@vecto-ui/ui`**: new `RichText` component — renders styled runs via the engine's rich path, drawing each glyph with its run's color and weight/slant.
+  - **`@vectojs/core`**: new `LayoutEngine.prepareRich(spans, atlas, baseFontSize, baseStyle?)` cold pass taking `StyledSpan[]`. Each grapheme carries the (base-merged) `TextStyle` of the span it came from — so a style change _mid-word_ is honored — and is measured at its run's `fontSize`. `layoutPrepared` now baseline-aligns mixed sizes (tallest run on a line drives line height; smaller glyphs drop to the shared baseline) and carries `style` onto each `LayoutNode`. New exports: `TextStyle`, `StyledSpan`; `PreparedGlyph`/`LayoutNode` gain an optional `style`. Plain (single-style) layout is unchanged.
+  - **`@vectojs/ui`**: new `RichText` component — renders styled runs via the engine's rich path, drawing each glyph with its run's color and weight/slant.
 
 - 90a4339: Inline links in rich text (战役一, PR A.5): a `{ href }` run in a `RichText` is underlined and painted in the link color on the canvas, and projects a real, operable `<a href>` shadow node so screen readers announce it and automation agents (Playwright / AI) can find it by href and click it — routing back to `onLinkClick`.
 
-  - **`@vecto-ui/core`**: new public `Scene.detachA11y(entity)` to prune the shadow node(s) of an entity subtree on demand. Interactive _child_ entities (e.g. per-link hotspots) call this when they are removed, so the per-frame `syncA11y` (which only creates/updates) never leaks stale nodes.
-  - **`@vecto-ui/ui`**: `RichText` gains `linkColor` and `onLinkClick` options. Each contiguous `href` run gets one transparent `<a>` hotspot child, kept stable across re-wrap (one per run) and pruned when the links change. Link glyphs render with the link color plus an underline.
+  - **`@vectojs/core`**: new public `Scene.detachA11y(entity)` to prune the shadow node(s) of an entity subtree on demand. Interactive _child_ entities (e.g. per-link hotspots) call this when they are removed, so the per-frame `syncA11y` (which only creates/updates) never leaks stale nodes.
+  - **`@vectojs/ui`**: `RichText` gains `linkColor` and `onLinkClick` options. Each contiguous `href` run gets one transparent `<a>` hotspot child, kept stable across re-wrap (one per run) and pruned when the links change. Link glyphs render with the link color plus an underline.
 
 - cd28e58: Streaming / typewriter rich text (战役一, PR C — "流式打字机"): re-laying out a growing styled document is now O(changed paragraph) instead of O(document).
 
-  - **`@vecto-ui/core`**: `LayoutEngine.prepareRich` now memoizes per paragraph (mirroring the plain `prepare` memo), keyed by `fontSize` + text + a _value_-based run-length signature of the inline styles. A streaming caller that appends styled runs reuses every untouched leading paragraph by reference — even if it passes fresh style objects with the same values. The memo is invalidated when the font atlas changes.
-  - **`@vecto-ui/ui`**: `RichText.appendSpans(spans)` and `Text.append(text)` for incremental streaming; both re-lay out through the paragraph memo.
+  - **`@vectojs/core`**: `LayoutEngine.prepareRich` now memoizes per paragraph (mirroring the plain `prepare` memo), keyed by `fontSize` + text + a _value_-based run-length signature of the inline styles. A streaming caller that appends styled runs reuses every untouched leading paragraph by reference — even if it passes fresh style objects with the same values. The memo is invalidated when the font atlas changes.
+  - **`@vectojs/ui`**: `RichText.appendSpans(spans)` and `Text.append(text)` for incremental streaming; both re-lay out through the paragraph memo.
 
 - 7a702a8: Add a multi-line `TextArea` component (战役二).
 
-  - **`@vecto-ui/ui`**: new `TextArea` — a multi-line field backed by a real, transparent `<textarea>` shadow node. The browser owns editing (keyboard, IME composition, selection, clipboard, undo, multi-line navigation); the canvas mirrors it, re-wrapping the value and drawing text, cross-line selection, and a blinking caret with vertical scroll-to-caret. Exposes a pure `wrapText(value, maxWidth, measure)` helper (offset-aware line wrapping with hard-newline + char-level breaking) and `lineOfOffset()` for caret mapping.
-  - **`@vecto-ui/core`**: the a11y/automation shadow layer now supports `tag: 'textarea'` — `Scene.syncA11y` projects a `<textarea>`, sets its placeholder, syncs its value, and forwards its `input`/`change`/selection/IME events back to the entity (previously only `<input>` was wired).
+  - **`@vectojs/ui`**: new `TextArea` — a multi-line field backed by a real, transparent `<textarea>` shadow node. The browser owns editing (keyboard, IME composition, selection, clipboard, undo, multi-line navigation); the canvas mirrors it, re-wrapping the value and drawing text, cross-line selection, and a blinking caret with vertical scroll-to-caret. Exposes a pure `wrapText(value, maxWidth, measure)` helper (offset-aware line wrapping with hard-newline + char-level breaking) and `lineOfOffset()` for caret mapping.
+  - **`@vectojs/core`**: the a11y/automation shadow layer now supports `tag: 'textarea'` — `Scene.syncA11y` projects a `<textarea>`, sets its placeholder, syncs its value, and forwards its `input`/`change`/selection/IME events back to the entity (previously only `<input>` was wired).
 
 - c1aebf2: Add touch / pointer-drag support.
 
@@ -114,7 +114,7 @@
 - Updated dependencies [cd28e58]
 - Updated dependencies [7a702a8]
 - Updated dependencies [c1aebf2]
-  - @vecto-ui/core@0.6.0
+  - @vectojs/core@0.6.0
 
 ## 0.2.3
 
@@ -127,7 +127,7 @@
 - c1d428f: Add a scrollable viewport (`ScrollView`) with clipping + wheel scrolling.
 
   - `core`: `Entity.clipChildren` (Scene clips a node's children to its local box) and a forwarded `'wheel'` event from the shadow node (non-passive, so a scroll container can `preventDefault()` the page scroll).
-  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoUI.
+  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoJS.
 
 - 6f84f7f: `Toggle` now emits a `change` event, unifying the form-control event model.
 
@@ -142,7 +142,7 @@
 - Updated dependencies [c1d428f]
 - Updated dependencies [7f5e403]
 - Updated dependencies [9d587db]
-  - @vecto-ui/core@0.5.3
+  - @vectojs/core@0.5.3
 
 ## 0.2.2
 
@@ -152,7 +152,7 @@
 
   Removes the fabricated "React vs core" comparison table (1k/10k/100k → React
   "Crash" vs "60 FPS") and the misleading "60 FPS with 100,000+ entities" tagline.
-  READMEs now describe VectoUI as a Zero-DOM canvas UI runtime with the a11y/agent
+  READMEs now describe VectoJS as a Zero-DOM canvas UI runtime with the a11y/agent
   moat, cite measured benchmark numbers, list the full component set, document the
   IME-capable `Input`, and state where the framework does and doesn't fit.
 
@@ -164,7 +164,7 @@
   `wrapLines` / `fontSizePx` are unchanged and still exported.
 - Updated dependencies [715693b]
 - Updated dependencies [7c9e40c]
-  - @vecto-ui/core@0.5.2
+  - @vectojs/core@0.5.2
 
 ## 0.2.1
 
@@ -186,7 +186,7 @@
 
 - Updated dependencies [1de96df]
 - Updated dependencies [0362f14]
-  - @vecto-ui/core@0.5.1
+  - @vectojs/core@0.5.1
 
 ## 0.2.0
 
@@ -208,7 +208,7 @@
 ### Patch Changes
 
 - Updated dependencies [9abb2b5]
-  - @vecto-ui/core@0.5.0
+  - @vectojs/core@0.5.0
 
 ## 0.1.4
 
@@ -216,7 +216,7 @@
 
 - Updated dependencies [a888e97]
 - Updated dependencies [f68ade4]
-  - @vecto-ui/core@0.4.0
+  - @vectojs/core@0.4.0
 
 ## 0.1.3
 
@@ -224,17 +224,17 @@
 
 - Updated dependencies [42819e7]
 - Updated dependencies [3eb0910]
-  - @vecto-ui/core@0.3.0
+  - @vectojs/core@0.3.0
 
 ## 0.1.2
 
 ### Patch Changes
 
-- 6fe2997: Fix the published dependency on `@vecto-ui/core`.
+- 6fe2997: Fix the published dependency on `@vectojs/core`.
 
-  Previous releases (0.1.0, 0.1.1) shipped with `"@vecto-ui/core": "workspace:*"`
+  Previous releases (0.1.0, 0.1.1) shipped with `"@vectojs/core": "workspace:*"`
   in the published `package.json` — the workspace protocol was not rewritten at
-  publish time, so `npm install @vecto-ui/ui` failed with `EUNSUPPORTEDPROTOCOL`.
+  publish time, so `npm install @vectojs/ui` failed with `EUNSUPPORTEDPROTOCOL`.
   The dependency is now a real semver range (`^0.2.0`), which bun still links
   locally in the monorepo and changesets keeps in sync on future core releases.
 
@@ -245,13 +245,13 @@
 - Updated dependencies [cd59328]
 - Updated dependencies [cd59328]
 - Updated dependencies [6463b61]
-  - @vecto-ui/core@0.2.0
+  - @vectojs/core@0.2.0
 
 ## 0.1.0
 
 ### Minor Changes
 
-- e3b05d3: Add `@vecto-ui/ui` — high-level canvas UI components rendered to a `<canvas>`
+- e3b05d3: Add `@vectojs/ui` — high-level canvas UI components rendered to a `<canvas>`
   with an accessibility/automation shadow layer:
 
   - `Text` — multi-line text via native canvas measurement, projects a labelled

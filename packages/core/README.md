@@ -1,13 +1,13 @@
-# @vecto-ui/core
+# @vectojs/core
 
-> The Zero-DOM, Canvas-native rendering engine behind **VectoUI** — ECS + Virtual Math Tree,
+> The Zero-DOM, Canvas-native rendering engine behind **VectoJS** — ECS + Virtual Math Tree,
 > with an accessibility/automation shadow layer.
 
-Part of the [VectoUI](https://github.com/Xuepoo/vecto-ui) ecosystem.
+Part of the [VectoJS](https://github.com/vectojs/vectojs) ecosystem.
 
 ## What it does
 
-`@vecto-ui/core` renders a whole UI onto one `<canvas>`: layout, hit-testing, animation and
+`@vectojs/core` renders a whole UI onto one `<canvas>`: layout, hit-testing, animation and
 physics are pure math on a Virtual Math Tree, dispatched to a Canvas 2D (or WebGL2) renderer —
 **no per-element DOM, no reflow, no style recalc**. Interactive entities project a real,
 transparent DOM node through the **`a11yRoot`** shadow layer, so a pure-canvas page stays
@@ -20,7 +20,7 @@ with a cold/hot `prepare`/`layoutPrepared` split), `SpatialHashGrid`, `LayoutRes
 
 ## Performance
 
-See the [main README](https://github.com/Xuepoo/vecto-ui#measured-performance) for measured,
+See the [main README](https://github.com/vectojs/vectojs#measured-performance) for measured,
 reproducible numbers (`bun run benchmark` / `bun run compare:dom`). Headline levers: viewport
 culling, on-demand redraw, draw-call batching, a WebGL2 point layer, and a cold/hot text layout
 split (~3.5× faster reflow). No fabricated comparisons — numbers are per-machine and
@@ -29,7 +29,7 @@ complexity-dependent.
 ## Quick Start
 
 ```typescript
-import { Scene, Entity, IRenderer } from '@vecto-ui/core';
+import { Scene, Entity, IRenderer } from '@vectojs/core';
 
 class CircleEntity extends Entity {
   isPointInside(x: number, y: number) {
@@ -49,7 +49,7 @@ scene.start();
 ```
 
 For high-level accessible components (Button, Input, Card…), see
-[`@vecto-ui/ui`](https://www.npmjs.com/package/@vecto-ui/ui).
+[`@vectojs/ui`](https://www.npmjs.com/package/@vectojs/ui).
 
 ## License
 

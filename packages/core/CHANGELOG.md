@@ -1,4 +1,4 @@
-# @vecto-ui/core
+# @vectojs/core
 
 ## 0.9.2
 
@@ -37,7 +37,7 @@
 
 - 3dfbfd4: DOM Portal + SVG entities — bridge native DOM and vector graphics into the canvas scene (战役二).
 
-  - **`DOMPortalEntity`**: mounts a real HTML element (iframe, video, third-party widget…) into the Vecto coordinate space. It forwards native `click`/`pointer*`/`wheel` into the entity tree as `VectoUIEvent`s (with capture-phase `focus`/`blur`), caches its measured size via a `ResizeObserver` to avoid forced reflow on hit-testing, and is a leaf (guards against adding canvas children).
+  - **`DOMPortalEntity`**: mounts a real HTML element (iframe, video, third-party widget…) into the Vecto coordinate space. It forwards native `click`/`pointer*`/`wheel` into the entity tree as `VectoJSEvent`s (with capture-phase `focus`/`blur`), caches its measured size via a `ResizeObserver` to avoid forced reflow on hit-testing, and is a leaf (guards against adding canvas children).
   - **`SVGEntity`**: renders an SVG source (e.g. LaTeX/Mermaid output) with dynamic level-of-detail re-rasterization — debounced on scale change, with a cached parsed document, and a browser/SSR-safe dimension parser.
   - **`Scene`**: unified stacking — DOM portals mount under `a11yRoot` and share one depth-ordered `zIndex` pass with the a11y shadow nodes (fixes the a11y layer hijacking portal clicks); portals are pre-cull aligned and reconciled safely across scenes.
   - **`Entity.getWorldRotation()`**: accumulated world-space rotation up the parent chain.
@@ -78,7 +78,7 @@
 
 - 668e503: Add DOM-style event propagation (capture + bubble) to the entity tree.
 
-  `Scene` now dispatches forwarded pointer/wheel/click events through a `VectoUIEvent` that walks the tree: a capture phase (root→target) then a bubble phase (target→root). Handlers get `target`, `currentTarget`, `stopPropagation()`, `stopImmediatePropagation()`, and `preventDefault()`; common native fields (`deltaY`, `clientX`, `key`, …) pass through, so existing handlers keep working.
+  `Scene` now dispatches forwarded pointer/wheel/click events through a `VectoJSEvent` that walks the tree: a capture phase (root→target) then a bubble phase (target→root). Handlers get `target`, `currentTarget`, `stopPropagation()`, `stopImmediatePropagation()`, and `preventDefault()`; common native fields (`deltaY`, `clientX`, `key`, …) pass through, so existing handlers keep working.
 
   - `Entity.on(type, cb, { capture })` registers a capture-phase listener (bubble is the default).
   - `Entity.dispatchEvent(event)` runs the capture/bubble walk; `emit(type, payload)` stays a direct, self-only dispatch (back-compat, used for component-internal events like a control's own `change`).
@@ -86,18 +86,18 @@
 
 - 382e34f: Text flow around exclusion rects (战役一, PR B — "文字绕流" v1): text can now wrap around rectangular regions, like CSS floats.
 
-  - **`@vecto-ui/core`**: new pure `computeLineSegments(top, bottom, maxWidth, exclusions)` returns the free horizontal segments left on a line after subtracting the `ExclusionRect`s that overlap its band (left/right floats narrow the line; a centered rect splits it in two; a full-width one skips the band). `LayoutEngine.layoutPrepared` takes an optional third `exclusions` argument and flows words across those per-line segments. New exports: `ExclusionRect`, `LineSegment`, `computeLineSegments`. The single-column path (no exclusions) is byte-for-byte unchanged.
-  - **`@vecto-ui/ui`**: `RichText` gains an `exclusions` option and a `setExclusions()` method.
+  - **`@vectojs/core`**: new pure `computeLineSegments(top, bottom, maxWidth, exclusions)` returns the free horizontal segments left on a line after subtracting the `ExclusionRect`s that overlap its band (left/right floats narrow the line; a centered rect splits it in two; a full-width one skips the band). `LayoutEngine.layoutPrepared` takes an optional third `exclusions` argument and flows words across those per-line segments. New exports: `ExclusionRect`, `LineSegment`, `computeLineSegments`. The single-column path (no exclusions) is byte-for-byte unchanged.
+  - **`@vectojs/ui`**: `RichText` gains an `exclusions` option and a `setExclusions()` method.
 
 - b5e2c76: Inline rich-text flow (战役一, PR A): bold / italic / colored / differently-sized runs that flow and wrap on the same lines, sharing a baseline.
 
-  - **`@vecto-ui/core`**: new `LayoutEngine.prepareRich(spans, atlas, baseFontSize, baseStyle?)` cold pass taking `StyledSpan[]`. Each grapheme carries the (base-merged) `TextStyle` of the span it came from — so a style change _mid-word_ is honored — and is measured at its run's `fontSize`. `layoutPrepared` now baseline-aligns mixed sizes (tallest run on a line drives line height; smaller glyphs drop to the shared baseline) and carries `style` onto each `LayoutNode`. New exports: `TextStyle`, `StyledSpan`; `PreparedGlyph`/`LayoutNode` gain an optional `style`. Plain (single-style) layout is unchanged.
-  - **`@vecto-ui/ui`**: new `RichText` component — renders styled runs via the engine's rich path, drawing each glyph with its run's color and weight/slant.
+  - **`@vectojs/core`**: new `LayoutEngine.prepareRich(spans, atlas, baseFontSize, baseStyle?)` cold pass taking `StyledSpan[]`. Each grapheme carries the (base-merged) `TextStyle` of the span it came from — so a style change _mid-word_ is honored — and is measured at its run's `fontSize`. `layoutPrepared` now baseline-aligns mixed sizes (tallest run on a line drives line height; smaller glyphs drop to the shared baseline) and carries `style` onto each `LayoutNode`. New exports: `TextStyle`, `StyledSpan`; `PreparedGlyph`/`LayoutNode` gain an optional `style`. Plain (single-style) layout is unchanged.
+  - **`@vectojs/ui`**: new `RichText` component — renders styled runs via the engine's rich path, drawing each glyph with its run's color and weight/slant.
 
 - 90a4339: Inline links in rich text (战役一, PR A.5): a `{ href }` run in a `RichText` is underlined and painted in the link color on the canvas, and projects a real, operable `<a href>` shadow node so screen readers announce it and automation agents (Playwright / AI) can find it by href and click it — routing back to `onLinkClick`.
 
-  - **`@vecto-ui/core`**: new public `Scene.detachA11y(entity)` to prune the shadow node(s) of an entity subtree on demand. Interactive _child_ entities (e.g. per-link hotspots) call this when they are removed, so the per-frame `syncA11y` (which only creates/updates) never leaks stale nodes.
-  - **`@vecto-ui/ui`**: `RichText` gains `linkColor` and `onLinkClick` options. Each contiguous `href` run gets one transparent `<a>` hotspot child, kept stable across re-wrap (one per run) and pruned when the links change. Link glyphs render with the link color plus an underline.
+  - **`@vectojs/core`**: new public `Scene.detachA11y(entity)` to prune the shadow node(s) of an entity subtree on demand. Interactive _child_ entities (e.g. per-link hotspots) call this when they are removed, so the per-frame `syncA11y` (which only creates/updates) never leaks stale nodes.
+  - **`@vectojs/ui`**: `RichText` gains `linkColor` and `onLinkClick` options. Each contiguous `href` run gets one transparent `<a>` hotspot child, kept stable across re-wrap (one per run) and pruned when the links change. Link glyphs render with the link color plus an underline.
 
 - 2a20b15: Memoize `LayoutEngine.prepare()` at the paragraph level for fast incremental / streaming text.
 
@@ -112,13 +112,13 @@
 
 - cd28e58: Streaming / typewriter rich text (战役一, PR C — "流式打字机"): re-laying out a growing styled document is now O(changed paragraph) instead of O(document).
 
-  - **`@vecto-ui/core`**: `LayoutEngine.prepareRich` now memoizes per paragraph (mirroring the plain `prepare` memo), keyed by `fontSize` + text + a _value_-based run-length signature of the inline styles. A streaming caller that appends styled runs reuses every untouched leading paragraph by reference — even if it passes fresh style objects with the same values. The memo is invalidated when the font atlas changes.
-  - **`@vecto-ui/ui`**: `RichText.appendSpans(spans)` and `Text.append(text)` for incremental streaming; both re-lay out through the paragraph memo.
+  - **`@vectojs/core`**: `LayoutEngine.prepareRich` now memoizes per paragraph (mirroring the plain `prepare` memo), keyed by `fontSize` + text + a _value_-based run-length signature of the inline styles. A streaming caller that appends styled runs reuses every untouched leading paragraph by reference — even if it passes fresh style objects with the same values. The memo is invalidated when the font atlas changes.
+  - **`@vectojs/ui`**: `RichText.appendSpans(spans)` and `Text.append(text)` for incremental streaming; both re-lay out through the paragraph memo.
 
 - 7a702a8: Add a multi-line `TextArea` component (战役二).
 
-  - **`@vecto-ui/ui`**: new `TextArea` — a multi-line field backed by a real, transparent `<textarea>` shadow node. The browser owns editing (keyboard, IME composition, selection, clipboard, undo, multi-line navigation); the canvas mirrors it, re-wrapping the value and drawing text, cross-line selection, and a blinking caret with vertical scroll-to-caret. Exposes a pure `wrapText(value, maxWidth, measure)` helper (offset-aware line wrapping with hard-newline + char-level breaking) and `lineOfOffset()` for caret mapping.
-  - **`@vecto-ui/core`**: the a11y/automation shadow layer now supports `tag: 'textarea'` — `Scene.syncA11y` projects a `<textarea>`, sets its placeholder, syncs its value, and forwards its `input`/`change`/selection/IME events back to the entity (previously only `<input>` was wired).
+  - **`@vectojs/ui`**: new `TextArea` — a multi-line field backed by a real, transparent `<textarea>` shadow node. The browser owns editing (keyboard, IME composition, selection, clipboard, undo, multi-line navigation); the canvas mirrors it, re-wrapping the value and drawing text, cross-line selection, and a blinking caret with vertical scroll-to-caret. Exposes a pure `wrapText(value, maxWidth, measure)` helper (offset-aware line wrapping with hard-newline + char-level breaking) and `lineOfOffset()` for caret mapping.
+  - **`@vectojs/core`**: the a11y/automation shadow layer now supports `tag: 'textarea'` — `Scene.syncA11y` projects a `<textarea>`, sets its placeholder, syncs its value, and forwards its `input`/`change`/selection/IME events back to the entity (previously only `<input>` was wired).
 
 - c1aebf2: Add touch / pointer-drag support.
 
@@ -152,7 +152,7 @@
 - c1d428f: Add a scrollable viewport (`ScrollView`) with clipping + wheel scrolling.
 
   - `core`: `Entity.clipChildren` (Scene clips a node's children to its local box) and a forwarded `'wheel'` event from the shadow node (non-passive, so a scroll container can `preventDefault()` the page scroll).
-  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoUI.
+  - `ui`: `ScrollView({ width, height })` — nests children in a clipped content layer, scrolls on wheel with a damped spring, and clamps to the content bounds. Unblocks scrollable docs/long-list pages built with VectoJS.
 
 - 7f5e403: Add MSDF (multi-channel signed distance field) GPU text rendering to the WebGL backend.
 
@@ -176,7 +176,7 @@ v1, color?, alpha?, rotation?)`: a textured-quad triangle batch that samples a
 
   Removes the fabricated "React vs core" comparison table (1k/10k/100k → React
   "Crash" vs "60 FPS") and the misleading "60 FPS with 100,000+ entities" tagline.
-  READMEs now describe VectoUI as a Zero-DOM canvas UI runtime with the a11y/agent
+  READMEs now describe VectoJS as a Zero-DOM canvas UI runtime with the a11y/agent
   moat, cite measured benchmark numbers, list the full component set, document the
   IME-capable `Input`, and state where the framework does and doesn't fit.
 

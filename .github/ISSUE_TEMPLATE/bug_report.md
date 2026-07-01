@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve VectoUI
+about: Create a report to help us improve VectoJS
 title: 'bug: '
 labels: 'bug'
 assignees: ''

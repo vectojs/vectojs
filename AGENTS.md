@@ -1,6 +1,6 @@
 # Vecto Monorepo Developer Agent Handbook
 
-Welcome, Agent. This repository (`vecto-ui/`) contains the framework core packages for **VectoUI**, a high-performance, accessible, Zero-DOM canvas-based UI rendering engine.
+Welcome, Agent. This repository (`vectojs/`) contains the framework core packages for **VectoJS**, a high-performance, accessible, Zero-DOM canvas-based UI rendering engine.
 
 ---
 
@@ -9,7 +9,7 @@ Welcome, Agent. This repository (`vecto-ui/`) contains the framework core packag
 This is a Bun monorepo. The codebase is modular and split into separate packages located under `packages/`:
 
 ```
-vecto-ui/
+vectojs/
 ├── .changeset/           # Changeset configs for package releases
 ├── .github/              # GitHub Actions CI/CD workflows
 ├── .husky/               # Git hook handlers (Husky)

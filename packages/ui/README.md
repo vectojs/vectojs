@@ -1,16 +1,16 @@
-# @vecto-ui/ui
+# @vectojs/ui
 
-High-level canvas UI components for [VectoUI](https://github.com/Xuepoo/vecto-ui) — rendered
+High-level canvas UI components for [VectoJS](https://github.com/vectojs/vectojs) — rendered
 to a `<canvas>` while projecting a real accessibility/automation shadow node, so the canvas
 stays accessible and drivable by screen readers and AI agents (`getByRole(...).click()/.fill()`).
 
 ```bash
-bun add @vecto-ui/ui @vecto-ui/core
+bun add @vectojs/ui @vectojs/core
 ```
 
 ```typescript
-import { Scene } from '@vecto-ui/core';
-import { Stack, Text, Input, Checkbox, Button } from '@vecto-ui/ui';
+import { Scene } from '@vectojs/core';
+import { Stack, Text, Input, Checkbox, Button } from '@vectojs/ui';
 
 const scene = new Scene(document.querySelector('canvas')!);
 const form = new Stack({ gap: 12 }).setPosition(20, 20);

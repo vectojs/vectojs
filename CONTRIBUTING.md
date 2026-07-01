@@ -1,4 +1,4 @@
-# Contributing to VectoUI
+# Contributing to VectoJS
 
 ## The Engineering Workflow
 
@@ -28,7 +28,7 @@ bun run format      # prettier --write
 - **Formatter**: `prettier`.
 - **Dependencies**: Analyzed by `knip`. No dead code allowed.
 - **TypeScript**: Strict mode enabled.
-- **Publishing**: `changesets` manages multi-package semantic versioning for `@vecto-ui/*`.
+- **Publishing**: `changesets` manages multi-package semantic versioning for `@vectojs/*`.
 
 > Demos and the documentation site live in a separate repo,
-> [vecto-website](https://github.com/Xuepoo/vecto-website); this repo is the engine only.
+> [vectojs-website](https://github.com/vectojs/vectojs-website); this repo is the engine only.
