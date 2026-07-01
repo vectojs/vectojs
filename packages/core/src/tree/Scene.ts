@@ -8,11 +8,13 @@ export interface IWebGPUParticleSystemManager {
   initPipelines(format: GPUTextureFormat): Promise<void> | void;
   setupEntityResources(entity: any): void;
   recordComputePass(
-    commandEncoder: GPUCommandEncoder,
+    pass: GPUComputePassEncoder,
     entity: any,
+    dt: number,
     mouseX: number,
     mouseY: number,
-    dt: number,
+    width: number,
+    height: number,
   ): void;
   recordRenderPass(renderPassEncoder: GPURenderPassEncoder, entity: any): void;
   destroy(): void;
@@ -607,7 +609,6 @@ export class Scene {
 
         // Bind pointer click
         el.addEventListener('click', (e) => {
-          console.log('[VectoA11y] click event on DOM element', node.id);
           node.dispatchEvent(new VectoUIEvent('click', node, e));
         });
 
@@ -623,12 +624,10 @@ export class Scene {
 
         const capEl = el;
         el.addEventListener('pointerdown', (e) => {
-          console.log('[VectoA11y] pointerdown event on DOM element', node.id);
           if (typeof capEl.setPointerCapture === 'function') capEl.setPointerCapture(e.pointerId);
           node.dispatchEvent(new VectoUIEvent('pointerdown', node, e));
         });
         el.addEventListener('pointerup', (e) => {
-          console.log('[VectoA11y] pointerup event on DOM element', node.id);
           if (typeof capEl.releasePointerCapture === 'function')
             capEl.releasePointerCapture(e.pointerId);
           node.dispatchEvent(new VectoUIEvent('pointerup', node, e));
@@ -639,7 +638,6 @@ export class Scene {
         el.addEventListener(
           'wheel',
           (e) => {
-            console.log('[VectoA11y] wheel event on DOM element', node.id, 'deltaY:', e.deltaY);
             node.dispatchEvent(new VectoUIEvent('wheel', node, e));
           },
           { passive: false },

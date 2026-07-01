@@ -32,6 +32,11 @@ positioned over the canvas. So a pure-canvas page is:
 | `@vecto-ui/ui`    | Active | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
 | `@vecto-ui/three` | Active | WebGL/Three.js 3D/WebXR space adapter — projects Vecto 2D canvas to 3D mesh texture, translates raycast intersects to 2D event routing, and manages XR pointers & hover boundaries                                                |
 
+## Documentation
+
+Explore our comprehensive tutorials, guidebooks, and API references:
+👉 **[Official VectoUI Documentation Portal](https://vecto-ui.xuepoo.xyz/learn/introduction/)**
+
 ## Install
 
 ```bash
