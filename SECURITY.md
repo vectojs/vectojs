@@ -5,10 +5,11 @@
 VectoJS is pre-1.0 and ships from the latest published release only. Security fixes land on the
 latest minor of each package; older `0.x` minors are not back-patched.
 
-| Package         | Supported            |
-| --------------- | -------------------- |
-| `@vectojs/core` | latest `0.x` release |
-| `@vectojs/ui`   | latest `0.x` release |
+| Package          | Supported            |
+| ---------------- | -------------------- |
+| `@vectojs/core`  | latest `0.x` release |
+| `@vectojs/ui`    | latest `0.x` release |
+| `@vectojs/three` | latest `0.x` release |
 
 ## Reporting a Vulnerability
 

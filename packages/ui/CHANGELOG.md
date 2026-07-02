@@ -1,5 +1,34 @@
 # @vectojs/ui
 
+## 0.1.1
+
+### Minor Changes
+
+- c8896118: Added ten new native UI components: `Overlay`, `VirtualList`, `TreeView`,
+  `ResizablePanel`, `Tooltip`, `Popover`, `ContextMenu`, `RadioGroup`, `Tabs`, and
+  `ProgressBar`.
+
+### Patch Changes
+
+- c8896118: Aligned `Toggle`, `Checkbox`, `Input`, `Dropdown`, and `Slider` so their change
+  callbacks fire through the same consistent shape.
+
+## 0.1.0
+
+### Minor Changes
+
+- c74bb7bd: Renamed from `@vecto-ui/ui` to `@vectojs/ui` and reset the version to `0.1.0`,
+  matching the same-day `@vectojs/core` rescope. See that package's changelog for details.
+  This is a clean version reset, not a feature release.
+
+---
+
+## Pre-rebrand history (`@vecto-ui/ui`)
+
+Everything below shipped under the old `@vecto-ui` npm scope, before the 2026-07-01 rename
+and version reset. Kept for historical reference — none of these version numbers exist under
+the current `@vectojs/ui` scope.
+
 ## 0.4.2
 
 ### Patch Changes
