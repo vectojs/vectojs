@@ -1,0 +1,175 @@
+import { Entity, IRenderer } from '@vectojs/core';
+import { UIComponent } from './UIComponent';
+
+export type OverlayPlacement =
+  | 'top'
+  | 'top-start'
+  | 'top-end'
+  | 'bottom'
+  | 'bottom-start'
+  | 'bottom-end'
+  | 'left'
+  | 'right'
+  | 'auto';
+
+export interface OverlayOptions {
+  /** Width of the floating panel. */
+  width: number;
+  /** Height of the floating panel. */
+  height: number;
+  /** Preferred placement relative to the target entity. Default `'bottom'`. */
+  placement?: OverlayPlacement;
+  /** Gap in pixels between the target and the overlay. Default `6`. */
+  offset?: number;
+}
+
+/**
+ * Base class for all floating UI elements (Tooltip, Popover, ContextMenu).
+ *
+ * Handles:
+ * - Computing canvas-space position relative to a target entity
+ * - Edge collision detection & placement flip
+ * - Mounting to `scene.overlayRoot` (bypasses `clipChildren`, always on top)
+ * - Spring-based opacity + scale appear/disappear animation
+ *
+ * Subclasses implement `render()` to draw their content.
+ */
+export class Overlay extends UIComponent {
+  public placement: OverlayPlacement;
+  public offset: number;
+  public visible: boolean = false;
+
+  private _opacity: number = 0;
+  private _scale: number = 0.92;
+  private _targetOpacity: number = 0;
+  private _targetScale: number = 1;
+
+  constructor(opts: OverlayOptions) {
+    super('Overlay');
+    this.width = opts.width;
+    this.height = opts.height;
+    this.placement = opts.placement ?? 'bottom';
+    this.offset = opts.offset ?? 6;
+    this.opacity = 0;
+    this.interactive = false;
+  }
+
+  /**
+   * Show the overlay anchored to a target entity.
+   * Automatically mounts to `scene.overlayRoot` on first call.
+   */
+  public showAt(target: Entity): void {
+    this._mount(target);
+    this._position(target);
+    this.visible = true;
+    this._targetOpacity = 1;
+    this._targetScale = 1;
+    this.scene?.markDirty();
+  }
+
+  /** Show the overlay at an absolute canvas position. */
+  public showAtPoint(x: number, y: number): void {
+    if (!this.scene) return;
+    if (!this.parent) this.scene.overlayRoot.add(this);
+    this._placeAt(x, y);
+    this.visible = true;
+    this._targetOpacity = 1;
+    this._targetScale = 1;
+    this.scene.markDirty();
+  }
+
+  /** Animate the overlay out. */
+  public hide(): void {
+    this.visible = false;
+    this._targetOpacity = 0;
+    this._targetScale = 0.92;
+    this.scene?.markDirty();
+  }
+
+  private _mount(target: Entity): void {
+    const scene = target.scene;
+    if (!scene) return;
+    if (this.parent) this.parent.remove(this);
+    scene.overlayRoot.add(this);
+  }
+
+  private _position(target: Entity): void {
+    const gp = target.getGlobalPosition();
+    const tw = target.width;
+    const th = target.height;
+    const sw = this.scene?.width ?? window.innerWidth;
+    const sh = this.scene?.height ?? window.innerHeight;
+    let pl = this.placement;
+
+    if (pl === 'auto') {
+      const below = sh - (gp.y + th);
+      const above = gp.y;
+      pl = below >= this.height + this.offset ? 'bottom' : 'top';
+      if (below < this.height + this.offset && above < this.height + this.offset)
+        pl = below >= above ? 'bottom' : 'top';
+    }
+
+    let ax = gp.x;
+    let ay = gp.y;
+    switch (pl) {
+      case 'top':
+        ax = gp.x + tw / 2 - this.width / 2;
+        ay = gp.y - this.height - this.offset;
+        break;
+      case 'top-start':
+        ax = gp.x;
+        ay = gp.y - this.height - this.offset;
+        break;
+      case 'top-end':
+        ax = gp.x + tw - this.width;
+        ay = gp.y - this.height - this.offset;
+        break;
+      case 'bottom':
+        ax = gp.x + tw / 2 - this.width / 2;
+        ay = gp.y + th + this.offset;
+        break;
+      case 'bottom-start':
+        ax = gp.x;
+        ay = gp.y + th + this.offset;
+        break;
+      case 'bottom-end':
+        ax = gp.x + tw - this.width;
+        ay = gp.y + th + this.offset;
+        break;
+      case 'left':
+        ax = gp.x - this.width - this.offset;
+        ay = gp.y + th / 2 - this.height / 2;
+        break;
+      case 'right':
+        ax = gp.x + tw + this.offset;
+        ay = gp.y + th / 2 - this.height / 2;
+        break;
+    }
+    this._placeAt(ax, ay, sw, sh);
+  }
+
+  private _placeAt(ax: number, ay: number, sw?: number, sh?: number): void {
+    const W = sw ?? this.scene?.width ?? window.innerWidth;
+    const H = sh ?? this.scene?.height ?? window.innerHeight;
+    this.x = Math.max(4, Math.min(ax, W - this.width - 4));
+    this.y = Math.max(4, Math.min(ay, H - this.height - 4));
+  }
+
+  public override update(dt: number, time: number): void {
+    super.update(dt, time);
+    const dOp = this._targetOpacity - this._opacity;
+    this._opacity += dOp * 0.18;
+    this.opacity = Math.max(0, Math.min(1, this._opacity));
+
+    const dSc = this._targetScale - this._scale;
+    this._scale += dSc * 0.18;
+    this.scaleX = this._scale;
+    this.scaleY = this._scale;
+
+    if (Math.abs(dOp) > 0.005 || Math.abs(dSc) > 0.005) this.scene?.markDirty();
+  }
+
+  public render(_r: IRenderer): void {
+    // Subclasses draw content; base draws nothing.
+  }
+}

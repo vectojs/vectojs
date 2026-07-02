@@ -1,0 +1,193 @@
+import { IRenderer, A11yAttributes } from '@vectojs/core';
+import { Overlay } from './Overlay';
+
+export interface ContextMenuItem {
+  /** Display label. Use with `separator: false` (default). */
+  label?: string;
+  /** Keyboard shortcut hint rendered flush-right. */
+  shortcut?: string;
+  /** Single-character icon (emoji, nerd-font glyph, etc.) shown left of the label. */
+  icon?: string;
+  /** Called when the user clicks a non-disabled leaf item. */
+  onClick?: () => void;
+  /** Grey out and make the item non-interactive. */
+  disabled?: boolean;
+  /** Render a horizontal rule instead of a menu item. */
+  separator?: boolean;
+  /** Nested submenu opened on click. */
+  children?: ContextMenuItem[];
+}
+
+export interface ContextMenuOptions {
+  items: ContextMenuItem[];
+  /** Panel width. Default `220`. */
+  width?: number;
+  font?: string;
+  color?: string;
+  disabledColor?: string;
+  bg?: string;
+  hoverBg?: string;
+  borderColor?: string;
+  /** Row height for non-separator items. Default `32`. */
+  itemHeight?: number;
+  /** Height of separator rows. Default `9`. */
+  separatorHeight?: number;
+}
+
+/**
+ * A right-click context menu with separator support and nested submenus.
+ *
+ * @example
+ * const menu = new ContextMenu({
+ *   items: [
+ *     { label: 'Cut',   icon: '✂️', shortcut: 'Ctrl+X', onClick: () => cut() },
+ *     { label: 'Copy',  icon: '📋', shortcut: 'Ctrl+C', onClick: () => copy() },
+ *     { separator: true },
+ *     { label: 'Delete', onClick: () => del(), disabled: true },
+ *   ],
+ * });
+ * scene.add(menu);
+ * entity.on('contextmenu', (e) => menu.showAtPoint(e.globalX, e.globalY));
+ */
+export class ContextMenu extends Overlay {
+  private _items: ContextMenuItem[];
+  private _font: string;
+  private _textColor: string;
+  private _disColor: string;
+  private _bg: string;
+  private _hoverBg: string;
+  private _border: string;
+  private _iH: number;
+  private _sH: number;
+  private _hoverIdx = -1;
+  private _submenu: ContextMenu | null = null;
+  private _opts: ContextMenuOptions;
+
+  constructor(opts: ContextMenuOptions) {
+    const iH = opts.itemHeight ?? 32;
+    const sH = opts.separatorHeight ?? 9;
+    const totalH = (opts.items ?? []).reduce((acc, it) => acc + (it.separator ? sH : iH), 0);
+    super({ width: opts.width ?? 220, height: totalH + 8, placement: 'auto', offset: 2 });
+
+    this._opts = opts;
+    this._items = opts.items ?? [];
+    this._font = opts.font ?? '13px sans-serif';
+    this._textColor = opts.color ?? '#e2e8f0';
+    this._disColor = opts.disabledColor ?? 'rgba(255,255,255,0.3)';
+    this._bg = opts.bg ?? 'rgba(18,18,32,0.97)';
+    this._hoverBg = opts.hoverBg ?? 'rgba(0,240,255,0.14)';
+    this._border = opts.borderColor ?? 'rgba(255,255,255,0.12)';
+    this._iH = iH;
+    this._sH = sH;
+    this.interactive = true;
+
+    this.on('pointermove', (e: { localY?: number }) => {
+      this._hoverIdx = this._idxAt(e.localY ?? 0);
+      this.scene?.markDirty();
+    });
+    this.on('pointerleave', () => {
+      this._hoverIdx = -1;
+      this.scene?.markDirty();
+    });
+    this.on('pointerdown', (e: { localY?: number }) => {
+      const idx = this._idxAt(e.localY ?? 0);
+      const item = this._items[idx];
+      if (!item || item.separator || item.disabled) return;
+      if (item.children && item.children.length > 0) {
+        // Lazy-create and open submenu
+        if (!this._submenu) {
+          this._submenu = new ContextMenu({ ...this._opts, items: item.children });
+          if (this.scene) this.scene.overlayRoot.add(this._submenu);
+        }
+        this._submenu.showAtPoint(this.x + this.width, this.y + this._rowTop(idx));
+      } else {
+        item.onClick?.();
+        this.hide();
+      }
+    });
+  }
+
+  private _idxAt(localY: number): number {
+    let y = 4;
+    for (let i = 0; i < this._items.length; i++) {
+      const h = this._items[i].separator ? this._sH : this._iH;
+      if (localY >= y && localY < y + h) return i;
+      y += h;
+    }
+    return -1;
+  }
+
+  private _rowTop(idx: number): number {
+    let y = 4;
+    for (let i = 0; i < idx; i++) y += this._items[i].separator ? this._sH : this._iH;
+    return y;
+  }
+
+  public render(r: IRenderer): void {
+    // Background + border
+    r.beginPath();
+    r.roundRect(0, 0, this.width, this.height, 8);
+    r.fill(this._bg);
+    r.beginPath();
+    r.roundRect(0, 0, this.width, this.height, 8);
+    r.stroke(this._border, 1);
+
+    let y = 4;
+    for (let i = 0; i < this._items.length; i++) {
+      const item = this._items[i];
+
+      if (item.separator) {
+        const mid = y + this._sH / 2;
+        r.beginPath();
+        r.moveTo(8, mid);
+        r.lineTo(this.width - 8, mid);
+        r.stroke('rgba(255,255,255,0.1)', 1);
+        y += this._sH;
+        continue;
+      }
+
+      const col = item.disabled ? this._disColor : this._textColor;
+
+      // Hover highlight
+      if (i === this._hoverIdx && !item.disabled) {
+        r.beginPath();
+        r.roundRect(4, y, this.width - 8, this._iH, 4);
+        r.fill(this._hoverBg);
+      }
+
+      const ty = y + this._iH / 2 + 4;
+      let lx = 12;
+
+      // Icon
+      if (item.icon) {
+        r.fillText(item.icon, lx, ty, this._font, col);
+        lx += 22;
+      }
+
+      // Label
+      r.fillText(item.label ?? '', lx, ty, this._font, col);
+
+      // Shortcut (right-aligned)
+      if (item.shortcut) {
+        r.fillText(
+          item.shortcut,
+          this.width - 12,
+          ty,
+          this._font,
+          item.disabled ? this._disColor : 'rgba(255,255,255,0.4)',
+        );
+      }
+
+      // Submenu indicator
+      if (item.children && item.children.length > 0) {
+        r.fillText('▸', this.width - 16, ty, '10px sans-serif', 'rgba(255,255,255,0.5)');
+      }
+
+      y += this._iH;
+    }
+  }
+
+  public getA11yAttributes(): A11yAttributes {
+    return { role: 'menu', label: 'Context menu' };
+  }
+}

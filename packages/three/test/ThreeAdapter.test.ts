@@ -139,8 +139,18 @@ describe('ThreeAdapter', () => {
     expect(leaveCaptured).toBe(true);
   });
 
-  it('routes events to A11y DOM elements and handles target focus', () => {
-    // Register an entity that projects an a11y DOM element
+  it('falls back to direct entity dispatch for a11y elements that exist but are DOM-detached (ThreeAdapter always produces these)', () => {
+    // ThreeAdapter's canvas is offscreen and never inserted into a live document
+    // (that's the whole point — it's rendered into a texture, not shown directly),
+    // so `canvas.parentElement` is never truthy and a11yRoot is never attached to
+    // `document` (Scene.ts's a11yRoot-append guard). syncA11y still creates and
+    // populates individual a11y elements as children of that detached a11yRoot —
+    // getA11yElement() legitimately returns a real, non-null Element — but neither
+    // it nor a11yRoot is ever `.isConnected`. Native DOM APIs some UI components'
+    // internals rely on (setPointerCapture, robust focus()) require a connected
+    // element and throw otherwise, so dispatchEventToTarget must route through the
+    // same fallback used when no a11y element exists at all, not attempt a DOM
+    // dispatch a disconnected element can't safely receive.
     class TestInput extends Entity {
       isPointInside(x: number, y: number) {
         return x >= 100 && x <= 200 && y >= 100 && y <= 200;
@@ -163,10 +173,18 @@ describe('ThreeAdapter', () => {
 
     const a11yEl = adapter.vectoScene.getA11yElement('input-node');
     expect(a11yEl).toBeDefined();
+    // The premise this test exists to cover: a real element that is NOT connected
+    // to a live document — exactly ThreeAdapter's permanent, by-design situation.
+    expect(a11yEl!.isConnected).toBe(false);
 
-    let eventDispatched = false;
+    let a11yEventDispatched = false;
     a11yEl!.addEventListener('pointerdown', () => {
-      eventDispatched = true;
+      a11yEventDispatched = true;
+    });
+
+    let bubbleEvent: VectoJSEvent | null = null;
+    testInput.on('pointerdown', (e: any) => {
+      bubbleEvent = e;
     });
 
     // Simulate clicking on the input node (pixel coords: x=150, y=150)
@@ -180,7 +198,13 @@ describe('ThreeAdapter', () => {
     } as any;
 
     adapter.updateIntersection(mockRaycaster, 'pointerdown');
-    expect(eventDispatched).toBe(true);
+
+    // Detached a11y element receives nothing; the entity's own VectoJSEvent
+    // dispatch fires instead — the same fallback path used for entities with no
+    // a11y element at all.
+    expect(a11yEventDispatched).toBe(false);
+    expect(bubbleEvent).not.toBeNull();
+    expect(bubbleEvent!.type).toBe('pointerdown');
   });
 
   it('bubbles events directly in Vecto tree if entity has no DOM element', () => {

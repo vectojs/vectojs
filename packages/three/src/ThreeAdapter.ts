@@ -184,8 +184,16 @@ export class ThreeAdapter {
   ): void {
     const a11yEl = this.vectoScene.getA11yElement(entity.id);
 
-    // If an associated transparent DOM element exists, dispatch to it to drive natively-bound widgets
-    if (a11yEl) {
+    // If an associated transparent DOM element exists AND is connected to a live
+    // document, dispatch to it to drive natively-bound widgets. ThreeAdapter's
+    // canvas is always offscreen (rendered into a texture, never inserted into
+    // the page), so the Scene's a11yRoot is never attached to `document` either —
+    // getA11yElement() can still return a real element (syncA11y populates it
+    // regardless), but it's permanently disconnected. Native DOM APIs some
+    // components' internals rely on (setPointerCapture, robust focus()) require a
+    // connected element and throw otherwise, so route disconnected elements
+    // through the same fallback used when no a11y element exists at all.
+    if (a11yEl && a11yEl.isConnected) {
       const domEvent = this.createDOMEvent(type, x, y, pointerId, originalEvent);
       a11yEl.dispatchEvent(domEvent);
 
