@@ -1,5 +1,25 @@
 # @vectojs/core
 
+## 0.1.0
+
+### Minor Changes
+
+- c74bb7bd: Renamed from `@vecto-ui/core` to `@vectojs/core` (the GitHub org uses "vectojs";
+  `vecto-ui` wasn't available) and reset the version to `0.1.0` for the new scope's first
+  release. `publishConfig.access` is now set explicitly, since a new scope defaults to
+  private on first publish. `VectoUIEvent` was also renamed to `VectoJSEvent`.
+
+  This is a clean version reset, not a feature release — no source behavior changed. See
+  **Pre-rebrand history** below for everything that shipped under the old `@vecto-ui` name.
+
+---
+
+## Pre-rebrand history (`@vecto-ui/core`)
+
+Everything below shipped under the old `@vecto-ui` npm scope, before the 2026-07-01 rename
+and version reset. Kept for historical reference — none of these version numbers exist under
+the current `@vectojs/core` scope.
+
 ## 0.9.2
 
 ### Patch Changes
