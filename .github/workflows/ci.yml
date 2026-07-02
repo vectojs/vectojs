@@ -21,9 +21,12 @@ jobs:
         run: cd packages/core && bunx vitest run
       - name: Run ui unit tests
         run: cd packages/ui && bunx vitest run
+      - name: Run three unit tests
+        run: cd packages/three && bunx vitest run
       - name: Lint
-        run: bunx oxlint packages/core/src packages/ui/src
+        run: bunx oxlint packages/core/src packages/ui/src packages/three/src
       - name: Build packages
         run: |
           cd packages/core && bun run build
           cd ../ui && bun run build
+          cd ../three && bun run build

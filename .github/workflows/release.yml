@@ -1,36 +1,107 @@
-name: Release
+name: Publish Package
 
+# Triggered by pushing a tag in the established `@vectojs/<pkg>@<version>` format
+# (e.g. `@vectojs/three@0.1.1`) — matches how every release so far has actually
+# been tagged. Cutting a release is still a manual step: bump the version in
+# that package's package.json, commit, tag it, push the tag. This workflow
+# takes over from there: test, verify the tag matches package.json, build,
+# publish to npm, and attach a tarball to a GitHub Release.
 on:
   push:
     tags:
-      - 'v*'
+      - '@vectojs/*@*'
 
 jobs:
-  release:
-    name: Create GitHub Release
+  publish:
+    name: Test, build & publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+
+      - name: Parse package and version from tag
+        id: parse
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          PKG="${TAG#@vectojs/}"
+          PKG="${PKG%@*}"
+          VERSION="${TAG##*@}"
+          # Belt-and-suspenders: constrain to a safe charset before this value
+          # is ever used to build a path or shell command in later steps —
+          # anyone who can push a tag matching the trigger pattern controls
+          # this string, so it's treated as untrusted input, not just parsed.
+          if ! [[ "$PKG" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::Parsed package name '$PKG' contains characters outside [a-z0-9-]"
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Parsed version '$VERSION' is not a plain semver string"
+            exit 1
+          fi
+          if [ ! -d "packages/$PKG" ]; then
+            echo "::error::No packages/$PKG directory exists"
+            exit 1
+          fi
+          echo "package=$PKG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag '$TAG' -> package=$PKG version=$VERSION"
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
       - name: Install dependencies
         run: bun install
-      - name: Build packages
-        run: cd packages/core && bun run build
-      - name: Pack package tarball
+
+      - name: Verify package.json version matches the tag
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+          EXPECTED_VERSION: ${{ steps.parse.outputs.version }}
         run: |
-          cd packages/core
+          PKG_VERSION=$(bun -e "console.log(require('./packages/'+process.env.PKG+'/package.json').version)")
+          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Tag version ($EXPECTED_VERSION) does not match packages/$PKG/package.json version ($PKG_VERSION) — refusing to publish a mismatched release."
+            exit 1
+          fi
+
+      - name: Run package tests
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+        run: cd "packages/$PKG" && bunx vitest run
+
+      - name: Lint
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+        run: bunx oxlint "packages/$PKG/src"
+
+      - name: Build package
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+        run: cd "packages/$PKG" && bun run build
+
+      - name: Publish to npm
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: cd "packages/$PKG" && npm publish --access public
+
+      - name: Pack tarball for the GitHub Release
+        id: pack
+        env:
+          PKG: ${{ steps.parse.outputs.package }}
+        run: |
+          cd "packages/$PKG"
           npm pack
           TARBALL_NAME=$(find . -maxdepth 1 -name "*.tgz" -exec basename {} \;)
-          echo "PACKAGE_TARBALL=${TARBALL_NAME}" >> "$GITHUB_ENV"
-      - name: Create Release
+          echo "tarball=packages/$PKG/${TARBALL_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: packages/core/${{ env.PACKAGE_TARBALL }}
-          name: Release ${{ github.ref_name }}
+          files: ${{ steps.pack.outputs.tarball }}
+          name: ${{ github.ref_name }}
           draft: false
           prerelease: false
         env:
