@@ -52,15 +52,13 @@ export class Checkbox extends UIComponent {
     this.height = this.size;
     this.width = this.size + (this.label ? 8 + measureText(this.label, this.font) : 0);
 
-    this.on('click', () => this.setChecked(!this.checked, opts.onChange));
+    this.on('click', () => this.emit('change', { checked: !this.checked }));
     // Authoritative native state when the shadow checkbox is toggled directly.
-    this.on('change', (e: { checked: boolean }) => this.setChecked(e.checked, opts.onChange));
-  }
-
-  private setChecked(value: boolean, onChange?: (c: boolean) => void): void {
-    if (value === this.checked) return;
-    this.checked = value;
-    onChange?.(value);
+    this.on('change', (e: { checked: boolean }) => {
+      if (e.checked === this.checked) return;
+      this.checked = e.checked;
+      opts.onChange?.(this.checked);
+    });
   }
 
   public getA11yAttributes(): A11yAttributes {

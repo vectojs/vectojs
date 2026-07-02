@@ -80,6 +80,10 @@ export class Dropdown extends UIComponent {
         }
       }
     });
+
+    this.on('change', (e: { value: string }) => {
+      props.onChange?.(e.value);
+    });
   }
 
   public getA11yAttributes() {

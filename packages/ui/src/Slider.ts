@@ -37,6 +37,10 @@ export class Slider extends UIComponent {
     this.on('pointerup', () => {
       this.isDragging = false;
     });
+
+    this.on('change', (e: { value: number }) => {
+      props.onChange?.(e.value);
+    });
   }
 
   private updateValueFromPointer(clientX: number) {
