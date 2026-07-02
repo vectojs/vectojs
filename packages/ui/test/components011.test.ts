@@ -10,6 +10,9 @@ import {
   Tooltip,
   Popover,
   ContextMenu,
+  RadioGroup,
+  Tabs,
+  ProgressBar,
 } from '../src';
 
 describe('UI 0.1.1 Components', () => {
@@ -216,6 +219,71 @@ describe('UI 0.1.1 Components', () => {
       expect(menu.x).toBe(100);
       expect(menu.y).toBe(150);
       expect(menu.visible).toBe(true);
+    });
+  });
+
+  describe('RadioGroup', () => {
+    it('manages value selection and emits change', () => {
+      const onChange = vi.fn();
+      const group = new RadioGroup({
+        options: [
+          { value: 'a', label: 'Option A' },
+          { value: 'b', label: 'Option B' },
+        ],
+        value: 'a',
+        onChange,
+      });
+
+      expect(group.value).toBe('a');
+
+      // Simulate click on Option B
+      // Option B starts at x = 0 (vertical group). localY is options[1].
+      // Option A starts at 0, B is at size + gap = 18 + 12 = 30.
+      group.emit('pointerdown', { localX: 10, localY: 35 });
+      expect(group.value).toBe('b');
+      expect(onChange).toHaveBeenCalledWith('b');
+    });
+  });
+
+  describe('Tabs', () => {
+    it('switches tabs and content visibility', () => {
+      const onChange = vi.fn();
+      const tab1Content = new Entity('tab1');
+      const tab2Content = new Entity('tab2');
+      const tabs = new Tabs({
+        width: 300,
+        height: 200,
+        tabs: [
+          { id: 'tab1', label: 'Tab 1', content: tab1Content },
+          { id: 'tab2', label: 'Tab 2', content: tab2Content },
+        ],
+        value: 'tab1',
+        onChange,
+      });
+
+      expect(tabs.value).toBe('tab1');
+      expect(tabs.children).toContain(tab1Content);
+      expect(tabs.children).not.toContain(tab2Content);
+
+      // Click Tab 2
+      // Tab width = 300 / 2 = 150. Tab 2 starts at x = 150.
+      tabs.emit('pointerdown', { localX: 200, localY: 10 });
+      expect(tabs.value).toBe('tab2');
+      expect(onChange).toHaveBeenCalledWith('tab2');
+      expect(tabs.children).not.toContain(tab1Content);
+      expect(tabs.children).toContain(tab2Content);
+    });
+  });
+
+  describe('ProgressBar', () => {
+    it('renders correct progress scale and updates value', () => {
+      const bar = new ProgressBar({ value: 0.25, width: 200, height: 10 });
+      expect(bar.value).toBe(0.25);
+      expect(bar.getA11yAttributes().value).toBe('25');
+
+      bar.setValue(0.75);
+      expect(bar.value).toBe(0.75);
+      expect(bar.getA11yAttributes().value).toBe('75');
     });
   });
 });

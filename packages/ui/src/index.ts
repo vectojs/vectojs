@@ -25,3 +25,6 @@ export * from './ResizablePanel';
 export * from './Tooltip';
 export * from './Popover';
 export * from './ContextMenu';
+export * from './RadioGroup';
+export * from './Tabs';
+export * from './ProgressBar';
