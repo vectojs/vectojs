@@ -81,10 +81,17 @@ jobs:
           PKG: ${{ steps.parse.outputs.package }}
         run: cd "packages/$PKG" && bun run build
 
+      - name: Configure npm registry auth
+        # oven-sh/setup-bun doesn't wire up npm auth the way actions/setup-node's
+        # registry-url input does — NODE_AUTH_TOKEN alone is not read by `npm
+        # publish` on its own; it has to be pointed at via .npmrc explicitly.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+
       - name: Publish to npm
         env:
           PKG: ${{ steps.parse.outputs.package }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: cd "packages/$PKG" && npm publish --access public
 
       - name: Pack tarball for the GitHub Release
