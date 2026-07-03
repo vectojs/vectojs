@@ -23,6 +23,7 @@ export * from './layout/measure';
 export * from './text/MSDFFont';
 export * from './math/SpatialHashGrid';
 export * from './math/SpringPhysics';
+export * from './animation/easing';
 export { MSDFTextEntity } from './text/MSDFTextEntity';
 export type { MSDFTextEntityOptions } from './text/MSDFTextEntity';
 export { LayoutWorkerManager } from './layout/LayoutWorkerManager';
