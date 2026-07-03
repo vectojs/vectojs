@@ -126,9 +126,14 @@ export class ThreeAdapter {
     pointerId: number,
     originalEvent?: Event,
   ): void {
-    const px = uv.x * this.canvas.width;
+    // Map UVs into the Scene's LOGICAL coordinate space, never the canvas's
+    // physical backing-store size: on HiDPI displays the CanvasRenderer scales
+    // the backing store (canvas.width = logicalWidth * devicePixelRatio) while
+    // entity layout and findEntityAt stay logical, so multiplying by
+    // canvas.width would land every hit down/right by exactly the DPR factor.
+    const px = uv.x * this.vectoScene.width;
     // Map Three.js Y (0 is bottom) to Canvas Y (0 is top)
-    const py = (1.0 - uv.y) * this.canvas.height;
+    const py = (1.0 - uv.y) * this.vectoScene.height;
 
     // Trigger markDirty so the scene repaints immediately in onDemand mode
     this.vectoScene.markDirty();

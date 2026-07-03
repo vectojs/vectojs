@@ -5,6 +5,21 @@
 `packages/three/package.json`, commit, tag `@vectojs/three@<version>`, and push the tag —
 the [publish workflow](../../.github/workflows/release.yml) takes it from there.
 
+## 0.1.2 (2026-07-03)
+
+### Fixed
+
+- **UV hits now map to logical scene coordinates, fixing mis-clicks on HiDPI displays.**
+  `@vectojs/core`'s `CanvasRenderer` scales the canvas backing store by
+  `devicePixelRatio` (`canvas.width = logicalWidth × dpr`) while entity layout and
+  `findEntityAt` stay in logical coordinates — but `dispatchAtUv` mapped raycast UVs via
+  the physical `canvas.width`/`height`. On any display or browser-zoom level where
+  DPR ≠ 1, every pointer event landed down/right of the cursor by exactly the DPR factor
+  (at DPR 2, clicking one control activated the control roughly one panel-row lower —
+  e.g. a `−` stepper click toggling a switch two rows below it). Now maps through
+  `vectoScene.width`/`height` (logical). Invisible at DPR 1, where physical and logical
+  sizes coincide — which is why unit tests and DPR-1 browser testing never caught it.
+
 ## 0.1.1 (2026-07-02)
 
 ### Fixed
