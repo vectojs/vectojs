@@ -238,6 +238,53 @@ describe('ThreeAdapter', () => {
     expect(bubbleEvent!.type).toBe('pointerdown');
   });
 
+  it('maps UV hits to logical scene coordinates, not DPR-scaled canvas pixels', () => {
+    // On a HiDPI display, core's CanvasRenderer scales the canvas backing store
+    // (canvas.width = logicalWidth * devicePixelRatio) and ctx.scale()s so all
+    // drawing and entity layout stay in logical coordinates. UV -> pixel mapping
+    // must therefore use the Scene's logical dimensions -- multiplying by the
+    // physical canvas.width instead shifts every hit down/right by exactly the
+    // DPR factor (at DPR=2, clicking one control activates the control ~2x
+    // further down the panel). Regression test for the Dimension-demo mis-click
+    // reports; invisible at DPR=1 where physical == logical.
+    const original = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const hidpi = new ThreeAdapter({ width: 800, height: 600 });
+      // Premise: the renderer really did scale the backing store 2x, while the
+      // scene's logical viewport stayed at the requested size.
+      expect(hidpi.canvas.width).toBe(1600);
+      expect(hidpi.vectoScene.width).toBe(800);
+
+      class Shape extends Entity {
+        isPointInside(x: number, y: number) {
+          return x >= 100 && x <= 200 && y >= 100 && y <= 200;
+        }
+        render() {}
+      }
+      const shape = new Shape('hidpi-shape').setPosition(150, 150);
+      shape.width = 100;
+      shape.height = 100;
+      hidpi.vectoScene.add(shape);
+
+      let received: VectoJSEvent | null = null;
+      shape.on('pointerdown', (e: any) => {
+        received = e;
+      });
+
+      // UV for logical (150, 150) in the 800x600 scene: (150/800, 1 - 150/600).
+      const mockRaycaster = {
+        intersectObject: () => [{ uv: new THREE.Vector2(0.1875, 0.75) }],
+      } as any;
+
+      hidpi.updateIntersection(mockRaycaster, 'pointerdown');
+      expect(received).not.toBeNull();
+      expect(received!.type).toBe('pointerdown');
+    } finally {
+      if (original) Object.defineProperty(window, 'devicePixelRatio', original);
+    }
+  });
+
   it('isolates state per pointerId to support multi-pointer/touch', () => {
     const mockRaycaster1 = {
       intersectObject: () => [
