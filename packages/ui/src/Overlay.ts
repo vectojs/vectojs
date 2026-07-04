@@ -39,19 +39,23 @@ export class Overlay extends UIComponent {
   public offset: number;
   public visible: boolean = false;
 
-  private _opacity: number = 0;
-  private _scale: number = 0.92;
-  private _targetOpacity: number = 0;
-  private _targetScale: number = 1;
-
   constructor(opts: OverlayOptions) {
     super('Overlay');
     this.width = opts.width;
     this.height = opts.height;
     this.placement = opts.placement ?? 'bottom';
     this.offset = opts.offset ?? 6;
-    this.opacity = 0;
     this.interactive = false;
+    // Seed the hidden state (instant, before any transition is configured), then
+    // declare how show/hide animate. Replaces the old hand-rolled *= 0.18 lerp.
+    this.opacity = 0;
+    this.scaleX = 0.92;
+    this.scaleY = 0.92;
+    this.setTransition({
+      opacity: { duration: 160, easing: 'easeOutQuad' },
+      scaleX: 'spring',
+      scaleY: 'spring',
+    });
   }
 
   /**
@@ -62,8 +66,9 @@ export class Overlay extends UIComponent {
     this._mount(target);
     this._position(target);
     this.visible = true;
-    this._targetOpacity = 1;
-    this._targetScale = 1;
+    this.opacity = 1;
+    this.scaleX = 1;
+    this.scaleY = 1;
     this.scene?.markDirty();
   }
 
@@ -73,16 +78,18 @@ export class Overlay extends UIComponent {
     if (!this.parent) this.scene.overlayRoot.add(this);
     this._placeAt(x, y);
     this.visible = true;
-    this._targetOpacity = 1;
-    this._targetScale = 1;
+    this.opacity = 1;
+    this.scaleX = 1;
+    this.scaleY = 1;
     this.scene.markDirty();
   }
 
-  /** Animate the overlay out. */
+  /** Animate the overlay out (stays mounted; re-show via showAt). */
   public hide(): void {
     this.visible = false;
-    this._targetOpacity = 0;
-    this._targetScale = 0.92;
+    this.opacity = 0;
+    this.scaleX = 0.92;
+    this.scaleY = 0.92;
     this.scene?.markDirty();
   }
 
@@ -153,20 +160,6 @@ export class Overlay extends UIComponent {
     const H = sh ?? this.scene?.height ?? window.innerHeight;
     this.x = Math.max(4, Math.min(ax, W - this.width - 4));
     this.y = Math.max(4, Math.min(ay, H - this.height - 4));
-  }
-
-  public override update(dt: number, time: number): void {
-    super.update(dt, time);
-    const dOp = this._targetOpacity - this._opacity;
-    this._opacity += dOp * 0.18;
-    this.opacity = Math.max(0, Math.min(1, this._opacity));
-
-    const dSc = this._targetScale - this._scale;
-    this._scale += dSc * 0.18;
-    this.scaleX = this._scale;
-    this.scaleY = this._scale;
-
-    if (Math.abs(dOp) > 0.005 || Math.abs(dSc) > 0.005) this.scene?.markDirty();
   }
 
   public render(_r: IRenderer): void {
