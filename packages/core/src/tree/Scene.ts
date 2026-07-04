@@ -1119,25 +1119,23 @@ export class Scene {
     const hasActiveAnimation =
       this.hasAnyPendingAnimation(this.root) || this.hasAnyPendingAnimation(this.overlayRoot);
 
-    if (hasActiveAnimation) {
-      this.a11yPendingSyncAfterAnimation = true;
-    } else {
-      const hasInteractive =
-        this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
-      const shouldSyncInterval =
-        this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
+    const hasInteractive =
+      this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+    const shouldSyncInterval =
+      this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
 
-      if (
-        (hasInteractive || this.a11yElements.size > 0) &&
-        (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
-      ) {
-        this.lastA11ySync = time;
-        if (hasInteractive) {
-          this.syncA11y(this.root);
-        }
-        this.enforceA11yDomOrder();
-        this.a11yPendingSyncAfterAnimation = false;
+    if (
+      (hasInteractive || this.a11yElements.size > 0) &&
+      (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
+    ) {
+      this.lastA11ySync = time;
+      if (hasInteractive) {
+        this.syncA11y(this.root);
       }
+      this.enforceA11yDomOrder();
+      this.a11yPendingSyncAfterAnimation = hasActiveAnimation;
+    } else if (hasActiveAnimation) {
+      this.a11yPendingSyncAfterAnimation = true;
     }
 
     this.dirty = false;

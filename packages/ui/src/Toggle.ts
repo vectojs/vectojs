@@ -24,6 +24,22 @@ export interface ToggleOptions {
   onChange?: (checked: boolean) => void;
 }
 
+class ToggleKnob extends UIComponent {
+  private knobR: number;
+
+  constructor(knobR: number) {
+    super();
+    this.knobR = knobR;
+    this.interactive = false;
+  }
+
+  public render(r: IRenderer): void {
+    r.beginPath();
+    r.arc(0, 0, this.knobR, 0, Math.PI * 2);
+    r.fill('#ffffff');
+  }
+}
+
 /**
  * A switch projecting a `role="switch"` shadow node with `aria-checked`, so
  * agents/assistive tech can read and operate it. Clicking toggles the state.
@@ -40,6 +56,8 @@ export class Toggle extends UIComponent {
   public accent: string;
   public track: string;
 
+  private knobEntity: ToggleKnob;
+
   constructor(opts: ToggleOptions) {
     super();
     this.checked = opts.checked ?? false;
@@ -55,15 +73,37 @@ export class Toggle extends UIComponent {
     this.height = this.trackH;
     this.width = this.trackW + (this.label ? 8 + measureText(this.label, this.font) : 0);
 
+    const radius = this.trackH / 2;
+    const knobR = radius - 3;
+    const initialX = this.checked ? this.trackW - radius : radius;
+
+    this.knobEntity = new ToggleKnob(knobR);
+    this.knobEntity.setPosition(initialX, radius);
+    this.knobEntity.setTransition({
+      x: {
+        stiffness: 210,
+        damping: 14,
+        mass: 0.6,
+      },
+    });
+    this.add(this.knobEntity);
+
     // Unified event model (matches Input/Checkbox): a click requests a state
     // change via `emit('change')`; the single 'change' handler is the source of
     // truth, so external `on('change', …)` listeners and the `onChange` callback
     // both fire. (role="switch" is a div, so the Scene doesn't forward a native
     // change for it — the component emits its own.)
-    this.on('click', () => this.emit('change', { checked: !this.checked }));
+    this.on('click', () => {
+      this.emit('change', { checked: !this.checked });
+    });
     this.on('change', (e: { checked: boolean }) => {
       if (e.checked === this.checked) return;
       this.checked = e.checked;
+
+      // Snappy physical spring motion targeting the new checked end position
+      const targetX = this.checked ? this.trackW - radius : radius;
+      this.knobEntity.x = targetX;
+
       opts.onChange?.(this.checked);
     });
   }
@@ -77,13 +117,6 @@ export class Toggle extends UIComponent {
     r.beginPath();
     r.roundRect(0, 0, this.trackW, this.trackH, radius);
     r.fill(this.checked ? this.accent : this.track);
-
-    // Knob.
-    const knobR = radius - 3;
-    const cx = this.checked ? this.trackW - radius : radius;
-    r.beginPath();
-    r.arc(cx, radius, knobR, 0, Math.PI * 2);
-    r.fill('#ffffff');
 
     if (this.label) {
       r.fillText(this.label, this.trackW + 8, this.trackH * 0.7, this.font, this.color);

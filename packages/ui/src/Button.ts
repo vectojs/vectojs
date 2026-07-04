@@ -39,7 +39,9 @@ export class Button extends UIComponent {
   public focused = false;
   private hovered = false;
 
-  constructor(label: string, opts: ButtonOptions = {}) {
+  public textWidth: number;
+
+  constructor(label: string, opts: ButtonOptions & { width?: number; height?: number } = {}) {
     super();
     this.label = label;
     this.bg = opts.bg ?? '#2563eb';
@@ -50,8 +52,9 @@ export class Button extends UIComponent {
     this.radius = opts.radius ?? 8;
     this.interactive = true;
 
-    this.width = measureText(this.label, this.font) + this.padding * 2;
-    this.height = fontSizePx(this.font) + this.padding * 2;
+    this.textWidth = measureText(this.label, this.font);
+    this.width = opts.width ?? this.textWidth + this.padding * 2;
+    this.height = opts.height ?? fontSizePx(this.font) + this.padding * 2;
 
     this.on('hover', () => (this.hovered = true));
     this.on('pointerleave', () => (this.hovered = false));
@@ -69,6 +72,7 @@ export class Button extends UIComponent {
     if (this.focused) {
       r.stroke('#00f0ff', 2);
     }
-    r.fillText(this.label, this.padding, this.height * 0.66, this.font, this.color);
+    const textX = (this.width - this.textWidth) / 2;
+    r.fillText(this.label, textX, this.height * 0.66, this.font, this.color);
   }
 }
