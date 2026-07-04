@@ -2,13 +2,11 @@ import { UIComponent } from './UIComponent';
 import { Card } from './Card';
 import { Text } from './Text';
 import { Button } from './Button';
-import { SpringPhysics, type IRenderer, VectoJSEvent } from '@vectojs/core';
+import { type IRenderer, VectoJSEvent } from '@vectojs/core';
 
 export class Modal extends UIComponent {
   private card: Card;
   private backdropColor: string;
-  private spring: SpringPhysics;
-  private closing: boolean = false;
 
   constructor(title: string, props: any = {}) {
     super(props);
@@ -16,9 +14,6 @@ export class Modal extends UIComponent {
     this.height = props.height ?? (typeof window !== 'undefined' ? window.innerHeight : 600);
     this.interactive = true;
     this.backdropColor = props.backdropColor ?? 'rgba(0, 0, 0, 0.5)';
-
-    this.spring = new SpringPhysics(0); // Starts collapsed (scale=0)
-    this.spring.target = 1; // Animation target (scale=1)
 
     // Central Card modal
     const modalW = props.modalWidth ?? 400;
@@ -49,35 +44,32 @@ export class Modal extends UIComponent {
     closeBtn.height = 36;
     closeBtn.on('click', (e: VectoJSEvent) => {
       e.stopPropagation();
-      this.close();
+      void this.close();
     });
     this.card.add(closeBtn.setPosition(modalW - 104, modalH - 60));
 
     this.add(this.card);
+
+    // The card scales in on mount (onMounted) and out on close() through the
+    // shared animation system's imperative springTo. Seed it collapsed so the
+    // mount animation grows it from nothing. The Scene ticks the card each frame
+    // (it recurses into descendants), so no per-frame update() override is needed.
+    this.card.scaleX = 0;
+    this.card.scaleY = 0;
 
     // Block underlying events
     this.on('click', (e: VectoJSEvent) => e.stopPropagation());
     this.on('pointerdown', (e: VectoJSEvent) => e.stopPropagation());
   }
 
-  public close() {
-    this.closing = true;
-    this.spring.target = 0; // Collapses scale to 0
+  protected override onMounted(): void {
+    void this.card.springTo({ scaleX: 1, scaleY: 1 }, { stiffness: 180, damping: 14 });
   }
 
-  public update(dt: number, time: number): void {
-    super.update(dt, time);
-    this.spring.update(dt / 1000); // Ticks Spring
-
-    this.card.scaleX = this.spring.value;
-    this.card.scaleY = this.spring.value;
-
-    if (!this.spring.isAtRest()) {
-      this.scene?.markDirty();
-    } else if (this.closing && this.spring.value === 0) {
-      // Safe deferred unmounting
-      this.scene?.hideOverlay(this);
-    }
+  /** Animate the card out, then remove the modal from its overlay layer. */
+  public async close(): Promise<void> {
+    await this.card.springTo({ scaleX: 0, scaleY: 0 }, { stiffness: 220, damping: 20 });
+    this.scene?.hideOverlay(this);
   }
 
   public render(r: IRenderer): void {

@@ -30,7 +30,7 @@ describe('Modal', () => {
     };
   });
 
-  it('does not unmount immediately on close() and plays exit animation', () => {
+  it('does not unmount immediately on close(); unmounts after the exit animation', async () => {
     const canvas = document.createElement('canvas');
     const scene = new Scene(canvas);
     const modal = new Modal('Test Header', { width: 300, height: 200 });
@@ -38,13 +38,17 @@ describe('Modal', () => {
     scene.showOverlay(modal);
     expect(scene.overlayRoot.children.length).toBe(1);
 
-    modal.close();
-    // Verify still mounted immediately after close()
+    const closed = modal.close();
+    // Still mounted immediately after close() — the exit animation must play first.
     expect(scene.overlayRoot.children.length).toBe(1);
 
-    // Run updates to simulate convergence to scale 0
-    // Spring physics update converts ms to seconds, so 5 seconds of dt (5000) will converge
-    modal.update(5000, 5000);
+    // The exit spring lives on the modal's card (the Scene ticks descendants each
+    // frame); drive it to rest here in small steps, then let close()'s async
+    // continuation run hideOverlay.
+    const card = (modal as unknown as { card: { update(dt: number, t: number): void } }).card;
+    for (let i = 0; i < 200; i++) card.update(16, i * 16);
+    await closed;
+
     expect(scene.overlayRoot.children.length).toBe(0);
   });
 });
