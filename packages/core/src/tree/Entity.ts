@@ -483,6 +483,12 @@ export abstract class Entity {
   }
 
   private _spawnDriver(prop: AnimatableProp, to: number, cfg: MotionConfig): void {
+    // Reduced motion: suppress movement (transforms), keep opacity fades. Snap instantly.
+    if (prop !== 'opacity' && this.scene?.prefersReducedMotion) {
+      this._drivers.delete(prop);
+      this._applyAnimated(prop, to);
+      return;
+    }
     const existing = this._drivers.get(prop);
     if (existing) {
       existing.retarget(to);

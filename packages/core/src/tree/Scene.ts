@@ -157,6 +157,11 @@ export class Scene {
   /** Cached media-query list; `.matches` is read live each frame. */
   private reducedMotionQuery: MediaQueryList | null = null;
 
+  /** True when the OS asks for reduced motion and we respect it. Read by the animation drivers. */
+  public get prefersReducedMotion(): boolean {
+    return this.respectReducedMotion && !!this.reducedMotionQuery?.matches;
+  }
+
   /**
    * Throttle interval (ms) for the a11y/automation shadow sync. `0` = every
    * frame. See {@link SceneOptions.a11ySyncInterval}.

@@ -45,3 +45,36 @@ describe('Entity animation', () => {
     expect(e.x).toBeCloseTo(100 * (0.5 * (2 - 0.5)), 4); // easeOutQuad(0.5)
   });
 });
+
+describe('Entity animation — reduced motion', () => {
+  function liveEntity(reduced: boolean): Entity {
+    const e = new (class extends Entity {
+      isPointInside(): boolean {
+        return false;
+      }
+      render(): void {}
+    })();
+    (e as unknown as { _scene: unknown })._scene = {
+      prefersReducedMotion: reduced,
+      markDirty() {},
+    };
+    return e;
+  }
+  const driverCount = (e: Entity) =>
+    (e as unknown as { _drivers: Map<string, unknown> })._drivers.size;
+
+  it('snaps movement props to target instantly when reduced motion is on', () => {
+    const e = liveEntity(true);
+    e.setTransition({ x: 'spring' });
+    e.x = 500;
+    expect(e.x).toBe(500); // no driver, instant
+    expect(driverCount(e)).toBe(0);
+  });
+
+  it('still animates opacity (a fade) under reduced motion', () => {
+    const e = liveEntity(true);
+    e.setTransition({ opacity: { duration: 100, easing: 'linear' } });
+    e.opacity = 0;
+    expect(driverCount(e)).toBe(1); // fade preserved
+  });
+});
