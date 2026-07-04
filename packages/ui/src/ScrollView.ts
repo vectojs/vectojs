@@ -30,6 +30,10 @@ export class ScrollView extends UIComponent {
         return false;
       }
       render() {}
+      /** Snap to `y` without touching the spring — see `scrollToBottom`'s use. */
+      jumpTo(y: number): void {
+        this.setImmediate('y', y);
+      }
     })('ScrollViewContent');
     super.add(this.content);
     // Drive scroll position through the shared, dt-aware spring system rather
@@ -88,11 +92,18 @@ export class ScrollView extends UIComponent {
 
   /**
    * Scroll to the very bottom of the content.
+   *
+   * Snaps instantly rather than retargeting the spring: callers that track
+   * growing content (e.g. streaming chat) call this on every update, often
+   * many times a second — retargeting a spring that fast never lets it
+   * settle, so the viewport visibly jitters instead of tracking the newest
+   * content. Wheel/drag scrolling still springs (see above); only this
+   * "pin to the end" path bypasses it.
    */
   public scrollToBottom(): void {
     const maxScroll = Math.max(0, this.content.height - this.height);
     this.targetY = -maxScroll;
-    this.content.y = this.targetY;
+    (this.content as unknown as { jumpTo(y: number): void }).jumpTo(this.targetY);
   }
 
   public add(child: Entity): this {

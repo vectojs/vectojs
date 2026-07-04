@@ -153,15 +153,31 @@ describe('ScrollView', () => {
     expect(sv.content.y).toBeCloseTo(-200, 0);
   });
 
+  it('snaps scrollToBottom instantly, without spawning a spring driver', () => {
+    // scrollToBottom is the auto-follow path a streaming chat calls on every
+    // token (see MessageView/reflow in the chat demo) — often dozens of times
+    // a second while content grows a little on each call. Retargeting a spring
+    // that fast never lets it settle, so the viewport visibly jitters instead
+    // of tracking the newest content. It must bypass the spring and land
+    // exactly on target in the same tick, with no driver left in flight.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300)); // maxScroll = 200
+    sv.scrollToBottom();
+    expect(sv.content.y).toBeCloseTo(-200, 0);
+    expect(sv.content.hasPendingAnimations()).toBe(false);
+  });
+
   it('reports a pending animation on content while scrolling settles, and none once at rest', () => {
     // This is the mechanism the idle-throttle bug hinged on: Scene only keeps
     // rendering continuously across multiple frames via hasPendingAnimations()
     // (a markDirty() call from inside update() is wiped by the loop's own
     // dirty=false at the end of that same tick). A scroll that isn't visible
     // to hasPendingAnimations() only advances once per external trigger.
+    // (Wheel/drag still spring — only scrollToBottom's auto-follow bypasses it,
+    // see the test above — so a wheel scroll is what exercises this path now.)
     const sv = new ScrollView({ width: 200, height: 100 });
     sv.add(new Box(50, 300)); // maxScroll = 200
-    sv.scrollToBottom();
+    sv.emit('wheel', wheelEvent(50).evt);
     expect(sv.content.hasPendingAnimations()).toBe(true);
     settle(sv);
     expect(sv.content.hasPendingAnimations()).toBe(false);
