@@ -1,5 +1,27 @@
 # @vectojs/ui
 
+## 0.2.0
+
+### Minor Changes
+
+- 21cea39: Add a unified, spring-first animation system.
+
+  `@vectojs/core` gains an easing library (`Easing`), per-property spring/tween
+  drivers, and a declarative + imperative API on `Entity`: `setTransition` (assign
+  a configured property and it animates), plus `animateTo` / `springTo` (imperative,
+  Promise-returning). The six transform/visual properties (`x`, `y`, `scaleX`,
+  `scaleY`, `rotation`, `opacity`) are now accessors with a zero-overhead fast path
+  when no transition is configured (benchmarked: 5000 writes/frame ≈ 89µs, 0.5% of a
+  60fps budget). Legacy `Entity.animate()` is preserved. Adds an `onMounted`
+  lifecycle hook and honors `prefers-reduced-motion` (movement snaps, opacity fades).
+
+  `@vectojs/ui` gains a shared enter/exit presence helper on `UIComponent`
+  (`enterMotion` / `exitMotion` / `dismiss`). `Modal` and the `Overlay` family
+  (`Tooltip` / `Popover` / `ContextMenu`) now animate through the shared system,
+  replacing their bespoke `SpringPhysics` and hand-rolled lerps.
+
+- c889611: Add Overlay (shared positioning engine), VirtualList (virtual scrolling with fixed and variable heights), TreeView (eager and lazy child loading), ResizablePanel (PanelGroup, Panel, PanelResizeHandle for N-panel nested resizable splits), Tooltip (hover trigger), Popover (click trigger), ContextMenu (right-click, separators, nested submenus), RadioGroup (horizontal/vertical option groups), Tabs (tabbed panel container), and ProgressBar (filled indicator bar with text display option) components.
+
 ## 0.1.1
 
 ### Minor Changes
