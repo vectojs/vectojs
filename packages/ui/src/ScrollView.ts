@@ -14,9 +14,6 @@ export class ScrollView extends UIComponent {
   public content: Entity;
 
   private targetY: number = 0;
-  private velocityY: number = 0;
-  private readonly friction: number = 0.85;
-  private readonly spring: number = 0.1;
   // Pointer-drag (touch / mouse) state.
   private dragging: boolean = false;
   private lastPointerY: number = 0;
@@ -35,20 +32,26 @@ export class ScrollView extends UIComponent {
       render() {}
     })('ScrollViewContent');
     super.add(this.content);
+    // Drive scroll position through the shared, dt-aware spring system rather
+    // than a hand-rolled per-frame integrator: that integrator ignored `dt`
+    // (frame-rate-dependent) and was invisible to Scene's idle auto-throttle
+    // (see Entity.hasPendingAnimations), so it only advanced once per external
+    // markDirty() trigger instead of every render frame once the throttle
+    // engaged — visibly stepping/jumping instead of gliding.
+    this.content.setTransition({ y: 'spring' });
 
     this.on('wheel', (e: WheelEvent) => {
       if (e.ctrlKey) return; // Allow browser zoom (Ctrl+wheel)
       e.preventDefault();
       this.targetY -= e.deltaY;
       this.clampTarget();
-      this.scene?.markDirty();
+      this.content.y = this.targetY; // retargets the spring; preserves velocity
     });
 
     // Pointer-drag (touch & mouse): content follows the finger/cursor 1:1.
     this.on('pointerdown', (e: { clientY?: number }) => {
       this.dragging = true;
       this.lastPointerY = e.clientY ?? 0;
-      this.scene?.markDirty();
     });
     this.on('pointermove', (e: { clientY?: number }) => {
       if (!this.dragging) return;
@@ -56,7 +59,7 @@ export class ScrollView extends UIComponent {
       this.targetY += y - this.lastPointerY;
       this.lastPointerY = y;
       this.clampTarget();
-      this.scene?.markDirty();
+      this.content.y = this.targetY;
     });
     const endDrag = () => {
       this.dragging = false;
@@ -80,7 +83,7 @@ export class ScrollView extends UIComponent {
   public scrollTo(y: number): void {
     this.targetY = -Math.max(0, y);
     this.clampTarget();
-    this.scene?.markDirty();
+    this.content.y = this.targetY;
   }
 
   /**
@@ -89,7 +92,7 @@ export class ScrollView extends UIComponent {
   public scrollToBottom(): void {
     const maxScroll = Math.max(0, this.content.height - this.height);
     this.targetY = -maxScroll;
-    this.scene?.markDirty();
+    this.content.y = this.targetY;
   }
 
   public add(child: Entity): this {
@@ -121,34 +124,23 @@ export class ScrollView extends UIComponent {
     const maxScroll = Math.max(0, this.content.height - this.height);
     if (this.targetY < -maxScroll) {
       this.targetY = -maxScroll;
+      this.content.y = this.targetY;
     }
   }
 
+  /**
+   * Defensive re-clamp only — the actual scroll motion is driven by `content`'s
+   * own spring transition, which the Scene tree walk ticks directly (calling
+   * `content.update()` as a normal child node). Reassigning `content.y` here
+   * unconditionally every frame would spawn a spurious (instantly-done) driver
+   * even when nothing changed, permanently defeating the idle throttle this
+   * fix restores — so only touch it when clamping actually moves the target.
+   */
   public update(dt: number, time: number): void {
     super.update(dt, time);
+    const before = this.targetY;
     this.clampTarget();
-
-    // Smooth scrolling integration
-    const maxScroll = Math.max(0, this.content.height - this.height);
-
-    // Spring back if out of bounds (for rubber-banding later)
-    if (this.content.y > 0) {
-      this.targetY = 0;
-    } else if (this.content.y < -maxScroll) {
-      this.targetY = -maxScroll;
-    }
-
-    const diff = this.targetY - this.content.y;
-    this.velocityY += diff * this.spring;
-    this.velocityY *= this.friction;
-
-    if (Math.abs(this.velocityY) > 0.01 || Math.abs(diff) > 0.01) {
-      this.content.y += this.velocityY;
-      this.scene?.markDirty();
-    } else {
-      this.content.y = this.targetY;
-      this.velocityY = 0;
-    }
+    if (this.targetY !== before) this.content.y = this.targetY;
   }
 
   public render(_r: IRenderer): void {

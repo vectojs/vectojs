@@ -33,9 +33,17 @@ function pointer(clientY: number): { clientY: number; preventDefault: () => void
   return { clientY, preventDefault: () => {} };
 }
 
-/** Run the spring integrator until the content settles on its target. */
+/**
+ * Run the spring integrator until the content settles on its target. In a real
+ * Scene, `content.update()` is ticked directly by the tree walk (it's a normal
+ * child node); these unit tests drive `ScrollView` in isolation, so both nodes
+ * need an explicit tick.
+ */
 function settle(sv: ScrollView): void {
-  for (let i = 0; i < 600; i++) sv.update(16, i * 16);
+  for (let i = 0; i < 600; i++) {
+    sv.update(16, i * 16);
+    sv.content.update(16, i * 16);
+  }
 }
 
 describe('ScrollView', () => {
@@ -145,6 +153,20 @@ describe('ScrollView', () => {
     expect(sv.content.y).toBeCloseTo(-200, 0);
   });
 
+  it('reports a pending animation on content while scrolling settles, and none once at rest', () => {
+    // This is the mechanism the idle-throttle bug hinged on: Scene only keeps
+    // rendering continuously across multiple frames via hasPendingAnimations()
+    // (a markDirty() call from inside update() is wiped by the loop's own
+    // dirty=false at the end of that same tick). A scroll that isn't visible
+    // to hasPendingAnimations() only advances once per external trigger.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300)); // maxScroll = 200
+    sv.scrollToBottom();
+    expect(sv.content.hasPendingAnimations()).toBe(true);
+    settle(sv);
+    expect(sv.content.hasPendingAnimations()).toBe(false);
+  });
+
   it('stays stable when targetY is set to a massive out-of-range value', () => {
     const sv = new ScrollView({ width: 200, height: 100 });
     sv.add(new Box(50, 300)); // maxScroll = 200
@@ -155,9 +177,10 @@ describe('ScrollView', () => {
     // Perform update tick
     sv.update(16, 0);
 
-    // Verify targetY was clamped immediately in update and velocityY did not blow up
+    // Verify targetY was clamped immediately in update, and the (now-retargeted)
+    // spring drives content.y toward the clamped value, not the colossal one.
     expect((sv as any).targetY).toBe(-200);
-    expect((sv as any).velocityY).toBeLessThan(100);
+    sv.content.update(16, 0);
     expect(sv.content.y).toBeLessThan(0);
     expect(sv.content.y).toBeGreaterThanOrEqual(-200);
   });
