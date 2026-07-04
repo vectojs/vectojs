@@ -260,6 +260,7 @@ export abstract class Entity {
   private _hasTransitions = false;
   private _transitions: Map<AnimatableProp, MotionConfig> | null = null;
   private _drivers: Map<AnimatableProp, PropertyDriver> = new Map();
+  private _mounted = false;
 
   public get x(): number {
     return this._x;
@@ -360,8 +361,20 @@ export abstract class Entity {
     if (s) {
       s.a11yNeedsReorder = true;
       s.markDirty();
+      child._notifyMounted(); // fire onMounted for the newly-live subtree
     }
     return this;
+  }
+
+  /** Called once when this entity becomes attached to a live Scene. Override to react. */
+  protected onMounted(): void {}
+
+  /** Fire onMounted for this node and its descendants, guarded against double-fire. */
+  private _notifyMounted(): void {
+    if (this._mounted) return;
+    this._mounted = true;
+    this.onMounted();
+    for (const c of this.children) c._notifyMounted();
   }
 
   /**
