@@ -21,6 +21,9 @@ export function isTweenConfig(c: MotionConfig): c is TweenConfig {
 /** Backs one animating property. Ticked in ms; writes `value`. */
 export interface PropertyDriver {
   value: number;
+  /** The current destination — applied exactly when the animation completes, so a
+   * finished spring lands on target rather than within its rest epsilon. */
+  readonly target: number;
   /** Change the destination. Spring keeps velocity; tween restarts from current value. */
   retarget(to: number): void;
   tick(dtMs: number): void;
@@ -43,6 +46,10 @@ export class TweenDriver implements PropertyDriver {
     this.duration = Math.max(1, cfg.duration);
     this.delay = cfg.delay ?? 0;
     this.ease = typeof cfg.easing === 'function' ? cfg.easing : Easing[cfg.easing ?? 'easeOutQuad'];
+  }
+
+  get target(): number {
+    return this.to;
   }
 
   retarget(to: number): void {
@@ -77,6 +84,10 @@ export class SpringDriver implements PropertyDriver {
 
   get value(): number {
     return this.spring.value;
+  }
+
+  get target(): number {
+    return this.spring.target;
   }
 
   retarget(to: number): void {

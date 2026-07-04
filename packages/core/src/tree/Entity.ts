@@ -1,3 +1,16 @@
+import {
+  TweenDriver,
+  SpringDriver,
+  isTweenConfig,
+  type PropertyDriver,
+  type MotionConfig,
+  type TweenConfig,
+  type SpringConfig,
+} from '../animation/drivers';
+
+/** A numeric transform/visual property that participates in the animation system. */
+export type AnimatableProp = 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity';
+
 /**
  * A 2-D coordinate in canvas/world space.
  */
@@ -235,12 +248,61 @@ export abstract class Entity {
     return this.parent ? this.parent.scene : null;
   }
 
-  public x: number = 0;
-  public y: number = 0;
-  public scaleX: number = 1;
-  public scaleY: number = 1;
-  public rotation: number = 0;
-  public opacity: number = 1;
+  private _x = 0;
+  private _y = 0;
+  private _scaleX = 1;
+  private _scaleY = 1;
+  private _rotation = 0;
+  private _opacity = 1;
+
+  // Fast-path flag: false for the overwhelming majority of entities (incl. the
+  // Danmaku hot loop), so a bare `entity.x = v` is one boolean check + field write.
+  private _hasTransitions = false;
+  private _transitions: Map<AnimatableProp, MotionConfig> | null = null;
+  private _drivers: Map<AnimatableProp, PropertyDriver> = new Map();
+
+  public get x(): number {
+    return this._x;
+  }
+  public set x(v: number) {
+    if (this._hasTransitions) this._animateProp('x', v);
+    else this._x = v;
+  }
+  public get y(): number {
+    return this._y;
+  }
+  public set y(v: number) {
+    if (this._hasTransitions) this._animateProp('y', v);
+    else this._y = v;
+  }
+  public get scaleX(): number {
+    return this._scaleX;
+  }
+  public set scaleX(v: number) {
+    if (this._hasTransitions) this._animateProp('scaleX', v);
+    else this._scaleX = v;
+  }
+  public get scaleY(): number {
+    return this._scaleY;
+  }
+  public set scaleY(v: number) {
+    if (this._hasTransitions) this._animateProp('scaleY', v);
+    else this._scaleY = v;
+  }
+  public get rotation(): number {
+    return this._rotation;
+  }
+  public set rotation(v: number) {
+    if (this._hasTransitions) this._animateProp('rotation', v);
+    else this._rotation = v;
+  }
+  public get opacity(): number {
+    return this._opacity;
+  }
+  public set opacity(v: number) {
+    if (this._hasTransitions) this._animateProp('opacity', v);
+    else this._opacity = v;
+  }
   public isDOMPortal: boolean = false;
   private _interactive: boolean = false;
   public get interactive(): boolean {
@@ -357,6 +419,142 @@ export abstract class Entity {
     return this;
   }
 
+  /** Write a driver-computed value to a backing field without re-triggering the setter. */
+  private _applyAnimated(prop: AnimatableProp, v: number): void {
+    switch (prop) {
+      case 'x':
+        this._x = v;
+        break;
+      case 'y':
+        this._y = v;
+        break;
+      case 'scaleX':
+        this._scaleX = v;
+        break;
+      case 'scaleY':
+        this._scaleY = v;
+        break;
+      case 'rotation':
+        this._rotation = v;
+        break;
+      case 'opacity':
+        this._opacity = v;
+        break;
+    }
+  }
+
+  private _currentOf(prop: AnimatableProp): number {
+    switch (prop) {
+      case 'x':
+        return this._x;
+      case 'y':
+        return this._y;
+      case 'scaleX':
+        return this._scaleX;
+      case 'scaleY':
+        return this._scaleY;
+      case 'rotation':
+        return this._rotation;
+      case 'opacity':
+        return this._opacity;
+    }
+  }
+
+  /**
+   * Write a value immediately, bypassing any configured transition. For subclasses
+   * that need to seed a starting state (e.g. the presence helper's enter `from`).
+   */
+  protected setImmediate(prop: AnimatableProp, v: number): void {
+    this._drivers.delete(prop);
+    this._applyAnimated(prop, v);
+  }
+
+  private _spawnDriver(prop: AnimatableProp, to: number, cfg: MotionConfig): void {
+    const existing = this._drivers.get(prop);
+    if (existing) {
+      existing.retarget(to);
+      return;
+    }
+    const from = this._currentOf(prop);
+    const driver: PropertyDriver = isTweenConfig(cfg)
+      ? new TweenDriver(from, to, cfg)
+      : new SpringDriver(from, to, cfg === 'spring' ? {} : (cfg as SpringConfig));
+    this._drivers.set(prop, driver);
+    this.scene?.markDirty();
+  }
+
+  /** Assignment path when a declarative transition is configured for `prop`. */
+  private _animateProp(prop: AnimatableProp, to: number): void {
+    const cfg = this._transitions?.get(prop);
+    if (!cfg) {
+      this._applyAnimated(prop, to);
+      return;
+    }
+    this._spawnDriver(prop, to, cfg);
+  }
+
+  /** Declare which properties animate, and how. Subsequent assignment animates them. */
+  public setTransition(config: Partial<Record<AnimatableProp, MotionConfig>>): this {
+    this._transitions ??= new Map();
+    for (const [k, v] of Object.entries(config))
+      this._transitions.set(k as AnimatableProp, v as MotionConfig);
+    this._hasTransitions = this._transitions.size > 0;
+    return this;
+  }
+
+  /** Imperative tween toward targets; resolves when all reach their end. */
+  public animateTo(
+    props: Partial<Record<AnimatableProp, number>>,
+    cfg: TweenConfig,
+  ): Promise<void> {
+    return this._driveTo(props, cfg);
+  }
+
+  /** Imperative spring toward targets; resolves when all reach rest. */
+  public springTo(
+    props: Partial<Record<AnimatableProp, number>>,
+    cfg: SpringConfig = {},
+  ): Promise<void> {
+    return this._driveTo(props, cfg);
+  }
+
+  private _driveTo(
+    props: Partial<Record<AnimatableProp, number>>,
+    cfg: MotionConfig,
+  ): Promise<void> {
+    const entries = Object.entries(props) as [AnimatableProp, number][];
+    return Promise.all(
+      entries.map(
+        (e) =>
+          new Promise<void>((resolve) => {
+            this._spawnDriver(e[0], e[1], cfg);
+            const d = this._drivers.get(e[0]) as
+              | (PropertyDriver & { onDone?: () => void })
+              | undefined;
+            if (!d)
+              resolve(); // spawn resolved instantly (e.g. reduced motion) -> no driver
+            else d.onDone = resolve;
+          }),
+      ),
+    ).then(() => undefined);
+  }
+
+  /** Advance active property drivers one frame. Call from update(). */
+  protected tickDrivers(dt: number): void {
+    if (this._drivers.size === 0) return;
+    for (const [prop, driver] of this._drivers) {
+      driver.tick(dt);
+      if (driver.isDone()) {
+        this._applyAnimated(prop, driver.target); // snap exactly to target on completion
+        (driver as PropertyDriver & { onDone?: () => void }).onDone?.();
+        this._drivers.delete(prop);
+      } else {
+        this._applyAnimated(prop, driver.value);
+      }
+    }
+    this.scene?.markDirty();
+  }
+
   /**
    * Advance the entity's internal state for one frame.
    *
@@ -366,7 +564,8 @@ export abstract class Entity {
    * @param dt - Elapsed time since the last frame in milliseconds.
    * @param time - Absolute timestamp from `performance.now()`.
    */
-  public update(_dt: number, time: number): void {
+  public update(dt: number, time: number): void {
+    this.tickDrivers(dt);
     if (this.animations.length > 0) {
       const anim = this.animations[0];
       if (anim.startTime === -1) {
