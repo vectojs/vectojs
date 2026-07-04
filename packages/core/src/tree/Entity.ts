@@ -848,15 +848,23 @@ export abstract class Entity {
   }
 
   /**
-   * Whether this entity still has a queued/running tween animation.
+   * Whether this entity still has a queued/running tween animation, or an
+   * active {@link setTransition}/{@link animateTo}/{@link springTo} property
+   * driver.
    *
-   * Used by {@link Scene}'s `onDemand` render mode to keep redrawing while an
-   * animation is in flight.
+   * Used by {@link Scene} to keep rendering continuously while an animation
+   * is in flight — both in `onDemand` render mode, and to hold off the
+   * `always`-mode idle auto-throttle. Without checking `_drivers` here, a
+   * property driver becomes invisible to that throttle: `markDirty()` called
+   * from inside `update()`/`tickDrivers()` is wiped by the loop's own
+   * `dirty = false` at the end of that same tick, so once the throttle
+   * engages an in-flight spring/tween only advances one animation-frame per
+   * external `markDirty()` trigger instead of every render frame.
    *
-   * @returns `true` if at least one animation remains.
+   * @returns `true` if at least one animation or property driver remains.
    */
   public hasPendingAnimations(): boolean {
-    return this.animations.length > 0;
+    return this.animations.length > 0 || this._drivers.size > 0;
   }
 
   public abstract isPointInside(globalX: number, globalY: number): boolean;

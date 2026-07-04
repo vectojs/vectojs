@@ -44,6 +44,17 @@ describe('Entity animation', () => {
     e.update(50, 50);
     expect(e.x).toBeCloseTo(100 * (0.5 * (2 - 0.5)), 4); // easeOutQuad(0.5)
   });
+
+  it('hasPendingAnimations() reports true while a property driver is active', () => {
+    const e = new TestEntity();
+    e.setTransition({ opacity: 'spring' });
+    e.opacity = 0.2;
+    expect(e.hasPendingAnimations()).toBe(true);
+    let t = 0;
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
+    for (let i = 0; i < 600 && drivers.size > 0; i++) e.update(16, (t += 16));
+    expect(e.hasPendingAnimations()).toBe(false);
+  });
 });
 
 describe('Entity animation — reduced motion', () => {

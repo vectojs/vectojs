@@ -86,6 +86,10 @@ export class Dropdown extends UIComponent {
     });
   }
 
+  public getValue(): string {
+    return this.selectedValue;
+  }
+
   public getA11yAttributes() {
     return {
       role: 'combobox',
