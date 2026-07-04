@@ -87,6 +87,11 @@ export interface SceneOptions {
    * Useful when Vecto is running inside a custom layout container or offscreen canvas.
    */
   disableWindowResize?: boolean;
+  /**
+   * Enable automatic throttling to 2 FPS when the scene is static (no active transitions
+   * and not marked dirty) to save power/CPU. Default is `true`.
+   */
+  autoThrottle?: boolean;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -145,6 +150,8 @@ export class Scene {
    */
   public renderMode: 'always' | 'onDemand' = 'always';
   private dirty: boolean = true;
+  /** Whether to throttle rendering to 2 FPS when the scene is static to save power. */
+  public autoThrottle: boolean = true;
 
   /**
    * Frame-rate cap (power saving). `0` = uncapped (native refresh). When set,
@@ -246,6 +253,7 @@ export class Scene {
       (globalProcess.env?.NODE_ENV === 'test' || globalProcess.env?.VITEST === 'true');
     this.maxFPS = options.maxFPS ?? (isTest ? 0 : 60);
     this.respectReducedMotion = options.respectReducedMotion ?? true;
+    this.autoThrottle = options.autoThrottle ?? true;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.reducedMotionQuery =
@@ -1077,6 +1085,7 @@ export class Scene {
     // (no pending animations and not marked dirty), drop the render rate to 2 FPS
     // to save battery and GPU cycles.
     const isStatic =
+      this.autoThrottle &&
       !this.dirty &&
       !this.hasAnyPendingAnimation(this.root) &&
       !this.hasAnyPendingAnimation(this.overlayRoot);
