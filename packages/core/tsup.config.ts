@@ -8,7 +8,7 @@ export default defineConfig({
     text: 'src/text/index.ts',
   },
   format: ['cjs', 'esm'],
-  dts: true,
+  dts: false,
   clean: true,
   splitting: true,
   external: ['@vectojs/core'],
