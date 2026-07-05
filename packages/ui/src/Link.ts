@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer } from '@vectojs/core';
+import { A11yAttributes, IRenderer, sanitizeUrl } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText, fontSizePx } from './measure';
 
@@ -42,14 +42,15 @@ export class Link extends UIComponent {
     this.height = fontSizePx(this.font);
 
     this.on('click', () => {
-      if (this.href && typeof window !== 'undefined') {
-        window.open(this.href, '_blank', 'noopener');
+      const safe = sanitizeUrl(this.href);
+      if (safe && safe !== '#' && typeof window !== 'undefined') {
+        window.open(safe, '_blank', 'noopener');
       }
     });
   }
 
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: this.href, label: this.label };
+    return { tag: 'a', href: sanitizeUrl(this.href), label: this.label };
   }
 
   public render(r: IRenderer): void {

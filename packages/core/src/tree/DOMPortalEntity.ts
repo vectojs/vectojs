@@ -13,6 +13,7 @@ export class DOMPortalEntity extends Entity {
   public lastHeight: string = '';
   public lastTransform: string = '';
   public lastZIndex: string = '';
+  public lastOpacity: string = '';
 
   constructor(domElement: HTMLElement, width?: number, height?: number, id?: string) {
     super(id);
@@ -73,27 +74,16 @@ export class DOMPortalEntity extends Entity {
   }
 
   isPointInside(globalX: number, globalY: number): boolean {
-    const pos = this.getGlobalPosition();
-    const scale = this.getWorldScale();
-    const rot = this.getWorldRotation();
-
-    const dx = globalX - pos.x;
-    const dy = globalY - pos.y;
-
-    const cos = Math.cos(-rot);
-    const sin = Math.sin(-rot);
-    const lx = (dx * cos - dy * sin) / scale.x;
-    const ly = (dx * sin + dy * cos) / scale.y;
-
     const w = this.width > 0 ? this.width : this.cachedWidth;
     const h = this.height > 0 ? this.height : this.cachedHeight;
-
-    return lx >= 0 && lx <= w && ly >= 0 && ly <= h;
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    return local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h;
   }
 
-  public override add(child: Entity): this {
+  public override add(_child: Entity): this {
     console.warn(`DOMPortalEntity (${this.id}) is a leaf node. Child entities are not supported.`);
-    return super.add(child);
+    return this;
   }
 
   render(): void {

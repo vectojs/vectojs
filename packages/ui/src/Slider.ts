@@ -11,7 +11,7 @@ export class Slider extends UIComponent {
   private handleColor: string;
 
   constructor(props: any = {}) {
-    super(props);
+    super();
     this.min = props.min ?? 0;
     this.max = props.max ?? 100;
     this.value = props.value ?? this.min;
@@ -25,12 +25,12 @@ export class Slider extends UIComponent {
 
     this.on('pointerdown', (e: any) => {
       this.isDragging = true;
-      this.updateValueFromPointer(e.clientX);
+      this.updateValueFromPointer(e.localX);
     });
 
     this.on('pointermove', (e: any) => {
       if (this.isDragging) {
-        this.updateValueFromPointer(e.clientX);
+        this.updateValueFromPointer(e.localX);
       }
     });
 
@@ -43,9 +43,9 @@ export class Slider extends UIComponent {
     });
   }
 
-  private updateValueFromPointer(clientX: number) {
-    const globalPos = this.getGlobalPosition();
-    const relativeX = Math.max(0, Math.min(this.width, clientX - globalPos.x));
+  private updateValueFromPointer(localX: number | undefined) {
+    if (localX === undefined) return;
+    const relativeX = Math.max(0, Math.min(this.width, localX));
     const fraction = relativeX / this.width;
     const rawValue = this.min + fraction * (this.max - this.min);
     this.value = Math.round(rawValue);

@@ -179,26 +179,17 @@ export class SVGEntity extends Entity {
   }
 
   isPointInside(globalX: number, globalY: number): boolean {
-    const pos = this.getGlobalPosition();
-    const scale = this.getWorldScale();
-    const rot = this.getWorldRotation();
-
-    const dx = globalX - pos.x;
-    const dy = globalY - pos.y;
-
-    const cos = Math.cos(-rot);
-    const sin = Math.sin(-rot);
-    const lx = (dx * cos - dy * sin) / scale.x;
-    const ly = (dx * sin + dy * cos) / scale.y;
-
-    return lx >= 0 && lx <= this.width && ly >= 0 && ly <= this.height;
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    return local.x >= 0 && local.x <= this.width && local.y >= 0 && local.y <= this.height;
   }
 
   render(r: IRenderer): void {
-    const isSVGExporter = typeof (r as any).toXMLString === 'function';
-    if (isSVGExporter) {
-      const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(this.svgSource);
-      r.drawImage({ src: dataUri } as any, 0, 0, this.width, this.height);
+    const svgRenderer = r as IRenderer & {
+      drawSVG?: (source: string, dx: number, dy: number, dw: number, dh: number) => void;
+    };
+    if (typeof svgRenderer.drawSVG === 'function') {
+      svgRenderer.drawSVG(this.svgSource, 0, 0, this.width, this.height);
       return;
     }
 

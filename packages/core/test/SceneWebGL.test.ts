@@ -148,6 +148,20 @@ class BatchBox extends Entity {
   }
 }
 
+class FallbackDot extends Entity {
+  isPointInside() {
+    return false;
+  }
+  getBatchCircle() {
+    return { radius: 3, color: '#ff0000' };
+  }
+  render(renderer: import('../src').IRenderer) {
+    renderer.beginPath();
+    renderer.arc(0, 0, 3, 0, Math.PI * 2);
+    renderer.fill('#ff0000');
+  }
+}
+
 let restoreCreate: (() => void) | null = null;
 function makeScene(glOrNull: unknown) {
   (globalThis as { window?: unknown }).window = {
@@ -236,6 +250,22 @@ describe('Scene — WebGL point backend', () => {
     tick();
 
     // No GL → the dot is drawn through the Canvas2D batch (arc + fill).
+    expect(ctx.calls).toContain('arc');
+    expect(ctx.calls).toContain('fill');
+  });
+
+  it('falls back to Canvas2D when an ancestor transform is not uniform', () => {
+    const { gl, captures } = mockGL();
+    const { scene, ctx, tick } = makeScene(gl);
+    const parent = new Group('non-uniform-parent');
+    parent.scaleX = 2;
+    parent.scaleY = 1;
+    parent.add(new FallbackDot('ellipse'));
+    scene.add(parent);
+
+    tick();
+
+    expect(captures.drawCount).toBe(-1);
     expect(ctx.calls).toContain('arc');
     expect(ctx.calls).toContain('fill');
   });

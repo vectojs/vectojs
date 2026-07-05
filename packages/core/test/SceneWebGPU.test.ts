@@ -165,6 +165,8 @@ describe('Scene WebGPU Orchestration & lost Recovery Integration', () => {
   });
 
   it('should fall back to CPU rendering if WebGPU is not supported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     // Ensure navigator.gpu is undefined
     const originalGpu = (navigator as any).gpu;
     Object.defineProperty(navigator, 'gpu', {
@@ -187,6 +189,37 @@ describe('Scene WebGPU Orchestration & lost Recovery Integration', () => {
       await new Promise(process.nextTick);
 
       expect(updateCPUSpy).toHaveBeenCalled();
+      expect((scene as any).webgpuDisabled).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        'WebGPU unavailable; using CPU particle fallback.',
+        expect.any(Error),
+      );
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, 'gpu', {
+        value: originalGpu,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  it('reports explicit WebGPU initialization failure as an error before falling back', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const originalGpu = (navigator as any).gpu;
+    Object.defineProperty(navigator, 'gpu', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      scene = new Scene(canvas, { particleBackend: 'webgpu' });
+      scene.add(new ComputeParticleEntity({ maxParticles: 1 }));
+
+      scene.render(scene.getRenderer(), 16, 0);
+      await new Promise(process.nextTick);
+
+      expect(error).toHaveBeenCalledWith('Failed to initialize WebGPU:', expect.any(Error));
       expect((scene as any).webgpuDisabled).toBe(true);
     } finally {
       Object.defineProperty(navigator, 'gpu', {
@@ -230,6 +263,43 @@ describe('Scene WebGPU Orchestration & lost Recovery Integration', () => {
 
       expect(updateCPUSpy).not.toHaveBeenCalled();
       expect(mockDevice.createCommandEncoder).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(navigator, 'gpu', {
+        value: originalGpu,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  it('passes logical scene coordinates to WebGPU compute when the canvas is CSS-scaled', async () => {
+    const originalGpu = (navigator as any).gpu;
+    Object.defineProperty(navigator, 'gpu', {
+      value: mockGpu,
+      configurable: true,
+      writable: true,
+    });
+    canvas.width = 800;
+    canvas.height = 600;
+    canvas.getBoundingClientRect = () =>
+      ({ left: 100, top: 50, width: 400, height: 300 }) as DOMRect;
+
+    try {
+      scene = new Scene(canvas, { disableWindowResize: true });
+      const entity = new ComputeParticleEntity({ maxParticles: 1 });
+      scene.add(entity);
+      canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 300, clientY: 200 }));
+
+      scene.render(scene.getRenderer(), 16, 0);
+      await new Promise(process.nextTick);
+      const manager = (scene as any).manager;
+      const recordComputePass = vi.spyOn(manager, 'recordComputePass');
+
+      scene.render(scene.getRenderer(), 16, 16);
+
+      expect(recordComputePass).toHaveBeenCalled();
+      expect(recordComputePass.mock.calls[0][3]).toBe(400);
+      expect(recordComputePass.mock.calls[0][4]).toBe(300);
     } finally {
       Object.defineProperty(navigator, 'gpu', {
         value: originalGpu,

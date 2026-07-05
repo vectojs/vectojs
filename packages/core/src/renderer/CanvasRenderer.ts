@@ -246,4 +246,16 @@ export class CanvasRenderer implements IRenderer {
     }
     return grad;
   }
+
+  /**
+   * Canvas2D drawing contexts are automatically released when their
+   * `<canvas>` element is GC'd, so there's no explicit GPU handle to free.
+   * This method clears our internal batch state and is idempotent.
+   */
+  public dispose(): void {
+    this.batchCount = 0;
+    this.batchColor = '';
+    this.batchAlpha = 1;
+    this.batchActive = false;
+  }
 }

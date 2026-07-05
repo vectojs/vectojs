@@ -295,4 +295,19 @@ describe('createWebGLPointRenderer', () => {
     r.flush();
     expect(captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(0);
   });
+
+  it('destroy releases each GL resource exactly once', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.setTexture({} as TexImageSource);
+    r.setMSDFTexture({} as TexImageSource, 4);
+
+    r.destroy();
+    r.destroy();
+
+    expect(gl.deleteBuffer).toHaveBeenCalledTimes(4);
+    expect(gl.deleteVertexArray).toHaveBeenCalledTimes(4);
+    expect(gl.deleteProgram).toHaveBeenCalledTimes(4);
+    expect(gl.deleteTexture).toHaveBeenCalledTimes(2);
+  });
 });

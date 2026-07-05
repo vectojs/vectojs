@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/video-exporter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Video export utility for VectoJS",
   "type": "module",
   "main": "dist/index.js",
@@ -12,17 +12,18 @@
     "vecto-export": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
+    "prepack": "bun run build && node scripts/verify-package.js",
     "test": "vitest run"
   },
   "dependencies": {
-    "@vectojs/core": "workspace:*",
     "cli-progress": "^3.12.0",
     "puppeteer": "^22.12.1"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
     "@types/node": "^26.1.0",
+    "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
     "typescript": "^5.4.5",
     "vite": "^8.1.3",

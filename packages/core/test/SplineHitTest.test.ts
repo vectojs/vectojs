@@ -60,6 +60,22 @@ describe('SplineEntity — curve-accurate hit-testing', () => {
     expect(s.isPointInside(180, 180)).toBe(false);
   });
 
+  it('maps world→local through nested rotation and non-uniform scale', () => {
+    const parent = new Group('transformed-parent');
+    parent.setPosition(30, 20);
+    parent.scaleX = 2;
+    parent.scaleY = 0.5;
+    parent.rotation = Math.PI / 3;
+    const s = new SplineEntity(L_DOC, { lineWidth: 4 });
+    s.rotation = -Math.PI / 7;
+    parent.add(s);
+
+    const near = s.localToWorld(50, 1);
+    const far = s.localToWorld(50, 5);
+    expect(s.isPointInside(near.x, near.y)).toBe(true);
+    expect(s.isPointInside(far.x, far.y)).toBe(false);
+  });
+
   it('hitTest:"aabb" keeps the coarse bounding-box behavior', () => {
     const s = new SplineEntity(L_DOC, { lineWidth: 4, hitTest: 'aabb' });
     s.setPosition(0, 0);

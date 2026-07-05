@@ -116,6 +116,75 @@ describe('Entity event propagation', () => {
     expect(prevented).toBe(true);
   });
 
+  it('exposes viewport, scene, local, and modifier coordinates independently', () => {
+    const { parent, mid, leaf } = chain();
+    parent.setPosition(50, 20);
+    mid.setPosition(10, 5);
+    leaf.setPosition(3, 2);
+    (parent as unknown as { _scene: unknown })._scene = {
+      clientToScene(clientX: number, clientY: number) {
+        return { x: (clientX - 100) * 2, y: (clientY - 50) * 2 };
+      },
+    };
+
+    const native = {
+      clientX: 300,
+      clientY: 200,
+      shiftKey: true,
+      ctrlKey: true,
+      altKey: false,
+      metaKey: true,
+    };
+    const seen: Array<Record<string, number | boolean | undefined>> = [];
+    leaf.on('pointerdown', (e: VectoJSEvent) => {
+      seen.push({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        sceneX: e.sceneX,
+        sceneY: e.sceneY,
+        localX: e.localX,
+        localY: e.localY,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+      });
+    });
+
+    leaf.dispatchEvent(new VectoJSEvent('pointerdown', leaf, native));
+
+    expect(seen).toEqual([
+      {
+        clientX: 300,
+        clientY: 200,
+        sceneX: 400,
+        sceneY: 300,
+        localX: 337,
+        localY: 273,
+        shiftKey: true,
+        ctrlKey: true,
+        altKey: false,
+        metaKey: true,
+      },
+    ]);
+  });
+
+  it('uses explicit logical scene coordinates for offscreen adapter events', () => {
+    const { leaf } = chain();
+    leaf.setPosition(20, 30);
+    const event = new VectoJSEvent('pointermove', leaf, { clientX: 900, clientY: 700 }, true, {
+      x: 120,
+      y: 80,
+    });
+
+    expect(event.clientX).toBe(900);
+    expect(event.clientY).toBe(700);
+    expect(event.sceneX).toBe(120);
+    expect(event.sceneY).toBe(80);
+    expect(event.localX).toBe(100);
+    expect(event.localY).toBe(50);
+  });
+
   it('emit() stays a direct, self-only dispatch (back-compat)', () => {
     const { mid, leaf } = chain();
     const order: string[] = [];

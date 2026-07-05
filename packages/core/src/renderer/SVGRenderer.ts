@@ -1,4 +1,5 @@
 import { IRenderer } from './IRenderer';
+import { sanitizeUrl } from './url';
 
 export interface SVGLinearGradient {
   type: 'linear';
@@ -262,7 +263,7 @@ export class SVGRenderer implements IRenderer {
 
   public fill(colorOrGradient: string | SVGLinearGradient): void {
     this.flush();
-    const fillVal = this.resolveGradient(colorOrGradient);
+    const fillVal = this.escapeXML(this.resolveGradient(colorOrGradient));
     const dStr = this.currentPath.join(' ');
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
     this.buffer.push(
@@ -272,7 +273,7 @@ export class SVGRenderer implements IRenderer {
 
   public stroke(colorOrGradient: string | SVGLinearGradient, lineWidth = 1): void {
     this.flush();
-    const strokeVal = this.resolveGradient(colorOrGradient);
+    const strokeVal = this.escapeXML(this.resolveGradient(colorOrGradient));
     const dStr = this.currentPath.join(' ');
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
     this.buffer.push(
@@ -305,7 +306,7 @@ export class SVGRenderer implements IRenderer {
     const fontFamily =
       cleanFont.replace(/(bold|italic|normal|600|500|400|300|100)\s+/gi, '').trim() || 'sans-serif';
 
-    const fillVal = this.resolveGradient(color);
+    const fillVal = this.escapeXML(this.resolveGradient(color));
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
     this.buffer.push(
       `<g transform="${transformStr}"><text x="${x}" y="${y}" font-size="${fontSize}" font-weight="${fontWeight}" font-style="${fontStyle}" font-family="${this.escapeXML(fontFamily)}" fill="${fillVal}" opacity="${this.globalAlpha}">${this.escapeXML(text)}</text></g>`,
@@ -341,7 +342,10 @@ export class SVGRenderer implements IRenderer {
 
   public drawImage(source: any, dx: number, dy: number, dw: number, dh: number): void {
     this.flush();
-    const href = typeof source?.toDataURL === 'function' ? source.toDataURL() : source?.src || '';
+    const fromCanvas = typeof source?.toDataURL === 'function';
+    const rawHref = fromCanvas ? source.toDataURL() : source?.src || '';
+    const href =
+      fromCanvas && this.isSafeRasterDataUrl(rawHref) ? rawHref : sanitizeUrl(String(rawHref));
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
     if (href) {
       this.buffer.push(
@@ -353,6 +357,22 @@ export class SVGRenderer implements IRenderer {
       );
       console.warn('drawImage source fallback triggered');
     }
+  }
+
+  /**
+   * Embed SVG markup as an isolated nested image.
+   *
+   * This explicit path is used by `SVGEntity` during vector export. General
+   * `drawImage()` input remains subject to the URL policy and therefore still
+   * rejects caller-provided SVG data URLs.
+   */
+  public drawSVG(source: string, dx: number, dy: number, dw: number, dh: number): void {
+    this.flush();
+    const href = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+    const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
+    this.buffer.push(
+      `<image href="${this.escapeXML(href)}" x="${dx}" y="${dy}" width="${dw}" height="${dh}" transform="${transformStr}" />`,
+    );
   }
 
   public flush(): void {
@@ -484,5 +504,21 @@ export class SVGRenderer implements IRenderer {
           return c;
       }
     });
+  }
+
+  private isSafeRasterDataUrl(value: unknown): value is string {
+    return (
+      typeof value === 'string' &&
+      /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z\d+/=\s]*$/i.test(value)
+    );
+  }
+
+  /**
+   * SVGRenderer accumulates strings in memory; nothing external is allocated.
+   * Drop the buffers for GC and become idempotent.
+   */
+  public dispose(): void {
+    this.clear();
+    this.gradientCache.clear();
   }
 }

@@ -62,8 +62,8 @@ export class Tabs extends UIComponent {
     this._updateContentVisibility();
 
     this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
-      const lx = e.localX ?? 0;
-      const ly = e.localY ?? 0;
+      const { localX: lx, localY: ly } = e;
+      if (lx === undefined || ly === undefined) return;
       if (ly >= 0 && ly <= this.tabHeight) {
         const idx = this._tabIdxAt(lx);
         if (idx !== -1) {
@@ -76,8 +76,8 @@ export class Tabs extends UIComponent {
     });
 
     this.on('pointermove', (e: { localX?: number; localY?: number }) => {
-      const lx = e.localX ?? 0;
-      const ly = e.localY ?? 0;
+      const { localX: lx, localY: ly } = e;
+      if (lx === undefined || ly === undefined) return;
       if (ly >= 0 && ly <= this.tabHeight) {
         this._hoverIdx = this._tabIdxAt(lx);
       } else {

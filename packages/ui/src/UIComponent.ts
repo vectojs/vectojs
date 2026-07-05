@@ -68,10 +68,9 @@ export abstract class UIComponent extends Entity {
    * @returns Whether the point lies within `[0, width] x [0, height]` locally.
    */
   public isPointInside(globalX: number, globalY: number): boolean {
-    const pos = this.getGlobalPosition();
-    const lx = globalX - pos.x;
-    const ly = globalY - pos.y;
-    return lx >= 0 && lx <= this.width && ly >= 0 && ly <= this.height;
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    return local.x >= 0 && local.x <= this.width && local.y >= 0 && local.y <= this.height;
   }
 
   /** Local-space box, enabling viewport culling by {@link Scene}. */

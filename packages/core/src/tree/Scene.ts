@@ -28,6 +28,7 @@ import type { PointRenderer } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
+import { sanitizeUrl } from '../renderer/url';
 
 /**
  * Options for {@link Scene}.
@@ -45,7 +46,7 @@ export interface SceneOptions {
   /**
    * Backend for particle simulation and rendering:
    * - `'auto'` (default): tries WebGPU first, falls back to CPU if WebGPU is unavailable or fails.
-   * - `'webgpu'`: forces WebGPU.
+   * - `'webgpu'`: explicitly requests WebGPU; the current runtime still falls back to CPU if initialization fails.
    * - `'cpu'`: forces CPU simulation and rendering (disabling WebGPU completely).
    */
   particleBackend?: 'auto' | 'webgpu' | 'cpu';
@@ -350,6 +351,18 @@ export class Scene {
     return this.renderer;
   }
 
+  /** Convert browser viewport coordinates into this Scene's logical coordinates. */
+  public clientToScene(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect?.();
+    if (!rect) return { x: clientX, y: clientY };
+    const cssWidth = rect.width || this.canvas.clientWidth || this.width;
+    const cssHeight = rect.height || this.canvas.clientHeight || this.height;
+    return {
+      x: (clientX - rect.left) * (cssWidth > 0 ? this.width / cssWidth : 1),
+      y: (clientY - rect.top) * (cssHeight > 0 ? this.height / cssHeight : 1),
+    };
+  }
+
   /**
    * Add a top-level entity to the scene graph.
    *
@@ -430,12 +443,22 @@ export class Scene {
     this.markDirty();
   }
 
+  private destroyEntitySubtree(entity: Entity): void {
+    while (entity.children.length > 0) this.destroyEntitySubtree(entity.children.at(-1)!);
+    entity.destroy();
+  }
+
   /**
    * Tear down the Scene, halt the loop, and clean up event listeners and DOM elements.
    */
   public destroy(): void {
+    if (this.destroyed) return;
     this.destroyed = true;
     this.stop();
+    while (this.root.children.length > 0) this.destroyEntitySubtree(this.root.children.at(-1)!);
+    while (this.overlayRoot.children.length > 0) {
+      this.destroyEntitySubtree(this.overlayRoot.children.at(-1)!);
+    }
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
@@ -455,6 +478,9 @@ export class Scene {
     this.portalRoot?.remove();
     this.a11yElements.clear();
     this.pointRenderer?.destroy();
+    // Release the main renderer's backend (e.g. WebGLRenderer + GL context)
+    // before GC — prevents context leakage across SPA/XR recreate cycles.
+    this.renderer.dispose?.();
     this.glCanvas?.remove();
     this.gpuCanvas?.remove();
     this.gpuCanvas = null;
@@ -479,9 +505,9 @@ export class Scene {
       typeof this.canvas.addEventListener === 'function'
     ) {
       this.pointerMoveListener = (e: PointerEvent) => {
-        const rect = this.canvas.getBoundingClientRect();
-        this.mouseX = e.clientX - rect.left;
-        this.mouseY = e.clientY - rect.top;
+        const point = this.clientToScene(e.clientX, e.clientY);
+        this.mouseX = point.x;
+        this.mouseY = point.y;
       };
       this.pointerLeaveListener = () => {
         this.mouseX = -9999;
@@ -616,6 +642,7 @@ export class Scene {
 
         // Default shadow DOM styling (with outline disabled to let Vecto handle visual focus outlines)
         el.style.position = 'absolute';
+        el.style.transformOrigin = '0 0';
         el.style.pointerEvents = 'auto'; // allow Playwright/Agent to click!
         el.style.touchAction = 'pinch-zoom';
         el.style.margin = '0';
@@ -794,7 +821,8 @@ export class Scene {
         if (el.placeholder !== attrs.placeholder) el.placeholder = attrs.placeholder;
       }
       if (attrs.href !== undefined && el instanceof HTMLAnchorElement) {
-        if (el.getAttribute('href') !== attrs.href) el.setAttribute('href', attrs.href);
+        const safeHref = sanitizeUrl(attrs.href);
+        if (el.getAttribute('href') !== safeHref) el.setAttribute('href', safeHref);
       }
       if (el instanceof HTMLImageElement) {
         if (attrs.src !== undefined && el.src !== attrs.src) el.src = attrs.src;
@@ -868,12 +896,12 @@ export class Scene {
         el.style.height = `${this.height}px`;
         el.style.transform = '';
       } else {
-        const pos = node.getGlobalPosition();
-        el.style.left = `${pos.x + node.a11yOffsetX}px`;
-        el.style.top = `${pos.y + node.a11yOffsetY}px`;
-        el.style.width = `${node.width * node.scaleX}px`;
-        el.style.height = `${node.height * node.scaleY}px`;
-        el.style.transform = `rotate(${node.rotation}rad)`;
+        const { a, b, c, d, e, f } = node.getWorldTransform();
+        el.style.left = `${e + node.a11yOffsetX}px`;
+        el.style.top = `${f + node.a11yOffsetY}px`;
+        el.style.width = `${node.width}px`;
+        el.style.height = `${node.height}px`;
+        el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
       }
     }
 
@@ -952,6 +980,44 @@ export class Scene {
     this.a11yNeedsReorder = false;
   }
 
+  /** Keep DOM/WebGL overlay layers aligned with the canvas's CSS box. */
+  private syncOverlayGeometry(): void {
+    const parent = this.canvas.parentElement;
+    if (!parent) return;
+
+    const canvasRect = this.canvas.getBoundingClientRect?.();
+    const parentRect = parent.getBoundingClientRect?.();
+    const cssWidth = canvasRect?.width || this.canvas.clientWidth || this.width;
+    const cssHeight = canvasRect?.height || this.canvas.clientHeight || this.height;
+    const left =
+      (canvasRect?.left ?? 0) -
+      (parentRect?.left ?? 0) -
+      (parent.clientLeft || 0) +
+      parent.scrollLeft;
+    const top =
+      (canvasRect?.top ?? 0) - (parentRect?.top ?? 0) - (parent.clientTop || 0) + parent.scrollTop;
+    const scaleX = this.width > 0 ? cssWidth / this.width : 1;
+    const scaleY = this.height > 0 ? cssHeight / this.height : 1;
+
+    for (const root of [this.a11yRoot, this.portalRoot]) {
+      if (!root) continue;
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+      root.style.width = `${this.width}px`;
+      root.style.height = `${this.height}px`;
+      root.style.transformOrigin = '0 0';
+      root.style.transform = `scale(${scaleX}, ${scaleY})`;
+    }
+
+    for (const canvas of [this.glCanvas, this.gpuCanvas]) {
+      if (!canvas) continue;
+      canvas.style.left = `${left}px`;
+      canvas.style.top = `${top}px`;
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+    }
+  }
+
   public getA11yTree(): A11yTreeNode[] {
     const map = new Map<string, A11yTreeNode>();
     const roots: A11yTreeNode[] = [];
@@ -1012,6 +1078,7 @@ export class Scene {
     b: number,
     c: number,
     d: number,
+    opacity: number,
   ): void {
     if (!this.portalRoot) return;
 
@@ -1051,6 +1118,11 @@ export class Scene {
     if (portal.lastZIndex !== zIndexStr) {
       portal.domElement.style.zIndex = zIndexStr;
       portal.lastZIndex = zIndexStr;
+    }
+    const opacityStr = String(opacity);
+    if (portal.lastOpacity !== opacityStr) {
+      portal.domElement.style.opacity = opacityStr;
+      portal.lastOpacity = opacityStr;
     }
   }
 
@@ -1163,15 +1235,19 @@ export class Scene {
    * @param time - Current absolute time in milliseconds (default 0).
    */
   public render(renderer: IRenderer, dt = 0, time = 0): void {
-    if (this.a11yRoot && this.canvas.parentElement) {
+    const isMainRenderer = renderer === this.renderer;
+    if (isMainRenderer && this.a11yRoot && this.canvas.parentElement) {
       const parentStyle = this.canvas.parentElement.style;
       if (!parentStyle.position || parentStyle.position === 'static') {
         parentStyle.position = 'relative';
       }
+      this.syncOverlayGeometry();
     }
 
-    this.renderOrderCounter = 0;
-    this.activePortalsThisFrame.clear();
+    if (isMainRenderer) {
+      this.renderOrderCounter = 0;
+      this.activePortalsThisFrame.clear();
+    }
 
     // Collect all ComputeParticleEntity instances in the tree
     const computeEntities: ComputeParticleEntity[] = [];
@@ -1189,8 +1265,19 @@ export class Scene {
     }
 
     if (computeEntities.length > 0) {
+      // Particle simulation (WebGPU compute pass / CPU fallback) mutates
+      // `entity.particleData` even when `dt === 0`. Secondary renderers such as
+      // SVG export are read-only snapshots; deterministic `step()` still uses
+      // the Scene's main renderer and therefore advances simulation.
+      const isMainRenderPath = renderer === this.renderer;
       // Async initialize WebGPU context on the first frame we encounter a ComputeParticleEntity
-      if (!this.device && !this.webgpuDisabled && !this.initializingWebGPU && !this.deviceLost) {
+      if (
+        isMainRenderPath &&
+        !this.device &&
+        !this.webgpuDisabled &&
+        !this.initializingWebGPU &&
+        !this.deviceLost
+      ) {
         this.initializingWebGPU = true;
         this.initWebGPUContext(computeEntities)
           .then((newDevice) => {
@@ -1215,14 +1302,24 @@ export class Scene {
             }
           })
           .catch((err) => {
-            console.error('Failed to initialize WebGPU:', err);
+            if (this.particleBackend === 'webgpu') {
+              console.error('Failed to initialize WebGPU:', err);
+            } else {
+              console.warn('WebGPU unavailable; using CPU particle fallback.', err);
+            }
             this.webgpuDisabled = true;
             this.initializingWebGPU = false;
           });
       }
 
       // Dispatch WebGPU Compute + Render passes OR run CPU physics updates fallback
-      if (this.device && this.manager && !this.deviceLost && !this.webgpuDisabled) {
+      if (
+        isMainRenderPath &&
+        this.device &&
+        this.manager &&
+        !this.deviceLost &&
+        !this.webgpuDisabled
+      ) {
         try {
           const commandEncoder = this.device.createCommandEncoder();
 
@@ -1275,7 +1372,7 @@ export class Scene {
           this.device = null;
           this.recreateWebGPUDeviceWithRetry(computeEntities);
         }
-      } else {
+      } else if (isMainRenderPath) {
         // Fallback updates
         for (const entity of computeEntities) {
           entity.updateCPU(dt / 1000, this.mouseX, this.mouseY, this.width, this.height);
@@ -1284,7 +1381,6 @@ export class Scene {
     }
 
     renderer.clear();
-    const isMainRenderer = renderer === this.renderer;
     if (isMainRenderer) {
       this.pointRenderer?.begin();
     }
@@ -1303,8 +1399,9 @@ export class Scene {
       pd: number,
       pe: number,
       pf: number,
+      parentOpacity: number,
     ) => {
-      node.update(dt, time);
+      if (isMainRenderer) node.update(dt, time);
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
       const cos = Math.cos(node.rotation);
@@ -1315,18 +1412,33 @@ export class Scene {
       const sxSin = node.scaleX * sin;
       const syCos = node.scaleY * cos;
       const sySin = node.scaleY * sin;
-      const a = pa * sxCos + pc * sxSin;
-      const b = pb * sxCos + pd * sxSin;
-      const c = pa * -sySin + pc * syCos;
-      const d = pb * -sySin + pd * syCos;
+      // Canvas calls translate → scale → rotate, so the local matrix is
+      // T * S * R = [sx*cos, -sx*sin; sy*sin, sy*cos]. Keep culling,
+      // portals, and GPU fast paths in the exact same coordinate system.
+      const a = pa * sxCos + pc * sySin;
+      const b = pb * sxCos + pd * sySin;
+      const c = pa * -sxSin + pc * syCos;
+      const d = pb * -sxSin + pd * syCos;
+      const worldScaleX = Math.hypot(a, b);
+      const worldScaleY = Math.hypot(c, d);
+      const worldOpacity = parentOpacity * node.opacity;
+      const scaleTolerance = Math.max(1, worldScaleX, worldScaleY) * 1e-6;
+      const orthogonalTolerance = Math.max(1, worldScaleX * worldScaleY) * 1e-6;
+      const isSimilarityTransform =
+        Number.isFinite(worldScaleX) &&
+        Number.isFinite(worldScaleY) &&
+        Math.abs(worldScaleX - worldScaleY) <= scaleTolerance &&
+        Math.abs(a * c + b * d) <= orthogonalTolerance;
 
-      const a11yEl = this.a11yElements.get(node.id);
+      const a11yEl = isMainRenderer ? this.a11yElements.get(node.id) : undefined;
       if (a11yEl) {
         a11yEl.style.zIndex = String(this.renderOrderCounter++);
       }
 
       if ((node as any).isDOMPortal) {
-        this.renderPortalDOM(node as DOMPortalEntity, te, tf, a, b, c, d);
+        if (isMainRenderer) {
+          this.renderPortalDOM(node as DOMPortalEntity, te, tf, a, b, c, d, worldOpacity);
+        }
         return;
       }
 
@@ -1362,38 +1474,37 @@ export class Scene {
       if (node.children.length === 0 && node.scaleX === node.scaleY) {
         const bc = node.getBatchCircle();
         if (bc) {
-          if (visible) {
-            if (isMainRenderer && this.pointRenderer) {
+          if (!visible) return;
+          if (isMainRenderer && this.pointRenderer) {
+            if (isSimilarityTransform) {
               // GPU layer: emit in world coords (center = (te,tf), radius scaled
               // by the accumulated uniform scale = hypot(a,b)).
-              this.pointRenderer.addCircle(
-                te,
-                tf,
-                bc.radius * Math.hypot(a, b),
-                bc.color,
-                node.opacity,
-              );
-            } else {
-              renderer.fillCircle(node.x, node.y, bc.radius * node.scaleX, bc.color, node.opacity);
+              this.pointRenderer.addCircle(te, tf, bc.radius * worldScaleX, bc.color, worldOpacity);
+              return;
             }
+            // A non-uniform or sheared ancestor turns the circle into an
+            // ellipse. The point backend only accepts one radius, so retain the
+            // exact Canvas transform by falling through to node.render().
+          } else {
+            renderer.fillCircle(node.x, node.y, bc.radius * node.scaleX, bc.color, worldOpacity);
+            return;
           }
-          return;
-        }
-        // GPU instanced rectangle (WebGL backend only; otherwise falls through
-        // to the normal render path below). Origin (te,tf), world scale hypot(a,b),
-        // rotation atan2(b,a).
-        if (isMainRenderer && this.pointRenderer) {
+        } else if (isMainRenderer && this.pointRenderer) {
+          // GPU instanced rectangle (WebGL backend only; otherwise falls through
+          // to the normal render path below). Origin (te,tf), world scale hypot(a,b),
+          // rotation atan2(b,a).
           const br = node.getBatchRect();
-          if (br) {
+          // A single size + rotation cannot represent non-uniform scale, shear,
+          // or a reflection, so those cases use the normal Canvas path.
+          if (br && isSimilarityTransform && a * d - b * c >= 0) {
             if (visible) {
-              const ws = Math.hypot(a, b);
               this.pointRenderer.addRect(
                 te,
                 tf,
-                br.width * ws,
-                br.height * ws,
+                br.width * worldScaleX,
+                br.height * worldScaleX,
                 br.color,
-                node.opacity,
+                worldOpacity,
                 Math.atan2(b, a),
               );
             }
@@ -1409,12 +1520,12 @@ export class Scene {
       renderer.translate(node.x, node.y);
       renderer.scale(node.scaleX, node.scaleY);
       renderer.rotate(node.rotation);
-      renderer.setGlobalAlpha(node.opacity);
+      renderer.setGlobalAlpha(worldOpacity);
 
       if (visible) {
         if (node instanceof ComputeParticleEntity) {
           if (this.deviceLost || this.webgpuDisabled || !this.device || !this.manager) {
-            this.renderCPUParticles(renderer, node);
+            this.renderCPUParticles(renderer, node, worldOpacity);
           }
         } else {
           node.render(renderer);
@@ -1426,18 +1537,18 @@ export class Scene {
       }
 
       for (const child of node.children) {
-        renderNode(child, a, b, c, d, te, tf);
+        renderNode(child, a, b, c, d, te, tf, worldOpacity);
       }
       // Commit any batched leaf children before popping this node's transform.
       renderer.flush();
       renderer.restore();
     };
 
-    renderNode(this.root, 1, 0, 0, 1, 0, 0);
+    renderNode(this.root, 1, 0, 0, 1, 0, 0, 1);
     for (const overlay of this.overlayRoot.children) {
-      renderNode(overlay, 1, 0, 0, 1, 0, 0);
+      renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
-    this.reconcilePortals();
+    if (isMainRenderer) this.reconcilePortals();
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
@@ -1597,7 +1708,9 @@ export class Scene {
             for (const entity of entities) {
               this.manager.setupEntityResources(entity);
               // Re-upload particle fallback states
-              newDevice.queue.writeBuffer(entity.gpuStorageBuffer!, 0, entity.particleData);
+              if (entity.gpuStorageBuffer) {
+                newDevice.queue.writeBuffer(entity.gpuStorageBuffer, 0, entity.particleData);
+              }
             }
           }
         })
@@ -1605,7 +1718,11 @@ export class Scene {
     }, backoff);
   }
 
-  private renderCPUParticles(renderer: IRenderer, entity: ComputeParticleEntity): void {
+  private renderCPUParticles(
+    renderer: IRenderer,
+    entity: ComputeParticleEntity,
+    worldOpacity: number,
+  ): void {
     const data = entity.particleData;
     const size = entity.maxParticles;
     const isMain = renderer === this.renderer;
@@ -1618,7 +1735,7 @@ export class Scene {
       const life = data[idx + 7];
       if (life === 0.0) continue; // dead
 
-      const opacity = life < 0.0 ? entity.opacity : entity.opacity * Math.min(1.0, life);
+      const opacity = life < 0.0 ? worldOpacity : worldOpacity * Math.min(1.0, life);
       const scale = life >= 0.0 ? Math.min(1.0, life) : 1.0;
       if (isMain && this.pointRenderer) {
         this.pointRenderer.addCircle(x, y, pSize * scale, entity.baseColor, opacity);

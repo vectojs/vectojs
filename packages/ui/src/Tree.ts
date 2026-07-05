@@ -151,11 +151,15 @@ export class TreeView extends UIComponent {
       this.scene?.markDirty();
     });
     this.on('pointerdown', (e: { localY?: number }) => {
-      const idx = Math.floor(((e.localY ?? 0) + this._scrollY) / this._rh);
+      if (e.localY === undefined) return;
+      const ly = e.localY;
+      const idx = Math.floor((ly + this._scrollY) / this._rh);
       if (idx >= 0 && idx < this._rows.length) void this._toggle(idx);
     });
     this.on('pointermove', (e: { localY?: number }) => {
-      this._hoverIdx = Math.floor(((e.localY ?? 0) + this._scrollY) / this._rh);
+      if (e.localY === undefined) return;
+      const ly = e.localY;
+      this._hoverIdx = Math.floor((ly + this._scrollY) / this._rh);
       this.scene?.markDirty();
     });
     this.on('pointerleave', () => {

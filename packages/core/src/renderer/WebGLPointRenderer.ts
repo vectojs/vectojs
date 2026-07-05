@@ -340,6 +340,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   let logicalW = 0;
   let logicalH = 0;
   let dpr = 1;
+  let destroyed = false;
 
   return {
     resize(width, height) {
@@ -567,6 +568,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
       gl.deleteBuffer(pointBuffer);
       gl.deleteBuffer(rectBuffer);
       gl.deleteBuffer(spriteBuffer);

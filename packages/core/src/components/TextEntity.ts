@@ -82,10 +82,9 @@ export class TextEntity extends Entity {
   }
 
   public isPointInside(globalX: number, globalY: number): boolean {
-    const pos = this.getGlobalPosition();
-    const lx = globalX - pos.x;
-    const ly = globalY - pos.y;
-    return lx >= 0 && lx <= this.width && ly >= 0 && ly <= this.height;
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    return local.x >= 0 && local.x <= this.width && local.y >= 0 && local.y <= this.height;
   }
 
   public render(renderer: IRenderer): void {

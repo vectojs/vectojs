@@ -82,7 +82,7 @@ export class ContextMenu extends Overlay {
     this.interactive = true;
 
     this.on('pointermove', (e: { localY?: number }) => {
-      this._hoverIdx = this._idxAt(e.localY ?? 0);
+      this._hoverIdx = e.localY === undefined ? -1 : this._idxAt(e.localY);
       this.scene?.markDirty();
     });
     this.on('pointerleave', () => {
@@ -90,7 +90,8 @@ export class ContextMenu extends Overlay {
       this.scene?.markDirty();
     });
     this.on('pointerdown', (e: { localY?: number }) => {
-      const idx = this._idxAt(e.localY ?? 0);
+      if (e.localY === undefined) return;
+      const idx = this._idxAt(e.localY);
       const item = this._items[idx];
       if (!item || item.separator || item.disabled) return;
       if (item.children && item.children.length > 0) {

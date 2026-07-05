@@ -40,7 +40,7 @@ if (typeof HTMLCanvasElement !== 'undefined') {
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),
 };
-import { Scene, Entity } from '../src';
+import { Scene, Entity, CanvasRenderer, ComputeParticleEntity, DOMPortalEntity } from '../src';
 
 // Entity is abstract; use a minimal concrete subclass for tests.
 class TestEntity extends Entity {
@@ -55,6 +55,54 @@ describe('Scene', () => {
     const scene = new Scene(mockCanvas as any);
     const xml = scene.toSVG();
     expect(xml).toContain('svg');
+  });
+
+  it('toSVG snapshots current state without advancing entities, while step advances them', () => {
+    class UpdatingEntity extends TestEntity {
+      updates = 0;
+      override update(dt: number, time: number): void {
+        super.update(dt, time);
+        this.updates++;
+      }
+    }
+    const scene = new Scene(mockCanvas as any, { particleBackend: 'cpu' });
+    const entity = new UpdatingEntity();
+    const particles = new ComputeParticleEntity({ maxParticles: 1 });
+    const updateCPU = vi.spyOn(particles, 'updateCPU');
+    scene.add(entity);
+    scene.add(particles);
+
+    scene.toSVG();
+    expect(entity.updates).toBe(0);
+    expect(updateCPU).not.toHaveBeenCalled();
+
+    scene.step(16);
+    expect(entity.updates).toBe(1);
+    expect(updateCPU).toHaveBeenCalledTimes(1);
+  });
+
+  it('toSVG does not mutate a11y z-order or mount DOM portals', () => {
+    const parent = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parent.appendChild(canvas);
+    const scene = new Scene(canvas);
+    const interactive = new TestEntity('interactive');
+    interactive.interactive = true;
+    interactive.width = 50;
+    interactive.height = 20;
+    scene.add(interactive);
+    (scene as any).syncA11y((scene as any).root);
+    const a11yElement = scene.getA11yElement(interactive.id)!;
+    a11yElement.style.zIndex = '77';
+
+    const portalElement = document.createElement('div');
+    const portal = new DOMPortalEntity(portalElement, 100, 50);
+    scene.add(portal);
+
+    scene.toSVG();
+
+    expect(a11yElement.style.zIndex).toBe('77');
+    expect(portalElement.parentElement).toBeNull();
   });
 
   it('add() increases root child count', () => {
@@ -88,6 +136,76 @@ describe('Scene', () => {
     expect((scene as any).isRunning).toBe(false);
   });
 
+  it('maps viewport coordinates through the canvas CSS rect into logical Scene space', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    scene.width = 800;
+    scene.height = 600;
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 50,
+      width: 400,
+      height: 300,
+      right: 500,
+      bottom: 350,
+      x: 100,
+      y: 50,
+      toJSON: () => ({}),
+    });
+
+    expect(scene.clientToScene(300, 200)).toEqual({ x: 400, y: 300 });
+  });
+
+  it('aligns and scales the accessibility overlay to the canvas CSS box', () => {
+    const parent = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    parent.appendChild(canvas);
+    document.body.appendChild(parent);
+    vi.spyOn(parent, 'getBoundingClientRect').mockReturnValue({
+      left: 50,
+      top: 30,
+      width: 1000,
+      height: 800,
+      right: 1050,
+      bottom: 830,
+      x: 50,
+      y: 30,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 150,
+      top: 90,
+      width: 400,
+      height: 300,
+      right: 550,
+      bottom: 390,
+      x: 150,
+      y: 90,
+      toJSON: () => ({}),
+    });
+
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    const entity = new TestEntity('scaled-control');
+    entity.interactive = true;
+    entity.width = 100;
+    entity.height = 40;
+    scene.add(entity);
+    scene.render(scene.getRenderer(), 0, 0);
+
+    const overlay = (scene as any).a11yRoot as HTMLElement;
+    expect(overlay.style.left).toBe('100px');
+    expect(overlay.style.top).toBe('60px');
+    expect(overlay.style.width).toBe('800px');
+    expect(overlay.style.height).toBe('600px');
+    expect(overlay.style.transformOrigin).toBe('0 0');
+    expect(overlay.style.transform).toBe('scale(0.5, 0.5)');
+
+    scene.destroy();
+    parent.remove();
+  });
+
   it('destroy() halts loop, removes listeners, and clears A11y DOM', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
@@ -107,6 +225,49 @@ describe('Scene', () => {
     scene.destroy();
     expect((scene as any).isRunning).toBe(false);
     expect((scene as any).a11yElements.size).toBe(0);
+  });
+
+  it('destroy() disposes a custom renderer exactly once', () => {
+    const canvas = document.createElement('canvas');
+    const renderer = new CanvasRenderer(canvas);
+    const dispose = vi.spyOn(renderer, 'dispose');
+    const scene = new Scene(canvas, { renderer });
+
+    scene.destroy();
+    scene.destroy();
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroy() tears down every owned entity and its GPU resources', () => {
+    const scene = new Scene(mockCanvas as any);
+    const parent = new TestEntity('parent');
+    const child = new TestEntity('child');
+    const childDestroy = vi.spyOn(child, 'destroy');
+    const particles = new ComputeParticleEntity({ maxParticles: 1 });
+    const storageDestroy = vi.fn();
+    const uniformDestroy = vi.fn();
+    particles.gpuStorageBuffer = { destroy: storageDestroy };
+    particles.gpuUniformBuffer = { destroy: uniformDestroy };
+    parent.add(child);
+    parent.add(particles);
+    scene.add(parent);
+
+    scene.destroy();
+
+    expect(childDestroy).toHaveBeenCalledOnce();
+    expect(storageDestroy).toHaveBeenCalledOnce();
+    expect(uniformDestroy).toHaveBeenCalledOnce();
+    expect(scene.getRoot().children).toHaveLength(0);
+  });
+
+  it('destroy() accepts a renderer without an explicit dispose hook', () => {
+    const canvas = document.createElement('canvas');
+    const renderer = new CanvasRenderer(canvas);
+    Object.defineProperty(renderer, 'dispose', { value: undefined });
+    const scene = new Scene(canvas, { renderer });
+
+    expect(() => scene.destroy()).not.toThrow();
   });
 
   it('remove() cleans A11y DOM elements recursively', () => {

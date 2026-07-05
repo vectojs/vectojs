@@ -28,9 +28,9 @@ function wheelEvent(deltaY: number): {
   };
 }
 
-/** A pointer-event stand-in carrying a clientY. */
-function pointer(clientY: number): { clientY: number; preventDefault: () => void } {
-  return { clientY, preventDefault: () => {} };
+/** A pointer-event stand-in carrying a localY. */
+function pointer(localY: number): { localY: number; preventDefault: () => void } {
+  return { localY, preventDefault: () => {} };
 }
 
 /**

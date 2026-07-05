@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/ui",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publishConfig": {
     "access": "public"
   },
@@ -10,7 +10,6 @@
     "ui",
     "components",
     "accessibility",
-    "zero-dom",
     "typescript"
   ],
   "license": "MIT",
@@ -49,7 +48,6 @@
   },
   "devDependencies": {
     "@vectojs/core": "workspace:*",
-    "@types/marked": "^6.0.0",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
     "vitest": "^4.1.9"

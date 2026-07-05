@@ -6,6 +6,9 @@ class TestEntity extends Entity {
     return false;
   }
   render(): void {}
+  snap(prop: 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity', value: number): void {
+    this.setImmediate(prop, value);
+  }
 }
 
 describe('Entity animation', () => {
@@ -35,6 +38,35 @@ describe('Entity animation', () => {
     for (let i = 0; i < 600 && drivers.size > 0; i++) e.update(16, (t += 16));
     await p;
     expect(e.opacity).toBe(0); // snapped exactly to target on completion
+  });
+
+  it('settles the previous Promise when an active property is retargeted', async () => {
+    const e = new TestEntity();
+    let firstSettled = false;
+    const first = e
+      .animateTo({ x: 100 }, { duration: 100, easing: 'linear' })
+      .then(() => (firstSettled = true));
+    e.update(25, 25);
+    const second = e.animateTo({ x: 200 }, { duration: 100, easing: 'linear' });
+
+    await first;
+    expect(firstSettled).toBe(true);
+    expect(e.x).toBeCloseTo(25);
+
+    e.update(100, 125);
+    await second;
+    expect(e.x).toBe(200);
+  });
+
+  it('settles an imperative animation when a subclass replaces it immediately', async () => {
+    const e = new TestEntity();
+    const animation = e.animateTo({ x: 100 }, { duration: 100 });
+
+    e.snap('x', 40);
+    await animation;
+
+    expect(e.x).toBe(40);
+    expect(e.hasPendingAnimations()).toBe(false);
   });
 
   it('legacy animate(props, ms) still tweens with the easeOutQuad curve', () => {

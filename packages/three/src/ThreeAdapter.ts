@@ -35,9 +35,23 @@ export class ThreeAdapter {
   /** Track hover states independently per pointerId for WebXR / Multi-Touch. */
   private activePointers: Map<number, PointerState> = new Map();
 
+  /**
+   * Holds the original `vectoScene.render` reference so {@link dispose} can
+   * restore it. Without restoring, a later render call would write
+   * `needsUpdate` on a disposed (deleted) `CanvasTexture`, which Three.js
+   * flags with `"THREE.Texture: trying to use deleted texture"`.
+   */
+  private _originalRender: VectoScene['render'] | null = null;
+
+  /** Tracks whether this adapter owns the canvas it is rendering to. */
+  private _ownsCanvas: boolean;
+  private _disposed = false;
+
   constructor(options: ThreeAdapterOptions) {
+    const optCanvas = options.canvas;
+    this._ownsCanvas = !optCanvas;
     this.canvas =
-      options.canvas ||
+      optCanvas ||
       (typeof document !== 'undefined'
         ? document.createElement('canvas')
         : ({ width: options.width, height: options.height } as HTMLCanvasElement));
@@ -60,7 +74,8 @@ export class ThreeAdapter {
     this.texture.magFilter = THREE.LinearFilter;
 
     // Proxy intercept VectoScene.render to set texture.needsUpdate = true only when redrawing
-    const originalRender = this.vectoScene.render;
+    this._originalRender = this.vectoScene.render;
+    const originalRender = this._originalRender;
     this.vectoScene.render = (renderer, dt, time) => {
       originalRender.call(this.vectoScene, renderer, dt, time);
       this.texture.needsUpdate = true;
@@ -213,8 +228,10 @@ export class ThreeAdapter {
       }
     } else {
       // Fallback: bubble the VectoJSEvent up the virtual tree directly
-      const e = originalEvent instanceof MouseEvent ? originalEvent : undefined;
-      const vectoEvent = new VectoJSEvent(type, entity, e, type !== 'pointerleave');
+      const vectoEvent = new VectoJSEvent(type, entity, originalEvent, type !== 'pointerleave', {
+        x,
+        y,
+      });
       entity.dispatchEvent(vectoEvent);
     }
   }
@@ -226,29 +243,44 @@ export class ThreeAdapter {
     pointerId: number,
     originalEvent?: Event,
   ): Event {
+    let event: Event;
     if (type === 'wheel') {
       const wheelE = originalEvent instanceof WheelEvent ? originalEvent : undefined;
-      return new WheelEvent('wheel', {
+      event = new WheelEvent('wheel', {
         clientX: x,
         clientY: y,
         deltaX: wheelE ? wheelE.deltaX : 0,
         deltaY: wheelE ? wheelE.deltaY : 0,
         deltaZ: wheelE ? wheelE.deltaZ : 0,
         deltaMode: wheelE ? wheelE.deltaMode : 0,
+        shiftKey: wheelE ? wheelE.shiftKey : false,
+        ctrlKey: wheelE ? wheelE.ctrlKey : false,
+        altKey: wheelE ? wheelE.altKey : false,
+        metaKey: wheelE ? wheelE.metaKey : false,
+        bubbles: true,
+        cancelable: true,
+      });
+    } else {
+      event = new PointerEvent(type as string, {
+        clientX: x,
+        clientY: y,
+        button: originalEvent instanceof MouseEvent ? originalEvent.button : 0,
+        buttons: originalEvent instanceof MouseEvent ? originalEvent.buttons : 0,
+        pointerId,
+        shiftKey: originalEvent instanceof MouseEvent ? originalEvent.shiftKey : false,
+        ctrlKey: originalEvent instanceof MouseEvent ? originalEvent.ctrlKey : false,
+        altKey: originalEvent instanceof MouseEvent ? originalEvent.altKey : false,
+        metaKey: originalEvent instanceof MouseEvent ? originalEvent.metaKey : false,
         bubbles: true,
         cancelable: true,
       });
     }
 
-    return new PointerEvent(type as string, {
-      clientX: x,
-      clientY: y,
-      button: originalEvent instanceof MouseEvent ? originalEvent.button : 0,
-      buttons: originalEvent instanceof MouseEvent ? originalEvent.buttons : 0,
-      pointerId,
-      bubbles: true,
-      cancelable: true,
+    Object.defineProperties(event, {
+      vectoSceneX: { value: x },
+      vectoSceneY: { value: y },
     });
+    return event;
   }
 
   private findEntityById(root: Entity, id: string): Entity | null {
@@ -274,6 +306,15 @@ export class ThreeAdapter {
    * Disposes of Three.js textures, geometries, and VectoJS scenes to prevent memory leaks.
    */
   public dispose(): void {
+    if (this._disposed) return;
+    this._disposed = true;
+
+    // Restore before destroying the Scene so no surviving reference retains a
+    // closure over the texture owned by this adapter.
+    if (this._originalRender) {
+      this.vectoScene.render = this._originalRender;
+      this._originalRender = null;
+    }
     this.texture.dispose();
     this.mesh.geometry.dispose();
     if (Array.isArray(this.mesh.material)) {
@@ -286,7 +327,11 @@ export class ThreeAdapter {
     }
     this.vectoScene.destroy();
     this.activePointers.clear();
-    this.canvas.width = 0;
-    this.canvas.height = 0;
+    // Only mutate the canvas dimensions when we created it; otherwise the user
+    // may still be using the canvas they passed in.
+    if (this._ownsCanvas) {
+      this.canvas.width = 0;
+      this.canvas.height = 0;
+    }
   }
 }

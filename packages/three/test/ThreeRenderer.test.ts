@@ -9,6 +9,8 @@ vi.mock('three', async () => {
 
   class MockWebGLRenderer {
     domElement = document.createElement('canvas');
+    private scissor = new actual.Vector4();
+    private scissorTest = false;
     constructor(options: any = {}) {
       if (options.canvas) {
         this.domElement = options.canvas;
@@ -18,10 +20,16 @@ vi.mock('three', async () => {
     setPixelRatio = vi.fn();
     clear = vi.fn();
     render = vi.fn();
-    setScissor = vi.fn();
-    setScissorTest = vi.fn();
-    getScissor = vi.fn((v: any) => v.set(0, 0, 0, 0));
-    getScissorTest = vi.fn(() => false);
+    dispose = vi.fn();
+    setScissor = vi.fn((x: number | THREE.Vector4, y?: number, z?: number, w?: number) => {
+      if (x instanceof actual.Vector4) this.scissor.copy(x);
+      else this.scissor.set(x, y ?? 0, z ?? 0, w ?? 0);
+    });
+    setScissorTest = vi.fn((enabled: boolean) => {
+      this.scissorTest = enabled;
+    });
+    getScissor = vi.fn((v: THREE.Vector4) => v.copy(this.scissor));
+    getScissorTest = vi.fn(() => this.scissorTest);
   }
 
   return {
@@ -75,6 +83,20 @@ describe('ThreeRenderer', () => {
     expect(renderer.scene.children.length).toBe(0);
   });
 
+  it('clear resets transient transform, alpha, and stack state', () => {
+    renderer.save();
+    renderer.translate(25, 40);
+    renderer.setGlobalAlpha(0.25);
+
+    renderer.clear();
+
+    expect((renderer as any).matrix.equals(new THREE.Matrix4().identity())).toBe(true);
+    expect((renderer as any).globalAlpha).toBe(1);
+    expect((renderer as any).stack).toHaveLength(0);
+    expect((renderer as any).alphaStack).toHaveLength(0);
+    expect((renderer as any).scissorStack).toHaveLength(0);
+  });
+
   it('handles transform matrices stack correctly', () => {
     // Initial identity matrix
     const mat1 = (renderer as any).matrix.clone();
@@ -92,6 +114,28 @@ describe('ThreeRenderer', () => {
     expect(mat3.equals(mat1)).toBe(true);
   });
 
+  it('uses a non-negative world AABB for rotated scissor clips', () => {
+    renderer.rotate(Math.PI / 2);
+
+    renderer.clip(0, 0, 100, 50);
+
+    const call = vi.mocked(renderer.renderer.setScissor).mock.calls.at(-1)!;
+    expect(call[2]).toBeCloseTo(50);
+    expect(call[3]).toBeCloseTo(100);
+  });
+
+  it('intersects nested scissor clips instead of replacing the parent clip', () => {
+    renderer.clip(0, 0, 100, 100);
+    renderer.save();
+    renderer.translate(50, 50);
+
+    renderer.clip(0, 0, 100, 100);
+
+    const call = vi.mocked(renderer.renderer.setScissor).mock.calls.at(-1)!;
+    expect(call[2]).toBeCloseTo(50);
+    expect(call[3]).toBeCloseTo(50);
+  });
+
   it('can draw text using CanvasTexture', () => {
     renderer.beginPath();
     renderer.fillText('Hello World', 50, 50, '16px sans-serif', '#ffffff');
@@ -105,6 +149,22 @@ describe('ThreeRenderer', () => {
     expect(renderer.scene.children.length).toBe(1);
     const circleMesh = renderer.scene.children[0];
     expect(circleMesh).toBeInstanceOf(THREE.Mesh);
+  });
+
+  it('multiplies solid CSS color alpha by the renderer alpha', () => {
+    renderer.setGlobalAlpha(0.4);
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(20, 0);
+    renderer.lineTo(20, 20);
+    renderer.closePath();
+
+    renderer.fill('rgba(255, 0, 0, 0.5)');
+
+    const mesh = renderer.scene.children[0] as THREE.Mesh;
+    const material = mesh.material as THREE.MeshBasicMaterial;
+    expect(material.opacity).toBeCloseTo(0.2);
+    expect(material.transparent).toBe(true);
   });
 
   it('should support WebGLGradient shader creation and fallbacks', () => {
@@ -126,5 +186,45 @@ describe('ThreeRenderer', () => {
     expect(mesh.material).toBeInstanceOf(THREE.ShaderMaterial);
     const mat = mesh.material as THREE.ShaderMaterial;
     expect(mat.uniforms.u_grad_stops).toBeDefined();
+  });
+
+  it('disposes active objects and renderer exactly once', () => {
+    const geometry = new THREE.PlaneGeometry(10, 10);
+    const firstMap = new THREE.Texture();
+    const secondMap = new THREE.Texture();
+    const materials = [
+      new THREE.MeshBasicMaterial({ map: firstMap }),
+      new THREE.MeshBasicMaterial({ map: secondMap }),
+    ];
+    const mesh = new THREE.Mesh(geometry, materials);
+    renderer.scene.add(mesh);
+    (renderer as any).activeObjects.push(mesh);
+
+    const geometryDispose = vi.spyOn(geometry, 'dispose');
+    const materialDisposes = materials.map((material) => vi.spyOn(material, 'dispose'));
+    const mapDisposes = [vi.spyOn(firstMap, 'dispose'), vi.spyOn(secondMap, 'dispose')];
+
+    renderer.dispose();
+    renderer.dispose();
+
+    expect(renderer.scene.children).not.toContain(mesh);
+    expect(geometryDispose).toHaveBeenCalledOnce();
+    for (const dispose of materialDisposes) expect(dispose).toHaveBeenCalledOnce();
+    for (const dispose of mapDisposes) expect(dispose).toHaveBeenCalledOnce();
+    expect(renderer.renderer.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('does not dispose frame resources twice after clear then dispose', () => {
+    renderer.fillCircle(10, 10, 5, '#fff');
+    const mesh = renderer.scene.children[0] as THREE.Mesh;
+    const geometryDispose = vi.spyOn(mesh.geometry, 'dispose');
+    const materialDispose = vi.spyOn(mesh.material as THREE.Material, 'dispose');
+
+    renderer.clear();
+    renderer.dispose();
+
+    expect(geometryDispose).toHaveBeenCalledOnce();
+    expect(materialDispose).toHaveBeenCalledOnce();
+    expect(renderer.renderer.dispose).toHaveBeenCalledOnce();
   });
 });

@@ -1,13 +1,17 @@
 # @vectojs/video-exporter
 
-An industrial-grade video exporter for VectoJS. Convert your VectoJS canvas animations, mathematical rendering, and physics simulations into flawless 60fps MP4 video streams.
+Export VectoJS canvas animations, mathematical rendering, and physics simulations to a fixed-rate
+H.264 MP4 file.
 
 ## Features
 
-- **Deterministic Rendering**: Hijacks the VectoJS internal clock for flawless `1/60s` frame stepping. Zero dropped frames, regardless of calculation complexity.
-- **High-Performance Pipeline**: Uses Puppeteer to drive headless Chromium and streams raw Canvas buffers via CDP directly to FFmpeg.
-- **Hardware/Software Encoding**: Encodes to standard H.264 MP4 directly via FFmpeg.
-- **Zero Config TypeScript DX**: Pass a pure `.ts` or `.tsx` file, and the exporter will automatically spin up an embedded Vite server, wrap it in a Canvas context, and export it invisibly.
+- **Fixed-step rendering**: Calls `window.vectoScene.step(1000 / fps)` once for every output frame,
+  so output timing does not depend on wall-clock rendering speed.
+- **PNG-to-FFmpeg pipeline**: Captures the first canvas as PNG data, then writes each frame to an
+  FFmpeg process in sequence.
+- **Standard MP4 output**: Encodes H.264 with FFmpeg's `libx264` encoder and `yuv420p` pixel format.
+- **TypeScript entry support**: A `.ts` or `.tsx` input is served by an embedded Vite process before
+  capture; an already-hosted HTTP URL can be captured directly.
 
 ## Installation
 

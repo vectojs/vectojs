@@ -19,6 +19,16 @@ export interface Point {
   y: number;
 }
 
+/** Six-scalar 2D affine transform matching CanvasRenderingContext2D. */
+export interface AffineTransform {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
 /**
  * An axis-aligned bounding box in an entity's local coordinate space.
  *
@@ -149,15 +159,23 @@ export class VectoJSEvent<N = unknown> {
   readonly nativeEvent: N | undefined;
   /** Whether the event bubbles past its target (capture always runs). */
   readonly bubbles: boolean;
+  private readonly explicitScenePoint: Point | undefined;
   private stopped = false;
   private stoppedImmediate = false;
 
-  constructor(type: VectoEvent, target: Entity, nativeEvent?: N, bubbles: boolean = true) {
+  constructor(
+    type: VectoEvent,
+    target: Entity,
+    nativeEvent?: N,
+    bubbles: boolean = true,
+    scenePoint?: Point,
+  ) {
     this.type = type;
     this.target = target;
     this.currentTarget = target;
     this.nativeEvent = nativeEvent;
     this.bubbles = bubbles;
+    this.explicitScenePoint = scenePoint;
   }
 
   /** Stop the event from reaching the next node in the propagation path. */
@@ -209,6 +227,66 @@ export class VectoJSEvent<N = unknown> {
   /** Native pointer Y, if this wraps a pointer/mouse event. */
   get clientY(): number | undefined {
     return (this.nativeEvent as { clientY?: number })?.clientY;
+  }
+
+  private get resolvedScenePoint(): Point | undefined {
+    if (this.explicitScenePoint) return this.explicitScenePoint;
+    const native = this.nativeEvent as
+      | { clientX?: number; clientY?: number; vectoSceneX?: number; vectoSceneY?: number }
+      | undefined;
+    if (native?.vectoSceneX !== undefined && native.vectoSceneY !== undefined) {
+      return { x: native.vectoSceneX, y: native.vectoSceneY };
+    }
+    if (native?.clientX === undefined || native.clientY === undefined) return undefined;
+    const scene = this.target.scene as {
+      clientToScene?: (clientX: number, clientY: number) => Point;
+    } | null;
+    return (
+      scene?.clientToScene?.(native.clientX, native.clientY) ?? {
+        x: native.clientX,
+        y: native.clientY,
+      }
+    );
+  }
+
+  /** Pointer X in the Scene's logical coordinate space. */
+  get sceneX(): number | undefined {
+    return this.resolvedScenePoint?.x;
+  }
+
+  /** Pointer Y in the Scene's logical coordinate space. */
+  get sceneY(): number | undefined {
+    return this.resolvedScenePoint?.y;
+  }
+
+  /** Pointer X local to the entity whose listener is currently running. */
+  get localX(): number | undefined {
+    const point = this.resolvedScenePoint;
+    if (!point) return undefined;
+    return this.currentTarget.worldToLocal(point.x, point.y)?.x;
+  }
+
+  /** Pointer Y local to the entity whose listener is currently running. */
+  get localY(): number | undefined {
+    const point = this.resolvedScenePoint;
+    if (!point) return undefined;
+    return this.currentTarget.worldToLocal(point.x, point.y)?.y;
+  }
+
+  get shiftKey(): boolean {
+    return !!(this.nativeEvent as { shiftKey?: boolean })?.shiftKey;
+  }
+
+  get ctrlKey(): boolean {
+    return !!(this.nativeEvent as { ctrlKey?: boolean })?.ctrlKey;
+  }
+
+  get altKey(): boolean {
+    return !!(this.nativeEvent as { altKey?: boolean })?.altKey;
+  }
+
+  get metaKey(): boolean {
+    return !!(this.nativeEvent as { metaKey?: boolean })?.metaKey;
   }
 
   /** Native key, if this wraps a keyboard event. */
@@ -478,19 +556,34 @@ export abstract class Entity {
    * that need to seed a starting state (e.g. the presence helper's enter `from`).
    */
   protected setImmediate(prop: AnimatableProp, v: number): void {
+    const existing = this._drivers.get(prop);
+    if (existing) this._settleDriver(existing);
     this._drivers.delete(prop);
     this._applyAnimated(prop, v);
+  }
+
+  private _settleDriver(driver: PropertyDriver): void {
+    const active = driver as PropertyDriver & { onDone?: () => void };
+    const onDone = active.onDone;
+    active.onDone = undefined;
+    onDone?.();
   }
 
   private _spawnDriver(prop: AnimatableProp, to: number, cfg: MotionConfig): void {
     // Reduced motion: suppress movement (transforms), keep opacity fades. Snap instantly.
     if (prop !== 'opacity' && this.scene?.prefersReducedMotion) {
+      const existing = this._drivers.get(prop);
+      if (existing) this._settleDriver(existing);
       this._drivers.delete(prop);
       this._applyAnimated(prop, to);
       return;
     }
     const existing = this._drivers.get(prop);
     if (existing) {
+      // Retargeting an in-flight driver: resolve the previous Promise so callers
+      // awaiting the original `animateTo`/`springTo` don't leak. The new drive
+      // will get a fresh `onDone` assigned by `_driveTo`.
+      this._settleDriver(existing);
       existing.retarget(to);
       return;
     }
@@ -565,7 +658,7 @@ export abstract class Entity {
       driver.tick(dt);
       if (driver.isDone()) {
         this._applyAnimated(prop, driver.target); // snap exactly to target on completion
-        (driver as PropertyDriver & { onDone?: () => void }).onDone?.();
+        this._settleDriver(driver);
         this._drivers.delete(prop);
       } else {
         this._applyAnimated(prop, driver.value);
@@ -729,23 +822,105 @@ export abstract class Entity {
    * @returns World-space {@link Point} for this entity.
    */
   public getGlobalPosition(): Point {
-    let px = this.x;
-    let py = this.y;
-    let curr = this.parent;
-    while (curr && curr.id !== 'root') {
-      // Match Scene.loop's Canvas transform order (translate -> scale -> rotate):
-      // world = parent.pos + S(R(local)). Scale applies per-axis to the rotated
-      // vector. The previous code mixed scaleX/scaleY into the rotation terms,
-      // which was wrong whenever scaleX !== scaleY and rotation !== 0.
-      const cos = Math.cos(curr.rotation);
-      const sin = Math.sin(curr.rotation);
-      const rotatedX = px * cos - py * sin;
-      const rotatedY = px * sin + py * cos;
-      px = curr.x + curr.scaleX * rotatedX;
-      py = curr.y + curr.scaleY * rotatedY;
-      curr = curr.parent;
+    return this.localToWorld(0, 0);
+  }
+
+  /**
+   * Return the exact accumulated Canvas `T * S * R` transform for this entity.
+   */
+  public getWorldTransform(): AffineTransform {
+    const path: Entity[] = this.id === 'root' ? [] : [this];
+    let ancestor = this.parent;
+    while (ancestor && ancestor.id !== 'root') {
+      path.push(ancestor);
+      ancestor = ancestor.parent;
     }
-    return { x: px, y: py };
+
+    let a = 1;
+    let b = 0;
+    let c = 0;
+    let d = 1;
+    let e = 0;
+    let f = 0;
+
+    for (let i = path.length - 1; i >= 0; i--) {
+      const node = path[i];
+      const cos = Math.cos(node.rotation);
+      const sin = Math.sin(node.rotation);
+      const la = node.scaleX * cos;
+      const lb = node.scaleY * sin;
+      const lc = -node.scaleX * sin;
+      const ld = node.scaleY * cos;
+      const le = node.x;
+      const lf = node.y;
+
+      const nextA = a * la + c * lb;
+      const nextB = b * la + d * lb;
+      const nextC = a * lc + c * ld;
+      const nextD = b * lc + d * ld;
+      const nextE = a * le + c * lf + e;
+      const nextF = b * le + d * lf + f;
+      a = nextA;
+      b = nextB;
+      c = nextC;
+      d = nextD;
+      e = nextE;
+      f = nextF;
+    }
+
+    return { a, b, c, d, e, f };
+  }
+
+  /** Convert a point from this entity's local space to Scene/world space. */
+  public localToWorld(localX: number, localY: number): Point {
+    const { a, b, c, d, e, f } = this.getWorldTransform();
+    return {
+      x: a * localX + c * localY + e,
+      y: b * localX + d * localY + f,
+    };
+  }
+
+  /**
+   * Convert a Scene/world point into this entity's local space.
+   * Returns `null` when the accumulated transform is singular.
+   */
+  public worldToLocal(worldX: number, worldY: number): Point | null {
+    const { a, b, c, d, e, f } = this.getWorldTransform();
+    const determinant = a * d - b * c;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+    const x = worldX - e;
+    const y = worldY - f;
+    return {
+      x: (d * x - c * y) / determinant,
+      y: (-b * x + a * y) / determinant,
+    };
+  }
+
+  /**
+   * Return the entity's local bounds transformed into a world-space AABB.
+   * Falls back to the entity's `[0, 0, width, height]` box when `getBounds()`
+   * does not provide a render-specific box.
+   */
+  public getWorldBounds(): Bounds {
+    const bounds = this.getBounds() ?? { x: 0, y: 0, width: this.width, height: this.height };
+    const { a, b, c, d, e, f } = this.getWorldTransform();
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (let i = 0; i < 4; i++) {
+      const localX = i & 1 ? bounds.x + bounds.width : bounds.x;
+      const localY = i & 2 ? bounds.y + bounds.height : bounds.y;
+      const worldX = a * localX + c * localY + e;
+      const worldY = b * localX + d * localY + f;
+      minX = Math.min(minX, worldX);
+      minY = Math.min(minY, worldY);
+      maxX = Math.max(maxX, worldX);
+      maxY = Math.max(maxY, worldY);
+    }
+
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
 
   /**
@@ -822,12 +997,12 @@ export abstract class Entity {
    * Opt into the renderer's draw-call batching fast-path for point-cloud /
    * particle entities that draw as a single filled circle at their local origin.
    *
-   * When a leaf entity returns a {@link BatchCircle} and has uniform scale, the
-   * {@link Scene} skips its per-entity `save`/`translate`/`scale`/`rotate`/
-   * `restore` and {@link render}, emitting the circle through
-   * {@link IRenderer.fillCircle} so runs of same-color siblings coalesce into a
-   * single `fill()`. Returns `null` by default (normal render path). Read each
-   * frame, so an animated color/radius is honored.
+   * When a leaf entity returns a {@link BatchCircle} and its accumulated
+   * transform is representable by the selected batch backend, the {@link Scene}
+   * skips its per-entity `save`/`translate`/`scale`/`rotate`/`restore` and
+   * {@link render}. Canvas mode or an unsupported affine transform uses the
+   * normal render path, so implementations must keep {@link render} correct.
+   * Returns `null` by default. Read each frame, so animated color/radius works.
    *
    * @returns The circle to batch, or `null` to use the normal {@link render} path.
    */

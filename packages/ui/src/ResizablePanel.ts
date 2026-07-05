@@ -50,13 +50,16 @@ export class PanelResizeHandle extends UIComponent {
     this.height = dir === 'vertical' ? size : 0;
     this.interactive = true;
 
-    this.on('pointerdown', (e: { clientX?: number; clientY?: number }) => {
+    this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
+      const pos = dir === 'horizontal' ? e.localX : e.localY;
+      if (pos === undefined) return;
       this._drag = true;
-      this._lastPos = dir === 'horizontal' ? (e.clientX ?? 0) : (e.clientY ?? 0);
+      this._lastPos = pos;
     });
-    this.on('pointermove', (e: { clientX?: number; clientY?: number }) => {
+    this.on('pointermove', (e: { localX?: number; localY?: number }) => {
       if (!this._drag) return;
-      const pos = dir === 'horizontal' ? (e.clientX ?? 0) : (e.clientY ?? 0);
+      const pos = dir === 'horizontal' ? e.localX : e.localY;
+      if (pos === undefined) return;
       const delta = pos - this._lastPos;
       this._lastPos = pos;
       if (delta !== 0) onResize(delta);

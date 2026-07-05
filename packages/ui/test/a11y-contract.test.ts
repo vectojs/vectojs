@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { Scene } from '@vectojs/core';
-import { Button, Link, Image, Checkbox, Toggle, Input } from '../src';
+import { Button, Link, Image, Checkbox, Toggle, Input, Card } from '../src';
 
 /**
  * Accessibility / automation contract suite.
@@ -158,5 +158,28 @@ describe('a11y / automation contract', () => {
     // pointer-events:auto keeps it clickable by Playwright/agents; opacity:0 hides chrome.
     expect(btn.style.pointerEvents).toBe('auto');
     expect(btn.style.opacity).toBe('0');
+  });
+
+  it('projects the complete nested affine transform', () => {
+    const { scene, root, tick } = makeScene();
+    const parent = new Card({ width: 300, height: 200 });
+    parent.setPosition(30, 40);
+    parent.scaleX = 2;
+    parent.scaleY = 0.5;
+    parent.rotation = Math.PI / 6;
+    const button = new Button('Nested', { onClick() {} }).setPosition(20, 10);
+    button.rotation = -Math.PI / 8;
+    parent.add(button);
+    scene.add(parent);
+    tick();
+
+    const el = root.querySelector('button') as HTMLElement;
+    const { a, b, c, d, e, f } = button.getWorldTransform();
+    expect(el.style.left).toBe(`${e}px`);
+    expect(el.style.top).toBe(`${f}px`);
+    expect(el.style.width).toBe(`${button.width}px`);
+    expect(el.style.height).toBe(`${button.height}px`);
+    expect(el.style.transform).toBe(`matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`);
+    expect(el.style.transformOrigin).toBe('0 0');
   });
 });

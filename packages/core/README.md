@@ -1,7 +1,7 @@
 # @vectojs/core
 
-> The Zero-DOM, Canvas-native rendering engine behind **VectoJS** — ECS + Virtual Math Tree,
-> with an accessibility/automation shadow layer.
+> The Canvas-native rendering engine behind **VectoJS** — an entity scene graph and Virtual Math
+> Tree with an accessibility/automation projection layer.
 
 Part of the [VectoJS](https://github.com/vectojs/vectojs) ecosystem.
 
@@ -13,18 +13,17 @@ physics are pure math on a Virtual Math Tree, dispatched to a Canvas 2D (or WebG
 transparent DOM node through the **`a11yRoot`** shadow layer, so a pure-canvas page stays
 accessible and drivable by assistive tech and AI agents.
 
-Includes: `Scene` (render loop + a11y sync), `Entity` (ECS base), `LayoutEngine` (Intl.Segmenter
+Includes: `Scene` (render loop + a11y sync), `Entity` (scene-graph base), `LayoutEngine` (Intl.Segmenter
 with a cold/hot `prepare`/`layoutPrepared` split), `SpatialHashGrid`, `LayoutResultBuffer`
-(zero-GC), `SplineEntity` (native vectomancy math-curve rendering + curve-accurate hit-testing),
+(reusable typed storage), `SplineEntity` (native vectomancy math-curve rendering + curve-accurate hit-testing),
 `CanvasRenderer`, and a `WebGLPointRenderer` point/rect batch layer.
 
 ## Performance
 
-See the [main README](https://github.com/vectojs/vectojs#measured-performance) for measured,
-reproducible numbers (`bun run benchmark` / `bun run compare:dom`). Headline levers: viewport
-culling, on-demand redraw, draw-call batching, a WebGL2 point layer, and a cold/hot text layout
-split (~3.5× faster reflow). No fabricated comparisons — numbers are per-machine and
-complexity-dependent.
+See the [main README](https://github.com/vectojs/vectojs#testing--quality) for reproducible
+workloads (`bun run benchmark` / `bun run compare:dom`). Headline levers include viewport culling,
+on-demand redraw, draw-call batching, a WebGL2 point layer, and a cold/hot text layout split.
+Results are machine- and workload-dependent.
 
 ## Quick Start
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { IRenderer } from '@vectojs/core';
 import { RichText } from '../src/RichText';
 
@@ -83,6 +83,18 @@ describe('RichText', () => {
       linkColor: '#1199ff',
     }).render(r);
     expect(calls.find((c) => c.text === 'L')?.color).toBe('#1199ff');
+  });
+
+  it('does not activate an obfuscated script link', () => {
+    const onLinkClick = vi.fn();
+    const rt = new RichText([{ text: 'unsafe', style: { href: 'java\nscript:alert(1)' } }], {
+      onLinkClick,
+    });
+    const hotspot = rt.children[0];
+
+    expect(hotspot.getA11yAttributes().href).toBe('#');
+    hotspot.emit('click', {});
+    expect(onLinkClick).not.toHaveBeenCalled();
   });
 
   it('flows around an exclusion rect (exclusion shapes): first line indents, later lines reclaim width', () => {

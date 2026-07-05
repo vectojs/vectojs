@@ -1,11 +1,12 @@
 const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
+const prettier = require('prettier');
 
 const workerPath = path.join(__dirname, '../src/layout/LayoutWorker.ts');
 const outputPath = path.join(__dirname, '../src/layout/LayoutWorkerSource.ts');
 
-try {
+async function buildWorker() {
   const result = esbuild.buildSync({
     entryPoints: [workerPath],
     bundle: true,
@@ -19,9 +20,15 @@ try {
 export const WORKER_SOURCE_STRING = ${JSON.stringify(minifiedCode)};
 `;
 
-  fs.writeFileSync(outputPath, tsContent);
+  const formattedContent = await prettier.format(tsContent, {
+    parser: 'typescript',
+    singleQuote: true,
+  });
+  fs.writeFileSync(outputPath, formattedContent);
   console.log('Worker minified and embedded to LayoutWorkerSource.ts successfully.');
-} catch (err) {
+}
+
+buildWorker().catch((err) => {
   console.error('Failed to build worker:', err);
   process.exit(1);
-}
+});

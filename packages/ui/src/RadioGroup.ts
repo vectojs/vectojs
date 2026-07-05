@@ -63,7 +63,8 @@ export class RadioGroup extends UIComponent {
     this._layout();
 
     this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
-      const idx = this._idxAt(e.localX ?? 0, e.localY ?? 0);
+      if (e.localX === undefined || e.localY === undefined) return;
+      const idx = this._idxAt(e.localX, e.localY);
       if (idx !== -1) {
         const opt = this.options[idx];
         if (!opt.disabled && opt.value !== this.value) {
@@ -73,7 +74,8 @@ export class RadioGroup extends UIComponent {
     });
 
     this.on('pointermove', (e: { localX?: number; localY?: number }) => {
-      this._hoverIdx = this._idxAt(e.localX ?? 0, e.localY ?? 0);
+      this._hoverIdx =
+        e.localX === undefined || e.localY === undefined ? -1 : this._idxAt(e.localX, e.localY);
       this.scene?.markDirty();
     });
 

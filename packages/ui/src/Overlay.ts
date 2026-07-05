@@ -101,9 +101,10 @@ export class Overlay extends UIComponent {
   }
 
   private _position(target: Entity): void {
-    const gp = target.getGlobalPosition();
-    const tw = target.width;
-    const th = target.height;
+    const targetBounds = target.getWorldBounds();
+    const gp = { x: targetBounds.x, y: targetBounds.y };
+    const tw = targetBounds.width;
+    const th = targetBounds.height;
     const sw = this.scene?.width ?? window.innerWidth;
     const sh = this.scene?.height ?? window.innerHeight;
     let pl = this.placement;

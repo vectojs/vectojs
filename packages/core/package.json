@@ -1,17 +1,15 @@
 {
   "name": "@vectojs/core",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publishConfig": {
     "access": "public"
   },
-  "description": "A zero-DOM, Canvas 2D Entity Component System (ECS) rendering framework — 60 FPS with 100,000+ entities.",
+  "description": "A mathematical Canvas 2D scene-graph framework with layout, events, accessibility projection, and optional GPU backends.",
   "keywords": [
     "canvas",
-    "ecs",
     "fourier",
     "spline",
     "rendering",
-    "60fps",
     "typescript",
     "vectorization"
   ],

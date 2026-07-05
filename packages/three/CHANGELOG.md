@@ -5,6 +5,17 @@
 `packages/three/package.json`, commit, tag `@vectojs/three@<version>`, and push the tag —
 the [publish workflow](../../.github/workflows/release.yml) takes it from there.
 
+## 0.1.3 (2026-07-05)
+
+### Fixed
+
+- Preserve pointer and wheel modifier keys when routing Three.js raycast events into VectoJS.
+- Reset renderer transform, alpha, and clip stacks between frames; intersect nested clips and use
+  non-negative transformed scissor bounds.
+- Honor alpha channels in CSS colors for solid fills, strokes, and circles.
+- Dispose objects, materials, textures, renderers, and adapter-owned canvases exactly once while
+  preserving caller-owned canvases.
+
 ## 0.1.2 (2026-07-03)
 
 ### Fixed

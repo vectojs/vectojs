@@ -60,6 +60,19 @@ describe('TextEntity', () => {
     expect(textEntity.isPointInside(250, 50)).toBe(false);
   });
 
+  it('hit-tests through rotation and non-uniform scale', () => {
+    const textEntity = new TextEntity('A', mockAtlas, 200, 24);
+    textEntity.setPosition(40, 60);
+    textEntity.scaleX = 2;
+    textEntity.scaleY = 0.5;
+    textEntity.rotation = Math.PI / 3;
+
+    const inside = textEntity.localToWorld(12, 18);
+    const outside = textEntity.localToWorld(textEntity.width + 1, 18);
+    expect(textEntity.isPointInside(inside.x, inside.y)).toBe(true);
+    expect(textEntity.isPointInside(outside.x, outside.y)).toBe(false);
+  });
+
   it('renders vector glyph from atlas', () => {
     const textEntity = new TextEntity('A', mockAtlas, 200, 24);
     mockRenderer.save.mockClear();

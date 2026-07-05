@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, test, expect } from 'vitest';
 import { SVGRenderer } from '../src/renderer/SVGRenderer';
 
@@ -26,6 +27,42 @@ describe('SVGRenderer', () => {
     r.fillText('<test & "hello" \'>', 0, 0, '12px Arial', '#000000');
     const xml = r.toXMLString();
     expect(xml).toContain('&lt;test &amp; &quot;hello&quot; &apos;&gt;');
+  });
+
+  test('escapes every string sink without injecting SVG nodes or attributes', () => {
+    const r = new SVGRenderer(800, 600);
+    const payload = `red" onload="alert(1)'><script>bad()</script>&`;
+    r.beginPath();
+    r.moveTo(0, 0);
+    r.lineTo(10, 10);
+    r.fill(payload);
+    r.stroke(payload);
+    r.fillText(`<tspan onload="bad()">& text`, 0, 12, `12px ${payload}`, payload);
+    const gradient = r.createLinearGradient(0, 0, 10, 10, [{ stop: 0, color: payload }]);
+    r.beginPath();
+    r.moveTo(0, 0);
+    r.lineTo(20, 20);
+    r.fill(gradient);
+    r.drawImage({ src: 'javascript:alert(1)" onload="bad()' }, 0, 0, 10, 10);
+
+    const xml = r.toXMLString();
+    const document = new DOMParser().parseFromString(xml, 'image/svg+xml');
+
+    expect(document.querySelector('parsererror')).toBeNull();
+    expect(document.querySelector('script')).toBeNull();
+    expect(document.querySelector('[onload]')).toBeNull();
+    expect(document.querySelector('image')?.getAttribute('href')).toBe('#');
+    expect(document.documentElement.textContent).toContain('<tspan onload="bad()">& text');
+  });
+
+  test('preserves raster canvas data while rejecting executable canvas data', () => {
+    const r = new SVGRenderer(20, 20);
+    r.drawImage({ toDataURL: () => 'data:image/png;base64,iVBORw0KGgo=' }, 0, 0, 10, 10);
+    r.drawImage({ toDataURL: () => 'data:image/svg+xml,<svg onload="bad()"/>' }, 10, 0, 10, 10);
+
+    const document = new DOMParser().parseFromString(r.toXMLString(), 'image/svg+xml');
+    const hrefs = [...document.querySelectorAll('image')].map((node) => node.getAttribute('href'));
+    expect(hrefs).toEqual(['data:image/png;base64,iVBORw0KGgo=', '#']);
   });
 
   test('should split 360 degree arcs into two half circles', () => {

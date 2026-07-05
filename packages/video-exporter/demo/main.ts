@@ -1,5 +1,5 @@
 import { Scene } from '@vectojs/core';
-import { Card, Text, UIComponent, Button } from '@vectojs/ui';
+import { Card, Text, UIComponent } from '@vectojs/ui';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 canvas.width = 1280;
@@ -15,7 +15,7 @@ class DemoRoot extends UIComponent {
   subtitle: Text;
   card: Card;
 
-  public render(renderer: any): void {}
+  public render(_renderer: any): void {}
 
   constructor() {
     super();

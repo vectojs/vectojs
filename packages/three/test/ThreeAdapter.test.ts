@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ThreeAdapter } from '../src/ThreeAdapter';
 import { Entity, VectoJSEvent } from '@vectojs/core';
 import * as THREE from 'three';
@@ -14,7 +14,7 @@ vi.mock('three', async () => {
     public minFilter = 0;
     public magFilter = 0;
     constructor(public image: any) {}
-    dispose() {}
+    dispose = vi.fn();
   }
 
   class MockMesh {
@@ -62,6 +62,8 @@ describe('ThreeAdapter', () => {
 
     adapter = new ThreeAdapter({ width: 800, height: 600 });
   });
+
+  afterEach(() => adapter.dispose());
 
   it('instantiates and creates the Vecto Scene and CanvasTexture', () => {
     expect(adapter).toBeDefined();
@@ -236,6 +238,42 @@ describe('ThreeAdapter', () => {
     adapter.updateIntersection(mockRaycaster, 'pointerdown');
     expect(bubbleEvent).not.toBeNull();
     expect(bubbleEvent!.type).toBe('pointerdown');
+    expect((bubbleEvent as unknown as VectoJSEvent).sceneX).toBe(150);
+    expect((bubbleEvent as unknown as VectoJSEvent).sceneY).toBe(150);
+    expect((bubbleEvent as unknown as VectoJSEvent).localX).toBe(0);
+    expect((bubbleEvent as unknown as VectoJSEvent).localY).toBe(0);
+  });
+
+  it('preserves modifier keys on direct offscreen dispatch', () => {
+    class Shape extends Entity {
+      isPointInside(x: number, y: number) {
+        return x >= 0 && x <= 800 && y >= 0 && y <= 600;
+      }
+      render() {}
+    }
+    const shape = new Shape('modifier-shape');
+    adapter.vectoScene.add(shape);
+
+    let received: VectoJSEvent | null = null;
+    shape.on('pointerdown', (event: VectoJSEvent) => {
+      received = event;
+    });
+    const original = new PointerEvent('pointerdown', {
+      pointerId: 4,
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    const raycaster = {
+      intersectObject: () => [{ uv: new THREE.Vector2(0.25, 0.75) }],
+    } as any;
+
+    adapter.updateIntersection(raycaster, 'pointerdown', original);
+
+    expect(received).not.toBeNull();
+    expect((received as unknown as VectoJSEvent).ctrlKey).toBe(true);
+    expect((received as unknown as VectoJSEvent).shiftKey).toBe(true);
+    expect((received as unknown as VectoJSEvent).sceneX).toBe(200);
+    expect((received as unknown as VectoJSEvent).sceneY).toBe(150);
   });
 
   it('maps UV hits to logical scene coordinates, not DPR-scaled canvas pixels', () => {
@@ -348,6 +386,33 @@ describe('ThreeAdapter', () => {
     expect(deltaYCaptured).toBe(0);
   });
 
+  it('preserves wheel deltas and modifier keys', () => {
+    let captured: WheelEvent | undefined;
+    adapter.canvas.addEventListener('wheel', (event) => {
+      captured = event;
+    });
+    const mockRaycaster = {
+      intersectObject: () => [{ uv: new THREE.Vector2(0.5, 0.5) }],
+    } as any;
+    const original = new WheelEvent('wheel', {
+      deltaX: 4,
+      deltaY: 12,
+      shiftKey: true,
+      ctrlKey: true,
+      altKey: true,
+      metaKey: true,
+    });
+
+    adapter.updateIntersection(mockRaycaster, 'wheel', original);
+
+    expect(captured?.deltaX).toBe(4);
+    expect(captured?.deltaY).toBe(12);
+    expect(captured?.shiftKey).toBe(true);
+    expect(captured?.ctrlKey).toBe(true);
+    expect(captured?.altKey).toBe(true);
+    expect(captured?.metaKey).toBe(true);
+  });
+
   it('resets canvas and scene dimensions via resize method', () => {
     adapter.resize(1920, 1080);
     expect(adapter.canvas.width).toBe(1920);
@@ -364,14 +429,34 @@ describe('ThreeAdapter', () => {
     adapter.mesh.parent = parentMock as any;
 
     const textureDisposeSpy = vi.spyOn(adapter.texture, 'dispose');
+    const geometryDisposeSpy = vi.spyOn(adapter.mesh.geometry, 'dispose');
+    const materialDisposeSpy = vi.spyOn(adapter.mesh.material as THREE.Material, 'dispose');
     const sceneDestroyRealSpy = vi.spyOn(adapter.vectoScene, 'destroy');
+    const originalRender = (adapter as any)._originalRender;
 
+    adapter.dispose();
     adapter.dispose();
 
     expect(textureDisposeSpy).toHaveBeenCalledOnce();
+    expect(geometryDisposeSpy).toHaveBeenCalledOnce();
+    expect(materialDisposeSpy).toHaveBeenCalledOnce();
     expect(sceneDestroyRealSpy).toHaveBeenCalledOnce();
     expect(parentMock.remove).toHaveBeenCalledWith(adapter.mesh);
+    expect(parentMock.remove).toHaveBeenCalledOnce();
+    expect(adapter.vectoScene.render).toBe(originalRender);
     expect(adapter.canvas.width).toBe(0);
     expect(adapter.canvas.height).toBe(0);
+  });
+
+  it('preserves dimensions of a caller-owned canvas during idempotent disposal', () => {
+    adapter.dispose();
+    const userCanvas = document.createElement('canvas');
+    adapter = new ThreeAdapter({ width: 320, height: 180, canvas: userCanvas });
+
+    adapter.dispose();
+    adapter.dispose();
+
+    expect(userCanvas.width).toBe(320);
+    expect(userCanvas.height).toBe(180);
   });
 });

@@ -1,6 +1,11 @@
 import { IRenderer, parseColorToRGBA } from '@vectojs/core';
 import * as THREE from 'three';
 
+function parseThreeColor(value: string): { color: THREE.Color; alpha: number } {
+  const [r, g, b, alpha] = parseColorToRGBA(value);
+  return { color: new THREE.Color(r, g, b), alpha };
+}
+
 export class WebGLGradient {
   public type = 'linear';
   constructor(
@@ -106,8 +111,15 @@ export class ThreeRenderer implements IRenderer {
   private scissorStack: Array<{ enabled: boolean; box: THREE.Vector4 }> = [];
 
   constructor(canvas: HTMLCanvasElement) {
-    this.width = window.innerWidth;
-    this.height = window.innerHeight;
+    // Prefer the canvas's own backing-store size for non-fullscreen embedding
+    // (offscreen framebuffers, WebXR render targets, embedded demo apps).
+    // Fall back to window dimensions only when the canvas has no intrinsic size.
+    const cw =
+      canvas.width > 0 ? canvas.width : typeof window !== 'undefined' ? window.innerWidth : 1024;
+    const ch =
+      canvas.height > 0 ? canvas.height : typeof window !== 'undefined' ? window.innerHeight : 1024;
+    this.width = cw;
+    this.height = ch;
 
     this.scene = new THREE.Scene();
     // Set up orthographic camera where y-axis points down (top is 0, bottom is height)
@@ -116,7 +128,7 @@ export class ThreeRenderer implements IRenderer {
 
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     this.renderer.setSize(this.width, this.height);
-    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+    this.renderer.setPixelRatio(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
 
     this.matrix = new THREE.Matrix4().identity();
   }
@@ -131,27 +143,46 @@ export class ThreeRenderer implements IRenderer {
   }
 
   clear(): void {
-    // Clean up WebGL resources to prevent memory leaks
-    for (const obj of this.activeObjects) {
-      this.scene.remove(obj);
-      if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
-        obj.geometry.dispose();
-        if (Array.isArray(obj.material)) {
-          for (const mat of obj.material) {
-            mat.dispose();
-            if ((mat as any).map) (mat as any).map.dispose();
-          }
-        } else {
-          obj.material.dispose();
-          if ((obj.material as any).map) {
-            (obj.material as any).map.dispose();
-          }
+    this.disposeActiveObjects();
+    this.currentPath = null;
+    this.matrix.identity();
+    this.stack.length = 0;
+    this.globalAlpha = 1;
+    this.alphaStack.length = 0;
+    this.scissorStack.length = 0;
+    this.renderer.clear();
+    this.renderer.setScissorTest(false);
+  }
+
+  private disposeActiveObjects(): void {
+    const disposedGeometries = new Set<THREE.BufferGeometry>();
+    const disposedMaterials = new Set<THREE.Material>();
+    const disposedTextures = new Set<THREE.Texture>();
+
+    for (const object of this.activeObjects) {
+      this.scene.remove(object);
+      if (!(object instanceof THREE.Mesh || object instanceof THREE.Line)) continue;
+
+      const geometry = object.geometry;
+      if (!disposedGeometries.has(geometry)) {
+        disposedGeometries.add(geometry);
+        geometry.dispose();
+      }
+
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        const map = (material as THREE.Material & { map?: THREE.Texture | null }).map;
+        if (map && !disposedTextures.has(map)) {
+          disposedTextures.add(map);
+          map.dispose();
+        }
+        if (!disposedMaterials.has(material)) {
+          disposedMaterials.add(material);
+          material.dispose();
         }
       }
     }
-    this.activeObjects = [];
-    this.renderer.clear();
-    this.renderer.setScissorTest(false);
+    this.activeObjects.length = 0;
   }
 
   save(): void {
@@ -197,21 +228,37 @@ export class ThreeRenderer implements IRenderer {
   }
 
   clip(x: number, y: number, width: number, height: number): void {
-    const pos = new THREE.Vector3(x, y, 0).applyMatrix4(this.matrix);
-    const size = new THREE.Vector3(width, height, 0)
-      .applyMatrix4(this.matrix)
-      .sub(new THREE.Vector3(0, 0, 0).applyMatrix4(this.matrix));
+    const corners = [
+      new THREE.Vector3(x, y, 0),
+      new THREE.Vector3(x + width, y, 0),
+      new THREE.Vector3(x, y + height, 0),
+      new THREE.Vector3(x + width, y + height, 0),
+    ].map((point) => point.applyMatrix4(this.matrix));
+    const minX = Math.min(...corners.map((point) => point.x));
+    const minY = Math.min(...corners.map((point) => point.y));
+    const maxX = Math.max(...corners.map((point) => point.x));
+    const maxY = Math.max(...corners.map((point) => point.y));
 
     // Convert to bottom-left origin for Three.js scissor test
     const dpr = window.devicePixelRatio || 1;
     const canvasHeight = this.renderer.domElement.height / dpr;
+    let scissorX = minX * dpr;
+    let scissorY = (canvasHeight - maxY) * dpr;
+    let scissorWidth = (maxX - minX) * dpr;
+    let scissorHeight = (maxY - minY) * dpr;
 
-    this.renderer.setScissor(
-      pos.x * dpr,
-      (canvasHeight - (pos.y + size.y)) * dpr,
-      size.x * dpr,
-      size.y * dpr,
-    );
+    if (this.renderer.getScissorTest()) {
+      const current = new THREE.Vector4();
+      this.renderer.getScissor(current);
+      const right = Math.min(scissorX + scissorWidth, current.x + current.z);
+      const top = Math.min(scissorY + scissorHeight, current.y + current.w);
+      scissorX = Math.max(scissorX, current.x);
+      scissorY = Math.max(scissorY, current.y);
+      scissorWidth = Math.max(0, right - scissorX);
+      scissorHeight = Math.max(0, top - scissorY);
+    }
+
+    this.renderer.setScissor(scissorX, scissorY, scissorWidth, scissorHeight);
     this.renderer.setScissorTest(true);
   }
 
@@ -475,14 +522,16 @@ export class ThreeRenderer implements IRenderer {
   private fillSolidShape(colorOrGradient: any): void {
     if (!this.currentPath) return;
     const color = typeof colorOrGradient === 'string' ? colorOrGradient : '#ffffff';
+    const parsed = parseThreeColor(color);
     const shapes = this.currentPath.toShapes();
 
     for (const shape of shapes) {
       const geometry = new THREE.ShapeGeometry(shape);
+      const opacity = this.globalAlpha * parsed.alpha;
       const material = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(color),
-        transparent: this.globalAlpha < 1,
-        opacity: this.globalAlpha,
+        color: parsed.color,
+        transparent: opacity < 1,
+        opacity,
         depthWrite: false,
       });
       const mesh = new THREE.Mesh(geometry, material);
@@ -509,10 +558,12 @@ export class ThreeRenderer implements IRenderer {
     if (points.length === 0) return;
 
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const parsed = parseThreeColor(color);
+    const opacity = this.globalAlpha * parsed.alpha;
     const material = new THREE.LineBasicMaterial({
-      color: new THREE.Color(color),
-      transparent: this.globalAlpha < 1,
-      opacity: this.globalAlpha,
+      color: parsed.color,
+      transparent: opacity < 1,
+      opacity,
       linewidth: lineWidth,
     });
     const line = new THREE.Line(geometry, material);
@@ -571,10 +622,12 @@ export class ThreeRenderer implements IRenderer {
 
   fillCircle(cx: number, cy: number, radius: number, color: string, alpha: number = 1): void {
     const geometry = new THREE.CircleGeometry(radius, 32);
+    const parsed = parseThreeColor(color);
+    const opacity = this.globalAlpha * alpha * parsed.alpha;
     const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(color),
-      transparent: this.globalAlpha * alpha < 1,
-      opacity: this.globalAlpha * alpha,
+      color: parsed.color,
+      transparent: opacity < 1,
+      opacity,
       depthWrite: false,
     });
     const mesh = new THREE.Mesh(geometry, material);
@@ -597,5 +650,19 @@ export class ThreeRenderer implements IRenderer {
     colorStops: { stop: number; color: string }[],
   ): any {
     return new WebGLGradient(x0, y0, x1, y1, colorStops);
+  }
+
+  private disposed = false;
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.disposeActiveObjects();
+    this.currentPath = null;
+    this.stack.length = 0;
+    this.alphaStack.length = 0;
+    this.scissorStack.length = 0;
+    this.renderer.setScissorTest(false);
+    // The WebGLRenderer holds the actual GL context — release it.
+    this.renderer.dispose();
   }
 }

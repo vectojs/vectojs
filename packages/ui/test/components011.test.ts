@@ -83,6 +83,28 @@ describe('UI 0.1.1 Components', () => {
       expect(overlay.x).toBe(175);
       expect(overlay.y).toBe(260);
     });
+
+    it('anchors to a target world-space box under ancestor transforms', () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 800;
+      canvas.height = 600;
+      const scene = new Scene(canvas);
+      const parent = new Entity('parent');
+      parent.setPosition(100, 50);
+      parent.scaleX = 2;
+      const target = new Entity('target');
+      target.setPosition(10, 20);
+      target.width = 50;
+      target.height = 40;
+      parent.add(target);
+      scene.add(parent);
+
+      const overlay = new Overlay({ width: 100, height: 80, placement: 'bottom', offset: 10 });
+      overlay.showAt(target);
+
+      expect(overlay.x).toBe(120);
+      expect(overlay.y).toBe(120);
+    });
   });
 
   describe('VirtualList', () => {

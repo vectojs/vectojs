@@ -194,4 +194,14 @@ export interface IRenderer {
     y1: number,
     colorStops: { stop: number; color: string }[],
   ): any;
+
+  /**
+   * Release any backend-owned GPU textures / GL contexts / caches.
+   *
+   * Called by {@link Scene.destroy()} so renderers that hold scarce resources
+   * (e.g. a WebGL2 context — browsers cap concurrent contexts to ~16) clean up
+   * before GC. Implementations MUST be idempotent: a second call after a
+   * successful teardown must be a silent no-op, not throw.
+   */
+  dispose?(): void;
 }

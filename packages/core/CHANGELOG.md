@@ -1,5 +1,14 @@
 # @vectojs/core
 
+## 0.2.3
+
+### Patch Changes
+
+- Stabilize renderer and Scene lifecycles. Core now provides exact nested coordinate conversion and
+  world bounds, modifier-aware events, inherited opacity on every backend, CSS-aligned semantic and
+  portal overlays, pure and SVGEntity-aware vector snapshots, recoverable layout workers, safe
+  navigation URLs, escaped SVG output, recursive Scene teardown, and idempotent renderer disposal.
+
 ## 0.2.2
 
 ### Patch Changes

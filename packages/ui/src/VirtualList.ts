@@ -171,13 +171,14 @@ export class VirtualList<T = unknown> extends UIComponent {
       this._clamp();
       this.scene?.markDirty();
     });
-    this.on('pointerdown', (e: { clientY?: number }) => {
+    this.on('pointerdown', (e: { localY?: number }) => {
+      if (e.localY === undefined) return;
       this._drag = true;
-      this._lastPY = e.clientY ?? 0;
+      this._lastPY = e.localY;
     });
-    this.on('pointermove', (e: { clientY?: number }) => {
-      if (!this._drag) return;
-      const y = e.clientY ?? 0;
+    this.on('pointermove', (e: { localY?: number }) => {
+      if (!this._drag || e.localY === undefined) return;
+      const y = e.localY;
       this._targetY -= y - this._lastPY;
       this._lastPY = y;
       this._clamp();

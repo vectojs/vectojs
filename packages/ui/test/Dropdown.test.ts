@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Dropdown } from '../src/Dropdown';
-import { Scene } from '@vectojs/core';
+import { Entity, Scene } from '@vectojs/core';
 
 describe('Dropdown', () => {
   beforeEach(() => {
@@ -39,5 +39,26 @@ describe('Dropdown', () => {
     // Simulate click on Dropdown component
     dropdown.emit('click', { stopPropagation: () => {} });
     expect(scene.overlayRoot.children.length).toBeGreaterThan(0);
+  });
+
+  it('positions and sizes its menu from the transformed trigger bounds', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const parent = new Entity('parent');
+    parent.setPosition(100, 50);
+    parent.scaleX = 2;
+    parent.scaleY = 1.5;
+    const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
+    dropdown.setPosition(10, 20);
+    parent.add(dropdown);
+    scene.add(parent);
+
+    dropdown.emit('click', {});
+
+    const menu = (dropdown as any).activeMenu;
+    expect(menu.x).toBe(120);
+    expect(menu.y).toBe(144);
+    expect(menu.width).toBe(200);
+    expect(menu.children[0].width).toBe(200);
   });
 });

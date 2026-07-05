@@ -139,4 +139,44 @@ test('MSDFTextEntity Canvas2D rendering fallback', () => {
     '24px sans-serif',
     'rgb(255,255,255)',
   );
+
+  entity.setPosition(30, 50);
+  entity.scaleX = 2;
+  entity.scaleY = 0.5;
+  entity.rotation = Math.PI / 4;
+  const inside = entity.localToWorld(50, 12);
+  const outside = entity.localToWorld(101, 12);
+  expect(entity.isPointInside(inside.x, inside.y)).toBe(true);
+  expect(entity.isPointInside(outside.x, outside.y)).toBe(false);
+});
+
+test('MSDFTextEntity falls back to Canvas for a sheared world transform', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('A', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+  });
+  entity['layoutResult'] = {
+    width: 20,
+    height: 24,
+    codePoints: new Uint32Array([65]),
+    xCoords: new Float32Array([0]),
+    yCoords: new Float32Array([18]),
+    packedStyles: new Uint32Array([0xffffff << 8]),
+  };
+  entity.scaleX = 2;
+  entity.scaleY = 0.5;
+  entity.rotation = Math.PI / 4;
+  const addGlyph = vi.fn();
+  (entity as any)._scene = {
+    pointRenderer: { setMSDFTexture: vi.fn(), addGlyph },
+    glCanvas: {},
+  };
+  const renderer = { fillText: vi.fn() };
+
+  entity.render(renderer);
+
+  expect(addGlyph).not.toHaveBeenCalled();
+  expect(renderer.fillText).toHaveBeenCalledOnce();
 });

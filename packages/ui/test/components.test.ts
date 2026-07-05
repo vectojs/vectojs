@@ -453,6 +453,20 @@ describe('UIComponent hit-testing', () => {
     expect(b.isPointInside(100 + b.width + 1, 100)).toBe(false);
     expect(b instanceof UIComponent).toBe(true);
   });
+
+  it('isPointInside inverts rotation and non-uniform scale', () => {
+    const b = new Button('Transformed', { width: 120, height: 40 });
+    b.setPosition(100, 80);
+    b.scaleX = 2;
+    b.scaleY = 0.5;
+    b.rotation = Math.PI / 3;
+
+    const inside = b.localToWorld(100, 35);
+    const outside = b.localToWorld(121, 20);
+
+    expect(b.isPointInside(inside.x, inside.y)).toBe(true);
+    expect(b.isPointInside(outside.x, outside.y)).toBe(false);
+  });
 });
 
 describe('Markdown', () => {

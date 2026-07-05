@@ -245,11 +245,9 @@ export class SplineEntity extends Entity {
    * this method already calls it as a refinement when it is overridden.
    */
   public isPointInside(globalX: number, globalY: number): boolean {
-    const pos = this.getGlobalPosition();
-    const scale = this.getWorldScale();
-    // Map the world point into the spline's unscaled local space.
-    const lx = (globalX - pos.x) / (scale.x || 1);
-    const ly = (globalY - pos.y) / (scale.y || 1);
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    const { x: lx, y: ly } = local;
     const inAabb =
       lx >= this.bounds.x &&
       lx <= this.bounds.x + this.bounds.width &&

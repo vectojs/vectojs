@@ -1,5 +1,13 @@
 # @vectojs/ui
 
+## 0.2.3
+
+### Patch Changes
+
+- Use the shared affine local-coordinate contract for interactive controls, position overlays from
+  transformed world bounds, reject executable link schemes, and align accessibility behavior across
+  the component library.
+
 ## 0.2.2
 
 ### Patch Changes

@@ -190,6 +190,42 @@ describe('integration: transform flow (Scene render ↔ getGlobalPosition ↔ cu
     expect(texts).toContain('ON');
     expect(texts).not.toContain('OFF');
   });
+
+  it('culling uses the same Canvas T*S*R order under non-uniform scale and rotation', () => {
+    const { scene, ctx } = sceneWithRecorder();
+    class Node extends Entity {
+      constructor(private readonly label = '') {
+        super();
+      }
+      getBounds() {
+        return { x: 0, y: 0, width: 10, height: 10 };
+      }
+      isPointInside() {
+        return false;
+      }
+      render(r: IRenderer) {
+        if (this.label) r.fillText(this.label, 0, 0, '10px sans-serif', '#fff');
+      }
+    }
+
+    const parent = new Node();
+    parent.setPosition(400, 300);
+    parent.scaleX = 10;
+    parent.scaleY = 1;
+    parent.rotation = Math.PI / 2;
+    const child = new Node('VISIBLE');
+    child.setPosition(50, 0);
+    parent.add(child);
+    scene.add(parent);
+
+    tick(scene);
+
+    expect(child.getGlobalPosition().x).toBeCloseTo(400);
+    expect(child.getGlobalPosition().y).toBeCloseTo(350);
+    expect(ctx.calls.some((call) => call.op === 'fillText' && call.args[0] === 'VISIBLE')).toBe(
+      true,
+    );
+  });
 });
 
 describe('integration: caching flow', () => {

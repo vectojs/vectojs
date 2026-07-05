@@ -12,7 +12,7 @@ export class Dropdown extends UIComponent {
   private highlightedIndex: number = -1;
 
   constructor(options: string[], props: any = {}) {
-    super(props);
+    super();
     this.options = options;
     this.selectedValue = props.value ?? (options.length > 0 ? options[0] : '');
     this.interactive = true;
@@ -116,7 +116,7 @@ export class Dropdown extends UIComponent {
     const scene = this.scene;
     if (!scene) return;
 
-    const globalPos = this.getGlobalPosition();
+    const triggerBounds = this.getWorldBounds();
 
     // Transparent backdrop covering full screen to intercept click-outside
     const backdrop = new (class Backdrop extends Entity {
@@ -125,8 +125,8 @@ export class Dropdown extends UIComponent {
       }
       render() {} // Invisible
     })('dropdown-backdrop');
-    backdrop.width = typeof window !== 'undefined' ? window.innerWidth : 800;
-    backdrop.height = typeof window !== 'undefined' ? window.innerHeight : 600;
+    backdrop.width = scene.width;
+    backdrop.height = scene.height;
     backdrop.interactive = true;
 
     // Stop clicks outside from reaching underlying controls
@@ -136,9 +136,9 @@ export class Dropdown extends UIComponent {
     });
 
     const menu = new Stack({ direction: 'vertical', gap: 2 });
-    menu.x = globalPos.x;
-    menu.y = globalPos.y + this.height + 4;
-    menu.width = this.width;
+    menu.x = triggerBounds.x;
+    menu.y = triggerBounds.y + triggerBounds.height + 4;
+    menu.width = triggerBounds.width;
     menu.height = this.options.length * 36 + (this.options.length - 1) * 2;
     menu.interactive = true;
 
@@ -156,7 +156,7 @@ export class Dropdown extends UIComponent {
         font: '13px sans-serif',
       });
       item.id = `${this.id}-opt-${index}`;
-      item.width = this.width;
+      item.width = menu.width;
       item.height = 36;
       item.interactive = true;
 

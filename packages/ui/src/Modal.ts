@@ -9,7 +9,7 @@ export class Modal extends UIComponent {
   private backdropColor: string;
 
   constructor(title: string, props: any = {}) {
-    super(props);
+    super();
     this.width = props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 800);
     this.height = props.height ?? (typeof window !== 'undefined' ? window.innerHeight : 600);
     this.interactive = true;

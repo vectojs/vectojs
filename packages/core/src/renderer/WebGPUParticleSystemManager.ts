@@ -1,4 +1,5 @@
 import { ComputeParticleEntity } from '../tree/ComputeParticleEntity';
+import type { Entity } from '../tree/Entity';
 import { parseColorToRGBA } from './colorParse';
 
 // Fallback definitions for GPUShaderStage and GPUBufferUsage if not present globally in standard DOM types
@@ -316,10 +317,14 @@ export class WebGPUParticleSystemManager {
     // Update uniform values securely
     const uniformArray = new Float32Array(20);
     const color = parseColorToRGBA(entity.baseColor);
+    let opacity = 1;
+    for (let current: Entity | null = entity; current; current = current.parent) {
+      opacity *= current.opacity;
+    }
     uniformArray[0] = color[0];
     uniformArray[1] = color[1];
     uniformArray[2] = color[2];
-    uniformArray[3] = color[3];
+    uniformArray[3] = color[3] * opacity;
 
     // Mouse coordinates (Quiet zone if NaN or inactive)
     const mActive = !isNaN(mouseX) && !isNaN(mouseY) && mouseX > -9000 && mouseY > -9000;

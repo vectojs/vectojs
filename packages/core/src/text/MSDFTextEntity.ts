@@ -70,26 +70,34 @@ export class MSDFTextEntity extends Entity {
 
   public isPointInside(globalX: number, globalY: number): boolean {
     if (!this.layoutResult) return false;
-    const pos = this.getGlobalPosition();
-    const scale = this.getWorldScale();
-    const lx = (globalX - pos.x) / scale.x;
-    const ly = (globalY - pos.y) / scale.y;
-    return lx >= 0 && lx <= this.layoutResult.width && ly >= 0 && ly <= this.layoutResult.height;
+    const local = this.worldToLocal(globalX, globalY);
+    if (!local) return false;
+    return (
+      local.x >= 0 &&
+      local.x <= this.layoutResult.width &&
+      local.y >= 0 &&
+      local.y <= this.layoutResult.height
+    );
   }
 
   public render(renderer: any): void {
     if (!this.layoutResult) return;
     const scene = this.scene;
+    const world = this.getWorldTransform();
+    const worldScaleX = Math.hypot(world.a, world.b);
+    const worldScaleY = Math.hypot(world.c, world.d);
+    const orthogonalTolerance = Math.max(1, worldScaleX * worldScaleY) * 1e-6;
+    const canUsePointGlyphs =
+      Number.isFinite(worldScaleX) &&
+      Number.isFinite(worldScaleY) &&
+      world.a * world.d - world.b * world.c >= 0 &&
+      Math.abs(world.a * world.c + world.b * world.d) <= orthogonalTolerance;
 
     // WebGL point rendering path
-    if (scene && scene.pointRenderer && scene.glCanvas) {
+    if (scene && scene.pointRenderer && scene.glCanvas && canUsePointGlyphs) {
       scene.pointRenderer.setMSDFTexture(this.texture, this.font.distanceRange);
 
-      const globalPos = this.getGlobalPosition();
-      const scale = this.getWorldScale();
-      const worldRot = this.getWorldRotation();
-      const rCos = Math.cos(worldRot);
-      const rSin = Math.sin(worldRot);
+      const worldRot = Math.atan2(world.b, world.a);
 
       const len = this.layoutResult.codePoints.length;
       for (let i = 0; i < len; i++) {
@@ -105,14 +113,12 @@ export class MSDFTextEntity extends Entity {
         const aw = this.font.atlasWidth;
         const ah = this.font.atlasHeight;
 
-        // Position coordinates calculated and rotated in world space
-        const lx = (nodeX + pb.left * this.fontSize) * scale.x;
-        const ly = (nodeY - pb.top * this.fontSize) * scale.y;
-
-        const glyphX = globalPos.x + lx * rCos - ly * rSin;
-        const glyphY = globalPos.y + lx * rSin + ly * rCos;
-        const glyphW = (pb.right - pb.left) * this.fontSize * scale.x;
-        const glyphH = (pb.top - pb.bottom) * this.fontSize * scale.y;
+        const lx = nodeX + pb.left * this.fontSize;
+        const ly = nodeY - pb.top * this.fontSize;
+        const glyphX = world.a * lx + world.c * ly + world.e;
+        const glyphY = world.b * lx + world.d * ly + world.f;
+        const glyphW = (pb.right - pb.left) * this.fontSize * worldScaleX;
+        const glyphH = (pb.top - pb.bottom) * this.fontSize * worldScaleY;
 
         const v0 = this.font.data.atlas.yOrigin === 'bottom' ? 1 - ab.top / ah : ab.top / ah;
         const v1 = this.font.data.atlas.yOrigin === 'bottom' ? 1 - ab.bottom / ah : ab.bottom / ah;

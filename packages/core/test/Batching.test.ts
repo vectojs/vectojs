@@ -211,4 +211,27 @@ describe('Scene — batch fast-path for getBatchCircle() leaf entities', () => {
     const ops = calls.filter((c) => c.op === 'fill' || c.op === 'fillText').map((c) => c.op);
     expect(ops).toEqual(['fill', 'fillText', 'fill']); // dot batch, label, dot batch — in order
   });
+
+  it('multiplies a batched leaf opacity by every ancestor opacity', () => {
+    setWindow();
+    const { canvas, calls } = recorderCtx();
+    const scene = sceneWith(canvas);
+    const parent = new (class extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+    })('parent');
+    parent.opacity = 0.5;
+    const dot = new BatchDot('dot', '#38bdf8');
+    dot.opacity = 0.4;
+    parent.add(dot);
+    scene.add(parent);
+
+    tick(scene);
+
+    const fills = calls.filter((call) => call.op === 'fill');
+    expect(fills).toHaveLength(1);
+    expect(fills[0].alpha).toBeCloseTo(0.2);
+  });
 });

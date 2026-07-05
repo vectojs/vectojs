@@ -2,6 +2,7 @@ import {
   A11yAttributes,
   IRenderer,
   LayoutEngine,
+  sanitizeUrl,
   type ExclusionRect,
   type GlyphMeasurer,
   type LayoutResult,
@@ -41,10 +42,13 @@ class LinkHotspot extends UIComponent {
     super();
     this.href = href;
     this.interactive = true;
-    this.on('click', () => onClick?.(this.href));
+    this.on('click', () => {
+      const safe = sanitizeUrl(this.href);
+      if (safe && safe !== '#') onClick?.(safe);
+    });
   }
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: this.href, label: this.href };
+    return { tag: 'a', href: sanitizeUrl(this.href), label: this.href };
   }
   public render(): void {
     /* invisible — RichText paints the text */

@@ -1,5 +1,13 @@
 # @vectojs/video-exporter
 
+## 0.2.1
+
+### Patch Changes
+
+- Remove the unused `@vectojs/core` runtime dependency from the video exporter package manifest.
+- Clean the build output, exclude test artifacts from the published package, and emit the declared
+  TypeScript definitions.
+
 ## 0.2.0
 
 ### Minor Changes

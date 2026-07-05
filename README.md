@@ -1,6 +1,6 @@
 # VectoJS
 
-> A Zero-DOM, Canvas-native UI **runtime** — render like a game engine, stay drivable like the DOM.
+> A Canvas-native UI **runtime** — render like a game engine, stay drivable like the DOM.
 
 [![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
@@ -28,7 +28,7 @@ positioned over the canvas. So a pure-canvas page is:
 
 | Package          | Status | Description                                                                                                                                                                                                                       |
 | ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@vectojs/core`  | Active | ECS engine, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, a11y shadow, Canvas2D + WebGL2 + WebGPU compute-driven particle system (WGSL compute + procedural rendering)  |
+| `@vectojs/core`  | Active | Entity scene graph, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, accessibility projection, Canvas2D + WebGL2 + WebGPU compute-driven particle system                   |
 | `@vectojs/ui`    | Active | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
 | `@vectojs/three` | Active | WebGL/Three.js 3D/WebXR space adapter — projects Vecto 2D canvas to 3D mesh texture, translates raycast intersects to 2D event routing, and manages XR pointers & hover boundaries                                                |
 
@@ -100,7 +100,7 @@ Each demo doubles as a real-world stress test for the engine.
 **Plays to its strengths:** infinite canvases / node editors, 100k-point dataviz, data grids,
 log/trace viewers, orderbook terminals, whiteboards, timelines — anywhere element count explodes
 or you need per-glyph / per-curve interaction; and any page that must be **agent- and AT-drivable
-while being pure canvas**.
+while keeping its visual layer canvas-rendered**.
 
 **Not the right tool for:** document-style, text-heavy, selectable/SEO content (the DOM wins);
 deepest text correctness (bidi/complex shaping — pretext/HarfBuzz go further); tiny static UIs
@@ -108,8 +108,8 @@ where the DOM's zero setup wins.
 
 ## Testing & quality
 
-VectoJS is validated across many dimensions — this is deliberate: reproducible data, not
-reputation, is the case for the engine. Every number above comes from a script in this repo.
+VectoJS is validated across multiple dimensions. The checked-in tests and benchmark commands below
+make their workloads reproducible; benchmark results remain machine- and workload-dependent.
 
 | Dimension            | How                                                    | Where                                    |
 | -------------------- | ------------------------------------------------------ | ---------------------------------------- |
