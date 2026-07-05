@@ -543,6 +543,18 @@ export class Scene {
   }
 
   /**
+   * Manually advance the scene clock by `dt` milliseconds and render synchronously.
+   * Essential for deterministic rendering (e.g. video export).
+   * Note: You should call `scene.stop()` before using this to avoid conflict with the rAF loop.
+   */
+  public step(dt: number): void {
+    const time = this.lastTime + dt;
+    this.lastTime = time;
+    this.render(this.renderer, dt, time);
+    this.dirty = false;
+  }
+
+  /**
    * Mark the scene as needing a redraw on the next frame.
    *
    * Only meaningful in `onDemand` {@link renderMode}: call it after mutating

@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 0.2.2
+
+### Patch Changes
+
+- Add `@vectojs/video-exporter` for rendering scenes to MP4 videos. Expose `Scene.step(dt)` in `@vectojs/core` for deterministic clock control.
+
 ## 0.2.1
 
 ### Patch Changes

@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>VectoJS Test Scene</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      // Simulate VectoJS scene setup
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      document.body.appendChild(canvas);
+      const ctx = canvas.getContext('2d');
+
+      class MockScene {
+        constructor() {
+          this.time = 0;
+          this.draw();
+        }
+
+        stop() {
+          console.log('Scene stopped');
+        }
+
+        step(dt) {
+          this.time += dt;
+          this.draw();
+        }
+
+        draw() {
+          // Clear
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(0, 0, 1280, 720);
+
+          // Draw a moving circle
+          const cx = 640 + Math.sin((this.time / 1000) * Math.PI) * 300;
+          const cy = 360 + Math.cos((this.time / 1000) * Math.PI) * 100;
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, 50, 0, Math.PI * 2);
+          ctx.fillStyle = '#22c55e';
+          ctx.fill();
+
+          // Draw text
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '40px monospace';
+          ctx.fillText(`Time: ${this.time.toFixed(1)} ms`, 50, 50);
+        }
+      }
+
+      window.vectoScene = new MockScene();
+    </script>
+  </body>
+</html>
