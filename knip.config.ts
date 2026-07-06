@@ -18,10 +18,9 @@ const config: KnipConfig = {
     },
   },
   // playwright is used from the global install by the benchmark/comparison scripts
-  // (not a dep); ffmpeg is a documented video-exporter system prerequisite,
-  // while readlink/which/vite are binaries invoked by project scripts.
+  // (not a dep); readlink/which/vite are binaries invoked by project scripts.
   ignoreDependencies: ['playwright'],
-  ignoreBinaries: ['ffmpeg', 'readlink', 'which', 'vite'],
+  ignoreBinaries: ['readlink', 'which', 'vite'],
 };
 
 export default config;
