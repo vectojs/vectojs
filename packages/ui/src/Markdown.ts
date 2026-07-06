@@ -744,7 +744,7 @@ export class Markdown extends UIComponent {
 
         // Add the vertical accent bar
         const border = new QuoteBorder(innerStack.height || 20, t.quoteBorderColor);
-        const container = new Stack({ direction: 'vertical', gap: 0 });
+        const container = new Entity();
         container.add(border);
 
         // Overlay the inner text stack
