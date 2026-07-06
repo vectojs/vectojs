@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/video-exporter",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Video export utility for VectoJS",
   "type": "module",
   "main": "dist/index.js",

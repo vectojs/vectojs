@@ -1,5 +1,13 @@
 # @vectojs/video-exporter
 
+## 0.2.2
+
+### Patch Changes
+
+- Keep the existing API and CLI while making exports reliable: validate options, serve local entries
+  without source-tree files, resolve Chromium portably, write output atomically, supervise FFmpeg
+  backpressure and termination, and clean up all resources on errors, aborts, SIGINT, and SIGTERM.
+
 ## 0.2.1
 
 ### Patch Changes
