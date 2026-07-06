@@ -112,6 +112,22 @@ describe('LayoutEngine', () => {
     expect(result.nodes[1].x).toBe(32); // advances by glyph width
   });
 
+  it('preserves astral emoji as complete grapheme nodes', () => {
+    const measured: string[] = [];
+    const engine = new LayoutEngine(200, 200, {
+      measure(char, fontSize) {
+        measured.push(char);
+        return fontSize;
+      },
+    });
+
+    const result = engine.layoutText('A😁B', {}, 16);
+
+    expect(result.nodes.map((node) => node.char)).toEqual(['A', '😁', 'B']);
+    expect(measured).toContain('😁');
+    expect(measured).not.toContain('\ud83d');
+  });
+
   it('should layout text into buffer correctly', () => {
     const engine = new LayoutEngine(100, 200);
     const buffer = new LayoutResultBuffer();
@@ -124,6 +140,16 @@ describe('LayoutEngine', () => {
     expect(buffer.xs[1]).toBe(20);
     expect(buffer.chars[2]).toBe('B');
     expect(buffer.xs[2]).toBe(30);
+  });
+
+  it('preserves astral emoji in the zero-GC buffer path', () => {
+    const engine = new LayoutEngine(200, 200);
+    const buffer = new LayoutResultBuffer();
+
+    engine.layoutTextIntoBuffer('A😁B', {}, 16, buffer);
+
+    expect(buffer.count).toBe(3);
+    expect(buffer.chars.slice(0, buffer.count)).toEqual(['A', '😁', 'B']);
   });
 });
 
@@ -188,6 +214,14 @@ describe('LayoutEngine — cold/hot split (prepare / layoutPrepared)', () => {
     expect(engine.layoutPrepared(engine.prepare('你好', cjk, 32))).toEqual(
       engine.layoutText('你好', cjk, 32),
     );
+  });
+
+  it('preserves astral emoji in rich text prepared runs', () => {
+    const engine = new LayoutEngine(200, 200);
+    const prepared = engine.prepareRich([{ text: 'Hi 😁', style: { color: '#22d3ee' } }], {}, 16);
+    const result = engine.layoutPrepared(prepared);
+
+    expect(result.nodes.map((node) => node.char).join('')).toBe('Hi 😁');
   });
 
   it('the hot path does NOT re-segment or re-measure', () => {

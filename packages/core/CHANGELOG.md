@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 0.2.5
+
+### Patch Changes
+
+- Preserve full grapheme clusters in LayoutEngine nodes so canvas text labels keep astral emoji intact.
+
 ## 0.2.4
 
 ### Patch Changes

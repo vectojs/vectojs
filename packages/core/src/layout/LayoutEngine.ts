@@ -248,6 +248,13 @@ export class LayoutEngine {
     return fontSize * 0.5;
   }
 
+  private glyphKeyFor(grapheme: string, fontAtlas: GlyphAtlas): string {
+    if (fontAtlas[grapheme]) return grapheme;
+    const firstCodePoint = Array.from(grapheme)[0];
+    if (firstCodePoint && fontAtlas[firstCodePoint]) return firstCodePoint;
+    return grapheme;
+  }
+
   private getGraphemes(word: string): string[] {
     const cached = this.graphemeCache.get(word);
     if (cached) return cached;
@@ -349,31 +356,24 @@ export class LayoutEngine {
           const sourceIndex = offset + rawStart;
           const sourceLength = rawEnd - rawStart;
 
-          const baseChar = char[0];
+          const glyphKey = this.glyphKeyFor(char, fontAtlas);
           const level = levels[visualStart];
 
           // Check if glyph is present in atlas
-          const hasGlyph = !!fontAtlas[char] || !!fontAtlas[baseChar];
+          const hasGlyph = !!fontAtlas[glyphKey];
           if (char.trim().length > 0 && !hasGlyph) {
             pFallback = true;
             fallbackToCanvas = true;
           }
 
-          const w = this.glyphWidth(baseChar, fontAtlas, fontSize);
-
-          // Extract combining marks
-          const combining: string[] = [];
-          for (let cIdx = 1; cIdx < char.length; cIdx++) {
-            combining.push(char[cIdx]);
-          }
+          const w = this.glyphWidth(glyphKey, fontAtlas, fontSize);
 
           glyphs.push({
-            char: baseChar,
+            char,
             width: w,
             level,
             sourceIndex,
             sourceLength,
-            combining: combining.length > 0 ? combining : undefined,
           });
           width += w;
           shapedCharIdx += char.length;
@@ -511,33 +511,27 @@ export class LayoutEngine {
           const sourceIndex = offset + rawStart;
           const sourceLength = rawEnd - rawStart;
 
-          const baseChar = char[0];
+          const glyphKey = this.glyphKeyFor(char, fontAtlas);
           const level = levels[visualStart];
 
           const style = styleAt[offset + rawStart];
           const gfs = style?.fontSize ?? baseFontSize;
 
-          const hasGlyph = !!fontAtlas[char] || !!fontAtlas[baseChar];
+          const hasGlyph = !!fontAtlas[glyphKey];
           if (char.trim().length > 0 && !hasGlyph) {
             pFallback = true;
             fallbackToCanvas = true;
           }
 
-          const w = this.glyphWidth(baseChar, fontAtlas, gfs);
-
-          const combining: string[] = [];
-          for (let cIdx = 1; cIdx < char.length; cIdx++) {
-            combining.push(char[cIdx]);
-          }
+          const w = this.glyphWidth(glyphKey, fontAtlas, gfs);
 
           glyphs.push({
-            char: baseChar,
+            char,
             width: w,
             style,
             level,
             sourceIndex,
             sourceLength,
-            combining: combining.length > 0 ? combining : undefined,
           });
           width += w;
           shapedCharIdx += char.length;
