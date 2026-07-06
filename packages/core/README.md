@@ -1,55 +1,132 @@
 # @vectojs/core
 
-> The Canvas-native rendering engine behind **VectoJS** — an entity scene graph and Virtual Math
-> Tree with an accessibility/automation projection layer.
+> Scene, layout, interaction, text, rendering, and semantic projection for canvas-native interfaces.
 
-Part of the [VectoJS](https://github.com/vectojs/vectojs) ecosystem.
+[![npm](https://img.shields.io/npm/v/@vectojs/core?color=22d3ee)](https://www.npmjs.com/package/@vectojs/core)
+[![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](https://github.com/vectojs/vectojs/blob/main/LICENSE)
 
-## What it does
+`@vectojs/core` is the runtime beneath VectoJS. It owns the retained `Scene`/`Entity` tree, affine
+transforms, render scheduling, layout, text flow, spatial hit-testing, event propagation, renderer
+backends, and the accessibility/automation projection layer.
 
-`@vectojs/core` renders a whole UI onto one `<canvas>`: layout, hit-testing, animation and
-physics are pure math on a Virtual Math Tree, dispatched to a Canvas 2D (or WebGL2) renderer —
-**no per-element DOM, no reflow, no style recalc**. Interactive entities project a real,
-transparent DOM node through the **`a11yRoot`** shadow layer, so a pure-canvas page stays
-accessible and drivable by assistive tech and AI agents.
+[Core guide](https://vectojs.xuepoo.xyz/learn/core-scene/) ·
+[API reference](https://vectojs.xuepoo.xyz/reference/core-api/) ·
+[Main repository](https://github.com/vectojs/vectojs)
 
-Includes: `Scene` (render loop + a11y sync), `Entity` (scene-graph base), `LayoutEngine` (Intl.Segmenter
-with a cold/hot `prepare`/`layoutPrepared` split), `SpatialHashGrid`, `LayoutResultBuffer`
-(reusable typed storage), `SplineEntity` (native vectomancy math-curve rendering + curve-accurate hit-testing),
-`CanvasRenderer`, and a `WebGLPointRenderer` point/rect batch layer.
+## Install
 
-## Performance
+```bash
+bun add @vectojs/core
+```
 
-See the [main README](https://github.com/vectojs/vectojs#testing--quality) for reproducible
-workloads (`bun run benchmark` / `bun run compare:dom`). Headline levers include viewport culling,
-on-demand redraw, draw-call batching, a WebGL2 point layer, and a cold/hot text layout split.
-Results are machine- and workload-dependent.
+## Minimal scene
 
-## Quick Start
+```ts
+import { Entity, type IRenderer, Scene } from '@vectojs/core';
 
-```typescript
-import { Scene, Entity, IRenderer } from '@vectojs/core';
-
-class CircleEntity extends Entity {
-  isPointInside(x: number, y: number) {
-    return Math.hypot(x - this.x, y - this.y) < 50;
+class Dot extends Entity {
+  constructor() {
+    super();
+    this.width = 48;
+    this.height = 48;
+    this.interactive = true;
+    this.on('click', () => this.animate({ scaleX: 1.25, scaleY: 1.25 }, 120));
   }
-  render(r: IRenderer) {
-    r.beginPath();
-    r.arc(0, 0, 50, 0, Math.PI * 2);
-    r.fill('#38bdf8');
+
+  isPointInside(globalX: number, globalY: number): boolean {
+    const local = this.worldToLocal(globalX, globalY);
+    return !!local && Math.hypot(local.x - 24, local.y - 24) <= 24;
+  }
+
+  getA11yAttributes() {
+    return { tag: 'button' as const, role: 'button', label: 'Animated dot' };
+  }
+
+  render(renderer: IRenderer): void {
+    renderer.beginPath();
+    renderer.arc(24, 24, 24, 0, Math.PI * 2);
+    renderer.fill('#22d3ee');
   }
 }
 
-const canvas = document.querySelector('canvas')!;
+const canvas = document.querySelector<HTMLCanvasElement>('canvas')!;
 const scene = new Scene(canvas);
-scene.add(new CircleEntity().setPosition(100, 100));
+scene.renderMode = 'onDemand';
+scene.add(new Dot().setPosition(80, 80));
 scene.start();
 ```
 
-For high-level accessible components (Button, Input, Card…), see
-[`@vectojs/ui`](https://www.npmjs.com/package/@vectojs/ui).
+## Runtime building blocks
+
+| Area        | Main APIs                                       | Purpose                                                                |
+| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Scene graph | `Scene`, `Entity`                               | ownership, transforms, lifecycle, update/render traversal              |
+| Layout      | `LayoutEngine`, layout subpath                  | prepared text/rich-text layout, wrapping, exclusions, reusable buffers |
+| Interaction | entity events, `SpatialHashGrid`                | hit-testing and DOM-like capture/bubble dispatch                       |
+| Text        | `TextEntity`, `MSDFTextEntity`, `SplineEntity`  | Canvas text, GPU text, and mathematical curves                         |
+| Rendering   | `IRenderer`, `CanvasRenderer`, renderer subpath | backend-neutral drawing contract and concrete renderers                |
+| GPU paths   | WebGL point batching, WebGPU particles          | high-volume points/rects and compute-driven particles                  |
+| Semantics   | `A11yAttributes`, Scene projection              | role/name/state, native inputs, screen readers, Playwright/agents      |
+| Animation   | `animate`, springs, transitions, `Scene.step()` | real-time or deterministic fixed-step motion                           |
+
+## Scene lifecycle
+
+```ts
+const scene = new Scene(canvas, {
+  maxFPS: 60,
+  pointBackend: 'canvas', // or 'webgl'
+  particleBackend: 'cpu', // or 'webgpu' when supported
+});
+scene.renderMode = 'onDemand'; // redraw only when dirty
+
+scene.resize(width, height); // logical CSS pixels
+scene.markDirty();
+scene.start();
+scene.stop();
+scene.step(1000 / 60); // deterministic single step
+scene.destroy(); // release renderers, workers, observers, and semantic DOM
+```
+
+Always call `destroy()` when a framework component unmounts. A `Scene` owns browser observers,
+renderer resources, layout work, and projected DOM nodes.
+
+## Package entry points
+
+```ts
+import { Scene, Entity } from '@vectojs/core';
+import { LayoutEngine } from '@vectojs/core/layout';
+import type { IRenderer } from '@vectojs/core/renderer';
+import { TextEntity } from '@vectojs/core/text';
+```
+
+Both ESM and CommonJS outputs are published with TypeScript declarations.
+
+## Accessibility and automation
+
+Canvas pixels have no semantics. Interactive entities can implement `getA11yAttributes()`; the
+Scene projects transparent DOM nodes over their world-space bounds and forwards native input back
+into the VectoJS event system.
+
+This projection is intentionally thin. Applications still own accessible names, keyboard behavior,
+focus order, contrast, and correct control semantics. See the
+[accessibility guide](https://vectojs.xuepoo.xyz/learn/accessibility/).
+
+## Performance model
+
+Useful levers include on-demand rendering, viewport culling, spatial hashing, prepared text layout,
+typed reusable buffers, batched WebGL points, and optional WebGPU particle compute. None makes every
+workload allocation-free or GPU-bound; profile the renderer and entity types used by your app.
+
+Run the repository benchmarks with `bun run benchmark`, `bun run compare:dom`, and
+`bun run compare`.
+
+## Related packages
+
+- [`@vectojs/ui`](https://github.com/vectojs/vectojs/tree/main/packages/ui) — high-level accessible components
+- [`@vectojs/three`](https://github.com/vectojs/vectojs/tree/main/packages/three) — Three.js/WebXR projection and raycast routing
+- [`@vectojs/video-exporter`](https://github.com/vectojs/vectojs/tree/main/packages/video-exporter) — deterministic H.264 capture
 
 ## License
 
-MIT © 2026 Xuepoo
+[MIT](https://github.com/vectojs/vectojs/blob/main/LICENSE) © 2026 Xuepoo

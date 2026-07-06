@@ -1,5 +1,12 @@
 # @vectojs/video-exporter
 
+[![npm](https://img.shields.io/npm/v/@vectojs/video-exporter?color=22d3ee)](https://www.npmjs.com/package/@vectojs/video-exporter)
+[![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](https://github.com/vectojs/vectojs/blob/main/LICENSE)
+
+[Documentation](https://vectojs.xuepoo.xyz/reference/video-exporter/) ·
+[Main repository](https://github.com/vectojs/vectojs)
+
 Export a VectoJS canvas scene to a fixed-rate H.264 MP4. The exporter stops the page's normal
 Scene clock, advances it by an exact `1000 / fps` milliseconds per frame, captures PNG frames in
 Chromium, and streams them to FFmpeg.

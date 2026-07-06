@@ -1,133 +1,191 @@
 # VectoJS
 
-> A Canvas-native UI **runtime** — render like a game engine, stay drivable like the DOM.
+> A canvas-native UI runtime: render like a scene engine, remain operable like the DOM.
 
 [![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![@vectojs/core](https://img.shields.io/npm/v/@vectojs/core?label=%40vectojs%2Fcore)](https://www.npmjs.com/package/@vectojs/core)
-[![@vectojs/ui](https://img.shields.io/npm/v/@vectojs/ui?label=%40vectojs%2Fui)](https://www.npmjs.com/package/@vectojs/ui)
+[![MIT license](https://img.shields.io/badge/license-MIT-6366f1.svg)](./LICENSE)
+[![core](https://img.shields.io/npm/v/@vectojs/core?label=core&color=22d3ee)](https://www.npmjs.com/package/@vectojs/core)
+[![ui](https://img.shields.io/npm/v/@vectojs/ui?label=ui&color=22d3ee)](https://www.npmjs.com/package/@vectojs/ui)
+[![three](https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee)](https://www.npmjs.com/package/@vectojs/three)
+[![video exporter](https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee)](https://www.npmjs.com/package/@vectojs/video-exporter)
 
-VectoJS renders an entire UI onto a single `<canvas>` — layout, hit-testing, animation and
-physics are pure math on a Virtual Math Tree (VMT), with **no per-element DOM, no reflow, no
-style recalc**. It is a _rendering runtime_ (think Flutter/Pixi/Konva), **not** a component
-library like shadcn or Ant Design.
+VectoJS draws a scene graph onto one `<canvas>`. Layout, hit-testing, animation, text flow, and
+render scheduling operate on a Virtual Math Tree (VMT), while interactive entities project a thin
+semantic DOM layer for accessibility and automation.
 
-### What makes it different: the a11y / agent moat
+This is not an ECS and it does not claim allocation-free rendering. It is a retained-mode rendering
+runtime for interfaces whose visual or interactive complexity is a poor fit for one DOM element per
+shape, glyph, point, or row.
 
-Canvas UIs have always had one fatal flaw — they're invisible to screen readers and impossible
-to automate. VectoJS's headline feature is a thin **semantic shadow layer (`a11yRoot`)**: every
-interactive component projects a real, transparent DOM node (`<button>`, `<a>`, `<input>`…)
-positioned over the canvas. So a pure-canvas page is:
+[Documentation](https://vectojs.xuepoo.xyz/learn/introduction/) ·
+[Live demos](https://vectojs.xuepoo.xyz/demos/) ·
+[Component reference](https://vectojs.xuepoo.xyz/reference/ui-components/) ·
+[Issues](https://github.com/vectojs/vectojs/issues)
 
-- **Accessible** — operable by assistive tech, by role and label.
-- **Agent-drivable** — Playwright / AI agents can `getByRole(...).click()/.fill()` it natively.
-- **Real-input capable** — the canvas `Input` mirrors a real `<input>`, so **CJK IME
-  composition**, selection, clipboard and undo all work, drawn on canvas.
+## Why VectoJS
+
+- **Canvas-native visuals** — Canvas 2D is the default renderer; WebGL point batching and WebGPU
+  compute paths cover high-volume workloads.
+- **Semantic projection** — buttons, links, inputs, checkboxes, sliders, and other controls expose
+  role/name/state through transparent DOM counterparts.
+- **Real browser input** — `Input` and `TextArea` mirror native controls, preserving IME composition,
+  selection, clipboard, undo, and automation APIs.
+- **Mathematical interaction** — transforms, bounds, spatial hashing, event capture/bubble, clipping,
+  and hit-testing live in one coordinate model.
+- **Deterministic rendering tools** — on-demand redraw, fixed-step `Scene.step()`, and the video
+  exporter support tests, simulations, and offline capture.
+- **Framework-neutral** — mount a canvas from React, Vue, Svelte, vanilla TypeScript, or a Three.js
+  scene; VectoJS does not own your application state.
 
 ## Packages
 
-| Package          | Status | Description                                                                                                                                                                                                                       |
-| ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@vectojs/core`  | Active | Entity scene graph, LayoutEngine (cold/hot + paragraph memo), MSDF GPU text, off-thread Web Worker layout, SpatialHashGrid, accessibility projection, Canvas2D + WebGL2 + WebGPU compute-driven particle system                   |
-| `@vectojs/ui`    | Active | High-level components: Text, RichText (inline styles/links/exclusion flow/streaming), Markdown (streaming), Button, Link, Image, Card, Stack, Flow, Input, TextArea, Checkbox, Toggle, ScrollView, Table, Dropdown, Slider, Modal |
-| `@vectojs/three` | Active | WebGL/Three.js 3D/WebXR space adapter — projects Vecto 2D canvas to 3D mesh texture, translates raycast intersects to 2D event routing, and manages XR pointers & hover boundaries                                                |
-
-## Documentation
-
-Explore our comprehensive tutorials, guidebooks, and API references:
-👉 **[Official VectoJS Documentation Portal](https://vectojs.xuepoo.xyz/learn/introduction/)**
+| Package                                                | Purpose                                                                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| [`@vectojs/core`](./packages/core)                     | Scene/Entity runtime, layout and text engine, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support |
+| [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                            |
+| [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                  |
+| [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                         |
 
 ## Install
 
 ```bash
-bun add @vectojs/core            # core engine
-bun add @vectojs/ui @vectojs/core   # + high-level components
+bun add @vectojs/core
+bun add @vectojs/ui       # optional high-level components
 ```
+
+The packages are standard ESM/CJS npm packages and also work with npm, pnpm, and yarn.
 
 ## Quick start
 
-**Core — your own entity:**
-
-```typescript
-import { Scene, Entity, IRenderer } from '@vectojs/core';
-
-class CircleEntity extends Entity {
-  isPointInside(x: number, y: number) {
-    return Math.hypot(x - this.x, y - this.y) < 50;
+```html
+<div id="app"><canvas id="canvas"></canvas></div>
+<style>
+  #app {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
   }
-  render(r: IRenderer) {
-    r.beginPath();
-    r.arc(0, 0, 50, 0, Math.PI * 2);
-    r.fill('#38bdf8');
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
-}
-
-const scene = new Scene(document.querySelector('canvas')!);
-scene.add(new CircleEntity().setPosition(100, 100));
-scene.start();
+</style>
 ```
 
-**UI — accessible, agent-drivable components:**
-
-```typescript
+```ts
 import { Scene } from '@vectojs/core';
-import { Stack, Text, Input, Checkbox, Button } from '@vectojs/ui';
+import { Button, Input, Stack, Text, Toggle } from '@vectojs/ui';
 
-const scene = new Scene(document.querySelector('canvas')!);
-const form = new Stack({ gap: 12 }).setPosition(40, 40);
-form.add(new Text('Sign up', { font: '600 24px sans-serif' }));
-form.add(new Input({ width: 280, placeholder: 'you@example.com' })); // real <input>, IME-ready
-form.add(new Checkbox({ label: 'I accept the terms' }));
-form.add(new Button('Create account', { onClick: () => console.log('submit') }));
-scene.add(form);
+const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
+const scene = new Scene(canvas, { maxFPS: 60 });
+scene.renderMode = 'onDemand';
+
+const panel = new Stack({ direction: 'vertical', gap: 14 });
+panel.setPosition(40, 40);
+panel.add(new Text('Runtime settings', { font: '700 24px Inter' }));
+panel.add(new Input({ width: 280, placeholder: 'Project name' }));
+panel.add(new Toggle({ checked: true, label: 'GPU acceleration' }));
+panel.add(
+  new Button('Save', {
+    onClick: () => console.log('saved'),
+  }),
+);
+
+scene.add(panel);
 scene.start();
-// A screen reader — or Playwright: page.getByRole('textbox').fill('a@b.com') — drives it.
+
+window.addEventListener('resize', () => {
+  scene.resize(window.innerWidth, window.innerHeight);
+});
+
+// Release renderers, workers, observers, and projected DOM when unmounting.
+// scene.destroy();
 ```
 
-## Demos
+The visual controls are canvas-rendered. Their semantic counterparts remain discoverable:
 
-Demos live in their own open-source repo so this one stays the lean engine — clone it to run
-them locally, or browse the deployed gallery:
+```ts
+await page.getByRole('textbox', { name: 'Project name' }).fill('Nexus');
+await page.getByRole('button', { name: 'Save' }).click();
+```
 
-- **Repo & live gallery**: [vectojs-website](https://github.com/vectojs/vectojs-website) → https://vectojs.xuepoo.xyz
-- Planned showcases: magnetic type, infinite canvas / node editor, Bilibili-style danmaku,
-  knowledge-graph viewer, LLM streaming-output rendering, and 100k-point data visualization.
+## Architecture
 
-Each demo doubles as a real-world stress test for the engine.
+```mermaid
+flowchart LR
+  App[Application state] --> VMT[Virtual Math Tree]
+  VMT --> Layout[Math layout and text flow]
+  VMT --> Events[Hit testing and events]
+  VMT --> Render[Canvas / WebGL / WebGPU]
+  VMT --> A11y[Semantic DOM projection]
+  A11y --> AT[Screen readers and automation]
+  Render --> Pixels[Visible canvas]
+```
+
+The DOM projection is deliberately not the visual renderer. It carries semantics and native input;
+the canvas remains the source of visible pixels.
 
 ## Where it fits
 
-**Plays to its strengths:** infinite canvases / node editors, 100k-point dataviz, data grids,
-log/trace viewers, orderbook terminals, whiteboards, timelines — anywhere element count explodes
-or you need per-glyph / per-curve interaction; and any page that must be **agent- and AT-drivable
-while keeping its visual layer canvas-rendered**.
+Good candidates:
 
-**Not the right tool for:** document-style, text-heavy, selectable/SEO content (the DOM wins);
-deepest text correctness (bidi/complex shaping — pretext/HarfBuzz go further); tiny static UIs
-where the DOM's zero setup wins.
+- infinite canvases, graphs, timelines, whiteboards, node editors;
+- dense dashboards, traces, order books, virtualized data, streaming output;
+- particle fields, simulations, educational/diagramming tools;
+- 2D panels embedded in Three.js/WebXR;
+- interfaces that need both canvas scale and role-based accessibility/automation.
 
-## Testing & quality
+Prefer ordinary HTML/CSS for document-first pages, SEO-heavy prose, native text selection, small
+static forms, or applications that do not benefit from a retained scene graph.
 
-VectoJS is validated across multiple dimensions. The checked-in tests and benchmark commands below
-make their workloads reproducible; benchmark results remain machine- and workload-dependent.
+## Render and interaction model
 
-| Dimension            | How                                                    | Where                                    |
-| -------------------- | ------------------------------------------------------ | ---------------------------------------- |
-| Unit / integration   | Vitest (jsdom), core + ui                              | `packages/*/test`                        |
-| a11y / automation    | role/name/state contract; driven via shadow nodes      | `packages/ui/test/a11y-contract.test.ts` |
-| Stress / leak        | 50k–100k entities, churn, teardown                     | `packages/core/test/stress.test.ts`      |
-| Render benchmark     | headless Chrome, real frame-time at 1k/10k/100k        | `bun run benchmark`                      |
-| vs DOM (CDP)         | layout-count / style-recalc / heap while animating     | `bun run compare:dom`                    |
-| Text-layout accuracy | line-break + glyph positions vs ground truth / pretext | `bun run compare`                        |
+1. Add `Entity` instances to a `Scene`.
+2. Layout resolves local boxes and transforms.
+3. Dirty scenes render through the selected backend.
+4. Pointer input is mapped into scene coordinates, spatially queried, then dispatched through
+   capture and bubble phases.
+5. Interactive entities synchronize role/name/state and native input through the semantic layer.
+
+Read the [core guide](https://vectojs.xuepoo.xyz/learn/core-scene/) for lifecycle and rendering, and
+the [accessibility guide](https://vectojs.xuepoo.xyz/learn/accessibility/) before shipping controls.
+
+## Demos
+
+The separate [vectojs-website](https://github.com/vectojs/vectojs-website) repository hosts live,
+source-available stress tests:
+
+- large danmaku streams and WebGPU particle fields;
+- streaming Markdown/chat rendering;
+- a knowledge graph and Canvas-vs-DOM comparison;
+- a VectoJS panel embedded in a Three.js scene;
+- game-style pointer and keyboard interaction.
+
+Performance depends on renderer, entity shape, text, hardware, and workload. Use the checked-in
+benchmarks instead of treating demo counts as universal guarantees.
+
+## Development and verification
 
 ```bash
 bun install
-bun run test                      # core + ui suites
-bun run lint                      # oxlint
-bun run benchmark                 # real frame-time numbers (headless Chrome)
-bun run compare:dom               # CDP layout/heap vs DOM
+bun run build
+bun run test
+oxlint --deny-warnings .
+prettier --check "**/*.{js,ts,json,md,html,yaml}"
+knip
 ```
+
+Additional reproducible workloads:
+
+```bash
+bun run benchmark     # real browser frame-time workloads
+bun run compare:dom   # CDP layout/style/heap comparison
+bun run compare       # text-layout comparison
+```
+
+The project is pre-1.0. Read package changelogs before upgrading and pin versions in production.
 
 ## License
 
-MIT © 2026 Xuepoo
+[MIT](./LICENSE) © 2026 Xuepoo

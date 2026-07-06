@@ -1,47 +1,113 @@
 # @vectojs/ui
 
-High-level canvas UI components for [VectoJS](https://github.com/vectojs/vectojs) — rendered
-to a `<canvas>` while projecting a real accessibility/automation shadow node, so the canvas
-stays accessible and drivable by screen readers and AI agents (`getByRole(...).click()/.fill()`).
+> Canvas-native components with a real semantic/input projection for accessibility and automation.
+
+[![npm](https://img.shields.io/npm/v/@vectojs/ui?color=22d3ee)](https://www.npmjs.com/package/@vectojs/ui)
+[![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](https://github.com/vectojs/vectojs/blob/main/LICENSE)
+
+`@vectojs/ui` supplies layout, form, content, data, navigation, and overlay components for
+`@vectojs/core`. The visible UI is painted on canvas. Interactive components project transparent
+native/ARIA counterparts so screen readers, keyboard users, Playwright, and AI agents can operate
+them by role and accessible name.
+
+[Live component gallery](https://vectojs.xuepoo.xyz/reference/ui-components/#live-component-gallery) ·
+[Component reference](https://vectojs.xuepoo.xyz/reference/ui-components/) ·
+[Getting started](https://vectojs.xuepoo.xyz/learn/getting-started/)
+
+## Install
 
 ```bash
-bun add @vectojs/ui @vectojs/core
+bun add @vectojs/core @vectojs/ui
 ```
 
-```typescript
-import { Scene } from '@vectojs/core';
-import { Stack, Text, Input, Checkbox, Button } from '@vectojs/ui';
+`@vectojs/core` is a peer dependency and should be installed explicitly.
 
-const scene = new Scene(document.querySelector('canvas')!);
-const form = new Stack({ gap: 12 }).setPosition(20, 20);
-form.add(new Text('Sign up', { font: '600 24px sans-serif' }));
-form.add(new Input({ width: 280, placeholder: 'you@example.com' })); // real <input>, CJK IME-ready
-form.add(new Checkbox({ label: 'I accept the terms' }));
-form.add(new Button('Create account', { onClick: () => console.log('submit') }));
-scene.add(form);
+## Example
+
+```ts
+import { Scene } from '@vectojs/core';
+import { Button, Card, Input, Slider, Stack, Text, Toggle } from '@vectojs/ui';
+
+const scene = new Scene(document.querySelector<HTMLCanvasElement>('canvas')!);
+scene.renderMode = 'onDemand';
+
+const state = { name: '', quality: 72, enabled: true };
+const form = new Stack({ direction: 'vertical', gap: 14 });
+form.setPosition(24, 24);
+form.add(new Text('Export settings', { font: '700 22px Inter' }));
+form.add(
+  new Input({
+    width: 300,
+    placeholder: 'Project name',
+    onChange: (name) => (state.name = name),
+  }),
+);
+form.add(new Toggle({ checked: state.enabled, label: 'Enabled' }));
+form.add(new Slider({ min: 0, max: 100, value: state.quality, width: 300 }));
+form.add(new Button('Export', { onClick: () => console.log(state) }));
+
+const card = new Card({ width: 360, height: 310, padding: 24, label: 'Export settings' });
+card.add(form);
+scene.add(card.setPosition(40, 40));
 scene.start();
 ```
 
-## Components
+Automation uses the projected controls, not pixel coordinates:
 
-| Component  | Renders                                                       | Shadow node                               |
-| ---------- | ------------------------------------------------------------- | ----------------------------------------- |
-| `Text`     | wrapped text (via the shared LayoutEngine)                    | `div` with `aria-label`                   |
-| `Button`   | rounded rect + label, hover state                             | `<button role="button" aria-label>`       |
-| `Link`     | underlined colored text                                       | `<a href>`                                |
-| `Image`    | image (placeholder until loaded)                              | `<img alt>`                               |
-| `Card`     | rounded panel + optional border                               | `div` (optional `role="group"`)           |
-| `Stack`    | vertical/horizontal auto-layout                               | container                                 |
-| `Input`    | text field with **caret, selection, IME composing underline** | `<input>` (value flows back via `change`) |
-| `Checkbox` | box + check + label                                           | `<input type="checkbox">`                 |
-| `Toggle`   | switch track + knob + label                                   | `role="switch"` with `aria-checked`       |
+```ts
+await page.getByRole('textbox', { name: 'Project name' }).fill('Launch');
+await page.getByRole('switch', { name: 'Enabled' }).click();
+await page.getByRole('button', { name: 'Export' }).click();
+```
 
-`Input` is backed by a real, transparent `<input>`, so the browser handles native **CJK IME
-composition**, selection, clipboard and undo; the canvas mirrors it (blinking caret, selection
-highlight, composing underline, scroll-to-caret).
+## Component catalog
 
-Also exported: `measureText`, `wrapLines`, `fontSizePx` text helpers, and the `UIComponent` base.
+| Category         | Components                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| Typography       | `Text`, `RichText`, `Link`, `measureText`, `wrapLines`, `wrapText`                      |
+| Layout           | `Card`, `Stack`, `Flow`, `ScrollView`                                                   |
+| Forms            | `Button`, `Input`, `TextArea`, `Checkbox`, `Toggle`, `Slider`, `Dropdown`, `RadioGroup` |
+| Content          | `Image`, `Markdown`, `CodeBlock`, `Table`                                               |
+| Navigation/data  | `Tabs`, `TreeView`, `VirtualList`, `ProgressBar`                                        |
+| Resizable layout | `PanelGroup`, `Panel`, `PanelResizeHandle`                                              |
+| Transient UI     | `Overlay`, `Tooltip`, `Popover`, `ContextMenu`, `Modal`                                 |
+
+The [live gallery](https://vectojs.xuepoo.xyz/reference/ui-components/#live-component-gallery)
+renders every public visual component with the published package.
+
+## Native input and semantic projection
+
+`Input` and `TextArea` are backed by transparent native controls. The browser remains responsible
+for IME composition, selection, clipboard, undo, and text editing; VectoJS mirrors value, selection,
+composition range, caret, and scrolling onto canvas.
+
+Other controls expose role/name/state through `getA11yAttributes()`. This makes them discoverable,
+but applications must still provide meaningful labels and validate focus order, keyboard behavior,
+contrast, error messaging, and reduced-motion behavior.
+
+## Layout and streaming guidance
+
+- `Stack` and `Flow` position children; call `layout()` after changing child dimensions directly.
+- `ScrollView`, `VirtualList`, and `TreeView` own clipped scrolling behavior. Do not place them inside
+  a page region that also captures the same wheel gesture without a clear boundary.
+- Use `Text.setMaxWidth()` for hot reflow instead of rebuilding text.
+- Use `RichText.appendSpans()` and `Markdown.appendMarkdown()` for streams. Repeatedly calling
+  `setContent(fullDocument)` rebuilds the rendered tree.
+- Overlays mount through the Scene overlay root so they escape normal clipping. Destroy or hide
+  transient UI when its target leaves the tree.
+
+## Rendering and lifecycle
+
+Components are `Entity` instances. They inherit transforms, opacity, event capture/bubble,
+animation, world/local coordinate conversion, and Scene ownership. Remove components from their
+parent when finished and call `scene.destroy()` when the canvas runtime unmounts.
+
+## Compatibility
+
+The package is pre-1.0 and its peer range currently accepts `@vectojs/core >=0.1.0`. Pin matching
+tested releases in production and read the changelog before upgrading.
 
 ## License
 
-MIT © 2026 Xuepoo
+[MIT](https://github.com/vectojs/vectojs/blob/main/LICENSE) © 2026 Xuepoo
