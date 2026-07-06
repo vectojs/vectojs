@@ -513,6 +513,7 @@ function renderInlineToRichText(
   color: string,
   maxWidth: number,
   theme: Required<MarkdownTheme>,
+  onLinkClick?: (url: string) => void,
 ): RichText {
   const spans: StyledSpan[] = [];
   if (tokens && tokens.length > 0) {
@@ -522,7 +523,7 @@ function renderInlineToRichText(
   if (spans.length === 0) {
     spans.push({ text: decodeEntities(fallbackText) });
   }
-  return new RichText(spans, { font, color, maxWidth, linkColor: '#38bdf8' });
+  return new RichText(spans, { font, color, maxWidth, linkColor: '#38bdf8', onLinkClick });
 }
 
 // ── Main Markdown component ─────────────────────────────────────────────────
@@ -530,6 +531,7 @@ function renderInlineToRichText(
 export interface MarkdownOptions {
   maxWidth?: number;
   theme?: MarkdownTheme;
+  onLinkClick?: (url: string) => void;
 }
 
 /**
@@ -552,6 +554,7 @@ export class Markdown extends UIComponent {
   public content: Stack;
   public maxWidth: number;
   public theme: Required<MarkdownTheme>;
+  public onLinkClick?: (url: string) => void;
   private rawMarkdown: string;
   private tokens: Token[];
 
@@ -559,6 +562,7 @@ export class Markdown extends UIComponent {
     super();
     this.maxWidth = opts.maxWidth ?? 800;
     this.theme = { ...DEFAULT_THEME, ...opts.theme };
+    this.onLinkClick = opts.onLinkClick;
 
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
@@ -673,7 +677,7 @@ export class Markdown extends UIComponent {
     return this;
   }
 
-  private renderToken(token: Token): Entity | null {
+  protected renderToken(token: Token): Entity | null {
     const t = this.theme;
     const bodyFont = `${t.fontSize}px ${t.bodyFont}`;
 
@@ -691,6 +695,7 @@ export class Markdown extends UIComponent {
           t.headingColor,
           this.maxWidth,
           t,
+          this.onLinkClick,
         );
       }
 
@@ -704,6 +709,7 @@ export class Markdown extends UIComponent {
           t.textColor,
           this.maxWidth,
           t,
+          this.onLinkClick,
         );
       }
 
@@ -774,6 +780,7 @@ export class Markdown extends UIComponent {
             color: t.textColor,
             maxWidth: this.maxWidth - 24,
             linkColor: '#38bdf8',
+            onLinkClick: this.onLinkClick,
           });
           itemRt.x = 12; // Indent
           listStack.add(itemRt);
