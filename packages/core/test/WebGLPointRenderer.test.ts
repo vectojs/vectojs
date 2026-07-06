@@ -251,6 +251,44 @@ describe('createWebGLPointRenderer', () => {
     expect(captures.textureBinds.length).toBeGreaterThan(0);
   });
 
+  it('skips re-uploading an identical texture source (per-frame re-set must be free)', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlasA = {} as TexImageSource;
+    r.setMSDFTexture(atlasA, 4);
+    r.setMSDFTexture(atlasA, 4); // MSDFTextEntity re-sets its atlas every render
+    r.setMSDFTexture(atlasA, 4);
+    expect(captures.texUploads).toBe(1);
+
+    const atlasB = {} as TexImageSource;
+    r.setMSDFTexture(atlasB, 2); // a different source must re-upload
+    expect(captures.texUploads).toBe(2);
+
+    const spriteAtlas = {} as TexImageSource;
+    r.setTexture(spriteAtlas);
+    r.setTexture(spriteAtlas);
+    expect(captures.texUploads).toBe(3); // sprite path caches too
+  });
+
+  it('draws pending glyphs before switching to a different MSDF atlas', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlasA = {} as TexImageSource;
+    const atlasB = {} as TexImageSource;
+
+    r.begin();
+    r.setMSDFTexture(atlasA, 4);
+    r.addGlyph(0, 0, 10, 10, 0, 0, 1, 1);
+    // Second font: glyphs already batched against atlas A must be committed
+    // now, or they'd be drawn with atlas B's texture (wrong glyphs).
+    r.setMSDFTexture(atlasB, 4);
+    r.addGlyph(20, 0, 10, 10, 0, 0, 1, 1);
+    r.flush();
+
+    const glyphDraws = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES && d.count === 6);
+    expect(glyphDraws).toHaveLength(2); // one draw per atlas
+  });
+
   it('addGlyph expands to a textured triangle batch and feeds the distance range', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;

@@ -188,6 +188,53 @@ describe('ThreeRenderer', () => {
     expect(mat.uniforms.u_grad_stops).toBeDefined();
   });
 
+  it('flush() only marks the frame dirty; present() does the single GL render', () => {
+    renderer.clear();
+    for (let i = 0; i < 3; i++) {
+      renderer.fillCircle(i * 10, 0, 5, '#ffffff');
+      renderer.flush(); // Scene flushes around every non-batched node
+    }
+    expect(vi.mocked(renderer.renderer.render)).not.toHaveBeenCalled();
+    renderer.present();
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('flush() without present() still paints once via the microtask fallback', async () => {
+    renderer.clear();
+    renderer.fillCircle(0, 0, 5, '#ffffff');
+    renderer.flush();
+    renderer.flush();
+    renderer.flush();
+    await Promise.resolve(); // drain microtasks (older-core compatibility path)
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('present() after an explicit present does not double-render via the fallback', async () => {
+    renderer.clear();
+    renderer.fillCircle(0, 0, 5, '#ffffff');
+    renderer.flush();
+    renderer.present(); // Scene's end-of-frame call
+    await Promise.resolve();
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('stroke() draws one Line per sub-path (no connectors across moveTo gaps)', () => {
+    renderer.clear();
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(10, 0);
+    renderer.moveTo(50, 50); // second sub-path
+    renderer.lineTo(60, 50);
+    renderer.stroke('#ffffff', 1);
+    const lines = renderer.scene.children.filter((o) => (o as THREE.Line).isLine);
+    expect(lines).toHaveLength(2);
+    // Each line has its own 2 points — nothing spans the (10,0)→(50,50) gap.
+    for (const line of lines) {
+      const pos = (line as THREE.Line).geometry.getAttribute('position');
+      expect(pos.count).toBe(2);
+    }
+  });
+
   it('disposes active objects and renderer exactly once', () => {
     const geometry = new THREE.PlaneGeometry(10, 10);
     const firstMap = new THREE.Texture();

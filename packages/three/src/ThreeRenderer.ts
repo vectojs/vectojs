@@ -554,23 +554,26 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    const points = this.currentPath.getPoints();
-    if (points.length === 0) return;
-
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const parsed = parseThreeColor(color);
     const opacity = this.globalAlpha * parsed.alpha;
-    const material = new THREE.LineBasicMaterial({
-      color: parsed.color,
-      transparent: opacity < 1,
-      opacity,
-      linewidth: lineWidth,
-    });
-    const line = new THREE.Line(geometry, material);
-    line.applyMatrix4(this.matrix);
+    // One Line per sub-path: concatenating all shapes into a single Line
+    // would draw spurious connector segments across every moveTo() gap.
+    for (const shape of this.currentPath.toShapes()) {
+      const points = shape.getPoints();
+      if (points.length < 2) continue;
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({
+        color: parsed.color,
+        transparent: opacity < 1,
+        opacity,
+        linewidth: lineWidth,
+      });
+      const line = new THREE.Line(geometry, material);
+      line.applyMatrix4(this.matrix);
 
-    this.scene.add(line);
-    this.activeObjects.push(line);
+      this.scene.add(line);
+      this.activeObjects.push(line);
+    }
   }
 
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
@@ -638,7 +641,32 @@ export class ThreeRenderer implements IRenderer {
     this.activeObjects.push(mesh);
   }
 
+  private frameDirty = false;
+  private presentScheduled = false;
+
+  /**
+   * The Scene calls flush() around every non-batched node (it commits the
+   * Canvas2D circle batch there). Rendering the whole Three scene on each of
+   * those calls made a frame cost O(N²) in entity count, so flush() only marks
+   * the frame dirty; the actual GL render happens once, in {@link present}.
+   *
+   * A microtask fallback keeps older `@vectojs/core` Scenes (that never call
+   * `present()`) painting: the many same-tick flushes coalesce into one render.
+   */
   flush(): void {
+    this.frameDirty = true;
+    if (this.presentScheduled) return;
+    this.presentScheduled = true;
+    queueMicrotask(() => {
+      this.presentScheduled = false;
+      if (this.frameDirty && !this.disposed) this.present();
+    });
+  }
+
+  /** Render the accumulated frame once. Called by Scene at the end of each render pass. */
+  present(): void {
+    if (this.disposed) return;
+    this.frameDirty = false;
     this.renderer.render(this.scene, this.camera);
   }
 

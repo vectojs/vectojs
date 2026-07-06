@@ -53,6 +53,9 @@ function fromCanvas(css: string): RGBA | null {
   if (typeof document === 'undefined') return null;
   if (!fallbackCtx) fallbackCtx = document.createElement('canvas').getContext('2d');
   if (!fallbackCtx) return null;
+  // The 1x1 canvas is shared across parses; a semi-transparent fill would
+  // source-over-composite with the previous parse's pixel, so clear it first.
+  fallbackCtx.clearRect(0, 0, 1, 1);
   fallbackCtx.fillStyle = css;
   fallbackCtx.fillRect(0, 0, 1, 1);
   const d = fallbackCtx.getImageData(0, 0, 1, 1).data;

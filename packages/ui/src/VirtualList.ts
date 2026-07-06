@@ -202,7 +202,23 @@ export class VirtualList<T = unknown> extends UIComponent {
       this.scene?.markDirty();
     } else {
       this._scrollY = this._targetY;
+      this._velY = 0;
     }
+  }
+
+  /**
+   * The scroll integrator lives in update(), not a property driver, so without
+   * this override it is invisible to the Scene's idle checks: markDirty() from
+   * inside update() is wiped by the loop's own end-of-tick `dirty = false`, and
+   * the animation then advances at the 2 FPS idle throttle (or stalls entirely
+   * in onDemand mode). Same class of bug as the ScrollView 0.2.x fix.
+   */
+  public override hasPendingAnimations(): boolean {
+    return (
+      super.hasPendingAnimations() ||
+      Math.abs(this._targetY - this._scrollY) > 0.05 ||
+      Math.abs(this._velY) > 0.05
+    );
   }
 
   public getA11yAttributes(): A11yAttributes {

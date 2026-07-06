@@ -59,9 +59,9 @@ export interface SceneOptions {
   debugA11y?: boolean;
   /**
    * Cap the render loop to at most this many frames per second (power saving —
-   * e.g. a quieter fan in a library). `0` (default) means uncapped (native
-   * refresh rate). Continuous animations still run, just less often. Also
-   * settable later via {@link Scene.maxFPS}.
+   * e.g. a quieter fan in a library). `0` means uncapped (native refresh
+   * rate). Defaults to `60` (`0` under test runners). Continuous animations
+   * still run, just less often. Also settable later via {@link Scene.maxFPS}.
    */
   maxFPS?: number;
   /**
@@ -224,6 +224,8 @@ export class Scene {
   private initializingWebGPU: boolean = false;
   private gpuCanvas: HTMLCanvasElement | null = null;
   private gpuContext: any = null;
+  /** True while the GPU canvas holds a presented particle frame (needs clearing when they leave). */
+  private gpuHasContent: boolean = false;
   private mouseX: number = -9999;
   private mouseY: number = -9999;
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
@@ -281,7 +283,12 @@ export class Scene {
     if (options.renderer) {
       this.renderer = options.renderer;
     } else {
-      this.renderer = new CanvasRenderer(canvas);
+      // Embedded scenes (disableWindowResize) keep the canvas's own size; the
+      // default fullscreen path lets CanvasRenderer size to the window.
+      this.renderer = new CanvasRenderer(
+        canvas,
+        this.disableWindowResize ? { width: this.width, height: this.height } : undefined,
+      );
     }
 
     // Setup Agent / Automation Semantic Layer (only where there's a DOM).
@@ -492,6 +499,12 @@ export class Scene {
     if (this.manager) {
       this.manager.destroy();
       this.manager = null;
+    }
+    // Release the GPUDevice itself — without this, repeated Scene
+    // create/destroy cycles (SPA routes, XR sessions) leak WebGPU devices.
+    if (this.device) {
+      this.device.destroy?.();
+      this.device = null;
     }
   }
 
@@ -1166,16 +1179,17 @@ export class Scene {
 
     let cap = this.effectiveMaxFPS();
 
-    // Auto-throttle when idle: if in continuous render mode (always) but the scene is static
-    // (no pending animations and not marked dirty), drop the render rate to 2 FPS
-    // to save battery and GPU cycles.
-    const isStatic =
-      this.autoThrottle &&
+    // Idle = nothing marked dirty and no animation in flight. This drives two
+    // independent behaviors: the onDemand frame skip (always active in that
+    // mode) and the `always`-mode 2 FPS auto-throttle (opt-out via
+    // `autoThrottle` — it must NOT gate the onDemand skip, or disabling the
+    // throttle would silently turn onDemand into per-frame rendering).
+    const isIdle =
       !this.dirty &&
       !this.hasAnyPendingAnimation(this.root) &&
       !this.hasAnyPendingAnimation(this.overlayRoot);
 
-    if (isStatic && this.renderMode === 'always' && this.maxFPS > 0) {
+    if (isIdle && this.autoThrottle && this.renderMode === 'always' && this.maxFPS > 0) {
       cap = Math.min(cap, 2);
     }
 
@@ -1191,7 +1205,7 @@ export class Scene {
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
-    if (this.renderMode === 'onDemand' && isStatic) {
+    if (this.renderMode === 'onDemand' && isIdle) {
       this.scheduleFrame();
       return;
     }
@@ -1367,6 +1381,7 @@ export class Scene {
           }
 
           this.device.queue.submit([commandEncoder.finish()]);
+          if (this.gpuContext) this.gpuHasContent = true;
         } catch (e) {
           console.error('WebGPU frame execution failed. Falling back.', e);
           this.deviceLost = true;
@@ -1379,6 +1394,11 @@ export class Scene {
           entity.updateCPU(dt / 1000, this.mouseX, this.mouseY, this.width, this.height);
         }
       }
+    } else if (isMainRenderer) {
+      // The GPU canvas presents its last frame until told otherwise: once the
+      // final ComputeParticleEntity leaves the tree, clear it or the particles
+      // stay frozen on screen.
+      this.clearGPUCanvasIfStale();
     }
 
     renderer.clear();
@@ -1554,6 +1574,8 @@ export class Scene {
     if (isMainRenderer) {
       this.pointRenderer?.flush();
     }
+    // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
+    renderer.present?.();
   }
 
   /**
@@ -1575,6 +1597,12 @@ export class Scene {
       (this.renderer as any).resize(width, height);
     }
     this.pointRenderer?.resize(width, height);
+    // Keep the WebGPU particle layer's backing store in step — otherwise it
+    // rasterizes at the creation-time resolution and gets CSS-stretched.
+    if (this.gpuCanvas) {
+      this.gpuCanvas.width = width;
+      this.gpuCanvas.height = height;
+    }
     this.markDirty();
   }
 
@@ -1602,6 +1630,29 @@ export class Scene {
 
     // 2. Search main scene tree
     return this.findHitRecursively(this.root, x, y);
+  }
+
+  /** Submit one transparent clear pass when particle content lingers on the GPU canvas. */
+  private clearGPUCanvasIfStale(): void {
+    if (!this.gpuHasContent || !this.device || !this.gpuContext || this.deviceLost) return;
+    try {
+      const encoder = this.device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: this.gpuContext.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.end();
+      this.device.queue.submit([encoder.finish()]);
+    } catch {
+      // Device may be mid-loss; the recovery machinery owns that state.
+    }
+    this.gpuHasContent = false;
   }
 
   private async initWebGPUContext(entities: ComputeParticleEntity[]): Promise<GPUDevice> {

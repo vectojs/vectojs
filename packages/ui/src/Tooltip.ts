@@ -46,7 +46,12 @@ export class Tooltip extends Overlay {
     this._delay = opts.delay ?? 320;
 
     opts.target.on('hover', () => {
-      this._timer = setTimeout(() => this.showAt(opts.target), this._delay);
+      // Re-hover before the delay elapsed: restart instead of stacking timers.
+      if (this._timer) clearTimeout(this._timer);
+      this._timer = setTimeout(() => {
+        this._timer = null;
+        this.showAt(opts.target);
+      }, this._delay);
     });
     opts.target.on('pointerleave', () => {
       if (this._timer) {
@@ -55,6 +60,14 @@ export class Tooltip extends Overlay {
       }
       this.hide();
     });
+  }
+
+  public override destroy(): void {
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+    super.destroy();
   }
 
   public render(r: IRenderer): void {

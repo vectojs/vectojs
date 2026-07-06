@@ -11,6 +11,15 @@ import {
 /** A numeric transform/visual property that participates in the animation system. */
 export type AnimatableProp = 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity';
 
+const ANIMATABLE_PROPS: ReadonlySet<string> = new Set([
+  'x',
+  'y',
+  'scaleX',
+  'scaleY',
+  'rotation',
+  'opacity',
+]);
+
 /**
  * A 2-D coordinate in canvas/world space.
  */
@@ -694,7 +703,15 @@ export abstract class Entity {
         const end = anim.target[key];
         if (typeof start === 'number' && typeof end === 'number') {
           const easeOut = progress * (2 - progress);
-          (this as any)[key] = start + (end - start) * easeOut;
+          const value = start + (end - start) * easeOut;
+          // Write transform props past the public setter: with a declarative
+          // transition configured, the setter would spawn/retarget a driver
+          // every frame and the two animation systems would fight.
+          if (ANIMATABLE_PROPS.has(key as AnimatableProp)) {
+            this._applyAnimated(key as AnimatableProp, value);
+          } else {
+            (this as any)[key] = value;
+          }
         }
       }
 

@@ -259,6 +259,7 @@ describe('integration: caching flow', () => {
         bakes++;
         return {
           translate: vi.fn(),
+          scale: vi.fn(),
           beginPath: vi.fn(),
           moveTo: vi.fn(),
           bezierCurveTo: vi.fn(),

@@ -246,7 +246,13 @@ function grow(data: Float32Array, needed: number): Float32Array {
  * @returns A point renderer, or `null` if WebGL2 isn't supported.
  */
 export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRenderer | null {
-  const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null;
+  // The shaders output straight (non-premultiplied) alpha and blend with
+  // SRC_ALPHA/ONE_MINUS_SRC_ALPHA. The default premultipliedAlpha:true canvas
+  // would make the compositor read that buffer as premultiplied — bright
+  // fringes on every anti-aliased edge — so opt out to match.
+  const gl = canvas.getContext('webgl2', {
+    premultipliedAlpha: false,
+  }) as WebGL2RenderingContext | null;
   if (!gl) return null;
 
   const pointProgram = link(gl, POINT_VERT, POINT_FRAG);
@@ -325,7 +331,9 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.bindVertexArray(null);
 
   let texture: WebGLTexture | null = null;
+  let textureSource: TexImageSource | null = null;
   let msdfTexture: WebGLTexture | null = null;
+  let msdfSource: TexImageSource | null = null;
   let distanceRange = 4;
 
   let pointData: Float32Array = new Float32Array(FLOATS_PER_POINT * 1024);
@@ -341,6 +349,26 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   let logicalH = 0;
   let dpr = 1;
   let destroyed = false;
+
+  // Commit the pending glyph batch with the CURRENTLY bound MSDF atlas. Called
+  // from flush(), and from setMSDFTexture() before an atlas switch so glyphs
+  // batched against the previous font aren't drawn with the new one.
+  const drawGlyphs = () => {
+    if (glyphCount === 0 || !msdfTexture) return;
+    const floats = glyphCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+    gl.useProgram(msdfProgram);
+    gl.bindVertexArray(glyphVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, glyphData.subarray(0, floats), gl.DYNAMIC_DRAW);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
+    gl.uniform1i(gUTex, 0);
+    gl.uniform2f(gURes, logicalW, logicalH);
+    gl.uniform1f(gURange, distanceRange);
+    gl.drawArrays(gl.TRIANGLES, 0, glyphCount * VERTS_PER_SPRITE);
+    gl.bindVertexArray(null);
+    glyphCount = 0;
+  };
 
   return {
     resize(width, height) {
@@ -359,9 +387,14 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       rectCount = 0;
       spriteCount = 0;
       glyphCount = 0;
+      // Clear at frame start (not in flush) so mid-frame batch commits — e.g.
+      // a glyph draw forced by an MSDF atlas switch — survive to the end.
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
     },
 
     setTexture(source) {
+      if (source === textureSource && texture) return; // atlas unchanged: free
       if (!texture) {
         texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -373,6 +406,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.bindTexture(gl.TEXTURE_2D, texture);
       }
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      textureSource = source;
     },
 
     addSprite(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
@@ -412,6 +446,13 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     setMSDFTexture(source, range) {
+      if (source === msdfSource && msdfTexture) {
+        distanceRange = range;
+        return; // same atlas re-set (entities do this every render): free
+      }
+      // Different atlas: glyphs already batched belong to the previous font —
+      // draw them with it before the upload replaces the texture contents.
+      drawGlyphs();
       distanceRange = range;
       if (!msdfTexture) {
         msdfTexture = gl.createTexture();
@@ -424,6 +465,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
       }
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      msdfSource = source;
     },
 
     addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
@@ -510,9 +552,6 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     flush() {
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-
       if (rectCount > 0) {
         const floats = rectCount * VERTS_PER_RECT * FLOATS_PER_RECT_VERT;
         gl.useProgram(rectProgram);
@@ -550,21 +589,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.drawArrays(gl.TRIANGLES, 0, spriteCount * VERTS_PER_SPRITE);
       }
 
-      if (glyphCount > 0 && msdfTexture) {
-        const floats = glyphCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
-        gl.useProgram(msdfProgram);
-        gl.bindVertexArray(glyphVAO);
-        gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, glyphData.subarray(0, floats), gl.DYNAMIC_DRAW);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
-        gl.uniform1i(gUTex, 0);
-        gl.uniform2f(gURes, logicalW, logicalH);
-        gl.uniform1f(gURange, distanceRange);
-        gl.drawArrays(gl.TRIANGLES, 0, glyphCount * VERTS_PER_SPRITE);
-      }
-
       gl.bindVertexArray(null);
+      drawGlyphs();
     },
 
     destroy() {

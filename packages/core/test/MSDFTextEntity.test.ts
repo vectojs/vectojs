@@ -2,6 +2,7 @@
 import { test, expect, vi, beforeAll, afterEach } from 'vitest';
 import { MSDFFont } from '../src/text/MSDFFont';
 import { MSDFTextEntity } from '../src/text/MSDFTextEntity';
+import { Entity } from '../src/tree/Entity';
 import { LayoutWorkerManager } from '../src/layout/LayoutWorkerManager';
 import fontJson from './fixtures/font.json';
 
@@ -101,6 +102,43 @@ test('MSDFTextEntity WebGL rendering under rotation', () => {
   const call1 = mockAddGlyph.mock.calls[0];
   // addGlyph signature: x, y, width, height, u0, v0, u1, v1, color, alpha, rotation
   expect(call1[10]).toBeCloseTo(Math.PI / 4);
+});
+
+test('MSDFTextEntity WebGL path multiplies ancestor opacity into glyph alpha', () => {
+  const font = new MSDFFont(fontJson);
+  const mockTexture = {} as TexImageSource;
+  const entity = new MSDFTextEntity('A', { font, texture: mockTexture, fontSize: 24 });
+  entity['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([65]),
+    xCoords: new Float32Array([0]),
+    yCoords: new Float32Array([18]),
+    packedStyles: new Uint32Array([0xffffff << 8]),
+  };
+  entity.opacity = 0.5;
+
+  // Real ancestor at opacity 0.5 → world opacity 0.25.
+  const parent = new (class extends Entity {
+    isPointInside() {
+      return false;
+    }
+    render() {}
+  })('opacity-parent');
+  parent.opacity = 0.5;
+  parent.add(entity);
+
+  const mockAddGlyph = vi.fn();
+  (parent as any)._scene = {
+    pointRenderer: { setMSDFTexture: vi.fn(), addGlyph: mockAddGlyph },
+    glCanvas: {},
+    markDirty: vi.fn(),
+  };
+
+  entity.render(null);
+  expect(mockAddGlyph).toHaveBeenCalledTimes(1);
+  // addGlyph signature: x, y, width, height, u0, v0, u1, v1, color, alpha, rotation
+  expect(mockAddGlyph.mock.calls[0][9]).toBeCloseTo(0.25);
 });
 
 test('MSDFTextEntity Canvas2D rendering fallback', () => {

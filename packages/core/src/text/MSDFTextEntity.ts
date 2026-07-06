@@ -98,6 +98,10 @@ export class MSDFTextEntity extends Entity {
       scene.pointRenderer.setMSDFTexture(this.texture, this.font.distanceRange);
 
       const worldRot = Math.atan2(world.b, world.a);
+      // The GL layer bypasses the 2D renderer's globalAlpha, so accumulate
+      // ancestor opacity here (the Canvas2D fallback gets it from the Scene).
+      let worldOpacity = this.opacity;
+      for (let p = this.parent; p; p = p.parent) worldOpacity *= p.opacity;
 
       const len = this.layoutResult.codePoints.length;
       for (let i = 0; i < len; i++) {
@@ -143,7 +147,7 @@ export class MSDFTextEntity extends Entity {
           ab.right / aw,
           v1,
           runColor,
-          this.opacity,
+          worldOpacity,
           worldRot,
         );
       }
