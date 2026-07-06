@@ -66,6 +66,10 @@ jobs:
             exit 1
           fi
 
+      - name: Install FFmpeg for video exporter integration test
+        if: steps.parse.outputs.package == 'video-exporter'
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+
       - name: Run package tests
         env:
           PKG: ${{ steps.parse.outputs.package }}
