@@ -94,6 +94,10 @@ contrast, error messaging, and reduced-motion behavior.
 - Use `Text.setMaxWidth()` for hot reflow instead of rebuilding text.
 - Use `RichText.appendSpans()` and `Markdown.appendMarkdown()` for streams. Repeatedly calling
   `setContent(fullDocument)` rebuilds the rendered tree.
+- Pass `MarkdownOptions.onLinkClick` when Markdown links should route through application code
+  instead of opening directly.
+- In `onDemand` scenes, built-in form controls and buttons mark their scene dirty on visual state
+  changes. Custom components should do the same from event handlers that affect rendering.
 - Overlays mount through the Scene overlay root so they escape normal clipping. Destroy or hide
   transient UI when its target leaves the tree.
 

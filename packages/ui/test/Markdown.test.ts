@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
+import type { Tokens } from 'marked';
 import { Markdown } from '../src/Markdown';
 import { RichText } from '../src/RichText';
+import { Text } from '../src/Text';
+
+function clickFirstLink(entity: RichText): void {
+  expect(entity.children.length).toBeGreaterThan(0);
+  entity.children[0].emit('click', {});
+}
 
 describe('Markdown', () => {
   it('creates child entities from heading tokens', () => {
@@ -150,6 +157,52 @@ Plain paragraph at the end.
     expect(linkSpan).toBeDefined();
     expect(linkSpan!.style!.href).toBe('https://google.com');
     expect(linkSpan!.text).toBe('Google');
+  });
+
+  it('forwards onLinkClick from paragraph links', () => {
+    const clicked: string[] = [];
+    const md = new Markdown('Visit [Docs](https://vectojs.xuepoo.xyz) now.', {
+      onLinkClick: (href) => clicked.push(href),
+    });
+
+    clickFirstLink(md.content.children[0] as RichText);
+    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+  });
+
+  it('forwards onLinkClick from heading links', () => {
+    const clicked: string[] = [];
+    const md = new Markdown('# [Docs](https://vectojs.xuepoo.xyz)', {
+      onLinkClick: (href) => clicked.push(href),
+    });
+
+    clickFirstLink(md.content.children[0] as RichText);
+    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+  });
+
+  it('forwards onLinkClick from list item links', () => {
+    const clicked: string[] = [];
+    const md = new Markdown('- [Docs](https://vectojs.xuepoo.xyz)', {
+      onLinkClick: (href) => clicked.push(href),
+    });
+    const list = md.content.children[0];
+
+    clickFirstLink(list.children[0] as RichText);
+    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+  });
+
+  it('allows subclasses to override renderToken for custom Markdown renderers', () => {
+    class CustomMarkdown extends Markdown {
+      protected override renderToken(token: Tokens.Generic) {
+        if (token.type === 'paragraph') {
+          return new Text('custom paragraph', { font: '16px sans-serif' });
+        }
+        return super.renderToken(token);
+      }
+    }
+
+    const md = new CustomMarkdown('Original text');
+    expect(md.content.children[0]).toBeInstanceOf(Text);
+    expect((md.content.children[0] as Text).text).toBe('custom paragraph');
   });
 
   // ── Streaming / Mutation tests ──────────────────────────────────────────

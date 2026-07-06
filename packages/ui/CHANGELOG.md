@@ -1,5 +1,15 @@
 # @vectojs/ui
 
+## 0.2.4
+
+### Patch Changes
+
+- Forward `MarkdownOptions.onLinkClick` through paragraph, heading, and list `RichText`
+  renderers, and make `Markdown.renderToken()` protected so custom Markdown renderers can
+  subclass safely without patching internals.
+- Mark interactive state changes dirty in `Button`, `Slider`, `Checkbox`, and `Toggle` so
+  `onDemand` scenes repaint immediately during hover, drag, checkbox, and switch updates.
+
 ## 0.2.3
 
 ### Patch Changes

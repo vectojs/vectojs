@@ -48,8 +48,11 @@ export class Slider extends UIComponent {
     const relativeX = Math.max(0, Math.min(this.width, localX));
     const fraction = relativeX / this.width;
     const rawValue = this.min + fraction * (this.max - this.min);
-    this.value = Math.round(rawValue);
+    const nextValue = Math.round(rawValue);
+    if (nextValue === this.value) return;
+    this.value = nextValue;
     this.emit('change', { value: this.value });
+    this.scene?.markDirty();
   }
 
   public getA11yAttributes(): A11yAttributes {

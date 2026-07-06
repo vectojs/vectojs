@@ -58,6 +58,7 @@ export class Checkbox extends UIComponent {
       if (e.checked === this.checked) return;
       this.checked = e.checked;
       opts.onChange?.(this.checked);
+      this.scene?.markDirty();
     });
   }
 

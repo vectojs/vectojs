@@ -56,8 +56,16 @@ export class Button extends UIComponent {
     this.width = opts.width ?? this.textWidth + this.padding * 2;
     this.height = opts.height ?? fontSizePx(this.font) + this.padding * 2;
 
-    this.on('hover', () => (this.hovered = true));
-    this.on('pointerleave', () => (this.hovered = false));
+    this.on('hover', () => {
+      if (this.hovered) return;
+      this.hovered = true;
+      this.scene?.markDirty();
+    });
+    this.on('pointerleave', () => {
+      if (!this.hovered) return;
+      this.hovered = false;
+      this.scene?.markDirty();
+    });
     if (opts.onClick) this.on('click', opts.onClick);
   }
 

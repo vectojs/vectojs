@@ -105,6 +105,7 @@ export class Toggle extends UIComponent {
       this.knobEntity.x = targetX;
 
       opts.onChange?.(this.checked);
+      this.scene?.markDirty();
     });
   }
 

@@ -43,7 +43,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "dependencies": {
         "marked": "^18.0.5",
       },
@@ -59,7 +59,7 @@
     },
     "packages/video-exporter": {
       "name": "@vectojs/video-exporter",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "bin": {
         "vecto-export": "dist/cli.js",
       },

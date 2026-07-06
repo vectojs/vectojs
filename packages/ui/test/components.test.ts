@@ -131,6 +131,18 @@ describe('Button', () => {
     const b = new Button('X', { font: '600 16px sans-serif', padding: 12 });
     expect(b.height).toBe(16 + 24);
   });
+
+  it('marks on-demand scenes dirty when hover state changes', () => {
+    const markDirty = vi.fn();
+    const b = new Button('Hover');
+    (b as unknown as { _scene: unknown })._scene = { markDirty };
+
+    b.emit('hover', {});
+    b.emit('hover', {});
+    b.emit('pointerleave', {});
+
+    expect(markDirty).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('Link', () => {
@@ -407,6 +419,17 @@ describe('Checkbox', () => {
     c.emit('change', { value: '', checked: true });
     expect(c.checked).toBe(true);
   });
+
+  it('marks on-demand scenes dirty when checked state changes', () => {
+    const markDirty = vi.fn();
+    const c = new Checkbox({});
+    (c as unknown as { _scene: unknown })._scene = { markDirty };
+
+    c.emit('change', { checked: true });
+    c.emit('change', { checked: true });
+
+    expect(markDirty).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Toggle', () => {
@@ -441,6 +464,19 @@ describe('Toggle', () => {
     const t = new Toggle({ onChange });
     t.emit('click', {});
     expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it('marks on-demand scenes dirty when switch state changes', () => {
+    const markDirty = vi.fn();
+    const t = new Toggle({});
+    (t as unknown as { _scene: unknown })._scene = { markDirty, prefersReducedMotion: false };
+
+    t.emit('change', { checked: true });
+    const callsAfterChange = markDirty.mock.calls.length;
+    t.emit('change', { checked: true });
+
+    expect(callsAfterChange).toBeGreaterThan(0);
+    expect(markDirty).toHaveBeenCalledTimes(callsAfterChange);
   });
 });
 
