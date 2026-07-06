@@ -85,6 +85,15 @@ export class ExportSession {
     });
   }
 
+  private async sizeCanvas(page: PageLike): Promise<void> {
+    await page.evaluate(({ width, height }: { width: number; height: number }) => {
+      const canvas = document.querySelector('canvas');
+      if (!canvas) throw new Error('No canvas found');
+      canvas.width = width;
+      canvas.height = height;
+    }, this.options);
+  }
+
   private async captureFrame(page: PageLike): Promise<Buffer> {
     const base64 = await page.evaluate(() => {
       const canvas = document.querySelector('canvas');
@@ -119,6 +128,7 @@ export class ExportSession {
 
       this.dependencies.log(`Loading URL: ${target.url}`);
       await page.goto(target.url, { waitUntil: 'networkidle0' });
+      await this.sizeCanvas(page);
       await this.validateAndStopScene(page);
       this.throwIfAborted();
 

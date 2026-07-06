@@ -40,8 +40,12 @@ function harness(): Harness {
     if (failure) throw failure;
     return value;
   };
-  const evaluate = vi.fn(async (operation: unknown, argument?: number) => {
+  const evaluate = vi.fn(async (operation: unknown, argument?: unknown) => {
     const source = String(operation);
+    if (source.includes('canvas.width = width')) {
+      events.push('canvas.size');
+      return undefined;
+    }
     if (source.includes('hasStop: typeof')) {
       events.push('scene.validate');
       return { hasStop: true, hasStep: true };
@@ -140,6 +144,7 @@ describe('ExportSession', () => {
     await new ExportSession(options(), fixture.dependencies).run();
 
     expect(fixture.evaluate).toHaveBeenCalled();
+    expect(fixture.events).toContain('canvas.size');
     expect(fixture.events.filter((event) => event === 'scene.step:40')).toHaveLength(2);
     expect(fixture.encoderWrite).toHaveBeenCalledTimes(2);
     expect(fixture.encoderWrite).toHaveBeenNthCalledWith(1, Buffer.from('png-frame'));
@@ -222,7 +227,12 @@ describe('ExportSession', () => {
 
   it('rejects an invalid Scene contract before starting FFmpeg', async () => {
     const fixture = harness();
-    fixture.evaluate.mockImplementationOnce(async () => ({ hasStop: false, hasStep: true }));
+    fixture.evaluate.mockImplementation(async (operation: unknown) => {
+      const source = String(operation);
+      if (source.includes('canvas.width = width')) return undefined;
+      if (source.includes('hasStop: typeof')) return { hasStop: false, hasStep: true };
+      throw new Error(`Unexpected page evaluation: ${source}`);
+    });
 
     await expect(new ExportSession(options(), fixture.dependencies).run()).rejects.toThrow(
       /vectoScene.*stop.*step/i,
@@ -232,8 +242,9 @@ describe('ExportSession', () => {
 
   it('reports a missing canvas', async () => {
     const fixture = harness();
-    fixture.evaluate.mockImplementation(async (operation: unknown, argument?: number) => {
+    fixture.evaluate.mockImplementation(async (operation: unknown, argument?: unknown) => {
       const source = String(operation);
+      if (source.includes('canvas.width = width')) throw new Error('No canvas found');
       if (source.includes('hasStop: typeof')) return { hasStop: true, hasStep: true };
       if (source.includes('scene.stop')) return undefined;
       if (source.includes('scene.step')) {

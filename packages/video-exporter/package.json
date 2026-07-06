@@ -12,9 +12,10 @@
     "vecto-export": "dist/cli.js"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "prepack": "bun run build && node scripts/verify-package.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:package": "bun run build && node scripts/verify-package.js && node scripts/smoke-package.js"
   },
   "dependencies": {
     "cli-progress": "^3.12.0",
