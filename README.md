@@ -112,16 +112,9 @@ await page.getByRole('button', { name: 'Save' }).click();
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  App[Application state] --> VMT[Virtual Math Tree]
-  VMT --> Layout[Math layout and text flow]
-  VMT --> Events[Hit testing and events]
-  VMT --> Render[Canvas / WebGL / WebGPU]
-  VMT --> A11y[Semantic DOM projection]
-  A11y --> AT[Screen readers and automation]
-  Render --> Pixels[Visible canvas]
-```
+<p align="center">
+  <img src="./docs/assets/readme-runtime-map.svg" alt="VectoJS architecture diagram showing application state flowing into the Virtual Math Tree, then into layout, hit testing, rendering, and semantic DOM projection." />
+</p>
 
 The DOM projection is deliberately not the visual renderer. It carries semantics and native input;
 the canvas remains the source of visible pixels.
