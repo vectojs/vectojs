@@ -57,7 +57,17 @@ class LinkHotspot extends UIComponent {
 
 /** Extract the family portion of a CSS font shorthand (drops a leading `<n>px`). */
 function familyOf(font: string): string {
-  return font.replace(/^.*?[\d.]+px\s*/i, '').trim() || 'sans-serif';
+  const pxIndex = font.indexOf('px');
+  if (pxIndex < 0) return font.trim() || 'sans-serif';
+
+  let rest = font.slice(pxIndex + 2).trimStart();
+  if (rest.startsWith('/')) {
+    let i = 1;
+    while (i < rest.length && rest[i] !== ' ' && rest[i] !== '\t') i++;
+    rest = rest.slice(i).trimStart();
+  }
+
+  return rest || 'sans-serif';
 }
 
 /**

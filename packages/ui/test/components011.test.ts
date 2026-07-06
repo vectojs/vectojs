@@ -186,6 +186,20 @@ describe('UI 0.1.1 Components', () => {
       expect(p1.width).toBeCloseTo(99);
       expect(p2.width).toBeCloseTo(297);
     });
+
+    it('keeps panel sizes inside the group after container resize', () => {
+      const group = new PanelGroup({ direction: 'horizontal', width: 540, height: 220 });
+      const p1 = new Panel({ minSize: 130, defaultSize: 0.36 });
+      const p2 = new Panel({ minSize: 180 });
+      group.addPanel(p1).addPanel(p2);
+
+      group.resize(360, 220);
+
+      expect(p1.width + p2.width).toBeCloseTo(356);
+      expect(p1.width).toBeGreaterThanOrEqual(130);
+      expect(p2.width).toBeGreaterThanOrEqual(180);
+      expect(p2.x + p2.width).toBeCloseTo(360);
+    });
   });
 
   describe('Tooltip, Popover & ContextMenu', () => {

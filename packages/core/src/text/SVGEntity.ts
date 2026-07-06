@@ -1,6 +1,44 @@
 import { Entity } from '../tree/Entity';
 import { IRenderer } from '../renderer/IRenderer';
 
+function isSvgWhitespace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+function readSvgAttribute(source: string, name: string): string | null {
+  const lowerSource = source.toLowerCase();
+  const svgStart = lowerSource.indexOf('<svg');
+  if (svgStart < 0) return null;
+
+  const tagEnd = source.indexOf('>', svgStart + 4);
+  if (tagEnd < 0) return null;
+
+  const tag = source.slice(svgStart + 4, tagEnd);
+  const lowerTag = tag.toLowerCase();
+  const lowerName = name.toLowerCase();
+
+  for (let i = 0; i < tag.length; i++) {
+    const before = i === 0 ? ' ' : tag[i - 1];
+    if (!isSvgWhitespace(before)) continue;
+    if (!lowerTag.startsWith(lowerName, i)) continue;
+
+    let cursor = i + lowerName.length;
+    while (cursor < tag.length && isSvgWhitespace(tag[cursor])) cursor++;
+    if (tag[cursor] !== '=') continue;
+    cursor++;
+    while (cursor < tag.length && isSvgWhitespace(tag[cursor])) cursor++;
+
+    const quote = tag[cursor];
+    if (quote !== '"' && quote !== "'") continue;
+    const valueStart = cursor + 1;
+    const valueEnd = tag.indexOf(quote, valueStart);
+    if (valueEnd < 0) return null;
+    return tag.slice(valueStart, valueEnd);
+  }
+
+  return null;
+}
+
 export class SVGEntity extends Entity {
   private svgSource: string = '';
   private imageBitmap: ImageBitmap | null = null;
@@ -60,18 +98,18 @@ export class SVGEntity extends Entity {
           }
         }
       } catch (e) {
-        console.error('Failed parsing SVG via DOMParser, falling back to regex:', e);
+        console.error('Failed parsing SVG via DOMParser, falling back to attribute scan:', e);
       }
     } else {
-      const wMatch = /<svg[^>]*\bwidth\s*=\s*["']([^"']+)["']/i.exec(this.svgSource);
-      const hMatch = /<svg[^>]*\bheight\s*=\s*["']([^"']+)["']/i.exec(this.svgSource);
-      const vbMatch = /<svg[^>]*\bviewBox\s*=\s*["']([^"']+)["']/i.exec(this.svgSource);
+      const wAttr = readSvgAttribute(this.svgSource, 'width');
+      const hAttr = readSvgAttribute(this.svgSource, 'height');
+      const vbAttr = readSvgAttribute(this.svgSource, 'viewBox');
 
-      if (wMatch && hMatch) {
-        width = parseFloat(wMatch[1]) || 100;
-        height = parseFloat(hMatch[1]) || 100;
-      } else if (vbMatch) {
-        const parts = vbMatch[1].split(/[\s,]+/).map(parseFloat);
+      if (wAttr && hAttr) {
+        width = parseFloat(wAttr) || 100;
+        height = parseFloat(hAttr) || 100;
+      } else if (vbAttr) {
+        const parts = vbAttr.split(/[\s,]+/).map(parseFloat);
         if (parts.length === 4) {
           width = parts[2];
           height = parts[3];

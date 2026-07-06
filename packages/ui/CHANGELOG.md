@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 0.2.5
+
+### Patch Changes
+
+- Fix form-control redraws in on-demand scenes, stabilize CodeBlock spacing, and keep resizable panel sizes bounded after resize.
+
 ## 0.2.4
 
 ### Patch Changes

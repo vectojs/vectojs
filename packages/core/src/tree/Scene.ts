@@ -714,6 +714,7 @@ export class Scene {
               selectionEnd: input.selectionEnd ?? input.value.length,
               composition,
             });
+            this.markDirty();
           };
           el.addEventListener('input', forward);
           el.addEventListener('change', forward);

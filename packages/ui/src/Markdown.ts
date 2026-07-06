@@ -360,20 +360,20 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
  */
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
-  private widths: number[][];
+  private cellWidth: number;
   private lang: string;
   private theme: Required<MarkdownTheme>;
-  private lineH = 20;
-  private pad = 16;
+  private lineH = 24;
+  private pad = 18;
   private codeFont: string;
 
   constructor(code: string, lang: string, maxWidth: number, theme: Required<MarkdownTheme>) {
     super();
     this.lang = lang;
     this.theme = theme;
-    this.codeFont = `14px ${theme.codeFont}`;
+    this.codeFont = `15px ${theme.codeFont}`;
+    this.cellWidth = Math.max(1, measureText('M', this.codeFont));
     this.lines = [];
-    this.widths = [];
     this.width = maxWidth;
     this.buildLines(code);
   }
@@ -388,7 +388,6 @@ export class CodeBlock extends UIComponent {
   private buildLines(code: string): void {
     const rawLines = code.split('\n');
     this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
-    this.widths = this.lines.map((segs) => segs.map((seg) => measureText(seg.text, this.codeFont)));
     this.height = this.pad * 2 + rawLines.length * this.lineH;
   }
 
@@ -406,12 +405,18 @@ export class CodeBlock extends UIComponent {
     // Text lines
     for (let row = 0; row < this.lines.length; row++) {
       const segs = this.lines[row];
-      const ws = this.widths[row];
-      let xOff = this.pad;
+      let colOffset = 0;
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       for (let col = 0; col < segs.length; col++) {
-        r.fillText(segs[col].text, xOff, yBaseline, this.codeFont, segs[col].color);
-        xOff += ws[col];
+        const segment = segs[col];
+        r.fillText(
+          segment.text,
+          this.pad + colOffset * this.cellWidth,
+          yBaseline,
+          this.codeFont,
+          segment.color,
+        );
+        colOffset += segment.text.length;
       }
     }
   }
@@ -422,11 +427,11 @@ export class CodeBlock extends UIComponent {
 /** Decode basic HTML entities that `marked` emits in token text. */
 function decodeEntities(text: string): string {
   return text
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 
 /**

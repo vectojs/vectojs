@@ -177,9 +177,20 @@ export class PanelGroup extends UIComponent {
 
   /** Update the group's canvas dimensions (e.g., on window resize). */
   public resize(w: number, h: number): void {
+    const oldAvail = this._avail();
     this.width = w;
     this.height = h;
-    this._initSizes();
+    const avail = this._avail();
+
+    if (this._sizes.length === this._panels.length && oldAvail > 0) {
+      const total = this._sizes.reduce((sum, size) => sum + size, 0);
+      const basis = total > 0 ? total : oldAvail;
+      this._sizes = this._sizes.map((size) => (size / basis) * avail);
+      this._normalizeSizes(avail);
+    } else {
+      this._initSizes();
+    }
+
     this._layout();
     this.scene?.markDirty();
   }
@@ -211,6 +222,33 @@ export class PanelGroup extends UIComponent {
     for (let i = 0; i < n; i++) {
       if (!assigned[i]) this._sizes[i] = Math.max(this._panels[i].minSize, share);
     }
+    this._normalizeSizes(avail);
+  }
+
+  private _normalizeSizes(avail: number): void {
+    const n = this._panels.length;
+    if (n === 0) return;
+
+    this._sizes = this._sizes.map((size, i) => Math.max(this._panels[i].minSize, size));
+
+    const minTotal = this._panels.reduce((sum, panel) => sum + panel.minSize, 0);
+    if (avail <= minTotal) return;
+
+    const total = this._sizes.reduce((sum, size) => sum + size, 0);
+    if (Math.abs(total - avail) < 0.01) return;
+
+    if (total > avail) {
+      const excess = total - avail;
+      const adjustable = this._sizes.map((size, i) => Math.max(0, size - this._panels[i].minSize));
+      const adjustableTotal = adjustable.reduce((sum, amount) => sum + amount, 0);
+      if (adjustableTotal <= 0) return;
+      this._sizes = this._sizes.map((size, i) => size - excess * (adjustable[i] / adjustableTotal));
+      return;
+    }
+
+    const extra = avail - total;
+    const basis = total > 0 ? total : n;
+    this._sizes = this._sizes.map((size) => size + extra * (size / basis));
   }
 
   private _onResize(idx: number, delta: number): void {
@@ -218,6 +256,7 @@ export class PanelGroup extends UIComponent {
     const b = idx + 1;
     this._sizes[a] = Math.max(this._panels[a].minSize, this._sizes[a] + delta);
     this._sizes[b] = Math.max(this._panels[b].minSize, this._sizes[b] - delta);
+    this._normalizeSizes(this._avail());
     this._layout();
     this.scene?.markDirty();
   }

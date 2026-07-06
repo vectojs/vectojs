@@ -12,6 +12,78 @@ export interface SVGLinearGradient {
   createMatrix: number[];
 }
 
+function parseFontSizeToken(
+  font: string,
+): { value: number; unit: 'px' | 'em' | 'rem'; start: number; end: number } | null {
+  for (let i = 0; i < font.length; i++) {
+    const ch = font[i];
+    if (!((ch >= '0' && ch <= '9') || ch === '.')) continue;
+
+    let j = i + 1;
+    while (j < font.length) {
+      const next = font[j];
+      if ((next >= '0' && next <= '9') || next === '.') {
+        j++;
+      } else {
+        break;
+      }
+    }
+
+    const unit = font.startsWith('rem', j)
+      ? 'rem'
+      : font.startsWith('em', j)
+        ? 'em'
+        : font.startsWith('px', j)
+          ? 'px'
+          : null;
+    if (!unit) {
+      i = j;
+      continue;
+    }
+
+    let end = j + unit.length;
+    if (font[end] === '/') {
+      end++;
+      while (end < font.length && font[end] !== ' ' && font[end] !== '\t') end++;
+    }
+
+    const value = Number.parseFloat(font.slice(i, j));
+    return Number.isFinite(value) ? { value, unit, start: i, end } : null;
+  }
+
+  return null;
+}
+
+function fontFamilyFromShorthand(font: string, sizeToken: { start: number; end: number } | null) {
+  const withoutSize = sizeToken
+    ? `${font.slice(0, sizeToken.start)} ${font.slice(sizeToken.end)}`.trim()
+    : font.trim();
+  const family = withoutSize
+    .split(' ')
+    .map((part) => part.trim())
+    .filter(
+      (part) =>
+        part &&
+        ![
+          'bold',
+          'italic',
+          'oblique',
+          'normal',
+          '900',
+          '800',
+          '700',
+          '600',
+          '500',
+          '400',
+          '300',
+          '200',
+          '100',
+        ].includes(part.toLowerCase()),
+    )
+    .join(' ');
+  return family || 'sans-serif';
+}
+
 export class SVGRenderer implements IRenderer {
   private width: number;
   private height: number;
@@ -289,22 +361,24 @@ export class SVGRenderer implements IRenderer {
     color: string | SVGLinearGradient,
   ): void {
     this.flush();
-    const sizeMatch = font.match(/(\d+(?:\.\d+)?)(px|em|rem)/);
-    let fontSize = sizeMatch ? parseFloat(sizeMatch[1]) : 16;
-    if (sizeMatch && sizeMatch[2] !== 'px') {
+    const sizeToken = parseFontSizeToken(font);
+    let fontSize = sizeToken ? sizeToken.value : 16;
+    if (sizeToken && sizeToken.unit !== 'px') {
       fontSize = fontSize * 16;
     }
 
-    const styleMatch = font.match(/(italic|oblique)/i);
-    const fontWeightMatch = font.match(/(bold|[1-9]00)/i);
-    const fontStyle = styleMatch ? styleMatch[1].toLowerCase() : 'normal';
-    const fontWeight = fontWeightMatch ? fontWeightMatch[1].toLowerCase() : 'normal';
-
-    const cleanFont = font
-      .replace(/\d+(?:\.\d+)?(px|em|rem)(?:\/\d+(?:\.\d+)?(?:px|em|rem|%)?)?/, '')
-      .trim();
-    const fontFamily =
-      cleanFont.replace(/(bold|italic|normal|600|500|400|300|100)\s+/gi, '').trim() || 'sans-serif';
+    const lowerFont = font.toLowerCase();
+    const fontStyle = lowerFont.includes('italic')
+      ? 'italic'
+      : lowerFont.includes('oblique')
+        ? 'oblique'
+        : 'normal';
+    const fontWeight = lowerFont.includes('bold')
+      ? 'bold'
+      : (['900', '800', '700', '600', '500', '400', '300', '200', '100'].find((weight) =>
+          lowerFont.includes(weight),
+        ) ?? 'normal');
+    const fontFamily = fontFamilyFromShorthand(font, sizeToken);
 
     const fillVal = this.escapeXML(this.resolveGradient(color));
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;

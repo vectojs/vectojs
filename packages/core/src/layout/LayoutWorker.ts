@@ -26,7 +26,37 @@ export interface LayoutWorkerResponse {
 
 const fontCache: Map<string, MSDFFontData> = new Map();
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isExpectedOrigin(e: MessageEvent): boolean {
+  if (!e.origin) return true;
+  return e.origin === self.location.origin;
+}
+
+function isLayoutWorkerRequest(data: unknown): data is LayoutWorkerRequest {
+  if (!data || typeof data !== 'object') return false;
+  const request = data as Partial<LayoutWorkerRequest>;
+  return (
+    typeof request.id === 'string' &&
+    isFiniteNumber(request.seqId) &&
+    typeof request.text === 'string' &&
+    typeof request.fontId === 'string' &&
+    (request.fontData === undefined || typeof request.fontData === 'object') &&
+    isFiniteNumber(request.maxWidth) &&
+    isFiniteNumber(request.maxHeight) &&
+    isFiniteNumber(request.fontSize) &&
+    (request.lineHeight === undefined || isFiniteNumber(request.lineHeight)) &&
+    (request.letterSpacing === undefined || isFiniteNumber(request.letterSpacing))
+  );
+}
+
 self.onmessage = (e: MessageEvent) => {
+  if (!isExpectedOrigin(e) || !isLayoutWorkerRequest(e.data)) {
+    return;
+  }
+
   const {
     id,
     seqId,

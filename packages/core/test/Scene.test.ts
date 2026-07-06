@@ -701,21 +701,31 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
 describe('Scene syncA11y — text input IME / selection / focus forwarding', () => {
   class InputLike extends Entity {
+    constructor(
+      id: string,
+      private readonly a11yTag: 'input' | 'textarea' = 'input',
+    ) {
+      super(id);
+    }
+
     isPointInside() {
       return false;
     }
     render() {}
     getA11yAttributes() {
+      if (this.a11yTag === 'textarea') {
+        return { tag: 'textarea' as const, value: 'abc', label: 'Notes' };
+      }
       return { tag: 'input' as const, inputType: 'text', value: 'abc', label: 'Name' };
     }
   }
 
-  function setup() {
+  function setup(a11yTag: 'input' | 'textarea' = 'input') {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
     parentDiv.appendChild(canvas);
     const scene = new Scene(canvas);
-    const e = new InputLike('inp');
+    const e = new InputLike('inp', a11yTag);
     e.interactive = true;
     e.width = 100;
     e.height = 30;
@@ -735,6 +745,19 @@ describe('Scene syncA11y — text input IME / selection / focus forwarding', () 
     el.dispatchEvent(new Event('input'));
 
     expect(events.at(-1)).toMatchObject({ value: 'hello', selectionStart: 2, selectionEnd: 4 });
+  });
+
+  it('marks onDemand scenes dirty when form controls forward edits', () => {
+    for (const tag of ['input', 'textarea'] as const) {
+      const { scene, el } = setup(tag);
+      scene.renderMode = 'onDemand';
+      (scene as any).dirty = false;
+
+      el.value = 'hello';
+      el.dispatchEvent(new Event('input'));
+
+      expect((scene as any).dirty).toBe(true);
+    }
   });
 
   it('arrow-key/click caret moves are forwarded via selection', () => {

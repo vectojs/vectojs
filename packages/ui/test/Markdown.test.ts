@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import type { Tokens } from 'marked';
-import { Markdown } from '../src/Markdown';
+import { CodeBlock, Markdown } from '../src/Markdown';
 import { RichText } from '../src/RichText';
 import { Text } from '../src/Text';
 
@@ -86,6 +86,47 @@ describe('Markdown', () => {
     expect(codeBlock.children.length).toBe(0); // No sub-entities
     expect(codeBlock.height).toBeGreaterThan(0);
     expect(codeBlock.width).toBeGreaterThan(0);
+  });
+
+  it('does not double-decode escaped HTML entities', () => {
+    const md = new Markdown('Escaped entity: &amp;lt;tag&amp;gt; and real entity: &lt;ok&gt;');
+    const paragraph = md.content.children[0] as RichText;
+    const text = paragraph.spans.map((span) => span.text).join('');
+
+    expect(text).toBe('Escaped entity: &lt;tag&gt; and real entity: <ok>');
+  });
+
+  it('positions CodeBlock highlight segments by source columns, not token widths', () => {
+    const theme = {
+      textColor: '#e2e8f0',
+      headingColor: '#f8fafc',
+      codeColor: '#a5f3fc',
+      codeBgColor: 'rgba(30, 41, 59, 0.85)',
+      quoteBorderColor: '#6366f1',
+      quoteTextColor: '#94a3b8',
+      hrColor: 'rgba(148, 163, 184, 0.3)',
+      bodyFont: 'Inter, system-ui, sans-serif',
+      codeFont: '"JetBrains Mono", "Fira Code", monospace',
+      fontSize: 16,
+    };
+    const block = new CodeBlock('const scene = new Scene(canvas);', 'ts', 400, theme);
+    const rendered: Array<{ text: string; x: number }> = [];
+    const renderer = {
+      beginPath() {},
+      roundRect() {},
+      fill() {},
+      fillText(text: string, x: number) {
+        rendered.push({ text, x });
+      },
+    };
+
+    (block as unknown as { cellWidth: number }).cellWidth = 10;
+    block.render(renderer as any);
+
+    const base = rendered.find((call) => call.text === 'const')!.x;
+    expect(rendered.find((call) => call.text === 'scene')!.x - base).toBe(60);
+    expect(rendered.find((call) => call.text === 'new')!.x - base).toBe(140);
+    expect(rendered.find((call) => call.text === 'Scene')!.x - base).toBe(180);
   });
 
   it('handles complex markdown without throwing', () => {

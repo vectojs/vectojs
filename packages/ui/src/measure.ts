@@ -25,8 +25,23 @@ function getCtx(): CanvasRenderingContext2D | null {
  * @returns The px size, or `16` when none is found.
  */
 export function fontSizePx(font: string): number {
-  const m = /(\d+(?:\.\d+)?)px/.exec(font);
-  return m ? parseFloat(m[1]) : 16;
+  const pxIndex = font.indexOf('px');
+  if (pxIndex <= 0) return 16;
+
+  let start = pxIndex - 1;
+  while (start >= 0) {
+    const ch = font[start];
+    if ((ch >= '0' && ch <= '9') || ch === '.') {
+      start--;
+    } else {
+      break;
+    }
+  }
+
+  const raw = font.slice(start + 1, pxIndex);
+  if (raw === '') return 16;
+  const size = Number.parseFloat(raw);
+  return Number.isFinite(size) ? size : 16;
 }
 
 // Cache `(font, text) → width`. Native `measureText` forces a layout/context
