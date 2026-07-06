@@ -4,15 +4,9 @@ import { createServer, ViteDevServer } from 'vite';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import cliProgress from 'cli-progress';
+import type { ExportOptions } from './options.js';
 
-export interface ExportOptions {
-  url: string; // Can be HTTP URL or a local .ts/.js file path
-  outputPath: string;
-  width: number;
-  height: number;
-  fps?: number;
-  duration?: number;
-}
+export type { ExportOptions } from './options.js';
 
 export async function exportVideo(options: ExportOptions) {
   const fps = options.fps || 60;
