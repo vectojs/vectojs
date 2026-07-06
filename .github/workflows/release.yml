@@ -69,6 +69,9 @@ jobs:
       - name: Run package tests
         env:
           PKG: ${{ steps.parse.outputs.package }}
+          # GitHub's Ubuntu runner disables unprivileged Chromium user
+          # namespaces, so opt into the exporter's documented CI escape hatch.
+          VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd "packages/$PKG" && bunx vitest run
 
       - name: Lint
