@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { test, expect, vi, beforeAll } from 'vitest';
+import { test, expect, vi, beforeAll, afterEach } from 'vitest';
 import { MSDFFont } from '../src/text/MSDFFont';
 import { MSDFTextEntity } from '../src/text/MSDFTextEntity';
+import { LayoutWorkerManager } from '../src/layout/LayoutWorkerManager';
 import fontJson from './fixtures/font.json';
 
 // Mock Worker and URL.createObjectURL since they are not supported in JSDOM/Node environment
@@ -39,6 +40,10 @@ beforeAll(() => {
   globalThis.Worker = MockWorker as any;
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock');
   globalThis.URL.revokeObjectURL = vi.fn();
+});
+
+afterEach(() => {
+  LayoutWorkerManager.getInstance().destroy();
 });
 
 test('MSDFTextEntity properties and boundary calculations', () => {
