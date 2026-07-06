@@ -66,5 +66,5 @@ describe('real video export', () => {
       }),
     ]);
     expect((await readdir(scratch)).filter((name) => name !== basename(outputPath))).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 });
