@@ -366,19 +366,41 @@ export class ThreeRenderer implements IRenderer {
     this.currentPath.arc(x + r_tl, y + r_tl, r_tl, Math.PI, -Math.PI / 2, false);
   }
 
-  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
-    let texture: THREE.Texture;
-    if (
-      source instanceof HTMLImageElement ||
-      source instanceof HTMLCanvasElement ||
-      (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap)
-    ) {
-      texture = new THREE.CanvasTexture(source as any);
-    } else {
-      texture = new THREE.Texture(source as any);
-      texture.needsUpdate = true;
+  /**
+   * Textures cached per drawImage source (identity-keyed). A frame that
+   * redraws the same image no longer re-uploads it. Mutable sources (a canvas
+   * you repaint) must call {@link invalidateImage} after changing pixels.
+   * Entries are skipped by the per-frame disposer and released on
+   * invalidation or {@link dispose}.
+   */
+  private imageTextureCache = new Map<CanvasImageSource, THREE.Texture>();
+
+  /** Drop the cached texture for a source whose pixels changed. */
+  public invalidateImage(source: CanvasImageSource): void {
+    const cached = this.imageTextureCache.get(source);
+    if (cached) {
+      cached.dispose();
+      this.imageTextureCache.delete(source);
     }
-    texture.minFilter = THREE.LinearFilter;
+  }
+
+  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
+    let texture = this.imageTextureCache.get(source);
+    if (!texture) {
+      if (
+        source instanceof HTMLImageElement ||
+        source instanceof HTMLCanvasElement ||
+        (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap)
+      ) {
+        texture = new THREE.CanvasTexture(source as any);
+      } else {
+        texture = new THREE.Texture(source as any);
+        texture.needsUpdate = true;
+      }
+      texture.minFilter = THREE.LinearFilter;
+      texture.userData.vectoCached = true;
+      this.imageTextureCache.set(source, texture);
+    }
 
     const material = new THREE.MeshBasicMaterial({
       map: texture,
@@ -723,6 +745,10 @@ export class ThreeRenderer implements IRenderer {
       entry.texture.dispose();
     }
     this.textTextureCache.clear();
+    for (const texture of this.imageTextureCache.values()) {
+      texture.dispose();
+    }
+    this.imageTextureCache.clear();
     this.currentPath = null;
     this.stack.length = 0;
     this.alphaStack.length = 0;

@@ -172,6 +172,25 @@ void main() {
   outColor = vec4(t.rgb * v_tint.rgb, t.a * v_tint.a);
 }`;
 
+// Circle quads reuse the sprite vertex layout (pos + uv + tint) and carve the
+// disk in the fragment shader — the fallback for circles gl.POINTS cannot
+// represent: primitive clipping discards a point the instant its CENTER
+// leaves the viewport (the disk pops), and gl_PointSize is capped by
+// ALIASED_POINT_SIZE_RANGE (big circles silently shrink).
+const CIRCLE_QUAD_FRAG = `#version 300 es
+precision mediump float;
+in vec2 v_uv;
+in vec4 v_tint;
+out vec4 outColor;
+void main() {
+  vec2 c = v_uv - 0.5;
+  float d = length(c);
+  float aa = fwidth(d);
+  float alpha = 1.0 - smoothstep(0.5 - aa, 0.5, d);
+  if (alpha <= 0.0) discard;
+  outColor = vec4(v_tint.rgb, v_tint.a * alpha);
+}`;
+
 // MSDF glyphs reuse the sprite vertex layout (pos + uv + tint) but reconstruct a
 // resolution-independent edge from the distance field: median of the 3 channels
 // is the signed distance, and a screen-space-derivative range gives crisp AA at
@@ -259,7 +278,9 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   const rectProgram = link(gl, RECT_VERT, RECT_FRAG);
   const spriteProgram = link(gl, SPRITE_VERT, SPRITE_FRAG);
   const msdfProgram = link(gl, SPRITE_VERT, MSDF_FRAG); // shares the sprite vertex layout
-  if (!pointProgram || !rectProgram || !spriteProgram || !msdfProgram) return null;
+  const circleQuadProgram = link(gl, SPRITE_VERT, CIRCLE_QUAD_FRAG);
+  if (!pointProgram || !rectProgram || !spriteProgram || !msdfProgram || !circleQuadProgram)
+    return null;
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -328,6 +349,22 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.vertexAttribPointer(gAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
   gl.enableVertexAttribArray(gATint);
   gl.vertexAttribPointer(gATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
+
+  // --- Circle-quad program state (POINTS fallback; sprite vertex layout) ---
+  const cAPos = gl.getAttribLocation(circleQuadProgram, 'a_pos');
+  const cAUv = gl.getAttribLocation(circleQuadProgram, 'a_uv');
+  const cATint = gl.getAttribLocation(circleQuadProgram, 'a_tint');
+  const cURes = gl.getUniformLocation(circleQuadProgram, 'u_resolution');
+  const circleQuadBuffer = gl.createBuffer();
+  const circleQuadVAO = gl.createVertexArray();
+  gl.bindVertexArray(circleQuadVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, circleQuadBuffer);
+  gl.enableVertexAttribArray(cAPos);
+  gl.vertexAttribPointer(cAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.enableVertexAttribArray(cAUv);
+  gl.vertexAttribPointer(cAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.enableVertexAttribArray(cATint);
+  gl.vertexAttribPointer(cATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
   gl.bindVertexArray(null);
 
   let texture: WebGLTexture | null = null;
@@ -345,10 +382,21 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   // Glyphs reuse the sprite vertex layout (8 floats/vert, 6 verts/quad).
   let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 1024);
   let glyphCount = 0;
+  let circleQuadData: Float32Array = new Float32Array(
+    FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 64,
+  );
+  let circleQuadCount = 0;
   let logicalW = 0;
   let logicalH = 0;
   let dpr = 1;
   let destroyed = false;
+  // Device-pixel cap on gl_PointSize; diameters beyond it must use quads.
+  // (getParameter guarded for minimal test doubles / exotic contexts.)
+  const pointSizeRange =
+    typeof gl.getParameter === 'function'
+      ? (gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as Float32Array | null)
+      : null;
+  const maxPointSize = pointSizeRange ? pointSizeRange[1] : Infinity;
 
   // Commit the pending glyph batch with the CURRENTLY bound MSDF atlas. Called
   // from flush(), and from setMSDFTexture() before an atlas switch so glyphs
@@ -387,6 +435,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       rectCount = 0;
       spriteCount = 0;
       glyphCount = 0;
+      circleQuadCount = 0;
       // Clear at frame start (not in flush) so mid-frame batch commits — e.g.
       // a glyph draw forced by an MSDF atlas switch — survive to the end.
       gl.clearColor(0, 0, 0, 0);
@@ -507,6 +556,41 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     addCircle(x, y, radius, color, alpha = 1) {
+      // gl.POINTS cannot represent this circle when its center could clip
+      // off-viewport (the whole disk pops) or its diameter exceeds the GPU
+      // point-size cap (it silently shrinks) — carve it from a quad instead.
+      const needsQuad =
+        (logicalW > 0 &&
+          (x < radius || y < radius || x > logicalW - radius || y > logicalH - radius)) ||
+        radius * 2 * dpr > maxPointSize;
+      if (needsQuad) {
+        const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+        circleQuadData = grow(circleQuadData, (circleQuadCount + 1) * stride);
+        const [qr, qg, qb, qa] = parseColorToRGBA(color);
+        const al = qa * alpha;
+        const quad: [number, number, number, number][] = [
+          [x - radius, y - radius, 0, 0],
+          [x + radius, y - radius, 1, 0],
+          [x + radius, y + radius, 1, 1],
+          [x - radius, y + radius, 0, 1],
+        ];
+        const order = [0, 1, 2, 0, 2, 3];
+        let o = circleQuadCount * stride;
+        for (const i of order) {
+          const [vx, vy, vu, vv] = quad[i];
+          circleQuadData[o] = vx;
+          circleQuadData[o + 1] = vy;
+          circleQuadData[o + 2] = vu;
+          circleQuadData[o + 3] = vv;
+          circleQuadData[o + 4] = qr;
+          circleQuadData[o + 5] = qg;
+          circleQuadData[o + 6] = qb;
+          circleQuadData[o + 7] = al;
+          o += FLOATS_PER_SPRITE_VERT;
+        }
+        circleQuadCount++;
+        return;
+      }
       pointData = grow(pointData, (pointCount + 1) * FLOATS_PER_POINT);
       const [r, g, b, a] = parseColorToRGBA(color);
       const o = pointCount * FLOATS_PER_POINT;
@@ -576,6 +660,16 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.drawArrays(gl.POINTS, 0, pointCount);
       }
 
+      if (circleQuadCount > 0) {
+        const floats = circleQuadCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+        gl.useProgram(circleQuadProgram);
+        gl.bindVertexArray(circleQuadVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, circleQuadBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, circleQuadData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.uniform2f(cURes, logicalW, logicalH);
+        gl.drawArrays(gl.TRIANGLES, 0, circleQuadCount * VERTS_PER_SPRITE);
+      }
+
       if (spriteCount > 0 && texture) {
         const floats = spriteCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
         gl.useProgram(spriteProgram);
@@ -600,14 +694,17 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       gl.deleteBuffer(rectBuffer);
       gl.deleteBuffer(spriteBuffer);
       gl.deleteBuffer(glyphBuffer);
+      gl.deleteBuffer(circleQuadBuffer);
       gl.deleteVertexArray(pointVAO);
       gl.deleteVertexArray(rectVAO);
       gl.deleteVertexArray(spriteVAO);
       gl.deleteVertexArray(glyphVAO);
+      gl.deleteVertexArray(circleQuadVAO);
       gl.deleteProgram(pointProgram);
       gl.deleteProgram(rectProgram);
       gl.deleteProgram(spriteProgram);
       gl.deleteProgram(msdfProgram);
+      gl.deleteProgram(circleQuadProgram);
       if (texture) gl.deleteTexture(texture);
       if (msdfTexture) gl.deleteTexture(msdfTexture);
     },

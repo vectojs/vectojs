@@ -305,6 +305,40 @@ describe('ThreeRenderer', () => {
     });
   });
 
+  describe('drawImage texture cache', () => {
+    it('reuses one texture per source across frames until invalidated', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const first = renderer.scene.children[0] as THREE.Mesh;
+      const firstMap = (first.material as THREE.MeshBasicMaterial).map!;
+      const mapDispose = vi.spyOn(firstMap, 'dispose');
+
+      renderer.clear(); // next frame
+      renderer.drawImage(img, 10, 10, 32, 32);
+      const second = renderer.scene.children[0] as THREE.Mesh;
+      expect((second.material as THREE.MeshBasicMaterial).map).toBe(firstMap);
+      expect(mapDispose).not.toHaveBeenCalled();
+
+      // Mutated source: caller invalidates, next draw uploads fresh.
+      renderer.invalidateImage(img);
+      expect(mapDispose).toHaveBeenCalledOnce();
+      renderer.clear();
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const third = renderer.scene.children[0] as THREE.Mesh;
+      expect((third.material as THREE.MeshBasicMaterial).map).not.toBe(firstMap);
+    });
+
+    it('dispose() releases cached image textures', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 16, 16);
+      const map = ((renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial)
+        .map!;
+      const mapDispose = vi.spyOn(map, 'dispose');
+      renderer.dispose();
+      expect(mapDispose).toHaveBeenCalledOnce();
+    });
+  });
+
   it('disposes active objects and renderer exactly once', () => {
     const geometry = new THREE.PlaneGeometry(10, 10);
     const firstMap = new THREE.Texture();
