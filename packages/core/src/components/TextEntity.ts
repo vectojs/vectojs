@@ -79,6 +79,28 @@ export class TextEntity extends Entity {
     return this;
   }
 
+  /**
+   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
+   * the wrap width; the last line stays ragged) and reflow.
+   */
+  public setTextAlign(align: 'left' | 'justify'): this {
+    this.layout.textAlign = align;
+    this.applyLayout();
+    return this;
+  }
+
+  /**
+   * Plug a hyphenator (word → parts). Break opportunities are baked in during
+   * the cold pass, so this re-prepares the current text. Soft hyphens
+   * (U+00AD) in the text work without one.
+   */
+  public setHyphenator(fn: ((word: string) => string[]) | null): this {
+    this.layout.hyphenate = fn;
+    this.prepared = this.layout.prepare(this.text, this.atlas, this.fontSize);
+    this.applyLayout();
+    return this;
+  }
+
   /** Hot pass: place the cached {@link PreparedText} and refresh the a11y box. */
   private applyLayout() {
     const result = this.layout.layoutPrepared(this.prepared);
