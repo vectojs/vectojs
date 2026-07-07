@@ -537,6 +537,9 @@ export abstract class Entity {
       startTime: -1,
       startProps: {},
     });
+    // Wake an idle scene: the loop's animation flags are collected during the
+    // render walk, so a sleeping onDemand scene needs the dirty signal.
+    this.scene?.markDirty();
     return this;
   }
 

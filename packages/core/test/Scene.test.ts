@@ -686,6 +686,20 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2); // still rendering due to pending animation
   });
 
+  it('legacy animate() wakes an idle onDemand scene', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('wake', null) as SpyEntity;
+    scene.add(e);
+    tick(scene); // initial dirty consumed
+    tick(scene); // fully idle
+    expect(e.renders).toBe(1);
+
+    e.animate({ opacity: 0 } as any, 200); // must wake the loop by itself
+    tick(scene);
+    expect(e.renders).toBe(2);
+  });
+
   it('markDirty() called inside update() survives to the next frame', () => {
     // The naive self-animating pattern: update() marks the scene dirty each
     // frame. The dirty flag must be consumed *before* the update/render pass,
