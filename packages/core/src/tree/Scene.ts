@@ -1210,6 +1210,12 @@ export class Scene {
       return;
     }
 
+    // Consume the dirty flag BEFORE the update/render pass: any markDirty()
+    // call made inside an entity's update() must survive into the next frame
+    // (self-animating entities re-arm themselves this way). Clearing after
+    // render would silently wipe those marks and freeze the entity.
+    this.dirty = false;
+
     this.render(this.renderer, dt, time);
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
@@ -1236,8 +1242,6 @@ export class Scene {
     } else if (hasActiveAnimation) {
       this.a11yPendingSyncAfterAnimation = true;
     }
-
-    this.dirty = false;
 
     this.scheduleFrame();
   }

@@ -628,6 +628,43 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2); // still rendering due to pending animation
   });
 
+  it('markDirty() called inside update() survives to the next frame', () => {
+    // The naive self-animating pattern: update() marks the scene dirty each
+    // frame. The dirty flag must be consumed *before* the update/render pass,
+    // otherwise marks made during update() are silently wiped at end of tick
+    // and the entity freezes after one frame.
+    class SelfDirtyEntity extends SpyEntity {
+      public updates = 0;
+      override update() {
+        this.updates++;
+        this.scene?.markDirty();
+      }
+    }
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SelfDirtyEntity('sd', null) as SelfDirtyEntity;
+    scene.add(e);
+
+    tick(scene); // frame 1: initial dirty
+    tick(scene); // frame 2: dirty re-armed from inside update()
+    tick(scene); // frame 3: same
+    expect(e.renders).toBe(3);
+    expect(e.updates).toBe(3);
+  });
+
+  it('markDirty() between frames still triggers exactly one onDemand render', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // initial dirty consumed
+    scene.markDirty();
+    tick(scene); // renders once
+    tick(scene); // idle again — must skip
+    expect(e.renders).toBe(2);
+  });
+
   it('clipChildren wraps the child render pass in a clip rect', () => {
     const scene = makeScene();
     mockCtx.clip.mockClear();
