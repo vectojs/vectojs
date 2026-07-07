@@ -982,9 +982,6 @@ export class LayoutEngine {
     let currentX = 0;
     let currentY = 0;
 
-    const justifyTarget = this.textAlign === 'justify' && !hasEx ? this.maxWidth : undefined;
-    const hyphenWidth = prepared.hyphenWidth ?? fontSize * 0.3;
-
     for (const paragraph of prepared.paragraphs) {
       if (paragraph.isEmpty) {
         currentY += lineHeight;
