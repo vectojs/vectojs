@@ -1,5 +1,13 @@
 # @vectojs/three
 
+## 0.1.4
+
+### Patch Changes
+
+- f4c98f3: clip() scissors by the renderer's own pixel ratio instead of window.devicePixelRatio; fillText reuses rasterized textures through an LRU cache instead of re-uploading per call per frame.
+- e45ec38: - `ThreeRenderer.flush()` no longer performs a full GL render per call — the Scene flushes around every non-batched node, which made frames O(N²) in entity count. Rendering now happens once per frame in the new `present()` hook (with a microtask fallback for older cores that never call it).
+  - `stroke()` emits one `THREE.Line` per sub-path instead of concatenating all of them into a single line — no more spurious connector segments across `moveTo()` gaps.
+
 `@vectojs/three` is excluded from the automated Changesets flow
 (`.changeset/config.json`'s `ignore` list) and is versioned by hand: bump
 `packages/three/package.json`, commit, tag `@vectojs/three@<version>`, and push the tag —
