@@ -549,6 +549,62 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  it('remounting an embedded Scene on the same canvas does not compound DPR scaling', () => {
+    // SPA remount at DPR 2: after the first Scene, canvas.width holds the
+    // DPR-scaled backing store (800 for a 400-logical canvas). A second Scene
+    // reading canvas.width as the logical size would double every mount
+    // (400 → 800 → 1600). The renderer records the logical size in the
+    // canvas's inline style; subsequent Scenes must prefer it.
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      parentDiv.appendChild(canvas);
+
+      const first = new Scene(canvas, { disableWindowResize: true });
+      expect(first.width).toBe(400);
+      expect(canvas.width).toBe(800); // backing store at DPR 2
+      first.destroy();
+
+      const second = new Scene(canvas, { disableWindowResize: true });
+      expect(second.width).toBe(400); // NOT 800
+      expect(canvas.width).toBe(800); // NOT 1600
+      second.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
+  it('clientToScene mapping is DPR-independent for an embedded scene', () => {
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      const scene = new Scene(canvas, { disableWindowResize: true });
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+        left: 50,
+        top: 20,
+        width: 400, // CSS box = logical size
+        height: 300,
+        right: 450,
+        bottom: 320,
+        x: 50,
+        y: 20,
+        toJSON: () => ({}),
+      });
+      // Identity mapping: DPR must not leak into pointer→scene coordinates.
+      expect(scene.clientToScene(250, 170)).toEqual({ x: 200, y: 150 });
+      scene.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
   it('disableWindowResize keeps the canvas backing store at its own size', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');

@@ -37,3 +37,7 @@ jobs:
           cd ../ui && bun run build
           cd ../three && bun run build
           cd ../video-exporter && bun run build
+      - name: HiDPI e2e (deviceScaleFactor 2)
+        # Uses the runner's preinstalled Chrome; the script resolves
+        # PUPPETEER_EXECUTABLE_PATH → /usr/bin/chromium → /usr/bin/google-chrome.
+        run: cd packages/core && bun run test:e2e
