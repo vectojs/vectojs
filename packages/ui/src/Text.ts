@@ -7,6 +7,7 @@ import {
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { fontSizePx } from './measure';
+import type { ContentProjection } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
 export interface TextOptions {
@@ -90,6 +91,12 @@ export class Text extends UIComponent {
    * @param text - The new text content.
    * @returns `this` for chaining.
    */
+  /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.text) return null;
+    return { text: this.text, font: this.font };
+  }
+
   public setText(text: string): this {
     this.text = text;
     this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
