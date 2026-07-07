@@ -60,6 +60,35 @@ test('MSDFTextEntity properties and boundary calculations', () => {
   entity.destroy();
 });
 
+test('MSDFTextEntity passes a configurable wrap width to the layout worker', () => {
+  const font = new MSDFFont(fontJson);
+  const queueLayout = vi.spyOn(LayoutWorkerManager.getInstance(), 'queueLayout');
+  const entity = new MSDFTextEntity('Vecto', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    maxWidth: 320,
+  });
+
+  expect(queueLayout).toHaveBeenCalledTimes(1);
+  expect(queueLayout.mock.calls[0][2].maxWidth).toBe(320);
+
+  // Changing the wrap width re-queues layout for the current text.
+  entity.setMaxWidth(480);
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+  expect(queueLayout.mock.calls[1][2].maxWidth).toBe(480);
+
+  // Same width is a no-op.
+  entity.setMaxWidth(480);
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+
+  // Default stays at the historical 1000 when unspecified.
+  queueLayout.mockClear();
+  new MSDFTextEntity('x', { font, texture: {} as TexImageSource });
+  expect(queueLayout.mock.calls[0][2].maxWidth).toBe(1000);
+  queueLayout.mockRestore();
+});
+
 test('MSDFTextEntity WebGL rendering under rotation', () => {
   const font = new MSDFFont(fontJson);
   const mockTexture = {} as TexImageSource;

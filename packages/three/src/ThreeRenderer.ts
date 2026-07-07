@@ -172,7 +172,8 @@ export class ThreeRenderer implements IRenderer {
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       for (const material of materials) {
         const map = (material as THREE.Material & { map?: THREE.Texture | null }).map;
-        if (map && !disposedTextures.has(map)) {
+        // Cached fillText textures outlive the frame; the cache owns them.
+        if (map && !map.userData.vectoCached && !disposedTextures.has(map)) {
           disposedTextures.add(map);
           map.dispose();
         }
@@ -239,8 +240,10 @@ export class ThreeRenderer implements IRenderer {
     const maxX = Math.max(...corners.map((point) => point.x));
     const maxY = Math.max(...corners.map((point) => point.y));
 
-    // Convert to bottom-left origin for Three.js scissor test
-    const dpr = window.devicePixelRatio || 1;
+    // Convert to bottom-left origin for Three.js scissor test. The scissor
+    // lives in backing-store pixels, so scale by the renderer's own pixel
+    // ratio (window DPR is wrong for offscreen/fixed-ratio targets).
+    const dpr = this.renderer.getPixelRatio() || 1;
     const canvasHeight = this.renderer.domElement.height / dpr;
     let scissorX = minX * dpr;
     let scissorY = (canvasHeight - maxY) * dpr;
@@ -576,20 +579,21 @@ export class ThreeRenderer implements IRenderer {
     }
   }
 
+  /**
+   * Rasterized fillText textures keyed by `font|color|text`, LRU-evicted.
+   * HUD-style UIs redraw the same labels every frame; without the cache each
+   * call allocated a canvas, rasterized it, and uploaded a fresh GPU texture.
+   * Entries are skipped by {@link disposeActiveObjects} (flagged via
+   * `userData.vectoCached`) and released on eviction or {@link dispose}.
+   */
+  private textTextureCache = new Map<
+    string,
+    { texture: THREE.CanvasTexture; width: number; height: number; fontSize: number }
+  >();
+  private textTextureCacheLimit = 256;
+
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     if (typeof document === 'undefined') return;
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-    ctx.font = font;
-
-    const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
-    const fontSize = parseInt(font) || 16;
-    const height = Math.max(1, Math.ceil(fontSize * 1.5));
-    canvas.width = width;
-    canvas.height = height;
-
-    ctx.font = font;
 
     let fillCol = '#ffffff';
     if (typeof color === 'string') {
@@ -601,12 +605,42 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    ctx.fillStyle = fillCol;
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText(text, 0, fontSize);
+    const cacheKey = `${font}|${fillCol}|${text}`;
+    let entry = this.textTextureCache.get(cacheKey);
+    if (entry) {
+      // Refresh LRU order (Map iteration order is insertion order).
+      this.textTextureCache.delete(cacheKey);
+      this.textTextureCache.set(cacheKey, entry);
+    } else {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d')!;
+      ctx.font = font;
 
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
+      const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
+      const fontSize = parseInt(font) || 16;
+      const height = Math.max(1, Math.ceil(fontSize * 1.5));
+      canvas.width = width;
+      canvas.height = height;
+
+      ctx.font = font;
+      ctx.fillStyle = fillCol;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(text, 0, fontSize);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      texture.userData.vectoCached = true;
+
+      entry = { texture, width, height, fontSize };
+      this.textTextureCache.set(cacheKey, entry);
+      while (this.textTextureCache.size > Math.max(1, this.textTextureCacheLimit)) {
+        const oldestKey = this.textTextureCache.keys().next().value as string;
+        this.textTextureCache.get(oldestKey)!.texture.dispose();
+        this.textTextureCache.delete(oldestKey);
+      }
+    }
+
+    const { texture, width, height, fontSize } = entry;
 
     const material = new THREE.MeshBasicMaterial({
       map: texture,
@@ -685,6 +719,10 @@ export class ThreeRenderer implements IRenderer {
     if (this.disposed) return;
     this.disposed = true;
     this.disposeActiveObjects();
+    for (const entry of this.textTextureCache.values()) {
+      entry.texture.dispose();
+    }
+    this.textTextureCache.clear();
     this.currentPath = null;
     this.stack.length = 0;
     this.alphaStack.length = 0;

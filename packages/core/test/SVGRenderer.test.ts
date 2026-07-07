@@ -74,4 +74,67 @@ describe('SVGRenderer', () => {
     const count = (xml.match(/A 10 10/g) || []).length;
     expect(count).toBe(2);
   });
+
+  describe('arc flag selection matches Canvas sweep semantics', () => {
+    // Extract the flags of the first "A rx ry rot largeArc sweep x y" command.
+    function arcFlags(draw: (r: SVGRenderer) => void): { largeArc: number; sweep: number } {
+      const r = new SVGRenderer(800, 600);
+      r.beginPath();
+      draw(r);
+      r.fill('#000');
+      const m = r.toXMLString().match(/A [\d.]+ [\d.]+ 0 (\d) (\d)/);
+      expect(m).not.toBeNull();
+      return { largeArc: Number(m![1]), sweep: Number(m![2]) };
+    }
+
+    test('CW quarter arc stays small', () => {
+      expect(arcFlags((r) => r.arc(50, 50, 10, 0, Math.PI / 2))).toEqual({
+        largeArc: 0,
+        sweep: 1,
+      });
+    });
+
+    test('CW arc with endAngle < startAngle wraps to a large arc', () => {
+      // Canvas sweeps clockwise from 0 down past 2π to -π/2 → 3π/2 travelled.
+      expect(arcFlags((r) => r.arc(50, 50, 10, 0, -Math.PI / 2))).toEqual({
+        largeArc: 1,
+        sweep: 1,
+      });
+    });
+
+    test('CCW arc with endAngle > startAngle wraps to a large arc', () => {
+      // Counterclockwise from 0 to π/2 travels the long way: 3π/2.
+      expect(arcFlags((r) => r.arc(50, 50, 10, 0, Math.PI / 2, true))).toEqual({
+        largeArc: 1,
+        sweep: 0,
+      });
+    });
+
+    test('CCW quarter arc stays small', () => {
+      expect(arcFlags((r) => r.arc(50, 50, 10, Math.PI / 2, 0, true))).toEqual({
+        largeArc: 0,
+        sweep: 0,
+      });
+    });
+
+    test('CCW with a ≥2π positive delta is NOT a full circle', () => {
+      // Canvas: CCW is a full circle only when start − end ≥ 2π. Here the
+      // normalized CCW sweep is 3π/2 — a single large arc, not two halves.
+      const r = new SVGRenderer(800, 600);
+      r.beginPath();
+      r.arc(50, 50, 10, 0, Math.PI * 2.5, true);
+      r.fill('#000');
+      const xml = r.toXMLString();
+      expect((xml.match(/A 10 10/g) || []).length).toBe(1);
+      expect(xml).toMatch(/A 10 10 0 1 0/);
+    });
+
+    test('CW with a ≥2π delta stays a full circle', () => {
+      const r = new SVGRenderer(800, 600);
+      r.beginPath();
+      r.arc(50, 50, 10, 0, Math.PI * 2.5);
+      r.fill('#000');
+      expect((r.toXMLString().match(/A 10 10/g) || []).length).toBe(2);
+    });
+  });
 });
