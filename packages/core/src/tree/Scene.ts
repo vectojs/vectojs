@@ -621,6 +621,20 @@ export class Scene {
    * Essential for deterministic rendering (e.g. video export).
    * Note: You should call `scene.stop()` before using this to avoid conflict with the rAF loop.
    */
+  /**
+   * The scene-graph root entity. Exposed read-only for tooling — the devtools
+   * inspector walks it to build the Virtual Math Tree view. Mutate the graph
+   * through {@link add}/{@link remove}, not by editing this node directly.
+   */
+  public get rootEntity(): Entity {
+    return this.root;
+  }
+
+  /** The overlay layer root (see {@link showOverlay}), read-only for tooling. */
+  public get overlayRootEntity(): Entity {
+    return this.overlayRoot;
+  }
+
   public step(dt: number): void {
     const time = this.lastTime + dt;
     this.lastTime = time;

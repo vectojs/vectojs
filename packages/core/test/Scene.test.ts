@@ -937,6 +937,14 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     });
   });
 
+  it('exposes the scene-graph roots read-only for tooling', () => {
+    const scene = makeScene();
+    const e = new SpyEntity('tool-e', null);
+    scene.add(e);
+    expect(scene.rootEntity.children).toContain(e);
+    expect(scene.overlayRootEntity.children).toEqual([]);
+  });
+
   it('clipChildren wraps the child render pass in a clip rect', () => {
     const scene = makeScene();
     mockCtx.clip.mockClear();
