@@ -1393,9 +1393,23 @@ export class Scene {
           this.recreateWebGPUDeviceWithRetry(computeEntities);
         }
       } else if (isMainRenderPath) {
-        // Fallback updates
+        // Fallback updates. The simulation runs in entity-local space, so the
+        // scene-space mouse must be converted per entity (repulsion would
+        // otherwise only work for untransformed entities at the origin).
         for (const entity of computeEntities) {
-          entity.updateCPU(dt / 1000, this.mouseX, this.mouseY, this.width, this.height);
+          let mx = this.mouseX;
+          let my = this.mouseY;
+          if (mx > -9000 && my > -9000) {
+            const local = entity.worldToLocal(mx, my);
+            if (local) {
+              mx = local.x;
+              my = local.y;
+            } else {
+              mx = -9999;
+              my = -9999;
+            }
+          }
+          entity.updateCPU(dt / 1000, mx, my, this.width, this.height);
         }
       }
     } else if (isMainRenderer) {
@@ -1550,7 +1564,19 @@ export class Scene {
       if (visible) {
         if (node instanceof ComputeParticleEntity) {
           if (this.deviceLost || this.webgpuDisabled || !this.device || !this.manager) {
-            this.renderCPUParticles(renderer, node, worldOpacity);
+            this.renderCPUParticles(
+              renderer,
+              node,
+              worldOpacity,
+              a,
+              b,
+              c,
+              d,
+              te,
+              tf,
+              worldScaleX,
+              isSimilarityTransform,
+            );
           }
         } else {
           node.render(renderer);
@@ -1778,10 +1804,22 @@ export class Scene {
     renderer: IRenderer,
     entity: ComputeParticleEntity,
     worldOpacity: number,
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    worldScale: number,
+    isSimilarityTransform: boolean,
   ): void {
     const data = entity.particleData;
     const size = entity.maxParticles;
-    const isMain = renderer === this.renderer;
+    // The GL point layer takes world coordinates and a single radius, so it
+    // can only represent the entity's transform when it is a similarity
+    // (uniform scale, no shear). Anything else draws through the canvas
+    // branch, which runs under the entity's own transform in local space.
+    const useGL = renderer === this.renderer && !!this.pointRenderer && isSimilarityTransform;
 
     for (let i = 0; i < size; i++) {
       const idx = i * 8;
@@ -1793,8 +1831,14 @@ export class Scene {
 
       const opacity = life < 0.0 ? worldOpacity : worldOpacity * Math.min(1.0, life);
       const scale = life >= 0.0 ? Math.min(1.0, life) : 1.0;
-      if (isMain && this.pointRenderer) {
-        this.pointRenderer.addCircle(x, y, pSize * scale, entity.baseColor, opacity);
+      if (useGL) {
+        this.pointRenderer!.addCircle(
+          a * x + c * y + e,
+          b * x + d * y + f,
+          pSize * scale * worldScale,
+          entity.baseColor,
+          opacity,
+        );
       } else {
         renderer.fillCircle(x, y, pSize * scale, entity.baseColor, opacity);
       }
