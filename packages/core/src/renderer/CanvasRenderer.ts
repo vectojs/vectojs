@@ -59,6 +59,14 @@ export class CanvasRenderer implements IRenderer {
 
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;
+    // Record the logical size as CSS size (same as resize() does): on HiDPI
+    // the canvas would otherwise *display* at the backing-store size, and a
+    // remounted Scene needs the logical size to survive somewhere readable —
+    // canvas.width now holds the DPR-scaled value.
+    if (canvas.style) {
+      canvas.style.width = `${this.width}px`;
+      canvas.style.height = `${this.height}px`;
+    }
 
     // getContext may be absent/return null in a headless canvas; stay constructible.
     const ctx = canvas.getContext('2d');

@@ -112,6 +112,16 @@ export interface A11yTreeNode {
 }
 
 /**
+ * Parse an inline `"<n>px"` style value into a positive number, or `null` for
+ * anything else (empty, percentages, calc(), zero).
+ */
+function parseInlinePx(value: string | undefined): number | null {
+  if (!value || !value.endsWith('px')) return null;
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
  * and maintains the accessibility/automation shadow layer.
  *
@@ -237,8 +247,14 @@ export class Scene {
     this.debugA11y = options.debugA11y ?? false;
     this.disableWindowResize = options.disableWindowResize ?? false;
     if (this.disableWindowResize) {
-      this.width = canvas.width || canvas.clientWidth || 0;
-      this.height = canvas.height || canvas.clientHeight || 0;
+      // Prefer the inline px style: it's where the renderer records the
+      // *logical* size. On a remount, canvas.width holds the previous
+      // renderer's DPR-scaled backing store — reading it as logical would
+      // compound the scale on every mount (400 → 800 → 1600 at DPR 2).
+      const styleWidth = parseInlinePx(canvas.style?.width);
+      const styleHeight = parseInlinePx(canvas.style?.height);
+      this.width = styleWidth ?? (canvas.width || canvas.clientWidth || 0);
+      this.height = styleHeight ?? (canvas.height || canvas.clientHeight || 0);
     } else {
       this.width =
         typeof window !== 'undefined'
