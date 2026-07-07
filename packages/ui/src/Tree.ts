@@ -183,7 +183,20 @@ export class TreeView extends UIComponent {
       this.scene?.markDirty();
     } else {
       this._scrollY = this._targetY;
+      this._velY = 0;
     }
+  }
+
+  /**
+   * Keep the hand-rolled scroll integrator visible to the Scene's idle
+   * throttle / onDemand skip — see the identical override in VirtualList.
+   */
+  public override hasPendingAnimations(): boolean {
+    return (
+      super.hasPendingAnimations() ||
+      Math.abs(this._targetY - this._scrollY) > 0.05 ||
+      Math.abs(this._velY) > 0.05
+    );
   }
 
   public render(r: IRenderer): void {

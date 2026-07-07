@@ -77,6 +77,19 @@ describe('Entity animation', () => {
     expect(e.x).toBeCloseTo(100 * (0.5 * (2 - 0.5)), 4); // easeOutQuad(0.5)
   });
 
+  it('legacy animate() does not spawn transition drivers for the same prop', () => {
+    const e = new TestEntity();
+    e.setTransition({ x: 'spring' }); // declarative transition configured…
+    e.animate({ x: 100 }, 100); // …but the legacy tween must own this animation
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
+    let t = 0;
+    for (let i = 0; i < 10; i++) {
+      e.update(16, (t += 16));
+      expect(drivers.size).toBe(0); // no per-frame driver spawn/retarget fight
+    }
+    expect(e.x).toBeCloseTo(100, 4); // tween completed normally
+  });
+
   it('hasPendingAnimations() reports true while a property driver is active', () => {
     const e = new TestEntity();
     e.setTransition({ opacity: 'spring' });

@@ -98,6 +98,7 @@ describe('SplineEntity', () => {
     // Stub OffscreenCanvas with a 2D context recorder.
     const bakeCtx = {
       translate: vi.fn(),
+      scale: vi.fn(),
       beginPath: vi.fn(),
       moveTo: vi.fn(),
       bezierCurveTo: vi.fn(),
@@ -130,6 +131,91 @@ describe('SplineEntity', () => {
       expect(r.bezierCurveTo).not.toHaveBeenCalled(); // not the fallback path
     } finally {
       (globalThis as any).OffscreenCanvas = prev;
+    }
+  });
+
+  it('gradient documents bypass the bake cache and keep their gradients', () => {
+    const gradientDoc: SplineDocument = {
+      type: 'Spline',
+      equations: [
+        {
+          color_rgb: {
+            stops: [
+              [0, [1, 0, 0]],
+              [1, [0, 0, 1]],
+            ],
+            start_pos: [0, 0],
+            end_pos: [1, 0],
+          },
+          data: sample.equations![0].data,
+        },
+      ],
+      bounding_box: sample.bounding_box,
+    };
+    class FakeOffscreen {
+      getContext() {
+        throw new Error('gradient docs must not bake (bake() cannot rasterize gradients)');
+      }
+    }
+    const prev = (globalThis as any).OffscreenCanvas;
+    (globalThis as any).OffscreenCanvas = FakeOffscreen as any;
+    try {
+      const e = new SplineEntity(gradientDoc); // cache defaults true
+      const r = mockRenderer();
+      e.render(r as any);
+      expect(r.drawImage).not.toHaveBeenCalled();
+      expect(r.createLinearGradient).toHaveBeenCalled(); // per-frame gradient path
+      expect(r.stroke).toHaveBeenCalled();
+    } finally {
+      (globalThis as any).OffscreenCanvas = prev;
+    }
+  });
+
+  it('bakes at devicePixelRatio resolution but blits at logical size', () => {
+    const created: Array<{ w: number; h: number }> = [];
+    const bakeCtx = {
+      translate: vi.fn(),
+      scale: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      bezierCurveTo: vi.fn(),
+      stroke: vi.fn(),
+      lineWidth: 0,
+      lineCap: '',
+      lineJoin: '',
+      strokeStyle: '',
+    };
+    class FakeOffscreen {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {
+        created.push({ w: width, h: height });
+      }
+      getContext() {
+        return bakeCtx;
+      }
+    }
+    const prevOC = (globalThis as any).OffscreenCanvas;
+    const prevDPR = window.devicePixelRatio;
+    (globalThis as any).OffscreenCanvas = FakeOffscreen as any;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const e = new SplineEntity(sample); // cache defaults true
+      const r = mockRenderer();
+      e.render(r as any);
+
+      const [minX, , maxX] = sample.bounding_box!;
+      const pad = e.lineWidth + 2;
+      const logicalW = Math.max(1, Math.ceil(maxX - minX) + pad * 2);
+      expect(created[0].w).toBe(logicalW * 2); // HiDPI backing store
+      expect(bakeCtx.scale).toHaveBeenCalledWith(2, 2);
+      // Blit destination stays in logical units — otherwise the image doubles in size.
+      const [, , , dw] = r.drawImage.mock.calls[0];
+      expect(dw).toBe(logicalW);
+    } finally {
+      (globalThis as any).OffscreenCanvas = prevOC;
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
     }
   });
 

@@ -51,7 +51,7 @@ function hasSafeSchemeOrIsRelative(url: string): boolean {
  *    returns it verbatim — relative navigation is never script-injectable.
  * 4. If the URL parses with a scheme NOT in {@link SAFE_SCHEMES}, returns `'#'`
  *    to keep the link non-empty but inert.
- * 5. Otherwise returns the canonical `URL.toString()` form.
+ * 5. Otherwise returns the trimmed input unchanged (no canonicalization).
  *
  * The function never throws; malformed input falls back to `'#'`.
  */

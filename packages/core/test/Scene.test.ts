@@ -547,6 +547,75 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  it('disableWindowResize keeps the canvas backing store at its own size', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.width = 400;
+    canvas.height = 300;
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    expect(scene.width).toBe(400);
+    // CanvasRenderer used to clobber this to window.innerWidth (800 in this mock).
+    expect(canvas.width).toBe(400);
+    expect(canvas.height).toBe(300);
+  });
+
+  it('destroy() releases the WebGPU device', () => {
+    const scene = makeScene();
+    const destroy = vi.fn();
+    (scene as any).device = { destroy };
+    scene.destroy();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect((scene as any).device).toBeNull();
+  });
+
+  it('resize() keeps the WebGPU canvas backing store in step', () => {
+    const scene = makeScene();
+    (scene as any).renderer = {}; // the mock ctx can't service CanvasRenderer.resize
+    const gpuCanvas = { width: 800, height: 600, style: {} };
+    (scene as any).gpuCanvas = gpuCanvas;
+    scene.resize(1024, 512);
+    expect(gpuCanvas.width).toBe(1024);
+    expect(gpuCanvas.height).toBe(512);
+  });
+
+  it('clears the GPU canvas once the last ComputeParticleEntity leaves', () => {
+    const scene = makeScene();
+    const submit = vi.fn();
+    const pass = { end: vi.fn() };
+    const encoder = { beginRenderPass: vi.fn(() => pass), finish: vi.fn(() => 'cmd') };
+    (scene as any).device = { createCommandEncoder: () => encoder, queue: { submit } };
+    (scene as any).gpuContext = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+    (scene as any).gpuHasContent = true; // particles were presented last frame
+
+    tick(scene); // no ComputeParticleEntity in the tree anymore
+    expect(submit).toHaveBeenCalledTimes(1); // one transparent clear pass
+    expect((scene as any).gpuHasContent).toBe(false);
+
+    scene.markDirty();
+    tick(scene); // already clean — no second clear
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('onDemand skips idle frames even when autoThrottle is disabled', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    scene.autoThrottle = false; // must not re-enable per-frame rendering
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // first frame is dirty
+    expect(e.renders).toBe(1);
+
+    tick(scene); // idle, not dirty — must still skip
+    tick(scene);
+    expect(e.renders).toBe(1);
+
+    scene.markDirty();
+    tick(scene);
+    expect(e.renders).toBe(2);
+  });
+
   it('onDemand mode keeps rendering while an animation is pending', () => {
     const scene = makeScene();
     scene.renderMode = 'onDemand';

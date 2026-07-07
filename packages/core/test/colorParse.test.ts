@@ -68,6 +68,7 @@ describe('parseColorToRGBA', () => {
     const getImageData = vi.fn(() => ({ data: new Uint8ClampedArray([0, 128, 0, 255]) }));
     const ctx = {
       fillStyle: '',
+      clearRect: vi.fn(),
       fillRect: vi.fn(),
       getImageData,
     };
@@ -82,6 +83,34 @@ describe('parseColorToRGBA', () => {
       expect(g).toBeCloseTo(128 / 255);
       expect(b).toBeCloseTo(0);
       expect(a).toBeCloseTo(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('clears the shared 1x1 canvas before each fallback parse (no alpha compositing)', async () => {
+    // Fresh module so the cached fallbackCtx from earlier tests doesn't leak in.
+    vi.resetModules();
+    const clearRect = vi.fn();
+    const fillRect = vi.fn();
+    const ctx = {
+      fillStyle: '',
+      clearRect,
+      fillRect,
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray([255, 0, 0, 128]) })),
+    };
+    const spy = vi.spyOn(document, 'createElement').mockReturnValue({
+      getContext: () => ctx,
+    } as unknown as HTMLCanvasElement);
+    try {
+      const mod = await import('../src/renderer/colorParse');
+      mod.parseColorToRGBA('some-semitransparent-named-color');
+      // A semi-transparent fill over a dirty canvas blends with the previous
+      // parse's pixel; the canvas must be cleared first, every time.
+      expect(clearRect).toHaveBeenCalledWith(0, 0, 1, 1);
+      expect(clearRect.mock.invocationCallOrder[0]).toBeLessThan(
+        fillRect.mock.invocationCallOrder[0],
+      );
     } finally {
       spy.mockRestore();
     }

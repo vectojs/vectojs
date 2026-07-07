@@ -85,6 +85,50 @@ describe('SpringPhysics', () => {
     });
   });
 
+  describe('Large-dt stability (background tab / GC pause)', () => {
+    it('does not diverge when a single frame delivers a multi-second dt', () => {
+      const spring = new SpringPhysics(0);
+      spring.target = 100;
+      spring.update(0.016); // one normal frame
+      spring.update(5.0); // tab was hidden: rAF resumes with a 5s delta
+
+      // Explicit Euler with an unclamped dt used to catapult this to ~344,000.
+      // The value must stay within a sane overshoot band around the target.
+      expect(spring.value).toBeGreaterThan(-100);
+      expect(spring.value).toBeLessThan(300);
+      expect(Number.isFinite(spring.velocity)).toBe(true);
+
+      // And it must still settle normally afterwards.
+      for (let i = 0; i < 300; i++) spring.update(0.016);
+      expect(spring.isAtRest()).toBe(true);
+      expect(spring.value).toBeCloseTo(100, 1);
+    });
+
+    it('stays stable for stiff springs across jittery frame times', () => {
+      const spring = new SpringPhysics(0);
+      spring.target = 10;
+      spring.stiffness = 5000;
+      spring.damping = 30;
+      const dts = [0.016, 0.2, 0.016, 1.5, 0.033, 0.5];
+      for (const dt of dts) {
+        spring.update(dt);
+        expect(Number.isFinite(spring.value)).toBe(true);
+        expect(Math.abs(spring.value)).toBeLessThan(1000);
+      }
+      for (let i = 0; i < 600; i++) spring.update(0.016);
+      expect(spring.isAtRest()).toBe(true);
+    });
+
+    it('treats zero and negative dt as a no-op', () => {
+      const spring = new SpringPhysics(0);
+      spring.target = 100;
+      spring.update(0);
+      spring.update(-1);
+      expect(spring.value).toBe(0);
+      expect(spring.velocity).toBe(0);
+    });
+  });
+
   describe('Stress & Zero-GC validation', () => {
     it('handles 50,000 springs updating concurrently under 5ms/frame', () => {
       const count = 50000;

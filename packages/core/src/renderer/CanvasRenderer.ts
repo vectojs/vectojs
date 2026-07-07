@@ -41,11 +41,21 @@ export class CanvasRenderer implements IRenderer {
   private batchAlpha: number = 1;
   private batchCount: number = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  /**
+   * @param canvas - The target canvas. Its backing store is resized to the
+   *   logical size × devicePixelRatio.
+   * @param size - Explicit logical size. Without it the renderer assumes a
+   *   fullscreen canvas and sizes to the window — pass this for embedded /
+   *   custom-container canvases (the Scene does when `disableWindowResize` is
+   *   set) so the canvas's own dimensions aren't clobbered by the window's.
+   */
+  constructor(canvas: HTMLCanvasElement, size?: { width: number; height: number }) {
     const dpr = getDevicePixelRatio();
     // Fall back to the canvas's own size in SSR/Node where there is no window.
-    this.width = typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0;
-    this.height = typeof window !== 'undefined' ? window.innerHeight : canvas.height || 0;
+    this.width =
+      size?.width ?? (typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0);
+    this.height =
+      size?.height ?? (typeof window !== 'undefined' ? window.innerHeight : canvas.height || 0);
 
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;

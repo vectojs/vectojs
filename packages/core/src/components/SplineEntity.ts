@@ -167,6 +167,11 @@ export class SplineEntity extends Entity {
   private bounds: Bounds;
   private offscreen: HTMLCanvasElement | OffscreenCanvas | null = null;
   private baked = false;
+  /** Logical (CSS-pixel) size of the baked bitmap — the blit destination size. */
+  private bakedWidth = 0;
+  private bakedHeight = 0;
+  /** Gradient strokes can't be baked to a solid-color bitmap; they render per-frame. */
+  private readonly containsGradient: boolean;
   /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
   private polylines: Float32Array[] | null = null;
 
@@ -188,6 +193,10 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
+    const isGradient = (c: SplineColor) => c !== null && !Array.isArray(c);
+    this.containsGradient =
+      (this.doc.equations?.some((eq) => isGradient(eq.color_rgb)) ?? false) ||
+      (this.doc.paths?.some((p) => isGradient(p.color_rgb)) ?? false);
     // Enable a11y shadow layer by default so pointer events are dispatched.
     this.interactive = true;
   }
@@ -360,13 +369,21 @@ export class SplineEntity extends Entity {
     const pad = this.lineWidth + 2;
     const w = Math.max(1, Math.ceil(this.bounds.width) + pad * 2);
     const h = Math.max(1, Math.ceil(this.bounds.height) + pad * 2);
+    this.bakedWidth = w;
+    this.bakedHeight = h;
+    // Bake at devicePixelRatio: the main canvas is DPR-scaled, so a 1x bitmap
+    // would be upscaled (blurry) on HiDPI displays. Blitting uses w×h (logical).
+    const dpr =
+      typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number'
+        ? window.devicePixelRatio || 1
+        : 1;
     let canvas: HTMLCanvasElement | OffscreenCanvas;
     if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(w, h);
+      canvas = new OffscreenCanvas(w * dpr, h * dpr);
     } else if (typeof document !== 'undefined') {
       canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
     } else {
       return; // no DOM: caller falls back to per-frame strokes
     }
@@ -375,6 +392,7 @@ export class SplineEntity extends Entity {
       | OffscreenCanvasRenderingContext2D
       | null;
     if (!ctx) return;
+    ctx.scale(dpr, dpr);
     ctx.translate(pad - this.bounds.x, pad - this.bounds.y);
     ctx.lineWidth = this.lineWidth;
     ctx.lineCap = 'round';
@@ -419,7 +437,7 @@ export class SplineEntity extends Entity {
 
   public render(r: IRenderer): void {
     let rendered = false;
-    if (this.cache) {
+    if (this.cache && !this.containsGradient) {
       if (!this.baked) this.bake();
       if (this.offscreen) {
         const pad = this.lineWidth + 2;
@@ -427,8 +445,9 @@ export class SplineEntity extends Entity {
           this.offscreen as CanvasImageSource,
           this.bounds.x - pad,
           this.bounds.y - pad,
-          (this.offscreen as { width: number }).width,
-          (this.offscreen as { height: number }).height,
+          // Logical size, not the (DPR-scaled) bitmap size.
+          this.bakedWidth,
+          this.bakedHeight,
         );
         rendered = true;
       }
