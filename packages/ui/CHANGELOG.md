@@ -1,5 +1,13 @@
 # @vectojs/ui
 
+## 0.2.6
+
+### Patch Changes
+
+- f4c98f3: Slider now supports Arrow/Home/End keyboard input (making its slider role honest) and a configurable step for both pointer and keyboard, snapped on a min-anchored grid.
+- e45ec38: - `VirtualList` and `TreeView` scroll animations are now visible to the Scene's idle throttle / onDemand skip via `hasPendingAnimations()` — smooth scrolling no longer steps at 2 FPS (or stalls in onDemand mode) once the throttle engages. Same regression class as the earlier ScrollView fix.
+  - `Tooltip` restarts (instead of stacking) its show-delay timer on repeated hover, and cancels it on `destroy()`.
+
 ## 0.2.5
 
 ### Patch Changes
