@@ -164,3 +164,15 @@ describe('TextEntity', () => {
     expect(t.width).toBe(48); // two 'A' glyphs at 24 each
   });
 });
+
+describe('TextEntity content projection', () => {
+  it('exposes its text and font for the DOM content mirror', () => {
+    const e = new TextEntity('Findable canvas text', mockAtlas, 400, 24);
+    const proj = e.getContentProjection()!;
+    expect(proj.text).toBe('Findable canvas text');
+    expect(proj.font).toBe('24px sans-serif');
+
+    e.setText('changed');
+    expect(e.getContentProjection()!.text).toBe('changed');
+  });
+});

@@ -798,6 +798,145 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     });
   });
 
+  describe('static content projection', () => {
+    class ContentEntity extends SpyEntity {
+      public projText: string | null = 'Hello VectoJS';
+      public projSelectable = false;
+      constructor(id: string) {
+        super(id, null);
+        this.width = 200;
+        this.height = 40;
+      }
+      override getContentProjection() {
+        return this.projText === null
+          ? null
+          : {
+              text: this.projText,
+              font: '24px sans-serif',
+              selectable: this.projSelectable,
+            };
+      }
+    }
+
+    function makeDomScene(options: Record<string, unknown> = {}) {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      const scene = new Scene(canvas, options);
+      (scene as any).isRunning = true;
+      return scene;
+    }
+
+    function contentEl(scene: Scene, id: string): HTMLElement | undefined {
+      return (scene as any).contentElements.get(id);
+    }
+
+    it('projects opt-in text as a transparent, findable DOM node', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('txt');
+      e.setPosition(30, 50);
+      scene.add(e);
+
+      tick(scene);
+
+      const el = contentEl(scene, 'txt')!;
+      expect(el).toBeDefined();
+      expect(el.textContent).toBe('Hello VectoJS'); // real text — find-in-page/SEO see it
+      expect(el.style.color).toBe('transparent'); // canvas owns the pixels
+      expect(el.style.font).toContain('24px');
+      expect(el.style.left).toBe('30px');
+      expect(el.style.top).toBe('50px');
+      expect(el.style.width).toBe('200px');
+      expect(el.getAttribute('aria-hidden')).toBeNull(); // static text IS the SR content
+      scene.destroy();
+    });
+
+    it('marks the projection aria-hidden when the entity already has an interactive a11y node', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('int');
+      e.interactive = true;
+      scene.add(e);
+
+      tick(scene);
+
+      expect(contentEl(scene, 'int')!.getAttribute('aria-hidden')).toBe('true');
+      scene.destroy();
+    });
+
+    it('selectable gates pointer-events so canvas input is unaffected by default', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('sel');
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'sel')!.style.pointerEvents).toBe('none');
+
+      e.projSelectable = true;
+      tick(scene);
+      const el = contentEl(scene, 'sel')!;
+      expect(el.style.pointerEvents).toBe('auto');
+      expect(el.style.userSelect).toBe('text');
+      scene.destroy();
+    });
+
+    it('updates text in place and removes the node when projection goes null', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('mut');
+      scene.add(e);
+      tick(scene);
+
+      e.projText = 'changed';
+      tick(scene);
+      expect(contentEl(scene, 'mut')!.textContent).toBe('changed');
+
+      e.projText = null;
+      tick(scene);
+      expect(contentEl(scene, 'mut')).toBeUndefined();
+      scene.destroy();
+    });
+
+    it('hides fully off-viewport projections (viewport-lazy)', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('off');
+      e.setPosition(5000, 5000); // outside the 800x600 mock viewport
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'off')!.style.display).toBe('none');
+
+      e.setPosition(10, 10);
+      scene.markDirty();
+      tick(scene);
+      expect(contentEl(scene, 'off')!.style.display).not.toBe('none');
+      scene.destroy();
+    });
+
+    it('contentProjection: false disables the layer entirely', () => {
+      const scene = makeDomScene({ contentProjection: false });
+      const e = new ContentEntity('nope');
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'nope')).toBeUndefined();
+      scene.destroy();
+    });
+
+    it('destroy() removes projected content nodes', () => {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      document.body.appendChild(parentDiv);
+      const scene = new Scene(canvas);
+      (scene as any).isRunning = true;
+      const e = new ContentEntity('gone');
+      scene.add(e);
+      tick(scene);
+      const el = contentEl(scene, 'gone')!;
+      expect(el.isConnected).toBe(true);
+      scene.destroy();
+      expect(el.isConnected).toBe(false);
+      expect((scene as any).contentElements.size).toBe(0);
+      parentDiv.remove();
+    });
+  });
+
   it('clipChildren wraps the child render pass in a clip rect', () => {
     const scene = makeScene();
     mockCtx.clip.mockClear();

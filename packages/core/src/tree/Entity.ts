@@ -77,6 +77,27 @@ export interface BatchRect {
 }
 
 /**
+ * Static text an {@link Entity} exposes for DOM content projection, returned
+ * from {@link Entity.getContentProjection}. The Scene mirrors it as a
+ * transparent, position-synced DOM node so browser-native text machinery —
+ * find-in-page, screen readers, SEO crawlers, translation, `#:~:text=`
+ * fragments — operates on canvas-rendered text.
+ */
+export interface ContentProjection {
+  /** The plain text content as rendered (line breaks as `\n`). */
+  text: string;
+  /** CSS font shorthand matching the drawn glyphs, e.g. `'24px sans-serif'`. */
+  font?: string;
+  /** Line height in px, when it differs from the font's default. */
+  lineHeight?: number;
+  /**
+   * Allow native mouse selection on the projected text. Off by default so the
+   * projection never intercepts pointer input meant for the canvas.
+   */
+  selectable?: boolean;
+}
+
+/**
  * Semantic attributes an {@link Entity} can project into the accessibility /
  * automation shadow layer maintained by {@link Scene}.
  *
@@ -1042,6 +1063,20 @@ export abstract class Entity {
    * @returns The rectangle to batch, or `null` for the normal render path.
    */
   public getBatchRect(): BatchRect | null {
+    return null;
+  }
+
+  /**
+   * Opt into DOM content projection for entities that render static text.
+   * The {@link Scene} mirrors the returned text as a transparent DOM node
+   * positioned over the drawn glyphs, making canvas text findable (Ctrl+F),
+   * readable by screen readers and crawlers, translatable, and — when
+   * `selectable` is set — natively selectable. Returns `null` by default.
+   * Read on the a11y sync cadence, so text changes propagate automatically.
+   *
+   * @returns The projection descriptor, or `null` to project nothing.
+   */
+  public getContentProjection(): ContentProjection | null {
     return null;
   }
 
