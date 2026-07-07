@@ -11,7 +11,7 @@ import puppeteer from 'puppeteer-core';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
@@ -79,7 +79,15 @@ async function main() {
         res.end(PAGE);
         return;
       }
-      const filePath = join(pkgRoot, req.url!.split('?')[0]);
+      // Containment check: never serve outside the package dir, even though
+      // this server is ephemeral and bound to localhost.
+      const pathname = new URL(req.url!, 'http://localhost').pathname;
+      const filePath = resolve(pkgRoot, '.' + pathname);
+      if (filePath !== pkgRoot && !filePath.startsWith(pkgRoot + sep)) {
+        res.statusCode = 403;
+        res.end('forbidden');
+        return;
+      }
       const body = await readFile(filePath);
       res.setHeader(
         'content-type',
