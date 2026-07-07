@@ -18,7 +18,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "0.2.6",
+      "version": "0.2.7",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.9",
         "esbuild": "^0.21.5",
@@ -26,6 +26,21 @@
         "puppeteer-core": "^22.12.1",
         "tsup": "^8.3.5",
         "vitest": "^4.1.9",
+      },
+    },
+    "packages/devtools": {
+      "name": "@vectojs/devtools",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@vectojs/core": "workspace:*",
+        "@vectojs/ui": "workspace:*",
+        "jsdom": "^29.1.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.9",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=0.2.7",
+        "@vectojs/ui": ">=0.2.7",
       },
     },
     "packages/three": {
@@ -499,6 +514,8 @@
     "@types/yauzl": ["@types/yauzl@2.10.3", "", { "dependencies": { "@types/node": "*" } }, "sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q=="],
 
     "@vectojs/core": ["@vectojs/core@workspace:packages/core"],
+
+    "@vectojs/devtools": ["@vectojs/devtools@workspace:packages/devtools"],
 
     "@vectojs/three": ["@vectojs/three@workspace:packages/three"],
 
