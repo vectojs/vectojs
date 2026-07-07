@@ -206,6 +206,11 @@ export class Scene {
   /** DOM nodes mirroring static text content, keyed by entity id. */
   private contentElements: Map<string, HTMLElement> = new Map();
   private contentProjectionEnabled: boolean = true;
+  // Animation/interactive flags collected during the render walk (tree-walk
+  // fusion): the loop reads last frame's answers instead of re-walking the
+  // tree up to 4× per tick. Start true so the first tick stays conservative.
+  private frameHadAnimation = true;
+  private frameHadInteractive = true;
   private resizeHandler: () => void;
   private focusedA11yElement: HTMLElement | null = null;
   private caretBlinkTimer: any = null;
@@ -639,23 +644,7 @@ export class Scene {
   }
 
   /** True when any node in the subtree has a pending animation. */
-  private hasAnyPendingAnimation(node: Entity): boolean {
-    if (node.hasPendingAnimations()) return true;
-    for (const child of node.children) {
-      if (this.hasAnyPendingAnimation(child)) return true;
-    }
-    return false;
-  }
-
   /** True when any node in the subtree is interactive (drives a11y sync). */
-  private hasAnyInteractive(node: Entity): boolean {
-    if (node.interactive) return true;
-    for (const child of node.children) {
-      if (this.hasAnyInteractive(child)) return true;
-    }
-    return false;
-  }
-
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
@@ -1323,10 +1312,11 @@ export class Scene {
     // mode) and the `always`-mode 2 FPS auto-throttle (opt-out via
     // `autoThrottle` — it must NOT gate the onDemand skip, or disabling the
     // throttle would silently turn onDemand into per-frame rendering).
-    const isIdle =
-      !this.dirty &&
-      !this.hasAnyPendingAnimation(this.root) &&
-      !this.hasAnyPendingAnimation(this.overlayRoot);
+    // Flags come from the last rendered frame (collected during the render
+    // walk). Skipped frames change no state, so they stay valid while idle;
+    // anything that starts motion marks the scene dirty, which wakes the loop
+    // and refreshes them on the next rendered frame.
+    const isIdle = !this.dirty && !this.frameHadAnimation;
 
     if (isIdle && this.autoThrottle && this.renderMode === 'always' && this.maxFPS > 0) {
       cap = Math.min(cap, 2);
@@ -1360,11 +1350,9 @@ export class Scene {
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
     // Performance Throttling: If an animation is currently flying, we freeze A11y writes
     // to prevent DOM reflow from thrashing Canvas render loop. We sync once it's at rest.
-    const hasActiveAnimation =
-      this.hasAnyPendingAnimation(this.root) || this.hasAnyPendingAnimation(this.overlayRoot);
+    const hasActiveAnimation = this.frameHadAnimation;
 
-    const hasInteractive =
-      this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+    const hasInteractive = this.frameHadInteractive;
     // Content projection rides the same walk. It must run even with zero
     // existing mirrors (new text entities need discovery), so enabling the
     // option opts into the walk; per-node writes are all dirty-checked, so an
@@ -1571,6 +1559,11 @@ export class Scene {
     const vw = this.width;
     const vh = this.height;
 
+    // Tree-walk fusion: animation/interactive state is collected during this
+    // walk (before any cull/portal early-return) so the loop doesn't re-walk.
+    let walkHadAnimation = false;
+    let walkHadInteractive = false;
+
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
     // for large scenes. Off-viewport entities with a known getBounds() are culled.
@@ -1584,7 +1577,11 @@ export class Scene {
       pf: number,
       parentOpacity: number,
     ) => {
-      if (isMainRenderer) node.update(dt, time);
+      if (isMainRenderer) {
+        node.update(dt, time);
+        if (!walkHadAnimation && node.hasPendingAnimations()) walkHadAnimation = true;
+        if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
+      }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
       const cos = Math.cos(node.rotation);
@@ -1743,7 +1740,11 @@ export class Scene {
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
-    if (isMainRenderer) this.reconcilePortals();
+    if (isMainRenderer) {
+      this.frameHadAnimation = walkHadAnimation;
+      this.frameHadInteractive = walkHadInteractive;
+      this.reconcilePortals();
+    }
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
