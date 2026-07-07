@@ -175,4 +175,13 @@ describe('TextEntity content projection', () => {
     e.setText('changed');
     expect(e.getContentProjection()!.text).toBe('changed');
   });
+
+  it('setTextAlign and setHyphenator reflow through the layout engine', () => {
+    const e = new TextEntity('aa bb cc dd', mockAtlas, 400, 24);
+    expect(e.setTextAlign('justify')).toBe(e);
+    expect((e as any).layout.textAlign).toBe('justify');
+    const hyph = (w: string) => [w];
+    expect(e.setHyphenator(hyph)).toBe(e);
+    expect((e as any).layout.hyphenate).toBe(hyph);
+  });
 });
