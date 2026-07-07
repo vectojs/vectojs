@@ -27,4 +27,63 @@ describe('Slider', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(markDirty).toHaveBeenCalledTimes(1);
   });
+
+  function pressKey(slider: Slider, key: string) {
+    slider.emit('keydown', {
+      nativeEvent: { key },
+      preventDefault: vi.fn(),
+    });
+  }
+
+  it('arrow keys step the value and Home/End jump to the bounds', () => {
+    const slider = new Slider({ min: 0, max: 100, value: 50 });
+
+    pressKey(slider, 'ArrowRight');
+    expect(slider.value).toBe(51);
+    pressKey(slider, 'ArrowUp');
+    expect(slider.value).toBe(52);
+    pressKey(slider, 'ArrowLeft');
+    pressKey(slider, 'ArrowDown');
+    expect(slider.value).toBe(50);
+
+    pressKey(slider, 'End');
+    expect(slider.value).toBe(100);
+    pressKey(slider, 'ArrowRight'); // clamped at max
+    expect(slider.value).toBe(100);
+    pressKey(slider, 'Home');
+    expect(slider.value).toBe(0);
+    pressKey(slider, 'ArrowLeft'); // clamped at min
+    expect(slider.value).toBe(0);
+  });
+
+  it('honors a fractional step for keyboard and pointer input', () => {
+    const slider = new Slider({ min: 0, max: 1, value: 0.5, step: 0.1, width: 200 });
+
+    pressKey(slider, 'ArrowRight');
+    expect(slider.value).toBeCloseTo(0.6);
+
+    // Pointer at 3/4 of the track = raw 0.75 → snaps to nearest step 0.8
+    slider.emit('pointerdown', { localX: 150 });
+    expect(slider.value).toBeCloseTo(0.8);
+  });
+
+  it('emits change and marks the scene dirty on keyboard steps', () => {
+    const markDirty = vi.fn();
+    const onChange = vi.fn();
+    const slider = new Slider({ min: 0, max: 10, value: 5, onChange });
+    (slider as unknown as { _scene: unknown })._scene = { markDirty };
+
+    pressKey(slider, 'ArrowRight');
+    expect(onChange).toHaveBeenCalledWith(6);
+    expect(markDirty).toHaveBeenCalledTimes(1);
+
+    pressKey(slider, 'Home');
+    expect(onChange).toHaveBeenCalledWith(0);
+  });
+
+  it('exposes the step through a11y attributes when set', () => {
+    const slider = new Slider({ min: 0, max: 1, step: 0.25 });
+    // role stays slider; keyboard support makes the role honest
+    expect(slider.getA11yAttributes().role).toBe('slider');
+  });
 });
