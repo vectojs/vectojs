@@ -32,4 +32,11 @@ describe('Text streaming (流式打字机)', () => {
     t.render(r);
     expect(lines).toEqual(['line1', 'line2']);
   });
+
+  it('exposes its text for DOM content projection', () => {
+    const t = new Text('Findable ui text', { font: '18px sans-serif' });
+    const proj = t.getContentProjection()!;
+    expect(proj.text).toBe('Findable ui text');
+    expect(proj.font).toBe('18px sans-serif');
+  });
 });
