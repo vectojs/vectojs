@@ -255,18 +255,25 @@ export class SVGRenderer implements IRenderer {
       this.currentPath.push(`L ${xs} ${ys}`);
     }
 
-    const deltaAngle = Math.abs(endAngle - startAngle);
-    if (deltaAngle >= Math.PI * 2 - 0.0001) {
+    // Canvas sweep semantics: the arc travels from startAngle to endAngle in
+    // the requested direction. A full circle only happens when the signed
+    // delta in that direction reaches 2π; everything else is normalized into
+    // [0, 2π) — e.g. clockwise 0 → -π/2 travels 3π/2, not π/2.
+    const TWO_PI = Math.PI * 2;
+    const directedDelta = ccw ? startAngle - endAngle : endAngle - startAngle;
+    const sweepAngle =
+      directedDelta >= TWO_PI ? TWO_PI : ((directedDelta % TWO_PI) + TWO_PI) % TWO_PI;
+    const sweep = ccw ? 0 : 1;
+
+    if (sweepAngle >= TWO_PI - 0.0001) {
       const xm = x - r * Math.cos(startAngle);
       const ym = y - r * Math.sin(startAngle);
-      const sweep = ccw ? 0 : 1;
       this.currentPath.push(`A ${r} ${r} 0 0 ${sweep} ${xm} ${ym}`);
       this.currentPath.push(`A ${r} ${r} 0 0 ${sweep} ${xs} ${ys}`);
     } else {
       const xe = x + r * Math.cos(endAngle);
       const ye = y + r * Math.sin(endAngle);
-      const largeArc = deltaAngle > Math.PI ? 1 : 0;
-      const sweep = ccw ? 0 : 1;
+      const largeArc = sweepAngle > Math.PI ? 1 : 0;
       this.currentPath.push(`A ${r} ${r} 0 ${largeArc} ${sweep} ${xe} ${ye}`);
     }
   }

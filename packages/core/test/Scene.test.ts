@@ -11,6 +11,8 @@ const mockCtx = {
   rotate: vi.fn(),
   fillText: vi.fn(),
   beginPath: vi.fn(),
+  moveTo: vi.fn(),
+  arc: vi.fn(),
   fill: vi.fn(),
   rect: vi.fn(),
   clip: vi.fn(),
@@ -626,6 +628,118 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     tick(scene);
     tick(scene);
     expect(e.renders).toBe(2); // still rendering due to pending animation
+  });
+
+  it('markDirty() called inside update() survives to the next frame', () => {
+    // The naive self-animating pattern: update() marks the scene dirty each
+    // frame. The dirty flag must be consumed *before* the update/render pass,
+    // otherwise marks made during update() are silently wiped at end of tick
+    // and the entity freezes after one frame.
+    class SelfDirtyEntity extends SpyEntity {
+      public updates = 0;
+      override update() {
+        this.updates++;
+        this.scene?.markDirty();
+      }
+    }
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SelfDirtyEntity('sd', null) as SelfDirtyEntity;
+    scene.add(e);
+
+    tick(scene); // frame 1: initial dirty
+    tick(scene); // frame 2: dirty re-armed from inside update()
+    tick(scene); // frame 3: same
+    expect(e.renders).toBe(3);
+    expect(e.updates).toBe(3);
+  });
+
+  it('markDirty() between frames still triggers exactly one onDemand render', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // initial dirty consumed
+    scene.markDirty();
+    tick(scene); // renders once
+    tick(scene); // idle again — must skip
+    expect(e.renders).toBe(2);
+  });
+
+  describe('CPU particle fallback coordinate space', () => {
+    // One live perpetual particle at local (10, 20), size 4.
+    function makeParticleEntity() {
+      const e = new ComputeParticleEntity({ maxParticles: 1, size: 4 });
+      e.setOrigins([10, 20]);
+      e.particleData[6] = 4; // size (setOrigins does not populate it)
+      e.particleData[7] = -1; // perpetual life
+      return e;
+    }
+
+    it('GL point branch transforms particle positions to world space', () => {
+      const scene = makeScene();
+      const addCircle = vi.fn();
+      (scene as any).pointRenderer = {
+        addCircle,
+        addRect: vi.fn(),
+        begin: vi.fn(),
+        flush: vi.fn(),
+      };
+      const e = makeParticleEntity();
+      e.setPosition(100, 50);
+      e.scaleX = 2;
+      e.scaleY = 2;
+      scene.add(e);
+
+      tick(scene);
+
+      expect(addCircle).toHaveBeenCalledTimes(1);
+      const [x, y, size] = addCircle.mock.calls[0];
+      // world = entity T*S applied to local (10, 20); size scaled by world scale
+      expect(x).toBeCloseTo(100 + 2 * 10);
+      expect(y).toBeCloseTo(50 + 2 * 20);
+      expect(size).toBeCloseTo(4 * 2);
+    });
+
+    it('non-similarity transforms fall back to the canvas path (local space)', () => {
+      const scene = makeScene();
+      const addCircle = vi.fn();
+      (scene as any).pointRenderer = {
+        addCircle,
+        addRect: vi.fn(),
+        begin: vi.fn(),
+        flush: vi.fn(),
+      };
+      const e = makeParticleEntity();
+      e.scaleX = 2; // non-uniform: one radius cannot represent the ellipse
+      e.scaleY = 1;
+      scene.add(e);
+
+      tick(scene);
+
+      // Must not go through the GL point layer; the Canvas branch draws under
+      // the entity's own transform instead.
+      expect(addCircle).not.toHaveBeenCalled();
+    });
+
+    it('mouse repulsion compares the mouse in entity-local space', () => {
+      const scene = makeScene();
+      const e = makeParticleEntity();
+      e.setPosition(500, 300); // far from origin so scene-space distance > 120
+      // particle at local (10, 20) with origin there too → no spring force
+      scene.add(e);
+      // Scene-space mouse right next to the particle's world position (510, 325)
+      (scene as any).mouseX = 510;
+      (scene as any).mouseY = 322;
+
+      tick(scene);
+
+      // Local mouse (10, 22) is 2px from the particle (10, 20): repulsion must
+      // push it away (negative y velocity). Comparing scene-space mouse to
+      // local-space particles sees a ~580px distance and applies no force.
+      expect(e.particleData[3]).toBeLessThan(0);
+    });
   });
 
   it('clipChildren wraps the child render pass in a clip rect', () => {
