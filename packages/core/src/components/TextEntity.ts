@@ -1,4 +1,4 @@
-import { Entity } from '../tree/Entity';
+import { Entity, type ContentProjection } from '../tree/Entity';
 import { LayoutEngine, type GlyphMeasurer, type PreparedText } from '../layout/LayoutEngine';
 import { createCanvasMeasurer } from '../layout/measure';
 import { IRenderer } from '../renderer/IRenderer';
@@ -41,6 +41,16 @@ export class TextEntity extends Entity {
 
     this.on('hover', () => (this.isHovered = true));
     this.on('pointerleave', () => (this.isHovered = false));
+  }
+
+  /**
+   * Mirror the rendered text into the DOM content layer: find-in-page, screen
+   * readers, crawlers, and translation see the same string the canvas draws.
+   */
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.text) return null;
+    // 'sans-serif' matches the shared measurer and the fillText fallback.
+    return { text: this.text, font: `${this.fontSize}px sans-serif` };
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Entity } from '../tree/Entity';
+import { Entity, type ContentProjection } from '../tree/Entity';
 import { MSDFFont } from './MSDFFont';
 import { LayoutWorkerManager } from '../layout/LayoutWorkerManager';
 
@@ -84,6 +84,19 @@ export class MSDFTextEntity extends Entity {
         this.scene?.markDirty();
       },
     });
+  }
+
+  /**
+   * Mirror the rendered text into the DOM content layer: find-in-page, screen
+   * readers, crawlers, and translation see the same string the canvas draws.
+   */
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.text) return null;
+    return {
+      text: this.text,
+      font: `${this.fontSize}px ${this.fallbackFont}`,
+      lineHeight: this.lineHeight,
+    };
   }
 
   public isPointInside(globalX: number, globalY: number): boolean {

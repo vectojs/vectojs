@@ -93,6 +93,14 @@ export interface SceneOptions {
    * and not marked dirty) to save power/CPU. Default is `true`.
    */
   autoThrottle?: boolean;
+  /**
+   * Mirror static text from entities implementing
+   * {@link Entity.getContentProjection} as transparent, position-synced DOM
+   * nodes, so find-in-page, screen readers, crawlers, and translation work on
+   * canvas-rendered text. Default is `true`; disable for purely decorative
+   * scenes to skip the sync walk.
+   */
+  contentProjection?: boolean;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -195,6 +203,9 @@ export class Scene {
   // server-side (e.g. headless layout / vector export) without jsdom.
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
+  /** DOM nodes mirroring static text content, keyed by entity id. */
+  private contentElements: Map<string, HTMLElement> = new Map();
+  private contentProjectionEnabled: boolean = true;
   private resizeHandler: () => void;
   private focusedA11yElement: HTMLElement | null = null;
   private caretBlinkTimer: any = null;
@@ -275,6 +286,7 @@ export class Scene {
     this.autoThrottle = options.autoThrottle ?? true;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
+    this.contentProjectionEnabled = options.contentProjection ?? true;
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -446,6 +458,11 @@ export class Scene {
    * @param entity - The subtree whose shadow nodes should be removed.
    */
   public detachA11y(entity: Entity): void {
+    const contentEl = this.contentElements.get(entity.id);
+    if (contentEl) {
+      contentEl.remove();
+      this.contentElements.delete(entity.id);
+    }
     this.removeA11yRecursively(entity);
   }
 
@@ -500,6 +517,8 @@ export class Scene {
     this.a11yRoot?.remove();
     this.portalRoot?.remove();
     this.a11yElements.clear();
+    for (const el of this.contentElements.values()) el.remove();
+    this.contentElements.clear();
     this.pointRenderer?.destroy();
     // Release the main renderer's backend (e.g. WebGLRenderer + GL context)
     // before GC — prevents context leakage across SPA/XR recreate cycles.
@@ -935,10 +954,114 @@ export class Scene {
       }
     }
 
+    this.syncContentProjection(node);
+
     for (const child of node.children) this.syncA11y(child);
     if (node === this.root) {
       for (const overlay of this.overlayRoot.children) this.syncA11y(overlay);
     }
+  }
+
+  /**
+   * Mirror one entity's static text ({@link Entity.getContentProjection}) as a
+   * transparent DOM node positioned over the drawn glyphs. Runs on the a11y
+   * sync cadence; all writes are dirty-checked. Off-viewport projections are
+   * hidden (`display: none`) so text-heavy scenes only materialize what is
+   * visible to the browser's text machinery anyway.
+   */
+  private syncContentProjection(node: Entity): void {
+    if (!this.contentProjectionEnabled || !this.a11yRoot) return;
+    const projection = node.getContentProjection();
+    let el = this.contentElements.get(node.id);
+
+    if (!projection || !projection.text) {
+      if (el) {
+        el.remove();
+        this.contentElements.delete(node.id);
+      }
+      return;
+    }
+
+    if (!el) {
+      el = document.createElement('div');
+      el.setAttribute('data-vecto-content', node.id);
+      const s = el.style;
+      s.position = 'absolute';
+      s.transformOrigin = '0 0';
+      s.margin = '0';
+      s.padding = '0';
+      // The canvas owns the pixels; the DOM node only carries the text.
+      s.color = 'transparent';
+      s.whiteSpace = 'pre-wrap';
+      s.overflow = 'hidden';
+      s.zIndex = '0'; // beneath the interactive a11y elements
+      // Keep scroll containers working when the pointer is over selectable text.
+      el.addEventListener(
+        'wheel',
+        (e) => {
+          node.dispatchEvent(new VectoJSEvent('wheel', node, e));
+        },
+        { passive: false },
+      );
+      this.a11yRoot.appendChild(el);
+      this.contentElements.set(node.id, el);
+    }
+
+    if (el.textContent !== projection.text) el.textContent = projection.text;
+
+    const font = projection.font ?? '';
+    if (el.style.font !== font) el.style.font = font;
+    const lineHeight = projection.lineHeight !== undefined ? `${projection.lineHeight}px` : '';
+    if (el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
+
+    // Interactive entities already project an a11y node — hide the text copy
+    // from screen readers so nothing is announced twice. Static text has no
+    // other semantic presence, so it stays exposed.
+    const hidden = node.interactive ? 'true' : null;
+    if (el.getAttribute('aria-hidden') !== hidden) {
+      if (hidden) el.setAttribute('aria-hidden', hidden);
+      else el.removeAttribute('aria-hidden');
+    }
+
+    // Selection is opt-in: pointer-events on the text would otherwise
+    // intercept canvas input over every text block.
+    const selectable = projection.selectable === true;
+    const pointerEvents = selectable ? 'auto' : 'none';
+    if (el.style.pointerEvents !== pointerEvents) {
+      el.style.pointerEvents = pointerEvents;
+      el.style.userSelect = selectable ? 'text' : 'none';
+      el.style.cursor = selectable ? 'text' : '';
+    }
+
+    // Geometry: same threading as the interactive branch.
+    const { a, b, c, d, e, f } = node.getWorldTransform();
+    el.style.left = `${e}px`;
+    el.style.top = `${f}px`;
+    if (node.width > 0) el.style.width = `${node.width}px`;
+    if (node.height > 0) el.style.height = `${node.height}px`;
+    el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+
+    // Viewport-lazy: hide projections whose local box is fully off-screen.
+    let visible = true;
+    if (node.width > 0 && node.height > 0) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < 4; i++) {
+        const lx = i & 1 ? node.width : 0;
+        const ly = i & 2 ? node.height : 0;
+        const wx = a * lx + c * ly + e;
+        const wy = b * lx + d * ly + f;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+        if (wy < minY) minY = wy;
+        if (wy > maxY) maxY = wy;
+      }
+      visible = maxX >= 0 && minX <= this.width && maxY >= 0 && minY <= this.height;
+    }
+    const display = visible ? '' : 'none';
+    if (el.style.display !== display) el.style.display = display;
   }
 
   private enforceA11yDomOrder(): void {
@@ -1242,15 +1365,20 @@ export class Scene {
 
     const hasInteractive =
       this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+    // Content projection rides the same walk. It must run even with zero
+    // existing mirrors (new text entities need discovery), so enabling the
+    // option opts into the walk; per-node writes are all dirty-checked, so an
+    // unchanged frame costs only the traversal.
+    const wantsContentSync = this.contentProjectionEnabled;
     const shouldSyncInterval =
       this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
 
     if (
-      (hasInteractive || this.a11yElements.size > 0) &&
+      (hasInteractive || this.a11yElements.size > 0 || wantsContentSync) &&
       (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
     ) {
       this.lastA11ySync = time;
-      if (hasInteractive) {
+      if (hasInteractive || wantsContentSync) {
         this.syncA11y(this.root);
       }
       this.enforceA11yDomOrder();

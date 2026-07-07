@@ -252,3 +252,17 @@ test('MSDFTextEntity falls back to Canvas for a sheared world transform', () => 
   expect(addGlyph).not.toHaveBeenCalled();
   expect(renderer.fillText).toHaveBeenCalledOnce();
 });
+
+test('MSDFTextEntity exposes its text and font for the DOM content mirror', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('MSDF findable', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 32,
+    lineHeight: 40,
+  });
+  const proj = entity.getContentProjection()!;
+  expect(proj.text).toBe('MSDF findable');
+  expect(proj.font).toBe('32px sans-serif');
+  expect(proj.lineHeight).toBe(40);
+});
