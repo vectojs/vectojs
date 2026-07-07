@@ -69,6 +69,18 @@ describe('Entity animation', () => {
     expect(e.hasPendingAnimations()).toBe(false);
   });
 
+  it('destroy() settles pending animateTo promises and clears drivers', async () => {
+    const e = new TestEntity();
+    const pending = e.animateTo({ x: 100 }, { duration: 1000, easing: 'linear' });
+    e.update(16, 16);
+
+    e.destroy();
+
+    await pending; // must resolve, not hang forever
+    expect((e as unknown as { _drivers: Map<string, unknown> })._drivers.size).toBe(0);
+    expect(e.hasPendingAnimations()).toBe(false);
+  });
+
   it('legacy animate(props, ms) still tweens with the easeOutQuad curve', () => {
     const e = new TestEntity();
     e.animate({ x: 100 }, 100);

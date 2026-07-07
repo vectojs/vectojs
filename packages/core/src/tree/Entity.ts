@@ -766,6 +766,12 @@ export abstract class Entity {
    */
   public destroy(): void {
     this.animations = [];
+    // Settle in-flight property drivers so promises returned by
+    // animateTo/springTo resolve instead of hanging forever.
+    for (const driver of this._drivers.values()) {
+      this._settleDriver(driver);
+    }
+    this._drivers.clear();
     this.listeners.clear();
     this.captureListeners.clear();
     if (this.parent) {
