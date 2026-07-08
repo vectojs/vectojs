@@ -36,3 +36,7 @@ Thumbs.db
 
 # Brainstorming sessions
 .superpowers/
+
+# Local agent skill installs
+.claude/skills/
+.agents/
