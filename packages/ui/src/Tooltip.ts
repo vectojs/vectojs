@@ -30,6 +30,9 @@ export class Tooltip extends Overlay {
   private _bg: string;
   private _delay: number;
   private _timer: ReturnType<typeof setTimeout> | null = null;
+  private _target: Entity;
+  private _onHover: () => void;
+  private _onLeave: () => void;
 
   constructor(opts: TooltipOptions) {
     const estimatedW = Math.min(opts.content.length * 7.5 + 20, 320);
@@ -44,22 +47,25 @@ export class Tooltip extends Overlay {
     this._textColor = opts.color ?? '#e2e8f0';
     this._bg = opts.bg ?? 'rgba(15,15,30,0.92)';
     this._delay = opts.delay ?? 320;
+    this._target = opts.target;
 
-    opts.target.on('hover', () => {
+    this._onHover = () => {
       // Re-hover before the delay elapsed: restart instead of stacking timers.
       if (this._timer) clearTimeout(this._timer);
       this._timer = setTimeout(() => {
         this._timer = null;
         this.showAt(opts.target);
       }, this._delay);
-    });
-    opts.target.on('pointerleave', () => {
+    };
+    this._onLeave = () => {
       if (this._timer) {
         clearTimeout(this._timer);
         this._timer = null;
       }
       this.hide();
-    });
+    };
+    opts.target.on('hover', this._onHover);
+    opts.target.on('pointerleave', this._onLeave);
   }
 
   public override destroy(): void {
@@ -67,6 +73,10 @@ export class Tooltip extends Overlay {
       clearTimeout(this._timer);
       this._timer = null;
     }
+    // Otherwise the (still-alive) target keeps a closure referencing this
+    // destroyed tooltip, and a later hover would resurrect it into the tree.
+    this._target.off('hover', this._onHover);
+    this._target.off('pointerleave', this._onLeave);
     super.destroy();
   }
 

@@ -132,6 +132,24 @@ describe('UI 0.1.1 Components', () => {
       expect(renderedIndices).toContain(6);
       expect(renderedIndices).not.toContain(8);
     });
+
+    it('renders nothing for an empty item list, instead of calling renderItem(undefined, 0)', () => {
+      const renderItem = vi.fn(() => {
+        const ent = new Entity();
+        ent.height = 20;
+        return ent;
+      });
+      const list = new VirtualList({
+        items: [],
+        renderItem,
+        estimatedRowHeight: 20,
+        width: 200,
+        height: 100,
+      });
+
+      expect(renderItem).not.toHaveBeenCalled();
+      expect(list.children.length).toBe(0);
+    });
   });
 
   describe('TreeView', () => {
@@ -222,6 +240,23 @@ describe('UI 0.1.1 Components', () => {
       expect(tooltip.visible).toBe(false);
     });
 
+    it('detaches its target listeners on destroy, instead of leaking a reference to itself', async () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const target = new Entity('btn');
+      scene.add(target);
+
+      const tooltip = new Tooltip({ target, content: 'Help info', delay: 0 });
+      scene.add(tooltip);
+      tooltip.destroy();
+
+      // A destroyed tooltip must not be resurrected into the tree by an event
+      // its (still-alive) target keeps emitting.
+      target.emit('hover', {});
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(tooltip.parent).toBeNull();
+    });
+
     it('toggles Popover on target click', () => {
       const canvas = document.createElement('canvas');
       const scene = new Scene(canvas);
@@ -237,6 +272,22 @@ describe('UI 0.1.1 Components', () => {
 
       target.emit('click', {});
       expect(popover.visible).toBe(false);
+    });
+
+    it('detaches its target click listener on destroy, instead of leaking a reference to itself', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const target = new Entity('btn');
+      scene.add(target);
+
+      const popover = new Popover({ target, width: 100, height: 100 });
+      scene.add(popover);
+      popover.destroy();
+
+      // A destroyed popover must not be resurrected into the tree by a click
+      // its (still-alive) target keeps emitting.
+      target.emit('click', {});
+      expect(popover.parent).toBeNull();
     });
 
     it('displays ContextMenu at point', () => {
