@@ -53,6 +53,7 @@ export class TreeView extends UIComponent {
   private _rows: FlatRow[] = [];
   private _expanded = new Set<string>();
   private _loaded = new Map<string, TreeNode[]>();
+  private _loading = new Set<string>();
   private _selectedId: string | null = null;
   private _hoverIdx = -1;
   private _scrollY = 0;
@@ -102,7 +103,8 @@ export class TreeView extends UIComponent {
         const eager = Array.isArray(node.children) && node.children.length > 0;
         const hasChildren = lazy || eager || this._loaded.has(node.id);
         const expanded = this._expanded.has(node.id);
-        this._rows.push({ node, depth, expanded, loading: false, hasChildren });
+        const loading = this._loading.has(node.id);
+        this._rows.push({ node, depth, expanded, loading, hasChildren });
         if (expanded) {
           const cached = this._loaded.get(node.id);
           if (cached) walk(cached, depth + 1);
@@ -132,11 +134,17 @@ export class TreeView extends UIComponent {
       this._onExpand?.(row.node);
       // Trigger lazy load on first expand
       if (typeof row.node.children === 'function' && !this._loaded.has(id)) {
-        row.loading = true;
+        // Tracked on the TreeView itself, not the FlatRow object: a sibling
+        // lazy load resolving in the meantime calls _buildRows(), which
+        // replaces `this._rows` with fresh objects — mutating `row.loading`
+        // directly would silently stop affecting anything the moment that
+        // happens, since `row` still points at the old, now-detached object.
+        this._loading.add(id);
+        this._buildRows();
         this.scene?.markDirty();
         const children = await (row.node.children as () => Promise<TreeNode[]>)();
         this._loaded.set(id, children);
-        row.loading = false;
+        this._loading.delete(id);
       }
     }
     this._buildRows();
@@ -183,7 +191,20 @@ export class TreeView extends UIComponent {
       this.scene?.markDirty();
     } else {
       this._scrollY = this._targetY;
+      this._velY = 0;
     }
+  }
+
+  /**
+   * Keep the hand-rolled scroll integrator visible to the Scene's idle
+   * throttle / onDemand skip — see the identical override in VirtualList.
+   */
+  public override hasPendingAnimations(): boolean {
+    return (
+      super.hasPendingAnimations() ||
+      Math.abs(this._targetY - this._scrollY) > 0.05 ||
+      Math.abs(this._velY) > 0.05
+    );
   }
 
   public render(r: IRenderer): void {

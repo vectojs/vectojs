@@ -61,6 +61,19 @@ describe('CanvasRenderer', () => {
     expect(mockCtx.scale).toHaveBeenCalledWith(2, 2);
   });
 
+  it('constructor sets the CSS size on HiDPI so the canvas displays at logical size', () => {
+    // Backing store is logical × dpr; without a CSS size the canvas would
+    // *display* at the backing-store size — doubled on a DPR-2 screen.
+    const canvas = { ...mockCanvas, width: 0, height: 0, style: { width: '', height: '' } };
+    (mockCtx as any).canvas = canvas;
+    new CanvasRenderer(canvas as any, { width: 400, height: 300 });
+    expect(canvas.width).toBe(800); // 400 × 2 backing store
+    expect(canvas.height).toBe(600);
+    expect(canvas.style.width).toBe('400px'); // displayed at logical size
+    expect(canvas.style.height).toBe('300px');
+    (mockCtx as any).canvas = mockCanvas;
+  });
+
   it('resize() updates size and canvas style', () => {
     mockCtx.scale.mockClear();
     const renderer = new CanvasRenderer(mockCanvas as any);

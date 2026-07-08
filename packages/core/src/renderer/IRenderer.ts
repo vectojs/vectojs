@@ -196,6 +196,14 @@ export interface IRenderer {
   ): any;
 
   /**
+   * Present the completed frame, called by {@link Scene} exactly once at the
+   * end of each render pass (after the final {@link flush}). Retained-scene
+   * backends (e.g. `@vectojs/three`) do their single real GL render here;
+   * immediate-mode backends (Canvas2D, SVG) don't need it. Optional.
+   */
+  present?(): void;
+
+  /**
    * Release any backend-owned GPU textures / GL contexts / caches.
    *
    * Called by {@link Scene.destroy()} so renderers that hold scarce resources

@@ -124,4 +124,14 @@ describe('RichText', () => {
     );
     expect(() => rt.render(r)).not.toThrow();
   });
+
+  it('exposes concatenated span text for DOM content projection', () => {
+    const rt = new RichText(
+      [{ text: 'The ' }, { text: 'quick', style: { bold: true } }, { text: ' fox' }],
+      { maxWidth: 240 },
+    );
+    const proj = rt.getContentProjection()!;
+    expect(proj.text).toBe('The quick fox'); // rendered text, no markup noise
+    expect(proj.font).toBe(rt.font);
+  });
 });

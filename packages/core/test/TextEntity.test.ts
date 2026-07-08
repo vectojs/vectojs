@@ -164,3 +164,24 @@ describe('TextEntity', () => {
     expect(t.width).toBe(48); // two 'A' glyphs at 24 each
   });
 });
+
+describe('TextEntity content projection', () => {
+  it('exposes its text and font for the DOM content mirror', () => {
+    const e = new TextEntity('Findable canvas text', mockAtlas, 400, 24);
+    const proj = e.getContentProjection()!;
+    expect(proj.text).toBe('Findable canvas text');
+    expect(proj.font).toBe('24px sans-serif');
+
+    e.setText('changed');
+    expect(e.getContentProjection()!.text).toBe('changed');
+  });
+
+  it('setTextAlign and setHyphenator reflow through the layout engine', () => {
+    const e = new TextEntity('aa bb cc dd', mockAtlas, 400, 24);
+    expect(e.setTextAlign('justify')).toBe(e);
+    expect((e as any).layout.textAlign).toBe('justify');
+    const hyph = (w: string) => [w];
+    expect(e.setHyphenator(hyph)).toBe(e);
+    expect((e as any).layout.hyphenate).toBe(hyph);
+  });
+});

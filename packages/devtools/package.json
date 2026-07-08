@@ -1,0 +1,36 @@
+{
+  "name": "@vectojs/devtools",
+  "version": "0.1.1",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "In-page Virtual Math Tree inspector for VectoJS scenes — entity picking, live tree view, and state readout, itself rendered with VectoJS",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../core && bun run build) && (cd ../ui && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@vectojs/core": ">=1.0.0 <2.0.0",
+    "@vectojs/ui": ">=1.0.0 <2.0.0"
+  },
+  "devDependencies": {
+    "@vectojs/core": "workspace:*",
+    "@vectojs/ui": "workspace:*",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.9",
+    "jsdom": "^29.1.1"
+  }
+}

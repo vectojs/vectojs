@@ -317,3 +317,104 @@ describe('LayoutEngine.prepare — paragraph memoization (streaming/incremental)
     expect(b.words[0].glyphs[0].width).toBeCloseTo(40);
   });
 });
+
+describe('LayoutEngine justification', () => {
+  const atlas: GlyphAtlas = {
+    a: { width: 10, baseSize: 32, ast: null },
+    b: { width: 10, baseSize: 32, ast: null },
+    c: { width: 10, baseSize: 32, ast: null },
+    d: { width: 10, baseSize: 32, ast: null },
+    ' ': { width: 10, baseSize: 32, ast: null },
+    你: { width: 20, baseSize: 32, ast: null },
+    好: { width: 20, baseSize: 32, ast: null },
+    世: { width: 20, baseSize: 32, ast: null },
+    界: { width: 20, baseSize: 32, ast: null },
+    了: { width: 20, baseSize: 32, ast: null },
+  };
+
+  it('stretches spaces so wrapped lines end flush at maxWidth', () => {
+    const engine = new LayoutEngine(100, 400);
+    engine.textAlign = 'justify';
+    // "aa bb cc dd": line 1 fits "aa bb cc" (80px), "dd" wraps.
+    const result = engine.layoutText('aa bb cc dd', atlas, 32);
+
+    const line1 = result.nodes.filter((n) => n.y === 0 && n.char.trim() !== '');
+    const lastGlyph = line1[line1.length - 1];
+    expect(lastGlyph.char).toBe('c');
+    // Slack 20px over 2 spaces → line ends flush at 100.
+    expect(lastGlyph.x + lastGlyph.width).toBeCloseTo(100, 5);
+
+    // The last line of the paragraph stays ragged-left.
+    const line2 = result.nodes.filter((n) => n.y > 0);
+    expect(line2[0].char).toBe('d');
+    expect(line2[0].x).toBe(0);
+  });
+
+  it('distributes inter-character slack for CJK lines without spaces', () => {
+    const engine = new LayoutEngine(90, 400);
+    engine.textAlign = 'justify';
+    // 5 glyphs × 20px; 4 fit per line (80px), the 5th wraps.
+    const result = engine.layoutText('你好世界了', atlas, 32);
+
+    const line1 = result.nodes.filter((n) => n.y === 0);
+    expect(line1).toHaveLength(4);
+    const last = line1[line1.length - 1];
+    expect(last.x + last.width).toBeCloseTo(90, 5); // flush right edge
+    // Even spacing: gaps of 10/3 px between glyphs.
+    expect(line1[1].x).toBeCloseTo(20 + 10 / 3, 5);
+  });
+
+  it('defaults to left alignment (byte-identical layout)', () => {
+    const left = new LayoutEngine(100, 400);
+    const result = left.layoutText('aa bb cc dd', atlas, 32);
+    const line1 = result.nodes.filter((n) => n.y === 0 && n.char.trim() !== '');
+    const last = line1[line1.length - 1];
+    expect(last.x + last.width).toBeCloseTo(80, 5); // ragged
+  });
+});
+
+describe('LayoutEngine hyphenation', () => {
+  const atlas: GlyphAtlas = {
+    h: { width: 10, baseSize: 32, ast: null },
+    y: { width: 10, baseSize: 32, ast: null },
+    p: { width: 10, baseSize: 32, ast: null },
+    e: { width: 10, baseSize: 32, ast: null },
+    n: { width: 10, baseSize: 32, ast: null },
+    a: { width: 10, baseSize: 32, ast: null },
+    t: { width: 10, baseSize: 32, ast: null },
+    i: { width: 10, baseSize: 32, ast: null },
+    o: { width: 10, baseSize: 32, ast: null },
+    '-': { width: 6, baseSize: 32, ast: null },
+    '\u00ad': { width: 0, baseSize: 32, ast: null },
+  };
+
+  it('breaks at soft hyphens (U+00AD) and renders a visible hyphen at the break', () => {
+    const engine = new LayoutEngine(66, 400);
+    // "hyphen\u00adation": prefix "hyphen" = 60px + hyphen 6px = 66 fits exactly.
+    const result = engine.layoutText('hyphen\u00adation', atlas, 32);
+
+    const line1 = result.nodes.filter((n) => n.y === 0);
+    expect(line1.map((n) => n.char).join('')).toBe('hyphen-');
+    const line2 = result.nodes.filter((n) => n.y > 0);
+    expect(line2.map((n) => n.char).join('')).toBe('ation');
+    expect(line2[0].x).toBe(0);
+  });
+
+  it('unused soft hyphens are invisible (no width, no glyph)', () => {
+    const engine = new LayoutEngine(400, 400);
+    const result = engine.layoutText('hyphen\u00adation', atlas, 32);
+    expect(result.nodes.map((n) => n.char).join('')).toBe('hyphenation');
+    expect(result.totalWidth).toBe(110); // 11 letters × 10px, no hyphen width
+  });
+
+  it('a pluggable hyphenator provides break opportunities for plain words', () => {
+    const engine = new LayoutEngine(66, 400);
+    engine.hyphenate = (word) => (word === 'hyphenation' ? ['hyphen', 'ation'] : [word]);
+    const result = engine.layoutText('hyphenation', atlas, 32);
+
+    const line1 = result.nodes.filter((n) => n.y === 0);
+    expect(line1.map((n) => n.char).join('')).toBe('hyphen-');
+    const line2 = result.nodes.filter((n) => n.y > 0);
+    expect(line2.map((n) => n.char).join('')).toBe('ation');
+  });
+});

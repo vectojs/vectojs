@@ -2,6 +2,7 @@
 import { test, expect, vi, beforeAll, afterEach } from 'vitest';
 import { MSDFFont } from '../src/text/MSDFFont';
 import { MSDFTextEntity } from '../src/text/MSDFTextEntity';
+import { Entity } from '../src/tree/Entity';
 import { LayoutWorkerManager } from '../src/layout/LayoutWorkerManager';
 import fontJson from './fixtures/font.json';
 
@@ -59,6 +60,35 @@ test('MSDFTextEntity properties and boundary calculations', () => {
   entity.destroy();
 });
 
+test('MSDFTextEntity passes a configurable wrap width to the layout worker', () => {
+  const font = new MSDFFont(fontJson);
+  const queueLayout = vi.spyOn(LayoutWorkerManager.getInstance(), 'queueLayout');
+  const entity = new MSDFTextEntity('Vecto', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    maxWidth: 320,
+  });
+
+  expect(queueLayout).toHaveBeenCalledTimes(1);
+  expect(queueLayout.mock.calls[0][2].maxWidth).toBe(320);
+
+  // Changing the wrap width re-queues layout for the current text.
+  entity.setMaxWidth(480);
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+  expect(queueLayout.mock.calls[1][2].maxWidth).toBe(480);
+
+  // Same width is a no-op.
+  entity.setMaxWidth(480);
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+
+  // Default stays at the historical 1000 when unspecified.
+  queueLayout.mockClear();
+  new MSDFTextEntity('x', { font, texture: {} as TexImageSource });
+  expect(queueLayout.mock.calls[0][2].maxWidth).toBe(1000);
+  queueLayout.mockRestore();
+});
+
 test('MSDFTextEntity WebGL rendering under rotation', () => {
   const font = new MSDFFont(fontJson);
   const mockTexture = {} as TexImageSource;
@@ -101,6 +131,43 @@ test('MSDFTextEntity WebGL rendering under rotation', () => {
   const call1 = mockAddGlyph.mock.calls[0];
   // addGlyph signature: x, y, width, height, u0, v0, u1, v1, color, alpha, rotation
   expect(call1[10]).toBeCloseTo(Math.PI / 4);
+});
+
+test('MSDFTextEntity WebGL path multiplies ancestor opacity into glyph alpha', () => {
+  const font = new MSDFFont(fontJson);
+  const mockTexture = {} as TexImageSource;
+  const entity = new MSDFTextEntity('A', { font, texture: mockTexture, fontSize: 24 });
+  entity['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([65]),
+    xCoords: new Float32Array([0]),
+    yCoords: new Float32Array([18]),
+    packedStyles: new Uint32Array([0xffffff << 8]),
+  };
+  entity.opacity = 0.5;
+
+  // Real ancestor at opacity 0.5 → world opacity 0.25.
+  const parent = new (class extends Entity {
+    isPointInside() {
+      return false;
+    }
+    render() {}
+  })('opacity-parent');
+  parent.opacity = 0.5;
+  parent.add(entity);
+
+  const mockAddGlyph = vi.fn();
+  (parent as any)._scene = {
+    pointRenderer: { setMSDFTexture: vi.fn(), addGlyph: mockAddGlyph },
+    glCanvas: {},
+    markDirty: vi.fn(),
+  };
+
+  entity.render(null);
+  expect(mockAddGlyph).toHaveBeenCalledTimes(1);
+  // addGlyph signature: x, y, width, height, u0, v0, u1, v1, color, alpha, rotation
+  expect(mockAddGlyph.mock.calls[0][9]).toBeCloseTo(0.25);
 });
 
 test('MSDFTextEntity Canvas2D rendering fallback', () => {
@@ -184,4 +251,18 @@ test('MSDFTextEntity falls back to Canvas for a sheared world transform', () => 
 
   expect(addGlyph).not.toHaveBeenCalled();
   expect(renderer.fillText).toHaveBeenCalledOnce();
+});
+
+test('MSDFTextEntity exposes its text and font for the DOM content mirror', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('MSDF findable', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 32,
+    lineHeight: 40,
+  });
+  const proj = entity.getContentProjection()!;
+  expect(proj.text).toBe('MSDF findable');
+  expect(proj.font).toBe('32px sans-serif');
+  expect(proj.lineHeight).toBe(40);
 });

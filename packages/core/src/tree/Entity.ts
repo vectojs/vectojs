@@ -11,6 +11,15 @@ import {
 /** A numeric transform/visual property that participates in the animation system. */
 export type AnimatableProp = 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity';
 
+const ANIMATABLE_PROPS: ReadonlySet<string> = new Set([
+  'x',
+  'y',
+  'scaleX',
+  'scaleY',
+  'rotation',
+  'opacity',
+]);
+
 /**
  * A 2-D coordinate in canvas/world space.
  */
@@ -65,6 +74,27 @@ export interface BatchRect {
   height: number;
   /** CSS fill color. */
   color: string;
+}
+
+/**
+ * Static text an {@link Entity} exposes for DOM content projection, returned
+ * from {@link Entity.getContentProjection}. The Scene mirrors it as a
+ * transparent, position-synced DOM node so browser-native text machinery —
+ * find-in-page, screen readers, SEO crawlers, translation, `#:~:text=`
+ * fragments — operates on canvas-rendered text.
+ */
+export interface ContentProjection {
+  /** The plain text content as rendered (line breaks as `\n`). */
+  text: string;
+  /** CSS font shorthand matching the drawn glyphs, e.g. `'24px sans-serif'`. */
+  font?: string;
+  /** Line height in px, when it differs from the font's default. */
+  lineHeight?: number;
+  /**
+   * Allow native mouse selection on the projected text. Off by default so the
+   * projection never intercepts pointer input meant for the canvas.
+   */
+  selectable?: boolean;
 }
 
 /**
@@ -429,10 +459,21 @@ export abstract class Entity {
   /**
    * Append a child entity to this node's children array.
    *
+   * If `child` already has a parent (including `this`), it's detached from it
+   * first — otherwise re-adding an already-added child duplicates it in
+   * `children[]` (one `remove()` call only strips the first occurrence,
+   * leaving a stale entry that keeps rendering/updating despite
+   * `child.parent` reporting `null`), and re-parenting to a different entity
+   * without an explicit `remove()` first leaves the old parent holding a
+   * stale reference whose own `.parent` disagrees with where it now lives.
+   * `child.parent` is only ever `null` or `this`'s ultimate owner, so this
+   * check is O(1) for the overwhelming common case (a brand-new entity).
+   *
    * @param child - The entity to add as a child.
    * @returns `this` for method chaining.
    */
   public add(child: Entity): this {
+    if (child.parent) child.parent.remove(child);
     child.parent = this;
     this.children.push(child);
     const s = this.scene;
@@ -507,6 +548,9 @@ export abstract class Entity {
       startTime: -1,
       startProps: {},
     });
+    // Wake an idle scene: the loop's animation flags are collected during the
+    // render walk, so a sleeping onDemand scene needs the dirty signal.
+    this.scene?.markDirty();
     return this;
   }
 
@@ -694,7 +738,15 @@ export abstract class Entity {
         const end = anim.target[key];
         if (typeof start === 'number' && typeof end === 'number') {
           const easeOut = progress * (2 - progress);
-          (this as any)[key] = start + (end - start) * easeOut;
+          const value = start + (end - start) * easeOut;
+          // Write transform props past the public setter: with a declarative
+          // transition configured, the setter would spawn/retarget a driver
+          // every frame and the two animation systems would fight.
+          if (ANIMATABLE_PROPS.has(key as AnimatableProp)) {
+            this._applyAnimated(key as AnimatableProp, value);
+          } else {
+            (this as any)[key] = value;
+          }
         }
       }
 
@@ -749,6 +801,12 @@ export abstract class Entity {
    */
   public destroy(): void {
     this.animations = [];
+    // Settle in-flight property drivers so promises returned by
+    // animateTo/springTo resolve instead of hanging forever.
+    for (const driver of this._drivers.values()) {
+      this._settleDriver(driver);
+    }
+    this._drivers.clear();
     this.listeners.clear();
     this.captureListeners.clear();
     if (this.parent) {
@@ -829,9 +887,18 @@ export abstract class Entity {
    * Return the exact accumulated Canvas `T * S * R` transform for this entity.
    */
   public getWorldTransform(): AffineTransform {
-    const path: Entity[] = this.id === 'root' ? [] : [this];
+    // Walk all the way to the true top of the tree (Scene.root/overlayRoot,
+    // whichever `.parent` is null) rather than stopping at an ancestor whose
+    // `id` happens to equal the string 'root' — Scene's own root entity is
+    // literally named that internally, but `id` is a plain user-settable
+    // string with no reservation, so any entity a caller names "root" (an
+    // entirely ordinary choice for a top-level container) would collide and
+    // silently truncate the transform chain there. Including the tree's
+    // actual top entity is harmless: it's always left at the identity
+    // transform (Scene never gives root/overlayRoot a non-default x/y/scale).
+    const path: Entity[] = [this];
     let ancestor = this.parent;
-    while (ancestor && ancestor.id !== 'root') {
+    while (ancestor) {
       path.push(ancestor);
       ancestor = ancestor.parent;
     }
@@ -925,8 +992,8 @@ export abstract class Entity {
 
   /**
    * Accumulated world scale factors: this entity's own `scaleX`/`scaleY` times
-   * those of every ancestor (excluding the scene root). Useful for mapping a
-   * world-space point back into local space for hit-testing.
+   * those of every ancestor. Useful for mapping a world-space point back into
+   * local space for hit-testing.
    *
    * @returns The world scale `{ x, y }`.
    */
@@ -934,7 +1001,9 @@ export abstract class Entity {
     let sx = this.scaleX;
     let sy = this.scaleY;
     let curr = this.parent;
-    while (curr && curr.id !== 'root') {
+    // See getWorldTransform()'s comment: walk to the true top (`.parent ===
+    // null`), not to an ancestor whose `id` happens to be the string 'root'.
+    while (curr) {
       sx *= curr.scaleX;
       sy *= curr.scaleY;
       curr = curr.parent;
@@ -944,14 +1013,16 @@ export abstract class Entity {
 
   /**
    * Accumulated world rotation: this entity's own `rotation` plus
-   * that of every ancestor (excluding the scene root).
+   * that of every ancestor.
    *
    * @returns The accumulated world rotation in radians.
    */
   public getWorldRotation(): number {
     let rot = this.rotation;
     let curr = this.parent;
-    while (curr && curr.id !== 'root') {
+    // See getWorldTransform()'s comment: walk to the true top (`.parent ===
+    // null`), not to an ancestor whose `id` happens to be the string 'root'.
+    while (curr) {
       rot += curr.rotation;
       curr = curr.parent;
     }
@@ -1019,6 +1090,20 @@ export abstract class Entity {
    * @returns The rectangle to batch, or `null` for the normal render path.
    */
   public getBatchRect(): BatchRect | null {
+    return null;
+  }
+
+  /**
+   * Opt into DOM content projection for entities that render static text.
+   * The {@link Scene} mirrors the returned text as a transparent DOM node
+   * positioned over the drawn glyphs, making canvas text findable (Ctrl+F),
+   * readable by screen readers and crawlers, translatable, and — when
+   * `selectable` is set — natively selectable. Returns `null` by default.
+   * Read on the a11y sync cadence, so text changes propagate automatically.
+   *
+   * @returns The projection descriptor, or `null` to project nothing.
+   */
+  public getContentProjection(): ContentProjection | null {
     return null;
   }
 

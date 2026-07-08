@@ -1,5 +1,37 @@
 # @vectojs/ui
 
+## 1.0.0
+
+### Major Changes
+
+- First stable release. All core engine features (scene graph, layout, hit-testing, animation drivers, WebGL/WebGPU/Canvas2D/SVG rendering, accessibility projection, text shaping/bidi) and the full UI component set have shipped and been through a complete file-by-file audit of both packages, with a live-interaction QA pass across every demo and renderer backend. No known bugs or vulnerabilities remain open.
+
+  This is a semver commitment: breaking changes to the public API of either package now require a major version bump.
+
+## 0.2.8
+
+### Patch Changes
+
+- 01c8abc: Fix `Markdown`'s blockquote rendering: the left accent border and the quote text were meant to overlay at the same position, but were built inside a `Stack`, whose `add()` re-runs sequential auto-layout on every call — silently moving the text below the border instead of overlaying it, while the container still reported a height that didn't cover the (mis)placed text. The overlay container is now a plain, non-layouting entity, so the border and text render together as intended.
+- da1c45c: Fix `ContextMenu` showing the wrong submenu content: the submenu instance was lazily created once and reused for every item with `children`, tracked by a single `_submenu` field with no record of _which_ item it represented. Opening a second submenu item just repositioned the first item's still-showing submenu instead of building one for the newly-clicked item. The submenu is now rebuilt whenever a different item is opened.
+- 33a3939: `Input` no longer re-scans the entire value for RTL-script characters on every `charOffset()` call. The scan ran uncached, and a single render (or caret blink) tick could call `charOffset()` several times (caret position, selection start, selection end, composition bounds) plus once more inline in the selection-highlight branch — each redoing the same O(n) scan from scratch. It's now cached alongside the existing layout cache, invalidated only when `value` changes.
+- 0cca389: Fix `Tooltip` and `Popover` leaking a listener on their target entity: both registered a `hover`/`click` closure directly on the caller-supplied `target` without ever removing it, so destroying a `Tooltip`/`Popover` while its target stayed alive left the target holding a reference to the dead instance — a later hover/click would resurrect the destroyed overlay back into the scene tree instead of being a no-op. Both now store the handler and detach it in `destroy()`.
+- 3de7bcc: Fix `TreeView`'s lazy-load spinner disappearing prematurely: the `loading` flag was mutated directly on the `FlatRow` object captured before the `await`, but a sibling lazy node resolving in the meantime calls `_buildRows()`, which replaces `this._rows` with entirely fresh row objects (always defaulting `loading: false`). The original row's later `loading = false` then mutated a detached, no-longer-rendered object — leaving the still-pending node's row showing no spinner and no children until its own load finished. `loading` is now tracked in a `Set<string>` on the TreeView itself and read by `_buildRows()`, so it survives rebuilds triggered by other in-flight loads.
+
+## 0.2.7
+
+### Patch Changes
+
+- a2d7d3b: Text and RichText mirror their rendered text into the DOM content layer (core 0.2.7 content projection) — Markdown bodies become findable, screen-reader-visible, and translatable automatically since Markdown composes these components.
+
+## 0.2.6
+
+### Patch Changes
+
+- f4c98f3: Slider now supports Arrow/Home/End keyboard input (making its slider role honest) and a configurable step for both pointer and keyboard, snapped on a min-anchored grid.
+- e45ec38: - `VirtualList` and `TreeView` scroll animations are now visible to the Scene's idle throttle / onDemand skip via `hasPendingAnimations()` — smooth scrolling no longer steps at 2 FPS (or stalls in onDemand mode) once the throttle engages. Same regression class as the earlier ScrollView fix.
+  - `Tooltip` restarts (instead of stacking) its show-delay timer on repeated hover, and cancels it on `destroy()`.
+
 ## 0.2.5
 
 ### Patch Changes

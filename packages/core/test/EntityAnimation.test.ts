@@ -69,12 +69,37 @@ describe('Entity animation', () => {
     expect(e.hasPendingAnimations()).toBe(false);
   });
 
+  it('destroy() settles pending animateTo promises and clears drivers', async () => {
+    const e = new TestEntity();
+    const pending = e.animateTo({ x: 100 }, { duration: 1000, easing: 'linear' });
+    e.update(16, 16);
+
+    e.destroy();
+
+    await pending; // must resolve, not hang forever
+    expect((e as unknown as { _drivers: Map<string, unknown> })._drivers.size).toBe(0);
+    expect(e.hasPendingAnimations()).toBe(false);
+  });
+
   it('legacy animate(props, ms) still tweens with the easeOutQuad curve', () => {
     const e = new TestEntity();
     e.animate({ x: 100 }, 100);
     e.update(0, 0); // startTime init
     e.update(50, 50);
     expect(e.x).toBeCloseTo(100 * (0.5 * (2 - 0.5)), 4); // easeOutQuad(0.5)
+  });
+
+  it('legacy animate() does not spawn transition drivers for the same prop', () => {
+    const e = new TestEntity();
+    e.setTransition({ x: 'spring' }); // declarative transition configured…
+    e.animate({ x: 100 }, 100); // …but the legacy tween must own this animation
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
+    let t = 0;
+    for (let i = 0; i < 10; i++) {
+      e.update(16, (t += 16));
+      expect(drivers.size).toBe(0); // no per-frame driver spawn/retarget fight
+    }
+    expect(e.x).toBeCloseTo(100, 4); // tween completed normally
   });
 
   it('hasPendingAnimations() reports true while a property driver is active', () => {

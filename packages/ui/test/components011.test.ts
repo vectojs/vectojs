@@ -132,6 +132,24 @@ describe('UI 0.1.1 Components', () => {
       expect(renderedIndices).toContain(6);
       expect(renderedIndices).not.toContain(8);
     });
+
+    it('renders nothing for an empty item list, instead of calling renderItem(undefined, 0)', () => {
+      const renderItem = vi.fn(() => {
+        const ent = new Entity();
+        ent.height = 20;
+        return ent;
+      });
+      const list = new VirtualList({
+        items: [],
+        renderItem,
+        estimatedRowHeight: 20,
+        width: 200,
+        height: 100,
+      });
+
+      expect(renderItem).not.toHaveBeenCalled();
+      expect(list.children.length).toBe(0);
+    });
   });
 
   describe('TreeView', () => {
@@ -170,6 +188,56 @@ describe('UI 0.1.1 Components', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(tree).toBeTruthy();
+    });
+
+    it("keeps a lazy node's loading indicator up while a sibling lazy load resolves and rebuilds the rows", async () => {
+      let resolveA: (children: any[]) => void = () => {};
+      let resolveB: (children: any[]) => void = () => {};
+      const nodes = [
+        {
+          id: 'a',
+          label: 'A (lazy)',
+          children: () => new Promise<any[]>((resolve) => (resolveA = resolve)),
+        },
+        {
+          id: 'b',
+          label: 'B (lazy)',
+          children: () => new Promise<any[]>((resolve) => (resolveB = resolve)),
+        },
+      ];
+      const tree = new TreeView({ nodes, width: 200, height: 400 });
+
+      // Expand both lazy nodes before either resolves.
+      tree.emit('pointerdown', { localY: 10 }); // row 0: A
+      tree.emit('pointerdown', { localY: 28 + 10 }); // row 1: B
+      await Promise.resolve(); // let both `_toggle` calls reach their `await`
+
+      const rowsAfterBothPending = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterBothPending.find((r) => r.node.id === 'a')?.loading).toBe(true);
+      expect(rowsAfterBothPending.find((r) => r.node.id === 'b')?.loading).toBe(true);
+
+      // A resolves first, rebuilding `_rows` — B's row must still show loading.
+      resolveA([{ id: 'a.1', label: 'Child A1' }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const rowsAfterAResolves = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterAResolves.find((r) => r.node.id === 'b')?.loading).toBe(true);
+
+      // B resolves too — its loading indicator must clear.
+      resolveB([{ id: 'b.1', label: 'Child B1' }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const rowsAfterBResolves = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterBResolves.find((r) => r.node.id === 'b')?.loading).toBe(false);
     });
   });
 
@@ -222,6 +290,23 @@ describe('UI 0.1.1 Components', () => {
       expect(tooltip.visible).toBe(false);
     });
 
+    it('detaches its target listeners on destroy, instead of leaking a reference to itself', async () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const target = new Entity('btn');
+      scene.add(target);
+
+      const tooltip = new Tooltip({ target, content: 'Help info', delay: 0 });
+      scene.add(tooltip);
+      tooltip.destroy();
+
+      // A destroyed tooltip must not be resurrected into the tree by an event
+      // its (still-alive) target keeps emitting.
+      target.emit('hover', {});
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(tooltip.parent).toBeNull();
+    });
+
     it('toggles Popover on target click', () => {
       const canvas = document.createElement('canvas');
       const scene = new Scene(canvas);
@@ -237,6 +322,22 @@ describe('UI 0.1.1 Components', () => {
 
       target.emit('click', {});
       expect(popover.visible).toBe(false);
+    });
+
+    it('detaches its target click listener on destroy, instead of leaking a reference to itself', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const target = new Entity('btn');
+      scene.add(target);
+
+      const popover = new Popover({ target, width: 100, height: 100 });
+      scene.add(popover);
+      popover.destroy();
+
+      // A destroyed popover must not be resurrected into the tree by a click
+      // its (still-alive) target keeps emitting.
+      target.emit('click', {});
+      expect(popover.parent).toBeNull();
     });
 
     it('displays ContextMenu at point', () => {
@@ -255,6 +356,33 @@ describe('UI 0.1.1 Components', () => {
       expect(menu.x).toBe(100);
       expect(menu.y).toBe(150);
       expect(menu.visible).toBe(true);
+    });
+
+    it('shows the correct submenu content when a different submenu item is opened', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const menu = new ContextMenu({
+        items: [
+          { label: 'Alpha', children: [{ label: 'Alpha child' }] },
+          { label: 'Beta', children: [{ label: 'Beta child' }] },
+        ],
+        itemHeight: 32,
+      });
+      scene.add(menu);
+      menu.showAtPoint(0, 0);
+
+      // Open the first item's submenu (row 0).
+      menu.emit('pointerdown', { localY: 10 });
+      const firstSubmenu = (menu as any)._submenu;
+      expect(firstSubmenu.items?.[0]?.label ?? (firstSubmenu as any)._items[0].label).toBe(
+        'Alpha child',
+      );
+
+      // Open the second item's submenu (row 1) — must show Beta's children,
+      // not silently reposition the still-showing Alpha submenu.
+      menu.emit('pointerdown', { localY: 42 });
+      const secondSubmenu = (menu as any)._submenu;
+      expect((secondSubmenu as any)._items[0].label).toBe('Beta child');
     });
   });
 

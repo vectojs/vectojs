@@ -98,6 +98,11 @@ export interface PreparedWord {
   isWordLike: boolean | undefined;
   /** Pre-computed `word.trim().length === 0`. */
   isWhitespace: boolean;
+  /**
+   * Glyph indices where the word may break with a visible hyphen — from
+   * soft hyphens (U+00AD) in the source or the engine's `hyphenate` hook.
+   */
+  breakPoints?: number[];
 }
 
 /** A measured paragraph; `isEmpty` marks a blank line (forced newline). */
@@ -119,6 +124,8 @@ export interface PreparedText {
   paragraphs: PreparedParagraph[];
   fontSize: number;
   fallbackToCanvas?: boolean;
+  /** Advance width of '-' at `fontSize`, for wrap-time hyphen insertion. */
+  hyphenWidth?: number;
 }
 
 /**
@@ -190,6 +197,13 @@ export function computeLineSegments(
  */
 export class LayoutEngine {
   public maxWidth: number;
+  /**
+   * Horizontal alignment. `'justify'` stretches inter-word spaces (or, for
+   * space-less CJK lines, inter-character gaps) so wrapped lines end flush at
+   * `maxWidth`; the last line of each paragraph stays ragged. Only applies to
+   * the object layout path without exclusion shapes.
+   */
+  public textAlign: 'left' | 'justify' = 'left';
   public maxHeight: number;
   public preserveLeadingSpaces: boolean = false;
   private wordSegmenter: Intl.Segmenter;
@@ -209,6 +223,24 @@ export class LayoutEngine {
   private richParagraphCache: Map<string, PreparedParagraph> = new Map();
   private lastAtlas: GlyphAtlas | null = null;
   private measurer: GlyphMeasurer | null;
+
+  private _hyphenate: ((word: string) => string[]) | null = null;
+
+  /**
+   * Optional hyphenator: given a word, return its break parts (e.g.
+   * `['hyphen', 'ation']`). Used at wrap time when a word doesn't fit; a
+   * visible '-' is drawn at the chosen break. Soft hyphens (U+00AD) in the
+   * source work without any hyphenator. Setting this clears the prepared
+   * caches (break opportunities are baked in during prepare()).
+   */
+  public get hyphenate(): ((word: string) => string[]) | null {
+    return this._hyphenate;
+  }
+  public set hyphenate(fn: ((word: string) => string[]) | null) {
+    this._hyphenate = fn;
+    this.paragraphCache.clear();
+    this.richParagraphCache.clear();
+  }
 
   constructor(maxWidth: number, maxHeight: number, measurer?: GlyphMeasurer | null) {
     this.maxWidth = maxWidth;
@@ -345,8 +377,15 @@ export class LayoutEngine {
         const word = segment.segment;
         const glyphs: PreparedGlyph[] = [];
         let width = 0;
+        let breakPoints: number[] | undefined;
 
         for (const char of this.getGraphemes(word)) {
+          // Soft hyphen: an invisible break opportunity — record it, render nothing.
+          if (char === '\u00ad') {
+            (breakPoints ??= []).push(glyphs.length);
+            shapedCharIdx += char.length;
+            continue;
+          }
           const visualStart = shapedCharIdx;
           const visualEnd = shapedCharIdx + char.length;
 
@@ -379,11 +418,26 @@ export class LayoutEngine {
           shapedCharIdx += char.length;
         }
 
+        // Pluggable hyphenator: derive break opportunities for plain words
+        // that don't already carry soft hyphens.
+        if (!breakPoints && this._hyphenate && segment.isWordLike && glyphs.length > 3) {
+          const parts = this._hyphenate(word);
+          if (parts.length > 1) {
+            breakPoints = [];
+            let count = 0;
+            for (let pi = 0; pi < parts.length - 1; pi++) {
+              for (const _g of this.getGraphemes(parts[pi])) count++;
+              breakPoints.push(count);
+            }
+          }
+        }
+
         words.push({
           glyphs,
           width,
           isWordLike: segment.isWordLike,
           isWhitespace: word.trim().length === 0,
+          breakPoints,
         });
       }
 
@@ -399,7 +453,12 @@ export class LayoutEngine {
       offset += paragraph.length + 1;
     }
 
-    return { paragraphs, fontSize, fallbackToCanvas: fallbackToCanvas || undefined };
+    return {
+      paragraphs,
+      fontSize,
+      fallbackToCanvas: fallbackToCanvas || undefined,
+      hyphenWidth: this.glyphWidth(this.glyphKeyFor('-', fontAtlas), fontAtlas, fontSize),
+    };
   }
 
   /**
@@ -500,8 +559,15 @@ export class LayoutEngine {
         const word = segment.segment;
         const glyphs: PreparedGlyph[] = [];
         let width = 0;
+        let breakPoints: number[] | undefined;
 
         for (const char of this.getGraphemes(word)) {
+          // Soft hyphen: an invisible break opportunity — record it, render nothing.
+          if (char === '\u00ad') {
+            (breakPoints ??= []).push(glyphs.length);
+            shapedCharIdx += char.length;
+            continue;
+          }
           const visualStart = shapedCharIdx;
           const visualEnd = shapedCharIdx + char.length;
 
@@ -537,11 +603,26 @@ export class LayoutEngine {
           shapedCharIdx += char.length;
         }
 
+        // Pluggable hyphenator: derive break opportunities for plain words
+        // that don't already carry soft hyphens.
+        if (!breakPoints && this._hyphenate && segment.isWordLike && glyphs.length > 3) {
+          const parts = this._hyphenate(word);
+          if (parts.length > 1) {
+            breakPoints = [];
+            let count = 0;
+            for (let pi = 0; pi < parts.length - 1; pi++) {
+              for (const _g of this.getGraphemes(parts[pi])) count++;
+              breakPoints.push(count);
+            }
+          }
+        }
+
         words.push({
           glyphs,
           width,
           isWordLike: segment.isWordLike,
           isWhitespace: word.trim().length === 0,
+          breakPoints,
         });
       }
 
@@ -599,7 +680,7 @@ export class LayoutEngine {
     let currentLineNodes: any[] = [];
     let paragraphBaseLevel = 0;
 
-    const commitLine = () => {
+    const commitLine = (justifyTo?: number) => {
       if (currentLineNodes.length === 0) return;
 
       // 1. Group contiguous visual runs to preserve gaps (e.g. exclusion masks, indentations)
@@ -636,6 +717,44 @@ export class LayoutEngine {
           x += node.width;
         }
 
+        // Justify: stretch this run so its content ends flush at the target.
+        // Only single-run lines qualify (multi-run = exclusion gaps that must
+        // be preserved); the paragraph-final line never passes a target.
+        if (justifyTo !== undefined && runs.length === 1) {
+          let lastContent = run.length - 1;
+          while (lastContent >= 0 && run[lastContent].char.trim() === '') lastContent--;
+          if (lastContent > 0) {
+            const contentEnd = run[lastContent].x + run[lastContent].width;
+            const slack = justifyTo - contentEnd;
+            // Guard against grotesque stretching on very short lines.
+            if (slack > 0 && slack <= (justifyTo - runStartX) * 0.5) {
+              const spaceIdx: number[] = [];
+              for (let k = 1; k < lastContent; k++) {
+                if (run[k].char.trim() === '') spaceIdx.push(k);
+              }
+              if (spaceIdx.length > 0) {
+                // Word-spaced text: widen each inter-word gap equally.
+                const extra = slack / spaceIdx.length;
+                let shift = 0;
+                let nextSpace = 0;
+                for (let k = 0; k <= lastContent; k++) {
+                  run[k].x += shift;
+                  if (nextSpace < spaceIdx.length && k === spaceIdx[nextSpace]) {
+                    run[k].width += extra;
+                    shift += extra;
+                    nextSpace++;
+                  }
+                }
+              } else {
+                // Space-less (CJK) line: distribute between every glyph.
+                const extra = slack / lastContent;
+                for (let k = 1; k <= lastContent; k++) run[k].x += extra * k;
+              }
+              if (justifyTo > maxLineWidth) maxLineWidth = justifyTo;
+            }
+          }
+        }
+
         // Add to final layout result
         for (const node of run) {
           layoutNodes.push(node as LayoutNode);
@@ -663,6 +782,9 @@ export class LayoutEngine {
       return false;
     };
 
+    const justifyTarget = this.textAlign === 'justify' && !hasEx ? this.maxWidth : undefined;
+    const hyphenWidth = prepared.hyphenWidth ?? fontSize * 0.3;
+
     for (const paragraph of prepared.paragraphs) {
       if (paragraph.isEmpty) {
         commitLine(); // Flush previous line
@@ -686,18 +808,72 @@ export class LayoutEngine {
       const lineHeight = pMax * 1.5;
       if (!startLine(lineHeight)) break; // out of vertical bounds
 
-      for (const word of paragraph.words) {
+      const wordQueue = paragraph.words.slice();
+      for (let qi = 0; qi < wordQueue.length; qi++) {
+        const word = wordQueue[qi];
         // Word-level wrap: keep the word whole by jumping to the next free
         // segment, or to the next line when this was the last one.
-        if (currentX + word.width > segs[si].x1 && currentX > segs[si].x0) {
-          if (word.isWordLike === false && word.isWhitespace) continue;
-          if (si < segs.length - 1) {
-            si++;
-            currentX = segs[si].x0;
-          } else {
-            commitLine(); // Flush visual line before wrap
-            currentY += lineHeight;
-            if (!startLine(lineHeight)) break;
+        if (currentX + word.width > segs[si].x1) {
+          // Hyphen break: place the longest fitting prefix plus a visible '-'
+          // and requeue the remainder, instead of wrapping the whole word.
+          // Runs even at line start, where a word longer than the line would
+          // otherwise fall through to per-glyph overflow.
+          if (!hasEx && word.breakPoints && word.breakPoints.length > 0) {
+            const avail = segs[si].x1 - currentX;
+            let chosen = -1;
+            let prefixWidth = 0;
+            let acc = 0;
+            let bpIdx = 0;
+            for (let g = 0; g < word.glyphs.length && bpIdx < word.breakPoints.length; g++) {
+              acc += word.glyphs[g].width;
+              if (g + 1 === word.breakPoints[bpIdx]) {
+                if (acc + hyphenWidth <= avail) {
+                  chosen = word.breakPoints[bpIdx];
+                  prefixWidth = acc;
+                }
+                bpIdx++;
+              }
+            }
+            if (chosen > 0) {
+              const anchorGlyph = word.glyphs[chosen - 1];
+              const prefix: PreparedWord = {
+                glyphs: [
+                  ...word.glyphs.slice(0, chosen),
+                  {
+                    char: '-',
+                    width: hyphenWidth,
+                    level: anchorGlyph.level,
+                    sourceIndex: anchorGlyph.sourceIndex,
+                    sourceLength: 0,
+                  },
+                ],
+                width: prefixWidth + hyphenWidth,
+                isWordLike: true,
+                isWhitespace: false,
+              };
+              const rest: PreparedWord = {
+                glyphs: word.glyphs.slice(chosen),
+                width: word.width - prefixWidth,
+                isWordLike: true,
+                isWhitespace: false,
+                breakPoints: word.breakPoints.filter((bp) => bp > chosen).map((bp) => bp - chosen),
+              };
+              wordQueue.splice(qi, 1, prefix, rest);
+              qi--;
+              continue;
+            }
+          }
+
+          if (currentX > segs[si].x0) {
+            if (word.isWordLike === false && word.isWhitespace) continue;
+            if (si < segs.length - 1) {
+              si++;
+              currentX = segs[si].x0;
+            } else {
+              commitLine(justifyTarget); // Flush visual line before wrap
+              currentY += lineHeight;
+              if (!startLine(lineHeight)) break;
+            }
           }
         }
 
@@ -712,7 +888,7 @@ export class LayoutEngine {
                 si++;
                 currentX = segs[si].x0;
               } else {
-                commitLine(); // Flush visual line before wrap
+                commitLine(justifyTarget); // Flush visual line before wrap
                 currentY += lineHeight;
                 if (!startLine(lineHeight)) break;
               }

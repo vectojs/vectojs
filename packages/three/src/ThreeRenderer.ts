@@ -172,7 +172,8 @@ export class ThreeRenderer implements IRenderer {
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       for (const material of materials) {
         const map = (material as THREE.Material & { map?: THREE.Texture | null }).map;
-        if (map && !disposedTextures.has(map)) {
+        // Cached fillText textures outlive the frame; the cache owns them.
+        if (map && !map.userData.vectoCached && !disposedTextures.has(map)) {
           disposedTextures.add(map);
           map.dispose();
         }
@@ -239,8 +240,10 @@ export class ThreeRenderer implements IRenderer {
     const maxX = Math.max(...corners.map((point) => point.x));
     const maxY = Math.max(...corners.map((point) => point.y));
 
-    // Convert to bottom-left origin for Three.js scissor test
-    const dpr = window.devicePixelRatio || 1;
+    // Convert to bottom-left origin for Three.js scissor test. The scissor
+    // lives in backing-store pixels, so scale by the renderer's own pixel
+    // ratio (window DPR is wrong for offscreen/fixed-ratio targets).
+    const dpr = this.renderer.getPixelRatio() || 1;
     const canvasHeight = this.renderer.domElement.height / dpr;
     let scissorX = minX * dpr;
     let scissorY = (canvasHeight - maxY) * dpr;
@@ -363,19 +366,41 @@ export class ThreeRenderer implements IRenderer {
     this.currentPath.arc(x + r_tl, y + r_tl, r_tl, Math.PI, -Math.PI / 2, false);
   }
 
-  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
-    let texture: THREE.Texture;
-    if (
-      source instanceof HTMLImageElement ||
-      source instanceof HTMLCanvasElement ||
-      (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap)
-    ) {
-      texture = new THREE.CanvasTexture(source as any);
-    } else {
-      texture = new THREE.Texture(source as any);
-      texture.needsUpdate = true;
+  /**
+   * Textures cached per drawImage source (identity-keyed). A frame that
+   * redraws the same image no longer re-uploads it. Mutable sources (a canvas
+   * you repaint) must call {@link invalidateImage} after changing pixels.
+   * Entries are skipped by the per-frame disposer and released on
+   * invalidation or {@link dispose}.
+   */
+  private imageTextureCache = new Map<CanvasImageSource, THREE.Texture>();
+
+  /** Drop the cached texture for a source whose pixels changed. */
+  public invalidateImage(source: CanvasImageSource): void {
+    const cached = this.imageTextureCache.get(source);
+    if (cached) {
+      cached.dispose();
+      this.imageTextureCache.delete(source);
     }
-    texture.minFilter = THREE.LinearFilter;
+  }
+
+  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
+    let texture = this.imageTextureCache.get(source);
+    if (!texture) {
+      if (
+        source instanceof HTMLImageElement ||
+        source instanceof HTMLCanvasElement ||
+        (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap)
+      ) {
+        texture = new THREE.CanvasTexture(source as any);
+      } else {
+        texture = new THREE.Texture(source as any);
+        texture.needsUpdate = true;
+      }
+      texture.minFilter = THREE.LinearFilter;
+      texture.userData.vectoCached = true;
+      this.imageTextureCache.set(source, texture);
+    }
 
     const material = new THREE.MeshBasicMaterial({
       map: texture,
@@ -554,39 +579,43 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    const points = this.currentPath.getPoints();
-    if (points.length === 0) return;
-
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const parsed = parseThreeColor(color);
     const opacity = this.globalAlpha * parsed.alpha;
-    const material = new THREE.LineBasicMaterial({
-      color: parsed.color,
-      transparent: opacity < 1,
-      opacity,
-      linewidth: lineWidth,
-    });
-    const line = new THREE.Line(geometry, material);
-    line.applyMatrix4(this.matrix);
+    // One Line per sub-path: concatenating all shapes into a single Line
+    // would draw spurious connector segments across every moveTo() gap.
+    for (const shape of this.currentPath.toShapes()) {
+      const points = shape.getPoints();
+      if (points.length < 2) continue;
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({
+        color: parsed.color,
+        transparent: opacity < 1,
+        opacity,
+        linewidth: lineWidth,
+      });
+      const line = new THREE.Line(geometry, material);
+      line.applyMatrix4(this.matrix);
 
-    this.scene.add(line);
-    this.activeObjects.push(line);
+      this.scene.add(line);
+      this.activeObjects.push(line);
+    }
   }
+
+  /**
+   * Rasterized fillText textures keyed by `font|color|text`, LRU-evicted.
+   * HUD-style UIs redraw the same labels every frame; without the cache each
+   * call allocated a canvas, rasterized it, and uploaded a fresh GPU texture.
+   * Entries are skipped by {@link disposeActiveObjects} (flagged via
+   * `userData.vectoCached`) and released on eviction or {@link dispose}.
+   */
+  private textTextureCache = new Map<
+    string,
+    { texture: THREE.CanvasTexture; width: number; height: number; fontSize: number }
+  >();
+  private textTextureCacheLimit = 256;
 
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     if (typeof document === 'undefined') return;
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-    ctx.font = font;
-
-    const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
-    const fontSize = parseInt(font) || 16;
-    const height = Math.max(1, Math.ceil(fontSize * 1.5));
-    canvas.width = width;
-    canvas.height = height;
-
-    ctx.font = font;
 
     let fillCol = '#ffffff';
     if (typeof color === 'string') {
@@ -598,12 +627,42 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    ctx.fillStyle = fillCol;
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText(text, 0, fontSize);
+    const cacheKey = `${font}|${fillCol}|${text}`;
+    let entry = this.textTextureCache.get(cacheKey);
+    if (entry) {
+      // Refresh LRU order (Map iteration order is insertion order).
+      this.textTextureCache.delete(cacheKey);
+      this.textTextureCache.set(cacheKey, entry);
+    } else {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d')!;
+      ctx.font = font;
 
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
+      const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
+      const fontSize = parseInt(font) || 16;
+      const height = Math.max(1, Math.ceil(fontSize * 1.5));
+      canvas.width = width;
+      canvas.height = height;
+
+      ctx.font = font;
+      ctx.fillStyle = fillCol;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(text, 0, fontSize);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      texture.userData.vectoCached = true;
+
+      entry = { texture, width, height, fontSize };
+      this.textTextureCache.set(cacheKey, entry);
+      while (this.textTextureCache.size > Math.max(1, this.textTextureCacheLimit)) {
+        const oldestKey = this.textTextureCache.keys().next().value as string;
+        this.textTextureCache.get(oldestKey)!.texture.dispose();
+        this.textTextureCache.delete(oldestKey);
+      }
+    }
+
+    const { texture, width, height, fontSize } = entry;
 
     const material = new THREE.MeshBasicMaterial({
       map: texture,
@@ -638,7 +697,32 @@ export class ThreeRenderer implements IRenderer {
     this.activeObjects.push(mesh);
   }
 
+  private frameDirty = false;
+  private presentScheduled = false;
+
+  /**
+   * The Scene calls flush() around every non-batched node (it commits the
+   * Canvas2D circle batch there). Rendering the whole Three scene on each of
+   * those calls made a frame cost O(N²) in entity count, so flush() only marks
+   * the frame dirty; the actual GL render happens once, in {@link present}.
+   *
+   * A microtask fallback keeps older `@vectojs/core` Scenes (that never call
+   * `present()`) painting: the many same-tick flushes coalesce into one render.
+   */
   flush(): void {
+    this.frameDirty = true;
+    if (this.presentScheduled) return;
+    this.presentScheduled = true;
+    queueMicrotask(() => {
+      this.presentScheduled = false;
+      if (this.frameDirty && !this.disposed) this.present();
+    });
+  }
+
+  /** Render the accumulated frame once. Called by Scene at the end of each render pass. */
+  present(): void {
+    if (this.disposed) return;
+    this.frameDirty = false;
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -657,6 +741,14 @@ export class ThreeRenderer implements IRenderer {
     if (this.disposed) return;
     this.disposed = true;
     this.disposeActiveObjects();
+    for (const entry of this.textTextureCache.values()) {
+      entry.texture.dispose();
+    }
+    this.textTextureCache.clear();
+    for (const texture of this.imageTextureCache.values()) {
+      texture.dispose();
+    }
+    this.imageTextureCache.clear();
     this.currentPath = null;
     this.stack.length = 0;
     this.alphaStack.length = 0;

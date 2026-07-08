@@ -41,14 +41,32 @@ export class CanvasRenderer implements IRenderer {
   private batchAlpha: number = 1;
   private batchCount: number = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  /**
+   * @param canvas - The target canvas. Its backing store is resized to the
+   *   logical size × devicePixelRatio.
+   * @param size - Explicit logical size. Without it the renderer assumes a
+   *   fullscreen canvas and sizes to the window — pass this for embedded /
+   *   custom-container canvases (the Scene does when `disableWindowResize` is
+   *   set) so the canvas's own dimensions aren't clobbered by the window's.
+   */
+  constructor(canvas: HTMLCanvasElement, size?: { width: number; height: number }) {
     const dpr = getDevicePixelRatio();
     // Fall back to the canvas's own size in SSR/Node where there is no window.
-    this.width = typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0;
-    this.height = typeof window !== 'undefined' ? window.innerHeight : canvas.height || 0;
+    this.width =
+      size?.width ?? (typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0);
+    this.height =
+      size?.height ?? (typeof window !== 'undefined' ? window.innerHeight : canvas.height || 0);
 
     canvas.width = this.width * dpr;
     canvas.height = this.height * dpr;
+    // Record the logical size as CSS size (same as resize() does): on HiDPI
+    // the canvas would otherwise *display* at the backing-store size, and a
+    // remounted Scene needs the logical size to survive somewhere readable —
+    // canvas.width now holds the DPR-scaled value.
+    if (canvas.style) {
+      canvas.style.width = `${this.width}px`;
+      canvas.style.height = `${this.height}px`;
+    }
 
     // getContext may be absent/return null in a headless canvas; stay constructible.
     const ctx = canvas.getContext('2d');

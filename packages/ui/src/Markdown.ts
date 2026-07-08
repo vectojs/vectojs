@@ -744,7 +744,20 @@ export class Markdown extends UIComponent {
 
         // Add the vertical accent bar
         const border = new QuoteBorder(innerStack.height || 20, t.quoteBorderColor);
-        const container = new Entity();
+
+        // A plain Entity, not a Stack: the border and text overlay at the same
+        // position (both at x=0, y=0), they aren't laid out sequentially. A
+        // Stack re-runs its own sequential layout on every add() (see
+        // Stack.add), which would silently move the second child below the
+        // first regardless of any position set on it beforehand.
+        const container = new (class extends Entity {
+          isPointInside() {
+            return false;
+          }
+          render() {}
+        })('BlockquoteOverlay');
+        border.x = 0;
+        border.y = 0;
         container.add(border);
 
         // Overlay the inner text stack

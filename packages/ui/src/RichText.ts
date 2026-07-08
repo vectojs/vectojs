@@ -7,6 +7,7 @@ import {
   type GlyphMeasurer,
   type LayoutResult,
   type StyledSpan,
+  type ContentProjection,
   type TextStyle,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
@@ -50,6 +51,7 @@ class LinkHotspot extends UIComponent {
   public getA11yAttributes(): A11yAttributes {
     return { tag: 'a', href: sanitizeUrl(this.href), label: this.href };
   }
+
   public render(): void {
     /* invisible — RichText paints the text */
   }
@@ -258,6 +260,13 @@ export class RichText extends UIComponent {
 
   public getA11yAttributes(): A11yAttributes {
     return { label: this.fullText() };
+  }
+
+  /** Mirror the concatenated span text into the DOM content layer. */
+  public override getContentProjection(): ContentProjection | null {
+    const text = this.spans.map((s) => s.text).join('');
+    if (!text) return null;
+    return { text, font: this.font };
   }
 
   public render(r: IRenderer): void {

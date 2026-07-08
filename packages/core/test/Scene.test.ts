@@ -11,6 +11,8 @@ const mockCtx = {
   rotate: vi.fn(),
   fillText: vi.fn(),
   beginPath: vi.fn(),
+  moveTo: vi.fn(),
+  arc: vi.fn(),
   fill: vi.fn(),
   rect: vi.fn(),
   clip: vi.fn(),
@@ -547,6 +549,131 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  it('remounting an embedded Scene on the same canvas does not compound DPR scaling', () => {
+    // SPA remount at DPR 2: after the first Scene, canvas.width holds the
+    // DPR-scaled backing store (800 for a 400-logical canvas). A second Scene
+    // reading canvas.width as the logical size would double every mount
+    // (400 → 800 → 1600). The renderer records the logical size in the
+    // canvas's inline style; subsequent Scenes must prefer it.
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      parentDiv.appendChild(canvas);
+
+      const first = new Scene(canvas, { disableWindowResize: true });
+      expect(first.width).toBe(400);
+      expect(canvas.width).toBe(800); // backing store at DPR 2
+      first.destroy();
+
+      const second = new Scene(canvas, { disableWindowResize: true });
+      expect(second.width).toBe(400); // NOT 800
+      expect(canvas.width).toBe(800); // NOT 1600
+      second.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
+  it('clientToScene mapping is DPR-independent for an embedded scene', () => {
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      const scene = new Scene(canvas, { disableWindowResize: true });
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+        left: 50,
+        top: 20,
+        width: 400, // CSS box = logical size
+        height: 300,
+        right: 450,
+        bottom: 320,
+        x: 50,
+        y: 20,
+        toJSON: () => ({}),
+      });
+      // Identity mapping: DPR must not leak into pointer→scene coordinates.
+      expect(scene.clientToScene(250, 170)).toEqual({ x: 200, y: 150 });
+      scene.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
+  it('disableWindowResize keeps the canvas backing store at its own size', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.width = 400;
+    canvas.height = 300;
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    expect(scene.width).toBe(400);
+    // CanvasRenderer used to clobber this to window.innerWidth (800 in this mock).
+    expect(canvas.width).toBe(400);
+    expect(canvas.height).toBe(300);
+  });
+
+  it('destroy() releases the WebGPU device', () => {
+    const scene = makeScene();
+    const destroy = vi.fn();
+    (scene as any).device = { destroy };
+    scene.destroy();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect((scene as any).device).toBeNull();
+  });
+
+  it('resize() keeps the WebGPU canvas backing store in step', () => {
+    const scene = makeScene();
+    (scene as any).renderer = {}; // the mock ctx can't service CanvasRenderer.resize
+    const gpuCanvas = { width: 800, height: 600, style: {} };
+    (scene as any).gpuCanvas = gpuCanvas;
+    scene.resize(1024, 512);
+    expect(gpuCanvas.width).toBe(1024);
+    expect(gpuCanvas.height).toBe(512);
+  });
+
+  it('clears the GPU canvas once the last ComputeParticleEntity leaves', () => {
+    const scene = makeScene();
+    const submit = vi.fn();
+    const pass = { end: vi.fn() };
+    const encoder = { beginRenderPass: vi.fn(() => pass), finish: vi.fn(() => 'cmd') };
+    (scene as any).device = { createCommandEncoder: () => encoder, queue: { submit } };
+    (scene as any).gpuContext = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+    (scene as any).gpuHasContent = true; // particles were presented last frame
+
+    tick(scene); // no ComputeParticleEntity in the tree anymore
+    expect(submit).toHaveBeenCalledTimes(1); // one transparent clear pass
+    expect((scene as any).gpuHasContent).toBe(false);
+
+    scene.markDirty();
+    tick(scene); // already clean — no second clear
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('onDemand skips idle frames even when autoThrottle is disabled', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    scene.autoThrottle = false; // must not re-enable per-frame rendering
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // first frame is dirty
+    expect(e.renders).toBe(1);
+
+    tick(scene); // idle, not dirty — must still skip
+    tick(scene);
+    expect(e.renders).toBe(1);
+
+    scene.markDirty();
+    tick(scene);
+    expect(e.renders).toBe(2);
+  });
+
   it('onDemand mode keeps rendering while an animation is pending', () => {
     const scene = makeScene();
     scene.renderMode = 'onDemand';
@@ -557,6 +684,279 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     tick(scene);
     tick(scene);
     expect(e.renders).toBe(2); // still rendering due to pending animation
+  });
+
+  it('legacy animate() wakes an idle onDemand scene', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('wake', null) as SpyEntity;
+    scene.add(e);
+    tick(scene); // initial dirty consumed
+    tick(scene); // fully idle
+    expect(e.renders).toBe(1);
+
+    e.animate({ opacity: 0 } as any, 200); // must wake the loop by itself
+    tick(scene);
+    expect(e.renders).toBe(2);
+  });
+
+  it('markDirty() called inside update() survives to the next frame', () => {
+    // The naive self-animating pattern: update() marks the scene dirty each
+    // frame. The dirty flag must be consumed *before* the update/render pass,
+    // otherwise marks made during update() are silently wiped at end of tick
+    // and the entity freezes after one frame.
+    class SelfDirtyEntity extends SpyEntity {
+      public updates = 0;
+      override update() {
+        this.updates++;
+        this.scene?.markDirty();
+      }
+    }
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SelfDirtyEntity('sd', null) as SelfDirtyEntity;
+    scene.add(e);
+
+    tick(scene); // frame 1: initial dirty
+    tick(scene); // frame 2: dirty re-armed from inside update()
+    tick(scene); // frame 3: same
+    expect(e.renders).toBe(3);
+    expect(e.updates).toBe(3);
+  });
+
+  it('markDirty() between frames still triggers exactly one onDemand render', () => {
+    const scene = makeScene();
+    scene.renderMode = 'onDemand';
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+
+    tick(scene); // initial dirty consumed
+    scene.markDirty();
+    tick(scene); // renders once
+    tick(scene); // idle again — must skip
+    expect(e.renders).toBe(2);
+  });
+
+  describe('CPU particle fallback coordinate space', () => {
+    // One live perpetual particle at local (10, 20), size 4.
+    function makeParticleEntity() {
+      const e = new ComputeParticleEntity({ maxParticles: 1, size: 4 });
+      e.setOrigins([10, 20]);
+      e.particleData[6] = 4; // size (setOrigins does not populate it)
+      e.particleData[7] = -1; // perpetual life
+      return e;
+    }
+
+    it('GL point branch transforms particle positions to world space', () => {
+      const scene = makeScene();
+      const addCircle = vi.fn();
+      (scene as any).pointRenderer = {
+        addCircle,
+        addRect: vi.fn(),
+        begin: vi.fn(),
+        flush: vi.fn(),
+      };
+      const e = makeParticleEntity();
+      e.setPosition(100, 50);
+      e.scaleX = 2;
+      e.scaleY = 2;
+      scene.add(e);
+
+      tick(scene);
+
+      expect(addCircle).toHaveBeenCalledTimes(1);
+      const [x, y, size] = addCircle.mock.calls[0];
+      // world = entity T*S applied to local (10, 20); size scaled by world scale
+      expect(x).toBeCloseTo(100 + 2 * 10);
+      expect(y).toBeCloseTo(50 + 2 * 20);
+      expect(size).toBeCloseTo(4 * 2);
+    });
+
+    it('non-similarity transforms fall back to the canvas path (local space)', () => {
+      const scene = makeScene();
+      const addCircle = vi.fn();
+      (scene as any).pointRenderer = {
+        addCircle,
+        addRect: vi.fn(),
+        begin: vi.fn(),
+        flush: vi.fn(),
+      };
+      const e = makeParticleEntity();
+      e.scaleX = 2; // non-uniform: one radius cannot represent the ellipse
+      e.scaleY = 1;
+      scene.add(e);
+
+      tick(scene);
+
+      // Must not go through the GL point layer; the Canvas branch draws under
+      // the entity's own transform instead.
+      expect(addCircle).not.toHaveBeenCalled();
+    });
+
+    it('mouse repulsion compares the mouse in entity-local space', () => {
+      const scene = makeScene();
+      const e = makeParticleEntity();
+      e.setPosition(500, 300); // far from origin so scene-space distance > 120
+      // particle at local (10, 20) with origin there too → no spring force
+      scene.add(e);
+      // Scene-space mouse right next to the particle's world position (510, 325)
+      (scene as any).mouseX = 510;
+      (scene as any).mouseY = 322;
+
+      tick(scene);
+
+      // Local mouse (10, 22) is 2px from the particle (10, 20): repulsion must
+      // push it away (negative y velocity). Comparing scene-space mouse to
+      // local-space particles sees a ~580px distance and applies no force.
+      expect(e.particleData[3]).toBeLessThan(0);
+    });
+  });
+
+  describe('static content projection', () => {
+    class ContentEntity extends SpyEntity {
+      public projText: string | null = 'Hello VectoJS';
+      public projSelectable = false;
+      constructor(id: string) {
+        super(id, null);
+        this.width = 200;
+        this.height = 40;
+      }
+      override getContentProjection() {
+        return this.projText === null
+          ? null
+          : {
+              text: this.projText,
+              font: '24px sans-serif',
+              selectable: this.projSelectable,
+            };
+      }
+    }
+
+    function makeDomScene(options: Record<string, unknown> = {}) {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      const scene = new Scene(canvas, options);
+      (scene as any).isRunning = true;
+      return scene;
+    }
+
+    function contentEl(scene: Scene, id: string): HTMLElement | undefined {
+      return (scene as any).contentElements.get(id);
+    }
+
+    it('projects opt-in text as a transparent, findable DOM node', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('txt');
+      e.setPosition(30, 50);
+      scene.add(e);
+
+      tick(scene);
+
+      const el = contentEl(scene, 'txt')!;
+      expect(el).toBeDefined();
+      expect(el.textContent).toBe('Hello VectoJS'); // real text — find-in-page/SEO see it
+      expect(el.style.color).toBe('transparent'); // canvas owns the pixels
+      expect(el.style.font).toContain('24px');
+      expect(el.style.left).toBe('30px');
+      expect(el.style.top).toBe('50px');
+      expect(el.style.width).toBe('200px');
+      expect(el.getAttribute('aria-hidden')).toBeNull(); // static text IS the SR content
+      scene.destroy();
+    });
+
+    it('marks the projection aria-hidden when the entity already has an interactive a11y node', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('int');
+      e.interactive = true;
+      scene.add(e);
+
+      tick(scene);
+
+      expect(contentEl(scene, 'int')!.getAttribute('aria-hidden')).toBe('true');
+      scene.destroy();
+    });
+
+    it('selectable gates pointer-events so canvas input is unaffected by default', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('sel');
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'sel')!.style.pointerEvents).toBe('none');
+
+      e.projSelectable = true;
+      tick(scene);
+      const el = contentEl(scene, 'sel')!;
+      expect(el.style.pointerEvents).toBe('auto');
+      expect(el.style.userSelect).toBe('text');
+      scene.destroy();
+    });
+
+    it('updates text in place and removes the node when projection goes null', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('mut');
+      scene.add(e);
+      tick(scene);
+
+      e.projText = 'changed';
+      tick(scene);
+      expect(contentEl(scene, 'mut')!.textContent).toBe('changed');
+
+      e.projText = null;
+      tick(scene);
+      expect(contentEl(scene, 'mut')).toBeUndefined();
+      scene.destroy();
+    });
+
+    it('hides fully off-viewport projections (viewport-lazy)', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('off');
+      e.setPosition(5000, 5000); // outside the 800x600 mock viewport
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'off')!.style.display).toBe('none');
+
+      e.setPosition(10, 10);
+      scene.markDirty();
+      tick(scene);
+      expect(contentEl(scene, 'off')!.style.display).not.toBe('none');
+      scene.destroy();
+    });
+
+    it('contentProjection: false disables the layer entirely', () => {
+      const scene = makeDomScene({ contentProjection: false });
+      const e = new ContentEntity('nope');
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'nope')).toBeUndefined();
+      scene.destroy();
+    });
+
+    it('destroy() removes projected content nodes', () => {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      document.body.appendChild(parentDiv);
+      const scene = new Scene(canvas);
+      (scene as any).isRunning = true;
+      const e = new ContentEntity('gone');
+      scene.add(e);
+      tick(scene);
+      const el = contentEl(scene, 'gone')!;
+      expect(el.isConnected).toBe(true);
+      scene.destroy();
+      expect(el.isConnected).toBe(false);
+      expect((scene as any).contentElements.size).toBe(0);
+      parentDiv.remove();
+    });
+  });
+
+  it('exposes the scene-graph roots read-only for tooling', () => {
+    const scene = makeScene();
+    const e = new SpyEntity('tool-e', null);
+    scene.add(e);
+    expect(scene.rootEntity.children).toContain(e);
+    expect(scene.overlayRootEntity.children).toEqual([]);
   });
 
   it('clipChildren wraps the child render pass in a clip rect', () => {

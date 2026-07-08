@@ -25,15 +25,22 @@ jobs:
         run: cd packages/ui && bunx vitest run
       - name: Run three unit tests
         run: cd packages/three && bunx vitest run
+      - name: Run devtools unit tests
+        run: cd packages/devtools && bunx vitest run
       - name: Run video exporter tests
         env:
           VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd packages/video-exporter && bunx vitest run
       - name: Lint
-        run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src
+        run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src
       - name: Build packages
         run: |
           cd packages/core && bun run build
           cd ../ui && bun run build
+          cd ../devtools && bun run build
           cd ../three && bun run build
           cd ../video-exporter && bun run build
+      - name: HiDPI e2e (deviceScaleFactor 2)
+        # Uses the runner's preinstalled Chrome; the script resolves
+        # PUPPETEER_EXECUTABLE_PATH → /usr/bin/chromium → /usr/bin/google-chrome.
+        run: cd packages/core && bun run test:e2e

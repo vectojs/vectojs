@@ -1,4 +1,4 @@
-import { Entity } from '../tree/Entity';
+import { Entity, type ContentProjection } from '../tree/Entity';
 import { LayoutEngine, type GlyphMeasurer, type PreparedText } from '../layout/LayoutEngine';
 import { createCanvasMeasurer } from '../layout/measure';
 import { IRenderer } from '../renderer/IRenderer';
@@ -44,6 +44,16 @@ export class TextEntity extends Entity {
   }
 
   /**
+   * Mirror the rendered text into the DOM content layer: find-in-page, screen
+   * readers, crawlers, and translation see the same string the canvas draws.
+   */
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.text) return null;
+    // 'sans-serif' matches the shared measurer and the fillText fallback.
+    return { text: this.text, font: `${this.fontSize}px sans-serif` };
+  }
+
+  /**
    * Replace the text content. Runs the **cold** measurement pass (re-segment +
    * re-measure) since the glyphs changed, then re-lays out.
    *
@@ -65,6 +75,28 @@ export class TextEntity extends Entity {
    */
   public setMaxWidth(maxWidth: number): this {
     this.layout.maxWidth = maxWidth;
+    this.applyLayout();
+    return this;
+  }
+
+  /**
+   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
+   * the wrap width; the last line stays ragged) and reflow.
+   */
+  public setTextAlign(align: 'left' | 'justify'): this {
+    this.layout.textAlign = align;
+    this.applyLayout();
+    return this;
+  }
+
+  /**
+   * Plug a hyphenator (word → parts). Break opportunities are baked in during
+   * the cold pass, so this re-prepares the current text. Soft hyphens
+   * (U+00AD) in the text work without one.
+   */
+  public setHyphenator(fn: ((word: string) => string[]) | null): this {
+    this.layout.hyphenate = fn;
+    this.prepared = this.layout.prepare(this.text, this.atlas, this.fontSize);
     this.applyLayout();
     return this;
   }

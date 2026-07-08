@@ -93,6 +93,8 @@ function mockGL() {
     TRIANGLE_STRIP: 13,
     STATIC_DRAW: 14,
     TRIANGLES: 15,
+    ALIASED_POINT_SIZE_RANGE: 27,
+    getParameter: vi.fn(() => new Float32Array([1, 255])),
   };
   return { gl, captures };
 }
@@ -251,6 +253,44 @@ describe('createWebGLPointRenderer', () => {
     expect(captures.textureBinds.length).toBeGreaterThan(0);
   });
 
+  it('skips re-uploading an identical texture source (per-frame re-set must be free)', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlasA = {} as TexImageSource;
+    r.setMSDFTexture(atlasA, 4);
+    r.setMSDFTexture(atlasA, 4); // MSDFTextEntity re-sets its atlas every render
+    r.setMSDFTexture(atlasA, 4);
+    expect(captures.texUploads).toBe(1);
+
+    const atlasB = {} as TexImageSource;
+    r.setMSDFTexture(atlasB, 2); // a different source must re-upload
+    expect(captures.texUploads).toBe(2);
+
+    const spriteAtlas = {} as TexImageSource;
+    r.setTexture(spriteAtlas);
+    r.setTexture(spriteAtlas);
+    expect(captures.texUploads).toBe(3); // sprite path caches too
+  });
+
+  it('draws pending glyphs before switching to a different MSDF atlas', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlasA = {} as TexImageSource;
+    const atlasB = {} as TexImageSource;
+
+    r.begin();
+    r.setMSDFTexture(atlasA, 4);
+    r.addGlyph(0, 0, 10, 10, 0, 0, 1, 1);
+    // Second font: glyphs already batched against atlas A must be committed
+    // now, or they'd be drawn with atlas B's texture (wrong glyphs).
+    r.setMSDFTexture(atlasB, 4);
+    r.addGlyph(20, 0, 10, 10, 0, 0, 1, 1);
+    r.flush();
+
+    const glyphDraws = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES && d.count === 6);
+    expect(glyphDraws).toHaveLength(2); // one draw per atlas
+  });
+
   it('addGlyph expands to a textured triangle batch and feeds the distance range', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;
@@ -305,9 +345,56 @@ describe('createWebGLPointRenderer', () => {
     r.destroy();
     r.destroy();
 
-    expect(gl.deleteBuffer).toHaveBeenCalledTimes(4);
-    expect(gl.deleteVertexArray).toHaveBeenCalledTimes(4);
-    expect(gl.deleteProgram).toHaveBeenCalledTimes(4);
+    expect(gl.deleteBuffer).toHaveBeenCalledTimes(5);
+    expect(gl.deleteVertexArray).toHaveBeenCalledTimes(5);
+    expect(gl.deleteProgram).toHaveBeenCalledTimes(5); // + the circle-quad fallback path
     expect(gl.deleteTexture).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('gl.POINTS clip fallback', () => {
+  it('routes circles near the viewport edge to the triangle-quad path', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.resize(800, 600);
+    r.begin();
+    // Center 5px from the left edge, radius 20: gl.POINTS would vanish the
+    // moment the center clips off-viewport; the quad path never does.
+    r.addCircle(5, 300, 20, '#00ff00');
+    r.flush();
+
+    const points = captures.drawArrays.filter((d) => d.mode === gl.POINTS);
+    const tris = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES);
+    expect(points).toHaveLength(0);
+    expect(tris).toHaveLength(1);
+    expect(tris[0].count).toBe(6); // one quad = two triangles
+  });
+
+  it('routes circles larger than the GPU max point size to the quad path', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.resize(800, 600);
+    r.begin();
+    r.addCircle(400, 300, 200, '#00f'); // diameter 400 > mocked max 255
+    r.flush();
+
+    expect(captures.drawArrays.filter((d) => d.mode === gl.POINTS)).toHaveLength(0);
+    expect(captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(1);
+  });
+
+  it('interior small circles keep the fast POINTS path', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.resize(800, 600);
+    r.begin();
+    r.addCircle(400, 300, 10, '#fff'); // safely interior
+    r.addCircle(5, 300, 20, '#fff'); // edge → quad
+    r.flush();
+
+    const points = captures.drawArrays.filter((d) => d.mode === gl.POINTS);
+    const tris = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES);
+    expect(points).toHaveLength(1);
+    expect(points[0].count).toBe(1);
+    expect(tris).toHaveLength(1);
   });
 });

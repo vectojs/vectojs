@@ -16,8 +16,12 @@ vi.mock('three', async () => {
         this.domElement = options.canvas;
       }
     }
+    private pixelRatio = 1;
     setSize = vi.fn();
-    setPixelRatio = vi.fn();
+    setPixelRatio = vi.fn((r: number) => {
+      this.pixelRatio = r;
+    });
+    getPixelRatio = vi.fn(() => this.pixelRatio);
     clear = vi.fn();
     render = vi.fn();
     dispose = vi.fn();
@@ -186,6 +190,153 @@ describe('ThreeRenderer', () => {
     expect(mesh.material).toBeInstanceOf(THREE.ShaderMaterial);
     const mat = mesh.material as THREE.ShaderMaterial;
     expect(mat.uniforms.u_grad_stops).toBeDefined();
+  });
+
+  it('flush() only marks the frame dirty; present() does the single GL render', () => {
+    renderer.clear();
+    for (let i = 0; i < 3; i++) {
+      renderer.fillCircle(i * 10, 0, 5, '#ffffff');
+      renderer.flush(); // Scene flushes around every non-batched node
+    }
+    expect(vi.mocked(renderer.renderer.render)).not.toHaveBeenCalled();
+    renderer.present();
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('flush() without present() still paints once via the microtask fallback', async () => {
+    renderer.clear();
+    renderer.fillCircle(0, 0, 5, '#ffffff');
+    renderer.flush();
+    renderer.flush();
+    renderer.flush();
+    await Promise.resolve(); // drain microtasks (older-core compatibility path)
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('present() after an explicit present does not double-render via the fallback', async () => {
+    renderer.clear();
+    renderer.fillCircle(0, 0, 5, '#ffffff');
+    renderer.flush();
+    renderer.present(); // Scene's end-of-frame call
+    await Promise.resolve();
+    expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
+  });
+
+  it('stroke() draws one Line per sub-path (no connectors across moveTo gaps)', () => {
+    renderer.clear();
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(10, 0);
+    renderer.moveTo(50, 50); // second sub-path
+    renderer.lineTo(60, 50);
+    renderer.stroke('#ffffff', 1);
+    const lines = renderer.scene.children.filter((o) => (o as THREE.Line).isLine);
+    expect(lines).toHaveLength(2);
+    // Each line has its own 2 points — nothing spans the (10,0)→(50,50) gap.
+    for (const line of lines) {
+      const pos = (line as THREE.Line).geometry.getAttribute('position');
+      expect(pos.count).toBe(2);
+    }
+  });
+
+  it('clip() scales the scissor by the renderer pixel ratio, not window DPR', () => {
+    renderer.renderer.setPixelRatio(2); // e.g. ThreeAdapter offscreen at fixed ratio
+    (window as any).devicePixelRatio = 3; // must be ignored
+
+    renderer.clip(0, 0, 100, 50);
+
+    const call = vi.mocked(renderer.renderer.setScissor).mock.calls.at(-1)!;
+    expect(call[2]).toBeCloseTo(200); // 100 × getPixelRatio()
+    expect(call[3]).toBeCloseTo(100);
+    (window as any).devicePixelRatio = 1;
+  });
+
+  describe('fillText texture cache', () => {
+    it('reuses one texture for repeated (text, font, color) across frames', () => {
+      renderer.fillText('fps: 60', 0, 0, '16px sans-serif', '#fff');
+      const first = renderer.scene.children[0] as THREE.Mesh;
+      const firstMap = (first.material as THREE.MeshBasicMaterial).map!;
+      const mapDispose = vi.spyOn(firstMap, 'dispose');
+
+      renderer.clear(); // next frame
+      renderer.fillText('fps: 60', 0, 0, '16px sans-serif', '#fff');
+      const second = renderer.scene.children[0] as THREE.Mesh;
+
+      expect((second.material as THREE.MeshBasicMaterial).map).toBe(firstMap);
+      expect(mapDispose).not.toHaveBeenCalled(); // clear() must not kill the cache
+    });
+
+    it('different text gets a different texture', () => {
+      renderer.fillText('fps: 60', 0, 0, '16px sans-serif', '#fff');
+      renderer.fillText('fps: 59', 0, 20, '16px sans-serif', '#fff');
+      const [a, b] = renderer.scene.children as THREE.Mesh[];
+      expect((a.material as THREE.MeshBasicMaterial).map).not.toBe(
+        (b.material as THREE.MeshBasicMaterial).map,
+      );
+    });
+
+    it('evicts least-recently-used textures past the cache limit', () => {
+      (renderer as any).textTextureCacheLimit = 2;
+      renderer.fillText('a', 0, 0, '16px sans-serif', '#fff');
+      const oldest = (renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      const oldestDispose = vi.spyOn(oldest.map!, 'dispose');
+
+      renderer.fillText('b', 0, 0, '16px sans-serif', '#fff');
+      renderer.fillText('a', 0, 0, '16px sans-serif', '#fff'); // refresh 'a'
+      renderer.fillText('c', 0, 0, '16px sans-serif', '#fff'); // evicts 'b', not 'a'
+
+      expect(oldestDispose).not.toHaveBeenCalled();
+      expect((renderer as any).textTextureCache.size).toBe(2);
+
+      renderer.fillText('d', 0, 0, '16px sans-serif', '#fff'); // evicts 'a'
+      expect(oldestDispose).toHaveBeenCalledOnce();
+    });
+
+    it('dispose() releases cached text textures', () => {
+      renderer.fillText('bye', 0, 0, '16px sans-serif', '#fff');
+      const map = ((renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial)
+        .map!;
+      const mapDispose = vi.spyOn(map, 'dispose');
+
+      renderer.dispose();
+
+      expect(mapDispose).toHaveBeenCalledOnce();
+      expect((renderer as any).textTextureCache.size).toBe(0);
+    });
+  });
+
+  describe('drawImage texture cache', () => {
+    it('reuses one texture per source across frames until invalidated', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const first = renderer.scene.children[0] as THREE.Mesh;
+      const firstMap = (first.material as THREE.MeshBasicMaterial).map!;
+      const mapDispose = vi.spyOn(firstMap, 'dispose');
+
+      renderer.clear(); // next frame
+      renderer.drawImage(img, 10, 10, 32, 32);
+      const second = renderer.scene.children[0] as THREE.Mesh;
+      expect((second.material as THREE.MeshBasicMaterial).map).toBe(firstMap);
+      expect(mapDispose).not.toHaveBeenCalled();
+
+      // Mutated source: caller invalidates, next draw uploads fresh.
+      renderer.invalidateImage(img);
+      expect(mapDispose).toHaveBeenCalledOnce();
+      renderer.clear();
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const third = renderer.scene.children[0] as THREE.Mesh;
+      expect((third.material as THREE.MeshBasicMaterial).map).not.toBe(firstMap);
+    });
+
+    it('dispose() releases cached image textures', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 16, 16);
+      const map = ((renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial)
+        .map!;
+      const mapDispose = vi.spyOn(map, 'dispose');
+      renderer.dispose();
+      expect(mapDispose).toHaveBeenCalledOnce();
+    });
   });
 
   it('disposes active objects and renderer exactly once', () => {

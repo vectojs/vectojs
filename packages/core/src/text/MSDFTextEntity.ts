@@ -1,4 +1,4 @@
-import { Entity } from '../tree/Entity';
+import { Entity, type ContentProjection } from '../tree/Entity';
 import { MSDFFont } from './MSDFFont';
 import { LayoutWorkerManager } from '../layout/LayoutWorkerManager';
 
@@ -10,6 +10,10 @@ export interface MSDFTextEntityOptions {
   color?: string;
   lineHeight?: number;
   letterSpacing?: number;
+  /** Wrap boundary in logical pixels. Defaults to 1000. */
+  maxWidth?: number;
+  /** Layout height limit in logical pixels. Defaults to 1000. */
+  maxHeight?: number;
 }
 
 export class MSDFTextEntity extends Entity {
@@ -20,6 +24,8 @@ export class MSDFTextEntity extends Entity {
   public color: string;
   private letterSpacing: number;
   private lineHeight?: number;
+  private maxWidth: number;
+  private maxHeight: number;
 
   private text: string = '';
   private lastRenderedSeqId: number = 0;
@@ -44,18 +50,30 @@ export class MSDFTextEntity extends Entity {
     this.color = options.color ?? '#ffffff';
     this.letterSpacing = options.letterSpacing ?? 0;
     this.lineHeight = options.lineHeight;
+    this.maxWidth = options.maxWidth ?? 1000;
+    this.maxHeight = options.maxHeight ?? 1000;
     this.setText(text);
+  }
+
+  /** Change the wrap boundary and re-run layout for the current text. */
+  public setMaxWidth(maxWidth: number): void {
+    if (this.maxWidth === maxWidth) return;
+    this.maxWidth = maxWidth;
+    this.queueLayout();
   }
 
   public setText(text: string): void {
     if (this.text === text && this.layoutResult) return;
     this.text = text;
+    this.queueLayout();
+  }
 
+  private queueLayout(): void {
     LayoutWorkerManager.getInstance().queueLayout(this.id, this.text, {
       fontId: this.font.id,
       fontSize: this.fontSize,
-      maxWidth: 1000, // standard wrap boundary
-      maxHeight: 1000,
+      maxWidth: this.maxWidth,
+      maxHeight: this.maxHeight,
       fontData: this.font.data,
       letterSpacing: this.letterSpacing,
       lineHeight: this.lineHeight,
@@ -66,6 +84,19 @@ export class MSDFTextEntity extends Entity {
         this.scene?.markDirty();
       },
     });
+  }
+
+  /**
+   * Mirror the rendered text into the DOM content layer: find-in-page, screen
+   * readers, crawlers, and translation see the same string the canvas draws.
+   */
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.text) return null;
+    return {
+      text: this.text,
+      font: `${this.fontSize}px ${this.fallbackFont}`,
+      lineHeight: this.lineHeight,
+    };
   }
 
   public isPointInside(globalX: number, globalY: number): boolean {
@@ -98,6 +129,10 @@ export class MSDFTextEntity extends Entity {
       scene.pointRenderer.setMSDFTexture(this.texture, this.font.distanceRange);
 
       const worldRot = Math.atan2(world.b, world.a);
+      // The GL layer bypasses the 2D renderer's globalAlpha, so accumulate
+      // ancestor opacity here (the Canvas2D fallback gets it from the Scene).
+      let worldOpacity = this.opacity;
+      for (let p = this.parent; p; p = p.parent) worldOpacity *= p.opacity;
 
       const len = this.layoutResult.codePoints.length;
       for (let i = 0; i < len; i++) {
@@ -143,7 +178,7 @@ export class MSDFTextEntity extends Entity {
           ab.right / aw,
           v1,
           runColor,
-          this.opacity,
+          worldOpacity,
           worldRot,
         );
       }

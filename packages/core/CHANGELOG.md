@@ -1,5 +1,55 @@
 # @vectojs/core
 
+## 1.0.0
+
+### Major Changes
+
+- First stable release. All core engine features (scene graph, layout, hit-testing, animation drivers, WebGL/WebGPU/Canvas2D/SVG rendering, accessibility projection, text shaping/bidi) and the full UI component set have shipped and been through a complete file-by-file audit of both packages, with a live-interaction QA pass across every demo and renderer backend. No known bugs or vulnerabilities remain open.
+
+  This is a semver commitment: breaking changes to the public API of either package now require a major version bump.
+
+## 0.2.9
+
+### Patch Changes
+
+- c10d401: Bound `parseColorToRGBA`'s cache to the same 1000-entry LRU pattern already used by `@vectojs/ui`'s `measureText` cache. `BatchCircle`/`BatchRect` colors are read every frame, so a workload with many distinctly-colored, continuously-varying entities (an animated heatmap, a particle field with per-point color shifts) could mint a new unique color string every frame — the cache had no eviction and would grow unbounded for the life of the page.
+- 1af6c8f: Fix `Entity.add()` not detaching a child from its previous parent: adding the same child to a parent twice duplicated it in `children[]` (a single `remove()` call only strips the first occurrence, leaving a stale entry that keeps rendering/updating despite `child.parent` reporting `null`); re-parenting to a different entity without an explicit `remove()` first left the old parent holding a stale reference whose own `.parent` disagreed with where the child now actually lived. `add()` now detaches from any existing parent first — the same convention Three.js's and PixiJS's `add`/`addChild` already follow. The check is O(1) for the common case of adding a brand-new entity.
+- f64823d: Fix `getWorldTransform()`/`getWorldScale()`/`getWorldRotation()` silently dropping every transform above an ancestor whose `id` happened to equal the string `'root'`. Scene's own root entity is internally named that, but `id` is a plain user-settable string with no reservation — any caller who names their own top-level container `"root"` (an entirely ordinary choice) would have any entity nested under it lose its parent's position/scale/rotation contribution entirely. Now walks to the true top of the tree (`.parent === null`) instead of matching on `id`.
+
+## 0.2.8
+
+### Patch Changes
+
+- d00abdd: New package @vectojs/devtools: the in-page Virtual Math Tree inspector — live tree view with type/geometry/animation badges, one-shot entity picking, world-transform readout, keyboard nudge editing, and a host-overlay selection highlight; the panel itself is rendered with VectoJS. Core gains read-only Scene.rootEntity/overlayRootEntity accessors for tooling.
+- 8da5d8c: Engine cleanups: WebGL circles that gl.POINTS cannot represent (center near/off the viewport edge, or diameter beyond the GPU point-size cap) now render through a triangle-quad fallback instead of popping or shrinking; the Scene loop no longer re-walks the tree up to 4x per tick (animation/interactive flags are collected during the render walk); legacy animate() wakes idle onDemand scenes; ThreeRenderer caches drawImage textures per source with an invalidateImage() API.
+- 8bc6c2b: Typography: LayoutEngine gains textAlign 'justify' (stretches inter-word spaces, or inter-character gaps on space-less CJK lines, so wrapped lines end flush; paragraph-final lines stay ragged) and wrap-time hyphenation — soft hyphens (U+00AD) break with a visible '-' out of the box, and a pluggable hyphenate hook supplies break parts for plain words. TextEntity exposes setTextAlign()/setHyphenator().
+
+## 0.2.7
+
+### Patch Changes
+
+- 965822d: Static content projection: entities can expose rendered text via getContentProjection() and the Scene mirrors it as transparent, position-synced, viewport-lazy DOM nodes — canvas text becomes findable (Ctrl+F), readable by screen readers and crawlers, translatable, and optionally natively selectable. TextEntity and MSDFTextEntity opt in out of the box; disable per scene with contentProjection: false.
+- HiDPI fixes: embedded canvases no longer display at double size on DPR-2 screens (the renderer now records the logical size as CSS size), and remounting a Scene on the same canvas no longer compounds the devicePixelRatio scale. A real-Chromium e2e leg at deviceScaleFactor 2 now guards these paths in CI.
+
+## 0.2.6
+
+### Patch Changes
+
+- f4c98f3: markDirty() calls made inside update() now survive to the next frame instead of being wiped at end of tick; CPU-fallback particles render and simulate in a consistent coordinate space for transformed entities; Entity.destroy() settles pending animateTo/springTo promises; SVGRenderer.arc matches Canvas sweep semantics for CCW and wrapped arcs; MSDF text wrap width is configurable via maxWidth/setMaxWidth.
+- e45ec38: Fix animation/runtime latent bugs found in the 2026-07-06 full-source review:
+
+  - `SpringPhysics` now integrates in clamped substeps — a background-tab rAF gap (multi-second dt) no longer catapults spring-animated entities off-screen.
+  - `Scene` onDemand frame skipping no longer silently disables itself when `autoThrottle: false` is set.
+  - Layout worker: multi-line text now reports the widest line's width (was: last line), wraps whole words (with per-glyph breaking for CJK/long words), honors `\n`, and swallows the wrapping space; glyph advance lookup is now O(1).
+  - WebGL point layer: identical texture sources are no longer re-uploaded every frame; switching MSDF atlases mid-frame commits the pending glyph batch first (two fonts no longer render with one atlas); the GL canvas now composites with `premultipliedAlpha: false` matching its straight-alpha blending (no more bright AA fringes).
+  - `MSDFTextEntity` GL path now honors ancestor opacity.
+  - `SplineEntity` gradient documents bypass the bitmap cache (gradients rendered as `defaultColor` before) and solid-color bakes are DPR-scaled (no more blurry cached splines on HiDPI).
+  - `colorParse` clears its shared 1×1 canvas before each fallback parse (semi-transparent named/hsl colors no longer blend with the previous parse).
+  - Legacy `Entity.animate()` writes past the property setters, so it no longer spawns/retargets transition drivers every frame when `setTransition` is configured on the same property.
+  - `Scene.destroy()` releases the WebGPU device; `Scene.resize()` resizes the WebGPU particle canvas; removing the last `ComputeParticleEntity` clears the GPU canvas instead of freezing the final frame.
+  - Embedded scenes (`disableWindowResize`) keep the canvas's own dimensions — `CanvasRenderer` no longer clobbers them to the window size.
+  - New optional `IRenderer.present()` hook: `Scene` calls it once at the end of each render pass so retained-scene backends can do their single real GL render there.
+
 ## 0.2.5
 
 ### Patch Changes

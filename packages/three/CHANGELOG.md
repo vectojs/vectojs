@@ -1,5 +1,25 @@
 # @vectojs/three
 
+## 0.1.6
+
+### Patch Changes
+
+- Tighten the `@vectojs/core`/`@vectojs/ui` peer dependency ranges to `>=1.0.0 <2.0.0` now that both have reached 1.0.0. The previous unbounded `>=0.1.0`/`>=0.2.7` ranges would have silently accepted a future breaking `2.0.0` of either package with no peer-dependency warning, defeating the point of the semver commitment.
+
+## 0.1.5
+
+### Patch Changes
+
+- 8da5d8c: Engine cleanups: WebGL circles that gl.POINTS cannot represent (center near/off the viewport edge, or diameter beyond the GPU point-size cap) now render through a triangle-quad fallback instead of popping or shrinking; the Scene loop no longer re-walks the tree up to 4x per tick (animation/interactive flags are collected during the render walk); legacy animate() wakes idle onDemand scenes; ThreeRenderer caches drawImage textures per source with an invalidateImage() API.
+
+## 0.1.4
+
+### Patch Changes
+
+- f4c98f3: clip() scissors by the renderer's own pixel ratio instead of window.devicePixelRatio; fillText reuses rasterized textures through an LRU cache instead of re-uploading per call per frame.
+- e45ec38: - `ThreeRenderer.flush()` no longer performs a full GL render per call — the Scene flushes around every non-batched node, which made frames O(N²) in entity count. Rendering now happens once per frame in the new `present()` hook (with a microtask fallback for older cores that never call it).
+  - `stroke()` emits one `THREE.Line` per sub-path instead of concatenating all of them into a single line — no more spurious connector segments across `moveTo()` gaps.
+
 `@vectojs/three` is excluded from the automated Changesets flow
 (`.changeset/config.json`'s `ignore` list) and is versioned by hand: bump
 `packages/three/package.json`, commit, tag `@vectojs/three@<version>`, and push the tag —

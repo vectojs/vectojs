@@ -51,6 +51,30 @@ describe('Entity affine coordinate conversion', () => {
     expect(node.worldToLocal(10, 20)).toBeNull();
   });
 
+  it('does not treat a user-named "root" ancestor as the scene root', () => {
+    // Entity.getWorldTransform()/getWorldScale() used to detect the top of
+    // the tree by checking `ancestor.id === 'root'` — a string that collides
+    // with the perfectly ordinary choice of naming your own top-level
+    // container "root". Any entity nested under one would silently lose
+    // every transform from that point up.
+    const userNamedRoot = new Node('root');
+    userNamedRoot.setPosition(100, 50);
+    userNamedRoot.scaleX = 2;
+    userNamedRoot.scaleY = 2;
+
+    const child = new Node('child');
+    child.setPosition(10, 20);
+    userNamedRoot.add(child);
+
+    const world = child.getGlobalPosition();
+    expect(world.x).toBeCloseTo(100 + 2 * 10, 9);
+    expect(world.y).toBeCloseTo(50 + 2 * 20, 9);
+
+    const scale = child.getWorldScale();
+    expect(scale.x).toBeCloseTo(2, 9);
+    expect(scale.y).toBeCloseTo(2, 9);
+  });
+
   it('returns the world-space axis-aligned box for transformed local bounds', () => {
     const node = new Node();
     node.setPosition(100, 50);

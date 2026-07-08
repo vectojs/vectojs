@@ -59,9 +59,9 @@ export interface SceneOptions {
   debugA11y?: boolean;
   /**
    * Cap the render loop to at most this many frames per second (power saving —
-   * e.g. a quieter fan in a library). `0` (default) means uncapped (native
-   * refresh rate). Continuous animations still run, just less often. Also
-   * settable later via {@link Scene.maxFPS}.
+   * e.g. a quieter fan in a library). `0` means uncapped (native refresh
+   * rate). Defaults to `60` (`0` under test runners). Continuous animations
+   * still run, just less often. Also settable later via {@link Scene.maxFPS}.
    */
   maxFPS?: number;
   /**
@@ -93,6 +93,14 @@ export interface SceneOptions {
    * and not marked dirty) to save power/CPU. Default is `true`.
    */
   autoThrottle?: boolean;
+  /**
+   * Mirror static text from entities implementing
+   * {@link Entity.getContentProjection} as transparent, position-synced DOM
+   * nodes, so find-in-page, screen readers, crawlers, and translation work on
+   * canvas-rendered text. Default is `true`; disable for purely decorative
+   * scenes to skip the sync walk.
+   */
+  contentProjection?: boolean;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -109,6 +117,16 @@ export interface A11yTreeNode {
   valuemin?: string;
   valuemax?: string;
   children: A11yTreeNode[];
+}
+
+/**
+ * Parse an inline `"<n>px"` style value into a positive number, or `null` for
+ * anything else (empty, percentages, calc(), zero).
+ */
+function parseInlinePx(value: string | undefined): number | null {
+  if (!value || !value.endsWith('px')) return null;
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**
@@ -185,6 +203,14 @@ export class Scene {
   // server-side (e.g. headless layout / vector export) without jsdom.
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
+  /** DOM nodes mirroring static text content, keyed by entity id. */
+  private contentElements: Map<string, HTMLElement> = new Map();
+  private contentProjectionEnabled: boolean = true;
+  // Animation/interactive flags collected during the render walk (tree-walk
+  // fusion): the loop reads last frame's answers instead of re-walking the
+  // tree up to 4× per tick. Start true so the first tick stays conservative.
+  private frameHadAnimation = true;
+  private frameHadInteractive = true;
   private resizeHandler: () => void;
   private focusedA11yElement: HTMLElement | null = null;
   private caretBlinkTimer: any = null;
@@ -224,6 +250,8 @@ export class Scene {
   private initializingWebGPU: boolean = false;
   private gpuCanvas: HTMLCanvasElement | null = null;
   private gpuContext: any = null;
+  /** True while the GPU canvas holds a presented particle frame (needs clearing when they leave). */
+  private gpuHasContent: boolean = false;
   private mouseX: number = -9999;
   private mouseY: number = -9999;
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
@@ -235,8 +263,14 @@ export class Scene {
     this.debugA11y = options.debugA11y ?? false;
     this.disableWindowResize = options.disableWindowResize ?? false;
     if (this.disableWindowResize) {
-      this.width = canvas.width || canvas.clientWidth || 0;
-      this.height = canvas.height || canvas.clientHeight || 0;
+      // Prefer the inline px style: it's where the renderer records the
+      // *logical* size. On a remount, canvas.width holds the previous
+      // renderer's DPR-scaled backing store — reading it as logical would
+      // compound the scale on every mount (400 → 800 → 1600 at DPR 2).
+      const styleWidth = parseInlinePx(canvas.style?.width);
+      const styleHeight = parseInlinePx(canvas.style?.height);
+      this.width = styleWidth ?? (canvas.width || canvas.clientWidth || 0);
+      this.height = styleHeight ?? (canvas.height || canvas.clientHeight || 0);
     } else {
       this.width =
         typeof window !== 'undefined'
@@ -257,6 +291,7 @@ export class Scene {
     this.autoThrottle = options.autoThrottle ?? true;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
+    this.contentProjectionEnabled = options.contentProjection ?? true;
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -281,7 +316,12 @@ export class Scene {
     if (options.renderer) {
       this.renderer = options.renderer;
     } else {
-      this.renderer = new CanvasRenderer(canvas);
+      // Embedded scenes (disableWindowResize) keep the canvas's own size; the
+      // default fullscreen path lets CanvasRenderer size to the window.
+      this.renderer = new CanvasRenderer(
+        canvas,
+        this.disableWindowResize ? { width: this.width, height: this.height } : undefined,
+      );
     }
 
     // Setup Agent / Automation Semantic Layer (only where there's a DOM).
@@ -423,6 +463,11 @@ export class Scene {
    * @param entity - The subtree whose shadow nodes should be removed.
    */
   public detachA11y(entity: Entity): void {
+    const contentEl = this.contentElements.get(entity.id);
+    if (contentEl) {
+      contentEl.remove();
+      this.contentElements.delete(entity.id);
+    }
     this.removeA11yRecursively(entity);
   }
 
@@ -477,6 +522,8 @@ export class Scene {
     this.a11yRoot?.remove();
     this.portalRoot?.remove();
     this.a11yElements.clear();
+    for (const el of this.contentElements.values()) el.remove();
+    this.contentElements.clear();
     this.pointRenderer?.destroy();
     // Release the main renderer's backend (e.g. WebGLRenderer + GL context)
     // before GC — prevents context leakage across SPA/XR recreate cycles.
@@ -492,6 +539,12 @@ export class Scene {
     if (this.manager) {
       this.manager.destroy();
       this.manager = null;
+    }
+    // Release the GPUDevice itself — without this, repeated Scene
+    // create/destroy cycles (SPA routes, XR sessions) leak WebGPU devices.
+    if (this.device) {
+      this.device.destroy?.();
+      this.device = null;
     }
   }
 
@@ -573,6 +626,20 @@ export class Scene {
    * Essential for deterministic rendering (e.g. video export).
    * Note: You should call `scene.stop()` before using this to avoid conflict with the rAF loop.
    */
+  /**
+   * The scene-graph root entity. Exposed read-only for tooling — the devtools
+   * inspector walks it to build the Virtual Math Tree view. Mutate the graph
+   * through {@link add}/{@link remove}, not by editing this node directly.
+   */
+  public get rootEntity(): Entity {
+    return this.root;
+  }
+
+  /** The overlay layer root (see {@link showOverlay}), read-only for tooling. */
+  public get overlayRootEntity(): Entity {
+    return this.overlayRoot;
+  }
+
   public step(dt: number): void {
     const time = this.lastTime + dt;
     this.lastTime = time;
@@ -591,23 +658,7 @@ export class Scene {
   }
 
   /** True when any node in the subtree has a pending animation. */
-  private hasAnyPendingAnimation(node: Entity): boolean {
-    if (node.hasPendingAnimations()) return true;
-    for (const child of node.children) {
-      if (this.hasAnyPendingAnimation(child)) return true;
-    }
-    return false;
-  }
-
   /** True when any node in the subtree is interactive (drives a11y sync). */
-  private hasAnyInteractive(node: Entity): boolean {
-    if (node.interactive) return true;
-    for (const child of node.children) {
-      if (this.hasAnyInteractive(child)) return true;
-    }
-    return false;
-  }
-
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
@@ -906,10 +957,114 @@ export class Scene {
       }
     }
 
+    this.syncContentProjection(node);
+
     for (const child of node.children) this.syncA11y(child);
     if (node === this.root) {
       for (const overlay of this.overlayRoot.children) this.syncA11y(overlay);
     }
+  }
+
+  /**
+   * Mirror one entity's static text ({@link Entity.getContentProjection}) as a
+   * transparent DOM node positioned over the drawn glyphs. Runs on the a11y
+   * sync cadence; all writes are dirty-checked. Off-viewport projections are
+   * hidden (`display: none`) so text-heavy scenes only materialize what is
+   * visible to the browser's text machinery anyway.
+   */
+  private syncContentProjection(node: Entity): void {
+    if (!this.contentProjectionEnabled || !this.a11yRoot) return;
+    const projection = node.getContentProjection();
+    let el = this.contentElements.get(node.id);
+
+    if (!projection || !projection.text) {
+      if (el) {
+        el.remove();
+        this.contentElements.delete(node.id);
+      }
+      return;
+    }
+
+    if (!el) {
+      el = document.createElement('div');
+      el.setAttribute('data-vecto-content', node.id);
+      const s = el.style;
+      s.position = 'absolute';
+      s.transformOrigin = '0 0';
+      s.margin = '0';
+      s.padding = '0';
+      // The canvas owns the pixels; the DOM node only carries the text.
+      s.color = 'transparent';
+      s.whiteSpace = 'pre-wrap';
+      s.overflow = 'hidden';
+      s.zIndex = '0'; // beneath the interactive a11y elements
+      // Keep scroll containers working when the pointer is over selectable text.
+      el.addEventListener(
+        'wheel',
+        (e) => {
+          node.dispatchEvent(new VectoJSEvent('wheel', node, e));
+        },
+        { passive: false },
+      );
+      this.a11yRoot.appendChild(el);
+      this.contentElements.set(node.id, el);
+    }
+
+    if (el.textContent !== projection.text) el.textContent = projection.text;
+
+    const font = projection.font ?? '';
+    if (el.style.font !== font) el.style.font = font;
+    const lineHeight = projection.lineHeight !== undefined ? `${projection.lineHeight}px` : '';
+    if (el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
+
+    // Interactive entities already project an a11y node — hide the text copy
+    // from screen readers so nothing is announced twice. Static text has no
+    // other semantic presence, so it stays exposed.
+    const hidden = node.interactive ? 'true' : null;
+    if (el.getAttribute('aria-hidden') !== hidden) {
+      if (hidden) el.setAttribute('aria-hidden', hidden);
+      else el.removeAttribute('aria-hidden');
+    }
+
+    // Selection is opt-in: pointer-events on the text would otherwise
+    // intercept canvas input over every text block.
+    const selectable = projection.selectable === true;
+    const pointerEvents = selectable ? 'auto' : 'none';
+    if (el.style.pointerEvents !== pointerEvents) {
+      el.style.pointerEvents = pointerEvents;
+      el.style.userSelect = selectable ? 'text' : 'none';
+      el.style.cursor = selectable ? 'text' : '';
+    }
+
+    // Geometry: same threading as the interactive branch.
+    const { a, b, c, d, e, f } = node.getWorldTransform();
+    el.style.left = `${e}px`;
+    el.style.top = `${f}px`;
+    if (node.width > 0) el.style.width = `${node.width}px`;
+    if (node.height > 0) el.style.height = `${node.height}px`;
+    el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+
+    // Viewport-lazy: hide projections whose local box is fully off-screen.
+    let visible = true;
+    if (node.width > 0 && node.height > 0) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < 4; i++) {
+        const lx = i & 1 ? node.width : 0;
+        const ly = i & 2 ? node.height : 0;
+        const wx = a * lx + c * ly + e;
+        const wy = b * lx + d * ly + f;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+        if (wy < minY) minY = wy;
+        if (wy > maxY) maxY = wy;
+      }
+      visible = maxX >= 0 && minX <= this.width && maxY >= 0 && minY <= this.height;
+    }
+    const display = visible ? '' : 'none';
+    if (el.style.display !== display) el.style.display = display;
   }
 
   private enforceA11yDomOrder(): void {
@@ -1166,16 +1321,18 @@ export class Scene {
 
     let cap = this.effectiveMaxFPS();
 
-    // Auto-throttle when idle: if in continuous render mode (always) but the scene is static
-    // (no pending animations and not marked dirty), drop the render rate to 2 FPS
-    // to save battery and GPU cycles.
-    const isStatic =
-      this.autoThrottle &&
-      !this.dirty &&
-      !this.hasAnyPendingAnimation(this.root) &&
-      !this.hasAnyPendingAnimation(this.overlayRoot);
+    // Idle = nothing marked dirty and no animation in flight. This drives two
+    // independent behaviors: the onDemand frame skip (always active in that
+    // mode) and the `always`-mode 2 FPS auto-throttle (opt-out via
+    // `autoThrottle` — it must NOT gate the onDemand skip, or disabling the
+    // throttle would silently turn onDemand into per-frame rendering).
+    // Flags come from the last rendered frame (collected during the render
+    // walk). Skipped frames change no state, so they stay valid while idle;
+    // anything that starts motion marks the scene dirty, which wakes the loop
+    // and refreshes them on the next rendered frame.
+    const isIdle = !this.dirty && !this.frameHadAnimation;
 
-    if (isStatic && this.renderMode === 'always' && this.maxFPS > 0) {
+    if (isIdle && this.autoThrottle && this.renderMode === 'always' && this.maxFPS > 0) {
       cap = Math.min(cap, 2);
     }
 
@@ -1191,30 +1348,39 @@ export class Scene {
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
-    if (this.renderMode === 'onDemand' && isStatic) {
+    if (this.renderMode === 'onDemand' && isIdle) {
       this.scheduleFrame();
       return;
     }
+
+    // Consume the dirty flag BEFORE the update/render pass: any markDirty()
+    // call made inside an entity's update() must survive into the next frame
+    // (self-animating entities re-arm themselves this way). Clearing after
+    // render would silently wipe those marks and freeze the entity.
+    this.dirty = false;
 
     this.render(this.renderer, dt, time);
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
     // Performance Throttling: If an animation is currently flying, we freeze A11y writes
     // to prevent DOM reflow from thrashing Canvas render loop. We sync once it's at rest.
-    const hasActiveAnimation =
-      this.hasAnyPendingAnimation(this.root) || this.hasAnyPendingAnimation(this.overlayRoot);
+    const hasActiveAnimation = this.frameHadAnimation;
 
-    const hasInteractive =
-      this.hasAnyInteractive(this.root) || this.hasAnyInteractive(this.overlayRoot);
+    const hasInteractive = this.frameHadInteractive;
+    // Content projection rides the same walk. It must run even with zero
+    // existing mirrors (new text entities need discovery), so enabling the
+    // option opts into the walk; per-node writes are all dirty-checked, so an
+    // unchanged frame costs only the traversal.
+    const wantsContentSync = this.contentProjectionEnabled;
     const shouldSyncInterval =
       this.a11ySyncInterval <= 0 || time - this.lastA11ySync >= this.a11ySyncInterval;
 
     if (
-      (hasInteractive || this.a11yElements.size > 0) &&
+      (hasInteractive || this.a11yElements.size > 0 || wantsContentSync) &&
       (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
     ) {
       this.lastA11ySync = time;
-      if (hasInteractive) {
+      if (hasInteractive || wantsContentSync) {
         this.syncA11y(this.root);
       }
       this.enforceA11yDomOrder();
@@ -1222,8 +1388,6 @@ export class Scene {
     } else if (hasActiveAnimation) {
       this.a11yPendingSyncAfterAnimation = true;
     }
-
-    this.dirty = false;
 
     this.scheduleFrame();
   }
@@ -1367,6 +1531,7 @@ export class Scene {
           }
 
           this.device.queue.submit([commandEncoder.finish()]);
+          if (this.gpuContext) this.gpuHasContent = true;
         } catch (e) {
           console.error('WebGPU frame execution failed. Falling back.', e);
           this.deviceLost = true;
@@ -1374,11 +1539,30 @@ export class Scene {
           this.recreateWebGPUDeviceWithRetry(computeEntities);
         }
       } else if (isMainRenderPath) {
-        // Fallback updates
+        // Fallback updates. The simulation runs in entity-local space, so the
+        // scene-space mouse must be converted per entity (repulsion would
+        // otherwise only work for untransformed entities at the origin).
         for (const entity of computeEntities) {
-          entity.updateCPU(dt / 1000, this.mouseX, this.mouseY, this.width, this.height);
+          let mx = this.mouseX;
+          let my = this.mouseY;
+          if (mx > -9000 && my > -9000) {
+            const local = entity.worldToLocal(mx, my);
+            if (local) {
+              mx = local.x;
+              my = local.y;
+            } else {
+              mx = -9999;
+              my = -9999;
+            }
+          }
+          entity.updateCPU(dt / 1000, mx, my, this.width, this.height);
         }
       }
+    } else if (isMainRenderer) {
+      // The GPU canvas presents its last frame until told otherwise: once the
+      // final ComputeParticleEntity leaves the tree, clear it or the particles
+      // stay frozen on screen.
+      this.clearGPUCanvasIfStale();
     }
 
     renderer.clear();
@@ -1388,6 +1572,11 @@ export class Scene {
 
     const vw = this.width;
     const vh = this.height;
+
+    // Tree-walk fusion: animation/interactive state is collected during this
+    // walk (before any cull/portal early-return) so the loop doesn't re-walk.
+    let walkHadAnimation = false;
+    let walkHadInteractive = false;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
@@ -1402,7 +1591,11 @@ export class Scene {
       pf: number,
       parentOpacity: number,
     ) => {
-      if (isMainRenderer) node.update(dt, time);
+      if (isMainRenderer) {
+        node.update(dt, time);
+        if (!walkHadAnimation && node.hasPendingAnimations()) walkHadAnimation = true;
+        if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
+      }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
       const cos = Math.cos(node.rotation);
@@ -1526,7 +1719,19 @@ export class Scene {
       if (visible) {
         if (node instanceof ComputeParticleEntity) {
           if (this.deviceLost || this.webgpuDisabled || !this.device || !this.manager) {
-            this.renderCPUParticles(renderer, node, worldOpacity);
+            this.renderCPUParticles(
+              renderer,
+              node,
+              worldOpacity,
+              a,
+              b,
+              c,
+              d,
+              te,
+              tf,
+              worldScaleX,
+              isSimilarityTransform,
+            );
           }
         } else {
           node.render(renderer);
@@ -1549,11 +1754,17 @@ export class Scene {
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
-    if (isMainRenderer) this.reconcilePortals();
+    if (isMainRenderer) {
+      this.frameHadAnimation = walkHadAnimation;
+      this.frameHadInteractive = walkHadInteractive;
+      this.reconcilePortals();
+    }
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
     }
+    // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
+    renderer.present?.();
   }
 
   /**
@@ -1575,6 +1786,12 @@ export class Scene {
       (this.renderer as any).resize(width, height);
     }
     this.pointRenderer?.resize(width, height);
+    // Keep the WebGPU particle layer's backing store in step — otherwise it
+    // rasterizes at the creation-time resolution and gets CSS-stretched.
+    if (this.gpuCanvas) {
+      this.gpuCanvas.width = width;
+      this.gpuCanvas.height = height;
+    }
     this.markDirty();
   }
 
@@ -1602,6 +1819,29 @@ export class Scene {
 
     // 2. Search main scene tree
     return this.findHitRecursively(this.root, x, y);
+  }
+
+  /** Submit one transparent clear pass when particle content lingers on the GPU canvas. */
+  private clearGPUCanvasIfStale(): void {
+    if (!this.gpuHasContent || !this.device || !this.gpuContext || this.deviceLost) return;
+    try {
+      const encoder = this.device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: this.gpuContext.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.end();
+      this.device.queue.submit([encoder.finish()]);
+    } catch {
+      // Device may be mid-loss; the recovery machinery owns that state.
+    }
+    this.gpuHasContent = false;
   }
 
   private async initWebGPUContext(entities: ComputeParticleEntity[]): Promise<GPUDevice> {
@@ -1723,10 +1963,22 @@ export class Scene {
     renderer: IRenderer,
     entity: ComputeParticleEntity,
     worldOpacity: number,
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    worldScale: number,
+    isSimilarityTransform: boolean,
   ): void {
     const data = entity.particleData;
     const size = entity.maxParticles;
-    const isMain = renderer === this.renderer;
+    // The GL point layer takes world coordinates and a single radius, so it
+    // can only represent the entity's transform when it is a similarity
+    // (uniform scale, no shear). Anything else draws through the canvas
+    // branch, which runs under the entity's own transform in local space.
+    const useGL = renderer === this.renderer && !!this.pointRenderer && isSimilarityTransform;
 
     for (let i = 0; i < size; i++) {
       const idx = i * 8;
@@ -1738,8 +1990,14 @@ export class Scene {
 
       const opacity = life < 0.0 ? worldOpacity : worldOpacity * Math.min(1.0, life);
       const scale = life >= 0.0 ? Math.min(1.0, life) : 1.0;
-      if (isMain && this.pointRenderer) {
-        this.pointRenderer.addCircle(x, y, pSize * scale, entity.baseColor, opacity);
+      if (useGL) {
+        this.pointRenderer!.addCircle(
+          a * x + c * y + e,
+          b * x + d * y + f,
+          pSize * scale * worldScale,
+          entity.baseColor,
+          opacity,
+        );
       } else {
         renderer.fillCircle(x, y, pSize * scale, entity.baseColor, opacity);
       }
