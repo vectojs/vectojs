@@ -61,7 +61,7 @@ function buildApp(): { tree: Stack; onClick: ReturnType<typeof vi.fn> } {
   const col = new Stack({ direction: 'vertical', gap: 8 });
   col.add(new Text('Hello 世界', { maxWidth: 200 }));
   col.add(new Button('Go', { onClick }));
-  col.add(new Link('Docs', { href: 'https://vectojs.xuepoo.xyz' }));
+  col.add(new Link('Docs', { href: 'https://vectojs.org' }));
   col.add(new Checkbox({ label: 'Accept', checked: false }));
   col.add(new Toggle({ label: 'Dark', checked: true }));
   col.add(new Input({ width: 200, placeholder: 'Name' }));
@@ -91,7 +91,7 @@ describe('UI smoke / integration', () => {
 
     // Native semantic elements project as real DOM (button / a / input).
     expect(root.querySelector('button')?.getAttribute('aria-label')).toBe('Go');
-    expect(root.querySelector('a')?.getAttribute('href')).toBe('https://vectojs.xuepoo.xyz');
+    expect(root.querySelector('a')?.getAttribute('href')).toBe('https://vectojs.org');
     expect(root.querySelector('img')?.getAttribute('alt')).toBe('Avatar');
     // Toggle is a role=switch; Checkbox is a real checkbox input.
     expect(root.querySelector('[role="switch"]')?.getAttribute('aria-label')).toBe('Dark');
