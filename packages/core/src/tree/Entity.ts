@@ -887,9 +887,18 @@ export abstract class Entity {
    * Return the exact accumulated Canvas `T * S * R` transform for this entity.
    */
   public getWorldTransform(): AffineTransform {
-    const path: Entity[] = this.id === 'root' ? [] : [this];
+    // Walk all the way to the true top of the tree (Scene.root/overlayRoot,
+    // whichever `.parent` is null) rather than stopping at an ancestor whose
+    // `id` happens to equal the string 'root' — Scene's own root entity is
+    // literally named that internally, but `id` is a plain user-settable
+    // string with no reservation, so any entity a caller names "root" (an
+    // entirely ordinary choice for a top-level container) would collide and
+    // silently truncate the transform chain there. Including the tree's
+    // actual top entity is harmless: it's always left at the identity
+    // transform (Scene never gives root/overlayRoot a non-default x/y/scale).
+    const path: Entity[] = [this];
     let ancestor = this.parent;
-    while (ancestor && ancestor.id !== 'root') {
+    while (ancestor) {
       path.push(ancestor);
       ancestor = ancestor.parent;
     }
@@ -983,8 +992,8 @@ export abstract class Entity {
 
   /**
    * Accumulated world scale factors: this entity's own `scaleX`/`scaleY` times
-   * those of every ancestor (excluding the scene root). Useful for mapping a
-   * world-space point back into local space for hit-testing.
+   * those of every ancestor. Useful for mapping a world-space point back into
+   * local space for hit-testing.
    *
    * @returns The world scale `{ x, y }`.
    */
@@ -992,7 +1001,9 @@ export abstract class Entity {
     let sx = this.scaleX;
     let sy = this.scaleY;
     let curr = this.parent;
-    while (curr && curr.id !== 'root') {
+    // See getWorldTransform()'s comment: walk to the true top (`.parent ===
+    // null`), not to an ancestor whose `id` happens to be the string 'root'.
+    while (curr) {
       sx *= curr.scaleX;
       sy *= curr.scaleY;
       curr = curr.parent;
@@ -1002,14 +1013,16 @@ export abstract class Entity {
 
   /**
    * Accumulated world rotation: this entity's own `rotation` plus
-   * that of every ancestor (excluding the scene root).
+   * that of every ancestor.
    *
    * @returns The accumulated world rotation in radians.
    */
   public getWorldRotation(): number {
     let rot = this.rotation;
     let curr = this.parent;
-    while (curr && curr.id !== 'root') {
+    // See getWorldTransform()'s comment: walk to the true top (`.parent ===
+    // null`), not to an ancestor whose `id` happens to be the string 'root'.
+    while (curr) {
       rot += curr.rotation;
       curr = curr.parent;
     }
