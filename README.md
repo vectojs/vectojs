@@ -7,6 +7,7 @@
 [![core](https://img.shields.io/npm/v/@vectojs/core?label=core&color=22d3ee)](https://www.npmjs.com/package/@vectojs/core)
 [![ui](https://img.shields.io/npm/v/@vectojs/ui?label=ui&color=22d3ee)](https://www.npmjs.com/package/@vectojs/ui)
 [![three](https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee)](https://www.npmjs.com/package/@vectojs/three)
+[![devtools](https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee)](https://www.npmjs.com/package/@vectojs/devtools)
 [![video exporter](https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee)](https://www.npmjs.com/package/@vectojs/video-exporter)
 
 VectoJS draws a scene graph onto one `<canvas>`. Layout, hit-testing, animation, text flow, and
@@ -17,9 +18,9 @@ This is not an ECS and it does not claim allocation-free rendering. It is a reta
 runtime for interfaces whose visual or interactive complexity is a poor fit for one DOM element per
 shape, glyph, point, or row.
 
-[Documentation](https://vectojs.xuepoo.xyz/learn/introduction/) ·
-[Live demos](https://vectojs.xuepoo.xyz/demos/) ·
-[Component reference](https://vectojs.xuepoo.xyz/reference/ui-components/) ·
+[Documentation](https://vectojs.org/learn/introduction/) ·
+[Live demos](https://vectojs.org/demos/) ·
+[Component reference](https://vectojs.org/reference/ui-components/) ·
 [Issues](https://github.com/vectojs/vectojs/issues)
 
 ## Why VectoJS
@@ -44,6 +45,7 @@ shape, glyph, point, or row.
 | [`@vectojs/core`](./packages/core)                     | Scene/Entity runtime, layout and text engine, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support |
 | [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                            |
 | [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                  |
+| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                       |
 | [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                         |
 
 ## Install
@@ -141,8 +143,32 @@ static forms, or applications that do not benefit from a retained scene graph.
    capture and bubble phases.
 5. Interactive entities synchronize role/name/state and native input through the semantic layer.
 
-Read the [core guide](https://vectojs.xuepoo.xyz/learn/core-scene/) for lifecycle and rendering, and
-the [accessibility guide](https://vectojs.xuepoo.xyz/learn/accessibility/) before shipping controls.
+Read the [core guide](https://vectojs.org/learn/core-scene/) for lifecycle and rendering, and
+the [accessibility guide](https://vectojs.org/learn/accessibility/) before shipping controls.
+
+## Devtools
+
+`@vectojs/devtools` ships an in-page VMT inspector — a canvas-rendered panel (dogfooding
+`@vectojs/ui`) with the live entity tree, click-to-pick, a selection highlight overlay, geometry
+readouts, and arrow-key nudging:
+
+```ts
+import { attachDevtools } from '@vectojs/devtools';
+
+const devtools = attachDevtools(scene);
+// …
+devtools.detach();
+```
+
+## Agent skills
+
+The [vectojs-skills](https://github.com/vectojs/vectojs-skills) repository packages Claude/agent
+skills that teach coding agents the VectoJS paradigm — most importantly
+`vectojs-paradigm`, which replaces HTML/CSS instincts with scene-graph thinking and a
+state-space debugging ladder (inspect numbers and `getA11yTree()` before reaching for
+screenshots). Skills also cover the core runtime, responsive layout, UI/animation, performance,
+Three.js embedding, and the video exporter. Install them into `.claude/skills` or
+`.agents/skills` of any project that uses VectoJS.
 
 ## Demos
 
