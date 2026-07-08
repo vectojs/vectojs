@@ -52,6 +52,25 @@ describe('Markdown', () => {
     expect(bq.children.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('overlays the blockquote border and text at the same position, not stacked sequentially', () => {
+    const md = new Markdown('> This is a quote');
+    const bq = md.content.children[0] as unknown as {
+      height: number;
+      children: { y: number; height: number }[];
+    };
+    const [border, innerStack] = bq.children;
+    // Both children are meant to overlay at the top of the blockquote box, not
+    // be laid out one after another — the border is a left rule running the
+    // full height of the quote, drawn behind/alongside the text, not above it.
+    expect(border.y).toBe(0);
+    expect(innerStack.y).toBe(0);
+    // The container's reported height must actually bound its children —
+    // otherwise the text renders outside the box the parent layout thinks
+    // this blockquote occupies.
+    expect(bq.height).toBeGreaterThanOrEqual(innerStack.height);
+    expect(bq.height).toBeGreaterThanOrEqual(border.height);
+  });
+
   it('renders horizontal rules', () => {
     const md = new Markdown('---');
     expect(md.content.children.length).toBeGreaterThanOrEqual(1);
