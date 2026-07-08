@@ -23,6 +23,8 @@ export interface PopoverOptions {
 export class Popover extends Overlay {
   private _bg: string;
   private _border: string;
+  private _target: Entity;
+  private _onClick: () => void;
 
   constructor(opts: PopoverOptions) {
     super({
@@ -34,11 +36,20 @@ export class Popover extends Overlay {
     this._bg = opts.bg ?? 'rgba(15,15,30,0.96)';
     this._border = opts.borderColor ?? 'rgba(255,255,255,0.14)';
     this.interactive = true;
+    this._target = opts.target;
 
-    opts.target.on('click', () => {
+    this._onClick = () => {
       if (this.visible) this.hide();
       else this.showAt(opts.target);
-    });
+    };
+    opts.target.on('click', this._onClick);
+  }
+
+  public override destroy(): void {
+    // Otherwise the (still-alive) target keeps a closure referencing this
+    // destroyed popover, and a later click would resurrect it into the tree.
+    this._target.off('click', this._onClick);
+    super.destroy();
   }
 
   public render(r: IRenderer): void {
