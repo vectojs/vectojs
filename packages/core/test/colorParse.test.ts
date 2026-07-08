@@ -63,6 +63,21 @@ describe('parseColorToRGBA', () => {
     expect(a).toBe(b); // cached, not re-parsed
   });
 
+  it('evicts least-recently-used entries instead of growing unbounded', () => {
+    // Point-cloud/particle rendering reads a color every frame (see
+    // Entity.getBatchCircle's doc comment), so a workload with thousands of
+    // distinctly-colored, continuously-varying entities can mint a new unique
+    // color string every frame — this cache must not remember all of them
+    // forever.
+    const seed = parseColorToRGBA('#123456');
+    for (let i = 0; i < 2000; i++) {
+      parseColorToRGBA(`#${(i % 0xffffff).toString(16).padStart(6, '0')}`);
+    }
+    const reparsed = parseColorToRGBA('#123456');
+    expect(reparsed).not.toBe(seed); // evicted -> freshly parsed, new array
+    expect(reparsed).toEqual(seed); // but numerically the same color
+  });
+
   it('falls back to a 1x1 canvas for named colors when DOM is present', () => {
     // jsdom canvas getContext is stubbed elsewhere; provide a deterministic stub here.
     const getImageData = vi.fn(() => ({ data: new Uint8ClampedArray([0, 128, 0, 255]) }));
