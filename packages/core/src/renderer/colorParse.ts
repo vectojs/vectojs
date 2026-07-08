@@ -3,6 +3,13 @@
  */
 export type RGBA = [number, number, number, number];
 
+// Bounded LRU (same rationale/pattern as @vectojs/ui's measureText cache): a
+// `BatchCircle`/`BatchRect` color is read every frame, so a workload with
+// many distinctly-colored, continuously-varying entities (e.g. an animated
+// heatmap or particle field) can mint a new unique color string every
+// frame — an unbounded Map would grow forever. A `Map` preserves insertion
+// order, so the first key is the least-recently-used.
+const CACHE_MAX = 1000;
 const cache = new Map<string, RGBA>();
 let fallbackCtx: CanvasRenderingContext2D | null | undefined;
 
@@ -76,11 +83,20 @@ function fromCanvas(css: string): RGBA | null {
  */
 export function parseColorToRGBA(css: string): RGBA {
   const hit = cache.get(css);
-  if (hit) return hit;
+  if (hit) {
+    // Promote to most-recently-used (delete + re-insert moves it to the end).
+    cache.delete(css);
+    cache.set(css, hit);
+    return hit;
+  }
   const trimmed = css.trim();
   const rgba = (trimmed[0] === '#' ? fromHex(trimmed) : null) ??
     fromRgbFunc(trimmed) ??
     fromCanvas(trimmed) ?? [0, 0, 0, 1];
   cache.set(css, rgba);
+  if (cache.size > CACHE_MAX) {
+    // Evict the least-recently-used entry (oldest insertion-order key).
+    cache.delete(cache.keys().next().value!);
+  }
   return rgba;
 }
