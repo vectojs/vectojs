@@ -62,7 +62,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "dependencies": {
         "marked": "^18.0.5",
       },
