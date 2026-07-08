@@ -189,6 +189,56 @@ describe('UI 0.1.1 Components', () => {
 
       expect(tree).toBeTruthy();
     });
+
+    it("keeps a lazy node's loading indicator up while a sibling lazy load resolves and rebuilds the rows", async () => {
+      let resolveA: (children: any[]) => void = () => {};
+      let resolveB: (children: any[]) => void = () => {};
+      const nodes = [
+        {
+          id: 'a',
+          label: 'A (lazy)',
+          children: () => new Promise<any[]>((resolve) => (resolveA = resolve)),
+        },
+        {
+          id: 'b',
+          label: 'B (lazy)',
+          children: () => new Promise<any[]>((resolve) => (resolveB = resolve)),
+        },
+      ];
+      const tree = new TreeView({ nodes, width: 200, height: 400 });
+
+      // Expand both lazy nodes before either resolves.
+      tree.emit('pointerdown', { localY: 10 }); // row 0: A
+      tree.emit('pointerdown', { localY: 28 + 10 }); // row 1: B
+      await Promise.resolve(); // let both `_toggle` calls reach their `await`
+
+      const rowsAfterBothPending = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterBothPending.find((r) => r.node.id === 'a')?.loading).toBe(true);
+      expect(rowsAfterBothPending.find((r) => r.node.id === 'b')?.loading).toBe(true);
+
+      // A resolves first, rebuilding `_rows` — B's row must still show loading.
+      resolveA([{ id: 'a.1', label: 'Child A1' }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const rowsAfterAResolves = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterAResolves.find((r) => r.node.id === 'b')?.loading).toBe(true);
+
+      // B resolves too — its loading indicator must clear.
+      resolveB([{ id: 'b.1', label: 'Child B1' }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const rowsAfterBResolves = (tree as any)._rows as Array<{
+        node: { id: string };
+        loading: boolean;
+      }>;
+      expect(rowsAfterBResolves.find((r) => r.node.id === 'b')?.loading).toBe(false);
+    });
   });
 
   describe('ResizablePanel', () => {
