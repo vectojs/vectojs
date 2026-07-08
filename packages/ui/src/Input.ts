@@ -115,6 +115,34 @@ export class Input extends UIComponent {
   private cachedFont: string = '';
   private cachedLayout: any = null;
 
+  private _rtlCacheValue: string | null = null;
+  private _rtlCacheResult = false;
+
+  /**
+   * Whether `value` contains any RTL-script character. Cached per distinct
+   * `value` — otherwise this O(n) scan re-runs from scratch on every
+   * `charOffset()` call, and a single render/caret-blink tick calls it several
+   * times (caret, selection start, selection end, composition bounds).
+   */
+  private hasRTL(): boolean {
+    if (this._rtlCacheValue === this.value) return this._rtlCacheResult;
+    let result = false;
+    for (let j = 0; j < this.value.length; j++) {
+      const code = this.value.charCodeAt(j);
+      if (
+        (code >= 0x0590 && code <= 0x05ff) ||
+        (code >= 0x0600 && code <= 0x06ff) ||
+        (code >= 0xfb50 && code <= 0xfeff)
+      ) {
+        result = true;
+        break;
+      }
+    }
+    this._rtlCacheValue = this.value;
+    this._rtlCacheResult = result;
+    return result;
+  }
+
   private getLayout(): any {
     if (this.value === this.cachedValue && this.font === this.cachedFont && this.cachedLayout) {
       return this.cachedLayout;
@@ -137,20 +165,7 @@ export class Input extends UIComponent {
   private charOffset(i: number): number {
     if (this.value.length === 0) return 0;
 
-    let hasRTL = false;
-    for (let j = 0; j < this.value.length; j++) {
-      const code = this.value.charCodeAt(j);
-      if (
-        (code >= 0x0590 && code <= 0x05ff) ||
-        (code >= 0x0600 && code <= 0x06ff) ||
-        (code >= 0xfb50 && code <= 0xfeff)
-      ) {
-        hasRTL = true;
-        break;
-      }
-    }
-
-    if (!hasRTL) {
+    if (!this.hasRTL()) {
       return measureText(this.value.slice(0, i), this.font);
     }
 
@@ -237,20 +252,7 @@ export class Input extends UIComponent {
       const a = Math.min(this.selectionStart, this.selectionEnd);
       const b = Math.max(this.selectionStart, this.selectionEnd);
 
-      let hasRTL = false;
-      for (let j = 0; j < this.value.length; j++) {
-        const code = this.value.charCodeAt(j);
-        if (
-          (code >= 0x0590 && code <= 0x05ff) ||
-          (code >= 0x0600 && code <= 0x06ff) ||
-          (code >= 0xfb50 && code <= 0xfeff)
-        ) {
-          hasRTL = true;
-          break;
-        }
-      }
-
-      if (!hasRTL) {
+      if (!this.hasRTL()) {
         const sx = textOriginX + this.charOffset(a);
         const ex = textOriginX + this.charOffset(b);
         r.beginPath();

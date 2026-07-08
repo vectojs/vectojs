@@ -26,6 +26,29 @@ describe('Input BiDi and Caret Selection Integration', () => {
     expect(x8).toBeGreaterThanOrEqual(0);
   });
 
+  it('caches its RTL-script detection instead of re-scanning the whole value on every charOffset() call', () => {
+    const value = 'שלום abc';
+    const input = new Input({ width: 200, font: '16px sans-serif', value });
+
+    (input as any).charOffset(0);
+    expect((input as any)._rtlCacheValue).toBe(value);
+    expect((input as any)._rtlCacheResult).toBe(true);
+
+    // Flip the cached result to a sentinel: if a later charOffset() call for
+    // the same (unchanged) value recomputed instead of trusting the cache,
+    // it would overwrite this sentinel back to `true` (this value does
+    // contain RTL characters).
+    (input as any)._rtlCacheResult = false;
+    (input as any).charOffset(4);
+    expect((input as any)._rtlCacheResult).toBe(false);
+
+    // Changing the value must invalidate the cache and recompute.
+    input.value = 'plain ascii';
+    (input as any).charOffset(0);
+    expect((input as any)._rtlCacheValue).toBe('plain ascii');
+    expect((input as any)._rtlCacheResult).toBe(false);
+  });
+
   it('should compute lines and caret position correctly for RTL text in TextArea', () => {
     const ta = new TextArea({
       width: 200,
