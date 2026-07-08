@@ -11,9 +11,9 @@
 native/ARIA counterparts so screen readers, keyboard users, Playwright, and AI agents can operate
 them by role and accessible name.
 
-[Live component gallery](https://vectojs.xuepoo.xyz/reference/ui-components/#live-component-gallery) ·
-[Component reference](https://vectojs.xuepoo.xyz/reference/ui-components/) ·
-[Getting started](https://vectojs.xuepoo.xyz/learn/getting-started/)
+[Live component gallery](https://vectojs.org/reference/ui-components/#live-component-gallery) ·
+[Component reference](https://vectojs.org/reference/ui-components/) ·
+[Getting started](https://vectojs.org/learn/getting-started/)
 
 ## Install
 
@@ -73,7 +73,7 @@ await page.getByRole('button', { name: 'Export' }).click();
 | Resizable layout | `PanelGroup`, `Panel`, `PanelResizeHandle`                                              |
 | Transient UI     | `Overlay`, `Tooltip`, `Popover`, `ContextMenu`, `Modal`                                 |
 
-The [live gallery](https://vectojs.xuepoo.xyz/reference/ui-components/#live-component-gallery)
+The [live gallery](https://vectojs.org/reference/ui-components/#live-component-gallery)
 renders every public visual component with the published package.
 
 ## Native input and semantic projection

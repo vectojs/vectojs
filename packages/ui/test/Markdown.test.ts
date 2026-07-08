@@ -221,33 +221,33 @@ Plain paragraph at the end.
 
   it('forwards onLinkClick from paragraph links', () => {
     const clicked: string[] = [];
-    const md = new Markdown('Visit [Docs](https://vectojs.xuepoo.xyz) now.', {
+    const md = new Markdown('Visit [Docs](https://vectojs.org) now.', {
       onLinkClick: (href) => clicked.push(href),
     });
 
     clickFirstLink(md.content.children[0] as RichText);
-    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+    expect(clicked).toEqual(['https://vectojs.org']);
   });
 
   it('forwards onLinkClick from heading links', () => {
     const clicked: string[] = [];
-    const md = new Markdown('# [Docs](https://vectojs.xuepoo.xyz)', {
+    const md = new Markdown('# [Docs](https://vectojs.org)', {
       onLinkClick: (href) => clicked.push(href),
     });
 
     clickFirstLink(md.content.children[0] as RichText);
-    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+    expect(clicked).toEqual(['https://vectojs.org']);
   });
 
   it('forwards onLinkClick from list item links', () => {
     const clicked: string[] = [];
-    const md = new Markdown('- [Docs](https://vectojs.xuepoo.xyz)', {
+    const md = new Markdown('- [Docs](https://vectojs.org)', {
       onLinkClick: (href) => clicked.push(href),
     });
     const list = md.content.children[0];
 
     clickFirstLink(list.children[0] as RichText);
-    expect(clicked).toEqual(['https://vectojs.xuepoo.xyz']);
+    expect(clicked).toEqual(['https://vectojs.org']);
   });
 
   it('allows subclasses to override renderToken for custom Markdown renderers', () => {

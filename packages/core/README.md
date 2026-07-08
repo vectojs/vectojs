@@ -10,8 +10,8 @@
 transforms, render scheduling, layout, text flow, spatial hit-testing, event propagation, renderer
 backends, and the accessibility/automation projection layer.
 
-[Core guide](https://vectojs.xuepoo.xyz/learn/core-scene/) ·
-[API reference](https://vectojs.xuepoo.xyz/reference/core-api/) ·
+[Core guide](https://vectojs.org/learn/core-scene/) ·
+[API reference](https://vectojs.org/reference/core-api/) ·
 [Main repository](https://github.com/vectojs/vectojs)
 
 ## Install
@@ -110,7 +110,7 @@ into the VectoJS event system.
 
 This projection is intentionally thin. Applications still own accessible names, keyboard behavior,
 focus order, contrast, and correct control semantics. See the
-[accessibility guide](https://vectojs.xuepoo.xyz/learn/accessibility/).
+[accessibility guide](https://vectojs.org/learn/accessibility/).
 
 ## Performance model
 

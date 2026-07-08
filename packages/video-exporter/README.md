@@ -4,7 +4,7 @@
 [![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](https://github.com/vectojs/vectojs/blob/main/LICENSE)
 
-[Documentation](https://vectojs.xuepoo.xyz/reference/video-exporter/) ·
+[Documentation](https://vectojs.org/reference/video-exporter/) ·
 [Main repository](https://github.com/vectojs/vectojs)
 
 Export a VectoJS canvas scene to a fixed-rate H.264 MP4. The exporter stops the page's normal

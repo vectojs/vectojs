@@ -10,8 +10,8 @@
 raycast UV coordinates into the Scene's logical coordinate space, forwards pointer/hover/wheel
 events, and keeps texture uploads synchronized with VectoJS rendering.
 
-[Live 3D demo](https://vectojs.xuepoo.xyz/demos/dimension/) ·
-[Reference](https://vectojs.xuepoo.xyz/reference/three/) ·
+[Live 3D demo](https://vectojs.org/demos/dimension/) ·
+[Reference](https://vectojs.org/reference/three/) ·
 [Main repository](https://github.com/vectojs/vectojs)
 
 ## Install
@@ -50,7 +50,7 @@ adapter.vectoScene.start();
 scene3d.add(adapter.mesh);
 ```
 
-See the [reference](https://vectojs.xuepoo.xyz/reference/three/) for the exact constructor and
+See the [reference](https://vectojs.org/reference/three/) for the exact constructor and
 mesh/material customization supported by the installed version.
 
 ## Coordinate and event model

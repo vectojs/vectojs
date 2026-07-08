@@ -87,6 +87,14 @@ class QuoteBorder extends Entity {
   }
 }
 
+/** A simple concrete container entity for nested layouts. */
+class MarkdownContainer extends Entity {
+  isPointInside(_globalX: number, _globalY: number): boolean {
+    return false;
+  }
+  render(_r: any): void {}
+}
+
 // ── Code block with syntax-keyword highlighting ─────────────────────────────
 
 /** Keyword sets for basic syntax highlighting. */
@@ -735,9 +743,12 @@ export class Markdown extends UIComponent {
           for (const inner of bqToken.tokens) {
             const el = this.renderToken(inner);
             if (el) {
-              // Offset by border width + padding
+              const wrapper = new MarkdownContainer();
               el.x = 16;
-              innerStack.add(el);
+              wrapper.add(el);
+              wrapper.width = el.width + 16;
+              wrapper.height = el.height;
+              innerStack.add(wrapper);
             }
           }
         }
@@ -750,12 +761,7 @@ export class Markdown extends UIComponent {
         // Stack re-runs its own sequential layout on every add() (see
         // Stack.add), which would silently move the second child below the
         // first regardless of any position set on it beforehand.
-        const container = new (class extends Entity {
-          isPointInside() {
-            return false;
-          }
-          render() {}
-        })('BlockquoteOverlay');
+        const container = new MarkdownContainer();
         border.x = 0;
         border.y = 0;
         container.add(border);

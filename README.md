@@ -177,7 +177,7 @@ source-available stress tests:
 
 - large danmaku streams and WebGPU particle fields;
 - streaming Markdown/chat rendering;
-- a knowledge graph and Canvas-vs-DOM comparison;
+- a knowledge graph;
 - a VectoJS panel embedded in a Three.js scene;
 - game-style pointer and keyboard interaction.
 
