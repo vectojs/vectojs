@@ -61,6 +61,8 @@ export class ContextMenu extends Overlay {
   private _sH: number;
   private _hoverIdx = -1;
   private _submenu: ContextMenu | null = null;
+  /** Which item's `children` `_submenu` currently represents, if any. */
+  private _submenuFor: ContextMenuItem | null = null;
   private _opts: ContextMenuOptions;
 
   constructor(opts: ContextMenuOptions) {
@@ -95,9 +97,14 @@ export class ContextMenu extends Overlay {
       const item = this._items[idx];
       if (!item || item.separator || item.disabled) return;
       if (item.children && item.children.length > 0) {
-        // Lazy-create and open submenu
-        if (!this._submenu) {
+        // Lazy-create the submenu, and rebuild it if a *different* item's
+        // children are being opened — reusing `_submenu` across items would
+        // just reposition whichever item's submenu happened to be built
+        // first, never reflecting the newly-clicked item's own children.
+        if (!this._submenu || this._submenuFor !== item) {
+          if (this._submenu) this._submenu.destroy();
           this._submenu = new ContextMenu({ ...this._opts, items: item.children });
+          this._submenuFor = item;
           if (this.scene) this.scene.overlayRoot.add(this._submenu);
         }
         this._submenu.showAtPoint(this.x + this.width, this.y + this._rowTop(idx));
