@@ -23,6 +23,38 @@ describe('Entity Component System', () => {
     expect(child.parent).toBeNull();
   });
 
+  it('adding an already-added child again does not duplicate it in children[]', () => {
+    const parent = new TestEntity('parent');
+    const child = new TestEntity('child');
+
+    parent.add(child);
+    parent.add(child);
+
+    expect(parent.children.length).toBe(1);
+    expect(child.parent).toBe(parent);
+
+    // A single remove() must fully detach it — not leave a stale duplicate
+    // entry that keeps rendering/updating despite child.parent being null.
+    parent.remove(child);
+    expect(parent.children.length).toBe(0);
+    expect(child.parent).toBeNull();
+  });
+
+  it('re-parenting a child to a new parent detaches it from the old one', () => {
+    const parentA = new TestEntity('a');
+    const parentB = new TestEntity('b');
+    const child = new TestEntity('child');
+
+    parentA.add(child);
+    parentB.add(child);
+
+    expect(child.parent).toBe(parentB);
+    expect(parentB.children).toContain(child);
+    // The old parent must not keep a stale reference whose own .parent
+    // disagrees with where it actually lives now.
+    expect(parentA.children).not.toContain(child);
+  });
+
   it('should compute global position correctly', () => {
     const parent = new TestEntity();
     parent.setPosition(100, 100);

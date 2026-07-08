@@ -459,10 +459,21 @@ export abstract class Entity {
   /**
    * Append a child entity to this node's children array.
    *
+   * If `child` already has a parent (including `this`), it's detached from it
+   * first — otherwise re-adding an already-added child duplicates it in
+   * `children[]` (one `remove()` call only strips the first occurrence,
+   * leaving a stale entry that keeps rendering/updating despite
+   * `child.parent` reporting `null`), and re-parenting to a different entity
+   * without an explicit `remove()` first leaves the old parent holding a
+   * stale reference whose own `.parent` disagrees with where it now lives.
+   * `child.parent` is only ever `null` or `this`'s ultimate owner, so this
+   * check is O(1) for the overwhelming common case (a brand-new entity).
+   *
    * @param child - The entity to add as a child.
    * @returns `this` for method chaining.
    */
   public add(child: Entity): this {
+    if (child.parent) child.parent.remove(child);
     child.parent = this;
     this.children.push(child);
     const s = this.scene;
