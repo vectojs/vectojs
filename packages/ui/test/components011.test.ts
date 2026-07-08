@@ -357,6 +357,33 @@ describe('UI 0.1.1 Components', () => {
       expect(menu.y).toBe(150);
       expect(menu.visible).toBe(true);
     });
+
+    it('shows the correct submenu content when a different submenu item is opened', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const menu = new ContextMenu({
+        items: [
+          { label: 'Alpha', children: [{ label: 'Alpha child' }] },
+          { label: 'Beta', children: [{ label: 'Beta child' }] },
+        ],
+        itemHeight: 32,
+      });
+      scene.add(menu);
+      menu.showAtPoint(0, 0);
+
+      // Open the first item's submenu (row 0).
+      menu.emit('pointerdown', { localY: 10 });
+      const firstSubmenu = (menu as any)._submenu;
+      expect(firstSubmenu.items?.[0]?.label ?? (firstSubmenu as any)._items[0].label).toBe(
+        'Alpha child',
+      );
+
+      // Open the second item's submenu (row 1) — must show Beta's children,
+      // not silently reposition the still-showing Alpha submenu.
+      menu.emit('pointerdown', { localY: 42 });
+      const secondSubmenu = (menu as any)._submenu;
+      expect((secondSubmenu as any)._items[0].label).toBe('Beta child');
+    });
   });
 
   describe('RadioGroup', () => {
