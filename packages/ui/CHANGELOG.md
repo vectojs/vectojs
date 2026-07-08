@@ -1,5 +1,13 @@
 # @vectojs/ui
 
+## 1.0.0
+
+### Major Changes
+
+- First stable release. All core engine features (scene graph, layout, hit-testing, animation drivers, WebGL/WebGPU/Canvas2D/SVG rendering, accessibility projection, text shaping/bidi) and the full UI component set have shipped and been through a complete file-by-file audit of both packages, with a live-interaction QA pass across every demo and renderer backend. No known bugs or vulnerabilities remain open.
+
+  This is a semver commitment: breaking changes to the public API of either package now require a major version bump.
+
 ## 0.2.8
 
 ### Patch Changes

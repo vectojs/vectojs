@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/devtools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -23,8 +23,8 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@vectojs/core": ">=0.2.7",
-    "@vectojs/ui": ">=0.2.7"
+    "@vectojs/core": ">=1.0.0 <2.0.0",
+    "@vectojs/ui": ">=1.0.0 <2.0.0"
   },
   "devDependencies": {
     "@vectojs/core": "workspace:*",
