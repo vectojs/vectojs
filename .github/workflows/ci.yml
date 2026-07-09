@@ -10,6 +10,8 @@ jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    env:
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
