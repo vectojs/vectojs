@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: bun install
       - name: Install FFmpeg for video exporter integration tests
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
       - name: Run core unit tests
         run: cd packages/core && bunx vitest run
       - name: Run ui unit tests
