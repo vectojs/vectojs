@@ -18,9 +18,8 @@
     "skipLibCheck": true,
     "ignoreDeprecations": "6.0",
 
-    "baseUrl": ".",
     "paths": {
-      "@vectojs/*": ["packages/*/src"]
+      "@vectojs/*": ["./packages/*/src"]
     }
   },
 
