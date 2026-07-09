@@ -31,6 +31,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "oxfmt": "^0.57.0"
+    "oxfmt": "^0.58.0"
   }
 }
