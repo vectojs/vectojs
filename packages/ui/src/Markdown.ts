@@ -414,17 +414,15 @@ export class CodeBlock extends UIComponent {
     for (let row = 0; row < this.lines.length; row++) {
       const segs = this.lines[row];
       let colOffset = 0;
+      let xOffset = 0;
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       for (let col = 0; col < segs.length; col++) {
         const segment = segs[col];
-        r.fillText(
-          segment.text,
-          this.pad + colOffset * this.cellWidth,
-          yBaseline,
-          this.codeFont,
-          segment.color,
-        );
+        const gridX = colOffset * this.cellWidth;
+        const posX = Math.max(gridX, xOffset);
+        r.fillText(segment.text, this.pad + posX, yBaseline, this.codeFont, segment.color);
         colOffset += segment.text.length;
+        xOffset = posX + measureText(segment.text, this.codeFont);
       }
     }
   }
