@@ -50,10 +50,11 @@ export function resolveBrowserLaunchOptions(
   if (configuredExecutable) options.executablePath = configuredExecutable;
   else if (dependencies.exists('/usr/bin/chromium')) options.executablePath = '/usr/bin/chromium';
 
+  options.args = ['--disable-gpu'];
   const sandboxDisabled =
     dependencies.getuid() === 0 || dependencies.env.VECTO_CHROMIUM_NO_SANDBOX === '1';
   if (sandboxDisabled) {
-    options.args = ['--no-sandbox', '--disable-setuid-sandbox'];
+    options.args.push('--no-sandbox', '--disable-setuid-sandbox');
     dependencies.warn(
       'Chromium sandbox is disabled for this VectoJS video export. Run as a non-root user when possible.',
     );

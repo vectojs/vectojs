@@ -22,6 +22,7 @@ describe('browser launch policy', () => {
     expect(resolveBrowserLaunchOptions(deps)).toEqual({
       headless: true,
       executablePath: '/custom/chrome',
+      args: ['--disable-gpu'],
     });
   });
 
@@ -31,11 +32,15 @@ describe('browser launch policy', () => {
     expect(resolveBrowserLaunchOptions(deps)).toEqual({
       headless: true,
       executablePath: '/usr/bin/chromium',
+      args: ['--disable-gpu'],
     });
   });
 
   it('lets Puppeteer resolve its bundled browser when no executable exists', () => {
-    expect(resolveBrowserLaunchOptions(dependencies())).toEqual({ headless: true });
+    expect(resolveBrowserLaunchOptions(dependencies())).toEqual({
+      headless: true,
+      args: ['--disable-gpu'],
+    });
   });
 
   it.each([
@@ -46,7 +51,7 @@ describe('browser launch policy', () => {
 
     expect(resolveBrowserLaunchOptions(deps)).toEqual({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--disable-gpu', '--no-sandbox', '--disable-setuid-sandbox'],
     });
     expect(deps.warn).toHaveBeenCalledOnce();
     expect(deps.warn).toHaveBeenCalledWith(expect.stringMatching(/sandbox.*disabled/i));
@@ -71,6 +76,7 @@ describe('browser launch policy', () => {
     expect(deps.launch).toHaveBeenCalledWith({
       headless: true,
       executablePath: '/custom/chrome',
+      args: ['--disable-gpu'],
     });
   });
 });
