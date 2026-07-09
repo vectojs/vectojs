@@ -368,7 +368,8 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
  */
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
-  private cellWidth: number;
+  private cellWidth = 0;
+
   private lang: string;
   private theme: Required<MarkdownTheme>;
   private lineH = 24;
@@ -380,7 +381,7 @@ export class CodeBlock extends UIComponent {
     this.lang = lang;
     this.theme = theme;
     this.codeFont = `15px ${theme.codeFont}`;
-    this.cellWidth = Math.max(1, measureText('M', this.codeFont));
+
     this.lines = [];
     this.width = maxWidth;
     this.buildLines(code);
@@ -410,6 +411,8 @@ export class CodeBlock extends UIComponent {
     r.roundRect(0, 0, this.width, this.height, 8);
     r.fill(this.theme.codeBgColor);
 
+    const cellWidth = this.cellWidth || Math.max(1, measureText('M', this.codeFont));
+
     // Text lines
     for (let row = 0; row < this.lines.length; row++) {
       const segs = this.lines[row];
@@ -418,7 +421,7 @@ export class CodeBlock extends UIComponent {
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       for (let col = 0; col < segs.length; col++) {
         const segment = segs[col];
-        const gridX = colOffset * this.cellWidth;
+        const gridX = colOffset * cellWidth;
         const posX = Math.max(gridX, xOffset);
         r.fillText(segment.text, this.pad + posX, yBaseline, this.codeFont, segment.color);
         colOffset += segment.text.length;

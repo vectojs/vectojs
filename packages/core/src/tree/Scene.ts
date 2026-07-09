@@ -257,6 +257,7 @@ export class Scene {
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
   private pointerLeaveListener: (() => void) | null = null;
   private hasWarnedZeroSize: boolean = false;
+  private fontLoadHandler: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
@@ -379,6 +380,14 @@ export class Scene {
       this.resize(window.innerWidth, window.innerHeight);
     };
 
+    if (typeof document !== 'undefined' && document.fonts) {
+      this.fontLoadHandler = () => {
+        this.markDirty();
+      };
+      document.fonts.ready.then(this.fontLoadHandler);
+      document.fonts.addEventListener('loadingdone', this.fontLoadHandler);
+    }
+
     this.setupEvents();
   }
 
@@ -500,6 +509,9 @@ export class Scene {
     if (this.destroyed) return;
     this.destroyed = true;
     this.stop();
+    if (typeof document !== 'undefined' && document.fonts && this.fontLoadHandler) {
+      document.fonts.removeEventListener('loadingdone', this.fontLoadHandler);
+    }
     while (this.root.children.length > 0) this.destroyEntitySubtree(this.root.children.at(-1)!);
     while (this.overlayRoot.children.length > 0) {
       this.destroyEntitySubtree(this.overlayRoot.children.at(-1)!);

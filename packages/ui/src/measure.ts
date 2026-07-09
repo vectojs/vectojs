@@ -53,6 +53,12 @@ export function fontSizePx(font: string): number {
 const MEASURE_CACHE_MAX = 1000;
 const measureCache = new Map<string, number>();
 
+if (typeof document !== 'undefined' && document.fonts) {
+  const clearCache = () => measureCache.clear();
+  document.fonts.ready.then(clearCache);
+  document.fonts.addEventListener('loadingdone', clearCache);
+}
+
 /**
  * Measure the rendered width of `text` in the given CSS `font`, memoized via a
  * bounded LRU.
