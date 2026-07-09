@@ -27,7 +27,7 @@
     "@types/node": "^26.1.0",
     "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
-    "typescript": "^5.4.5",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   },
   "publishConfig": {
