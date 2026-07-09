@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.1.1
+
+### Patch Changes
+
+- fix(ui): prevent character overlapping in CodeBlock rendering under fallback proportional fonts
+
 ## 1.1.0
 
 ### Minor Changes
