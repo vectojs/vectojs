@@ -140,4 +140,22 @@ describe('attachDevtools', () => {
     panel.detach();
     host.destroy();
   });
+
+  it('exposes an opt-in event trace and tears it down with the panel', async () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, traceEvents: true, traceCapacity: 2 });
+    expect(panel.trace).not.toBeNull();
+
+    host.canvas.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+    await Promise.resolve();
+    expect(panel.trace?.entries).toEqual([
+      expect.objectContaining({ type: 'keydown', key: 'Enter' }),
+    ]);
+
+    panel.detach();
+    host.canvas.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
+    await Promise.resolve();
+    expect(panel.trace?.entries).toHaveLength(1);
+    host.destroy();
+  });
 });

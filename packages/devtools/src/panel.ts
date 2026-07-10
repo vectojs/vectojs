@@ -2,12 +2,17 @@ import { Scene, Entity } from '@vectojs/core';
 import { TreeView, Text, Button } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene } from './model';
 import { auditScene, type AuditFinding } from './audit';
+import { createEventTrace, type EventTrace } from './eventTrace';
 
 export interface DevtoolsOptions {
   /** Panel width in px. Default 320. */
   width?: number;
   /** Auto-refresh interval in ms while open; 0 disables. Default 500. */
   refreshInterval?: number;
+  /** Observe and render recent pointer, wheel, and keyboard routing. Default false. */
+  traceEvents?: boolean;
+  /** Maximum retained trace records when `traceEvents` is enabled. Default 50. */
+  traceCapacity?: number;
 }
 
 const PANEL_BG = 'rgba(10, 14, 24, 0.96)';
@@ -25,6 +30,8 @@ export class DevtoolsPanel {
   private panelScene: Scene;
   private tree: TreeView;
   private detailLines: Text[] = [];
+  private traceLines: Text[] = [];
+  private eventTrace: EventTrace | null = null;
   private index: Map<string, Entity> = new Map();
   private selected: Entity | null = null;
   private highlight: HighlightEntity | null = null;
@@ -129,7 +136,7 @@ export class DevtoolsPanel {
     auditBtn.on('click', () => this.audit());
     this.panelScene.add(auditBtn);
 
-    const treeHeight = Math.max(160, Math.floor(height * 0.55));
+    const treeHeight = Math.max(160, Math.floor(height * (options.traceEvents ? 0.42 : 0.55)));
     this.tree = new TreeView({
       nodes: [],
       width: this.width - 16,
@@ -158,6 +165,22 @@ export class DevtoolsPanel {
       line.setPosition(12, detailTop + i * 16);
       this.detailLines.push(line);
       this.panelScene.add(line);
+    }
+
+    if (options.traceEvents) {
+      this.eventTrace = createEventTrace(this.host, { capacity: options.traceCapacity });
+      const traceTop = detailTop + this.detailLines.length * 16 + 12;
+      for (let i = 0; i < 4; i++) {
+        const line = new Text('', { font: '11px monospace' });
+        line.setPosition(12, traceTop + i * 16);
+        this.traceLines.push(line);
+        this.panelScene.add(line);
+      }
+      this.eventTrace.subscribe(() => {
+        this.writeTrace();
+        this.panelScene.markDirty();
+      });
+      this.writeTrace();
     }
 
     document.addEventListener('click', this.onHostPick, true);
@@ -242,10 +265,29 @@ export class DevtoolsPanel {
     return this.selected;
   }
 
+  /** Optional generic routing trace, enabled with `traceEvents`. */
+  public get trace(): EventTrace | null {
+    return this.eventTrace;
+  }
+
   private writeDetails(entity: Entity): void {
     const lines = describeEntity(entity);
     for (let i = 0; i < this.detailLines.length; i++) {
       this.detailLines[i].setText(lines[i] ?? '');
+    }
+  }
+
+  private writeTrace(): void {
+    if (!this.eventTrace) return;
+    const recent = this.eventTrace.entries.slice(-3).reverse();
+    this.traceLines[0]?.setText(`trace ${this.eventTrace.entries.length} event(s)`);
+    for (let i = 1; i < this.traceLines.length; i++) {
+      const entry = recent[i - 1];
+      this.traceLines[i].setText(
+        entry
+          ? `${entry.type} ${entry.source} ${entry.targetId?.slice(0, 8) ?? entry.key ?? ''}`
+          : '',
+      );
     }
   }
 
@@ -254,6 +296,7 @@ export class DevtoolsPanel {
     if (this.destroyed) return;
     this.destroyed = true;
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.eventTrace?.destroy();
     document.removeEventListener('click', this.onHostPick, true);
     document.removeEventListener('keydown', this.onKeyNudge);
     if (this.highlight) {

@@ -1,5 +1,13 @@
 # @vectojs/devtools
 
+## 0.3.0
+
+### Minor Changes
+
+- Add an opt-in, bounded event-routing trace for pointer, wheel, and keyboard
+  events. The in-page panel can render recent trace entries, while
+  `createEventTrace` provides the same JSON-safe records to tests and agents.
+
 ## 0.2.0
 
 ### Minor Changes

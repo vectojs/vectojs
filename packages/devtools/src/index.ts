@@ -5,6 +5,15 @@ export { DevtoolsPanel, type DevtoolsOptions } from './panel';
 export { buildTreeModel, findEntityAt, describeEntity, pickInScene } from './model';
 export { inspectEntity, entityPath, textPreviewOf, type EntityInfo } from './inspect';
 export {
+  createEventTrace,
+  EventTrace,
+  type EventTraceEntry,
+  type EventTraceModifiers,
+  type EventTraceOptions,
+  type EventTraceSource,
+  type EventTraceType,
+} from './eventTrace';
+export {
   captureSnapshot,
   diffSnapshots,
   type SceneSnapshot,
