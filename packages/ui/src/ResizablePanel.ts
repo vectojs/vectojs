@@ -50,15 +50,34 @@ export class PanelResizeHandle extends UIComponent {
     this.height = dir === 'vertical' ? size : 0;
     this.interactive = true;
 
-    this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
-      const pos = dir === 'horizontal' ? e.localX : e.localY;
+    // Delta is measured in SCENE space, not the handle's LOCAL space. The
+    // handle moves with the panel it resizes, so a local-space coordinate
+    // tracks the cursor only relative to the moving handle — as the panel
+    // grows the handle slides under the pointer and localX barely changes,
+    // making the drag lag the cursor. Scene coordinates are stable while the
+    // handle moves beneath them, so 1px of mouse travel = 1px of resize.
+    type PointerLike = {
+      sceneX?: number;
+      sceneY?: number;
+      localX?: number;
+      localY?: number;
+    };
+    const posOf = (e: PointerLike): number | undefined => {
+      const scenePos = dir === 'horizontal' ? e.sceneX : e.sceneY;
+      if (scenePos !== undefined) return scenePos;
+      // Fall back to local space where no native event supplies scene coords
+      // (e.g. synthetic test events).
+      return dir === 'horizontal' ? e.localX : e.localY;
+    };
+    this.on('pointerdown', (e: PointerLike) => {
+      const pos = posOf(e);
       if (pos === undefined) return;
       this._drag = true;
       this._lastPos = pos;
     });
-    this.on('pointermove', (e: { localX?: number; localY?: number }) => {
+    this.on('pointermove', (e: PointerLike) => {
       if (!this._drag) return;
-      const pos = dir === 'horizontal' ? e.localX : e.localY;
+      const pos = posOf(e);
       if (pos === undefined) return;
       const delta = pos - this._lastPos;
       this._lastPos = pos;
@@ -69,7 +88,6 @@ export class PanelResizeHandle extends UIComponent {
       this._drag = false;
     };
     this.on('pointerup', end);
-    this.on('pointerleave', end);
     this.on('hover', () => {
       this._hovered = true;
       this.scene?.markDirty();

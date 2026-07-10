@@ -268,6 +268,41 @@ describe('UI 0.1.1 Components', () => {
       expect(p2.width).toBeGreaterThanOrEqual(180);
       expect(p2.x + p2.width).toBeCloseTo(360);
     });
+
+    it('tracks the cursor 1:1 in scene space as the handle moves under it', () => {
+      const group = new PanelGroup({ direction: 'horizontal', width: 400, height: 200 });
+      const p1 = new Panel({ minSize: 50, defaultSize: 0.25 });
+      const p2 = new Panel({ minSize: 50 });
+      group.addPanel(p1).addPanel(p2);
+
+      const handle = (group as unknown as { _handles: Entity[] })._handles[0];
+      const startWidth = p1.width; // ~99
+
+      // Press on the handle, then move the pointer 60px right in SCENE space.
+      // The handle slides right with the growing panel, so its LOCAL x barely
+      // changes; only scene coordinates track the true cursor travel.
+      handle.emit('pointerdown', { sceneX: handle.x, sceneY: 100 });
+      handle.emit('pointermove', { sceneX: handle.x + 60, sceneY: 100 });
+
+      expect(p1.width - startWidth).toBeCloseTo(60, 0);
+    });
+
+    it('does not abort a drag when the pointer briefly leaves the thin handle', () => {
+      const group = new PanelGroup({ direction: 'horizontal', width: 400, height: 200 });
+      const p1 = new Panel({ minSize: 50, defaultSize: 0.25 });
+      const p2 = new Panel({ minSize: 50 });
+      group.addPanel(p1).addPanel(p2);
+
+      const handle = (group as unknown as { _handles: Entity[] })._handles[0];
+      const startWidth = p1.width;
+
+      handle.emit('pointerdown', { sceneX: handle.x, sceneY: 100 });
+      handle.emit('pointerleave', {}); // fast drag outruns the 4px handle
+      handle.emit('pointermove', { sceneX: handle.x + 40, sceneY: 100 });
+
+      // Drag survived the leave — still resizing.
+      expect(p1.width).toBeGreaterThan(startWidth);
+    });
   });
 
   describe('Tooltip, Popover & ContextMenu', () => {
@@ -436,6 +471,59 @@ describe('UI 0.1.1 Components', () => {
       expect(onChange).toHaveBeenCalledWith('tab2');
       expect(tabs.children).not.toContain(tab1Content);
       expect(tabs.children).toContain(tab2Content);
+    });
+
+    it('fires onClose when the × affordance of a tab is clicked', () => {
+      const onClose = vi.fn();
+      const onChange = vi.fn();
+      const tabs = new Tabs({
+        width: 320,
+        height: 200,
+        closable: true,
+        onClose,
+        onChange,
+        tabs: [
+          { id: 'a', label: 'A', content: new Entity('a') },
+          { id: 'b', label: 'B', content: new Entity('b') },
+        ],
+        value: 'a',
+      });
+
+      // Two tabs, 160px each. Tab A's × sits at x = 160 - 12 = 148.
+      tabs.emit('pointerdown', { localX: 148, localY: 20 });
+      expect(onClose).toHaveBeenCalledWith('a');
+      // Closing must not also switch/select the tab.
+      expect(onChange).not.toHaveBeenCalled();
+      expect(tabs.value).toBe('a');
+    });
+
+    it('keeps a fixed tab width and scrolls instead of shrinking with many tabs', () => {
+      const many = Array.from({ length: 20 }, (_, i) => ({
+        id: `t${i}`,
+        label: `Tab ${i + 1}`,
+        content: new Entity(`t${i}`),
+      }));
+      const tabs = new Tabs({
+        width: 600,
+        height: 200,
+        tabWidth: 160,
+        minTabWidth: 96,
+        tabs: many,
+        value: 't0',
+      });
+
+      const w = (tabs as unknown as { _tabW(): number })._tabW();
+      // 20 × 96 = 1920 > 600, so tabs cannot fit — width holds at minTabWidth,
+      // never collapses to 600/20 = 30px slivers.
+      expect(w).toBe(96);
+
+      // Selecting a far tab scrolls it into view rather than squeezing.
+      tabs.emit('change', { value: 't19' });
+      const scrollX = (tabs as unknown as { _scrollX: number })._scrollX;
+      expect(scrollX).toBeGreaterThan(0);
+      const activeLeft = 19 * w;
+      expect(scrollX).toBeLessThanOrEqual(activeLeft);
+      expect(scrollX + 600).toBeGreaterThanOrEqual(activeLeft + w);
     });
   });
 

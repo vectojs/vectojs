@@ -6,6 +6,8 @@ export interface TreeNode {
   label: string;
   /** Optional icon character (emoji, nerd-font glyph, etc.) */
   icon?: string;
+  /** Optional icon color; falls back to the tree's text color when unset (material-style file icons). */
+  iconColor?: string;
   /**
    * Array of children = **eager** loading (all nodes loaded upfront).
    * Function = **lazy** loading (called once on first expand).
@@ -239,7 +241,13 @@ export class TreeView extends UIComponent {
       // Icon + label
       const lx = indent + (row.hasChildren ? 16 : 0);
       if (row.node.icon)
-        r.fillText(row.node.icon, lx, y + this._rh / 2 + 4, this._font, this._color);
+        r.fillText(
+          row.node.icon,
+          lx,
+          y + this._rh / 2 + 4,
+          this._font,
+          row.node.iconColor ?? this._color,
+        );
       r.fillText(
         row.node.label,
         lx + (row.node.icon ? 20 : 0),
