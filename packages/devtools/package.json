@@ -30,7 +30,7 @@
     "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.10",
     "jsdom": "^29.1.1"
   }
 }

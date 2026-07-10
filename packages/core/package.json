@@ -58,11 +58,11 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.9",
+    "vitest": "^4.1.10",
     "puppeteer-core": "^25.3.0"
   }
 }

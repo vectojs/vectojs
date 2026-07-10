@@ -41,7 +41,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "marked": "^18.0.5"
+    "marked": "^18.0.6"
   },
   "peerDependencies": {
     "@vectojs/core": ">=0.1.0"
@@ -50,6 +50,6 @@
     "@vectojs/core": "workspace:*",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
