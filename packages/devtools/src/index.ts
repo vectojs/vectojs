@@ -3,6 +3,21 @@ import { DevtoolsPanel, type DevtoolsOptions } from './panel';
 
 export { DevtoolsPanel, type DevtoolsOptions } from './panel';
 export { buildTreeModel, findEntityAt, describeEntity, pickInScene } from './model';
+export { inspectEntity, entityPath, textPreviewOf, type EntityInfo } from './inspect';
+export {
+  captureSnapshot,
+  diffSnapshots,
+  type SceneSnapshot,
+  type SnapshotNode,
+  type SnapshotDiff,
+} from './snapshot';
+export {
+  auditScene,
+  auditTree,
+  type AuditFinding,
+  type AuditKind,
+  type AuditOptions,
+} from './audit';
 
 /**
  * Attach the VMT inspector to a Scene. Returns the panel; call

@@ -1,6 +1,7 @@
 import { Scene, Entity } from '@vectojs/core';
 import { TreeView, Text, Button } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene } from './model';
+import { auditScene, type AuditFinding } from './audit';
 
 export interface DevtoolsOptions {
   /** Panel width in px. Default 320. */
@@ -31,6 +32,7 @@ export class DevtoolsPanel {
   private pickArmed = false;
   private width: number;
   private destroyed = false;
+  private findings: AuditFinding[] = [];
 
   private onHostPick = (ev: MouseEvent) => {
     if (!this.pickArmed) return;
@@ -122,6 +124,11 @@ export class DevtoolsPanel {
     refreshBtn.on('click', () => this.refresh());
     this.panelScene.add(refreshBtn);
 
+    const auditBtn = new Button('Audit', { width: 64, height: 24 });
+    auditBtn.setPosition(176, 34);
+    auditBtn.on('click', () => this.audit());
+    this.panelScene.add(auditBtn);
+
     const treeHeight = Math.max(160, Math.floor(height * 0.55));
     this.tree = new TreeView({
       nodes: [],
@@ -132,6 +139,11 @@ export class DevtoolsPanel {
       color: PANEL_FG,
       selectedColor: ACCENT,
       onSelect: (node) => {
+        const findingMatch = /^finding:(\d+)$/.exec(node.id);
+        if (findingMatch) {
+          this.selectFinding(Number(findingMatch[1]));
+          return;
+        }
         const entity = this.index.get(node.id);
         if (entity) this.select(entity);
       },
@@ -175,6 +187,41 @@ export class DevtoolsPanel {
   /** Arm one-shot pick mode: the next click on the page selects the entity under it. */
   public armPick(): void {
     this.pickArmed = true;
+  }
+
+  /**
+   * Run the layout audit on the host scene and list the findings in place of
+   * the entity tree (hit Refresh to restore it). Selecting a finding selects
+   * and highlights the offending entity. Returns the findings so agents and
+   * tests can drive the panel programmatically.
+   */
+  public audit(): AuditFinding[] {
+    if (this.destroyed) return [];
+    // Rebuild the index first so finding ids resolve to live entities.
+    const { index } = buildTreeModel(this.host.rootEntity);
+    const overlay = buildTreeModel(this.host.overlayRootEntity);
+    for (const [id, entity] of overlay.index) index.set(id, entity);
+    this.index = index;
+
+    this.findings = auditScene(this.host);
+    this.tree.setNodes(
+      this.findings.map((f, i) => ({
+        id: `finding:${i}`,
+        label: `⚠ ${f.kind}: ${f.message}`,
+      })),
+    );
+    this.detailLines[0]?.setText(
+      this.findings.length === 0 ? 'audit clean' : `${this.findings.length} finding(s)`,
+    );
+    this.panelScene.markDirty();
+    return this.findings;
+  }
+
+  /** Select and highlight the entity behind finding `i` from the last {@link audit} run. */
+  public selectFinding(i: number): void {
+    const finding = this.findings[i];
+    const entity = finding ? this.index.get(finding.entityId) : undefined;
+    if (entity) this.select(entity);
   }
 
   /** Select an entity: highlight it on the host scene and show its state. */

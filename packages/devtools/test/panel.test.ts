@@ -104,4 +104,40 @@ describe('attachDevtools', () => {
     host.destroy();
     vi.useRealTimers();
   });
+
+  it('audit() reports findings and selectFinding() highlights the offender', () => {
+    const host = makeHost();
+    host.resize(400, 300);
+    const a = new Box('a', 100, 100);
+    const b = new Box('b', 100, 100); // fully stacked on a → one overlap finding
+    host.add(a);
+    host.add(b);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    const findings = panel.audit();
+    expect(findings).toHaveLength(1);
+    expect(findings[0].kind).toBe('overlap');
+
+    panel.selectFinding(0);
+    expect(panel.selection).toBe(a);
+    const readout = (panel as any).detailLines.map((l: { text: string }) => l.text).join('\n');
+    expect(readout).toContain('#a');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('audit() on a clean scene reports no findings and refresh restores the tree', () => {
+    const host = makeHost();
+    host.resize(400, 300);
+    const solo = new Box('solo', 50, 50);
+    host.add(solo);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    expect(panel.audit()).toEqual([]);
+    panel.refresh();
+    expect((panel as any).index.get('solo')).toBe(solo);
+    panel.detach();
+    host.destroy();
+  });
 });
