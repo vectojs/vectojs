@@ -31,14 +31,20 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./input": {
+      "types": "./dist/Input.d.ts",
+      "import": "./dist/Input.mjs",
+      "require": "./dist/Input.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "build": "(cd ../core && bun run build) && tsup src/index.ts src/Input.ts --format cjs,esm --clean && tsc -p tsconfig.build.json && bun run verify:input-entry",
+    "test": "vitest run",
+    "verify:input-entry": "node scripts/verify-input-entry.mjs"
   },
   "dependencies": {
     "marked": "^18.0.6",
