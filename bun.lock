@@ -21,7 +21,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.4.1",
+      "version": "1.5.0",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
         "esbuild": "^0.28.1",
@@ -33,7 +33,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
@@ -65,7 +65,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.6.3",
+      "version": "1.7.0",
       "dependencies": {
         "marked": "^18.0.6",
         "mathjax-full": "^3.2.2",
