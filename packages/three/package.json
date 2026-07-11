@@ -30,6 +30,6 @@
     "@vectojs/core": "workspace:*",
     "@types/three": "^0.185.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
