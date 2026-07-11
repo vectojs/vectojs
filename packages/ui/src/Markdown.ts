@@ -143,6 +143,10 @@ export interface MarkdownTheme {
   quoteTextColor?: string;
   /** Horizontal-rule color. */
   hrColor?: string;
+  /** Table background color. */
+  tableBgColor?: string;
+  /** Table header background color. */
+  tableHeaderBgColor?: string;
   /** Body font. */
   bodyFont?: string;
   /** Monospace font for code. */
@@ -159,6 +163,8 @@ const DEFAULT_THEME: Required<MarkdownTheme> = {
   quoteBorderColor: '#6366f1',
   quoteTextColor: '#94a3b8',
   hrColor: 'rgba(148, 163, 184, 0.3)',
+  tableBgColor: 'rgba(15, 15, 25, 0.4)',
+  tableHeaderBgColor: 'rgba(255, 255, 255, 0.08)',
   bodyFont: 'Inter, system-ui, sans-serif',
   codeFont: '"JetBrains Mono", "Fira Code", monospace',
   fontSize: 16,
@@ -1074,6 +1080,8 @@ export class Markdown extends UIComponent {
           headerTextColor: t.headingColor,
           font: `${t.fontSize - 2}px ${t.bodyFont}`,
           borderColor: t.hrColor,
+          bg: t.tableBgColor,
+          headerBg: t.tableHeaderBgColor,
         });
       }
 
