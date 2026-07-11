@@ -1,5 +1,11 @@
 # @vectojs/devtools
 
+## 0.3.1
+
+### Patch Changes
+
+- 8bbb5a2: Add the `@vectojs/devtools/headless` entry for audits, event traces, snapshots, inspection, and picking without bundling the visual panel or `@vectojs/ui`.
+
 ## 0.3.0
 
 ### Minor Changes

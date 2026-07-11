@@ -200,15 +200,6 @@ const devtools = attachDevtools(scene);
 devtools.detach();
 ```
 
-Tests and production diagnostics can avoid the visual panel and its UI dependency graph:
-
-```ts
-import { auditScene, createEventTrace } from '@vectojs/devtools/headless';
-
-const findings = auditScene(scene);
-const trace = createEventTrace(scene);
-```
-
 ## Agent skills
 
 The [vectojs-skills](https://github.com/vectojs/vectojs-skills) repository packages Claude/agent
