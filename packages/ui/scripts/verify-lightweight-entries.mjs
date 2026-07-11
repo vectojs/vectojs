@@ -2,6 +2,7 @@ import { build } from 'esbuild';
 
 const entries = [
   { name: 'Input', path: './dist/Input.mjs' },
+  { name: 'Text', path: './dist/Text.mjs' },
   { name: 'measure', path: './dist/measure.mjs' },
 ];
 

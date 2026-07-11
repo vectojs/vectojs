@@ -37,6 +37,11 @@
       "import": "./dist/Input.mjs",
       "require": "./dist/Input.js"
     },
+    "./text": {
+      "types": "./dist/Text.d.ts",
+      "import": "./dist/Text.mjs",
+      "require": "./dist/Text.js"
+    },
     "./measure": {
       "types": "./dist/measure.d.ts",
       "import": "./dist/measure.mjs",
@@ -47,7 +52,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
     "test": "vitest run",
     "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs"
   },
