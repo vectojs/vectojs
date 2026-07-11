@@ -1,4 +1,4 @@
-import { Entity, IRenderer, type StyledSpan, type TextStyle } from '@vectojs/core';
+import { Entity, IRenderer, type StyledSpan, type TextStyle, SVGEntity } from '@vectojs/core';
 import { marked, type Token, type Tokens, type TokensList } from 'marked';
 
 marked.use({
@@ -989,6 +989,18 @@ export class Markdown extends UIComponent {
       // ── Whitespace ───────────────────────────────────────────────────
       case 'space':
         return null;
+
+      // ── HTML (Support raw SVGs) ──────────────────────────────────────
+      case 'html': {
+        const htmlToken = token as Tokens.HTML;
+        if (
+          htmlToken.text.toLowerCase().includes('<svg') &&
+          htmlToken.text.toLowerCase().includes('</svg>')
+        ) {
+          return new SVGEntity(htmlToken.text);
+        }
+        return null;
+      }
 
       // ── Fallback ─────────────────────────────────────────────────────
       default:
