@@ -29,6 +29,8 @@ export interface RichTextOptions {
   onLinkClick?: (href: string) => void;
   /** Rect regions (local space) the text flows around — exclusion shapes / CSS-like floats. */
   exclusions?: ExclusionRect[];
+  /** Allow browser-native drag selection and copy. Default `true`. */
+  selectable?: boolean;
 }
 
 /**
@@ -116,6 +118,7 @@ export class RichText extends UIComponent {
   public font: string;
   public color: string;
   public maxWidth?: number;
+  public selectable: boolean;
 
   public linkColor: string;
   public exclusions?: ExclusionRect[];
@@ -134,6 +137,7 @@ export class RichText extends UIComponent {
     this.font = opts.font ?? '16px sans-serif';
     this.color = opts.color ?? '#e2e8f0';
     this.maxWidth = opts.maxWidth;
+    this.selectable = opts.selectable ?? true;
     this.baseStyle = opts.baseStyle;
     this.linkColor = opts.linkColor ?? '#38bdf8';
     this.onLinkClick = opts.onLinkClick;
@@ -174,6 +178,13 @@ export class RichText extends UIComponent {
   public appendSpans(spans: StyledSpan[]): this {
     this.spans = [...this.spans, ...spans];
     this.result = this.layout();
+    return this;
+  }
+
+  /** Enable or disable browser-native drag selection without rebuilding the entity. */
+  public setSelectable(selectable: boolean): this {
+    this.selectable = selectable;
+    this.scene?.markDirty();
     return this;
   }
 
@@ -251,6 +262,21 @@ export class RichText extends UIComponent {
     return this.spans.map((s) => s.text).join('');
   }
 
+  /** Reconstruct the text in the exact visual line order produced by LayoutEngine. */
+  private projectedText(): string {
+    if (this.result.nodes.length === 0) return this.fullText();
+    let text = '';
+    let lineY = this.result.nodes[0].y;
+    for (const node of this.result.nodes) {
+      if (node.y > lineY + 0.01) {
+        text += '\n';
+        lineY = node.y;
+      }
+      text += node.char;
+    }
+    return text;
+  }
+
   /** Build the CSS font shorthand for a node's style. */
   private nodeFont(style: TextStyle | undefined, size: number): string {
     const italic = style?.italic ? 'italic ' : '';
@@ -264,7 +290,7 @@ export class RichText extends UIComponent {
 
   /** Mirror the concatenated span text into the DOM content layer. */
   public override getContentProjection(): ContentProjection | null {
-    const text = this.spans.map((s) => s.text).join('');
+    const text = this.projectedText();
     if (!text) return null;
     // The engine advances lines by fontSize × 1.5; without matching the DOM
     // line-height, multi-line selection highlights drift off the glyphs.
@@ -272,7 +298,7 @@ export class RichText extends UIComponent {
       text,
       font: this.font,
       lineHeight: this.baseFontSize * 1.5,
-      selectable: true,
+      selectable: this.selectable,
     };
   }
 

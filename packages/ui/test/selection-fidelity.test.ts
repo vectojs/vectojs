@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { Text, RichText, Table, Markdown } from '../src/index';
+import { CodeBlock, Text, RichText, Table, Markdown } from '../src/index';
 
 // jsdom has no canvas getContext; measure.ts falls back to its estimate. Stub to
 // keep the test output free of "Not implemented" noise.
@@ -44,6 +44,13 @@ describe('selection fidelity of content projections', () => {
       const t = new Text('short', { font: '16px sans-serif' });
       expect(t.getContentProjection()!.text).toBe('short');
     });
+
+    it('allows native selection to be disabled and enabled at runtime', () => {
+      const t = new Text('optional selection', { selectable: false });
+      expect(t.getContentProjection()!.selectable).toBe(false);
+      expect(t.setSelectable(true)).toBe(t);
+      expect(t.getContentProjection()!.selectable).toBe(true);
+    });
   });
 
   describe('RichText', () => {
@@ -54,6 +61,19 @@ describe('selection fidelity of content projections', () => {
       const p = rt.getContentProjection()!;
       // RichText draws at the layout engine's internal advance (fontSize×1.5).
       expect(p.lineHeight).toBe(24);
+    });
+
+    it('projects actual wrapped lines and exposes the selectable setting', () => {
+      const rt = new RichText([{ text: 'alpha beta gamma delta epsilon' }], {
+        font: '16px sans-serif',
+        maxWidth: 80,
+        selectable: false,
+      });
+      const projection = rt.getContentProjection()!;
+      expect(projection.text).toContain('\n');
+      expect(projection.selectable).toBe(false);
+      rt.setSelectable(true);
+      expect(rt.getContentProjection()!.selectable).toBe(true);
     });
   });
 
@@ -68,6 +88,137 @@ describe('selection fidelity of content projections', () => {
       // setMaxWidth() re-wraps. The cell must be laid out at colWidth − 24.
       expect(cell.maxWidth).toBe(176);
       expect((cell as unknown as { engine: { maxWidth: number } }).engine.maxWidth).toBe(176);
+    });
+
+    it('lays out cells before render and keeps render free of geometry mutations', () => {
+      const header = new RichText([{ text: 'Header' }], { font: '14px sans-serif' });
+      const first = new RichText([{ text: 'First row' }], { font: '14px sans-serif' });
+      const second = new RichText([{ text: 'Second row' }], { font: '14px sans-serif' });
+      const table = new Table({ headers: [header], rows: [[first], [second]], width: 180 });
+      const before = [header.x, header.y, first.x, first.y, second.x, second.y, table.height];
+
+      expect(first.y).toBeGreaterThan(header.y);
+      expect(second.y).toBeGreaterThan(first.y);
+      table.render({
+        beginPath() {},
+        roundRect() {},
+        fill() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+      } as never);
+
+      expect([header.x, header.y, first.x, first.y, second.x, second.y, table.height]).toEqual(
+        before,
+      );
+    });
+
+    it('reflows row and table geometry after a cell changes', () => {
+      const first = new RichText([{ text: 'short' }], { font: '14px sans-serif' });
+      const second = new RichText([{ text: 'next' }], { font: '14px sans-serif' });
+      const table = new Table({ headers: ['Header'], rows: [[first], [second]], width: 140 });
+      const oldHeight = table.height;
+      const oldSecondY = second.y;
+
+      first.setSpans([{ text: 'A long unbroken中文内容需要在列宽以内自动换行并增加行高' }]);
+      table.layout();
+
+      expect(first.width).toBeLessThanOrEqual(116);
+      expect(table.rowHeights[0]).toBeGreaterThan(36);
+      expect(table.height).toBeGreaterThan(oldHeight);
+      expect(second.y).toBeGreaterThan(oldSecondY);
+    });
+
+    it('gives every logical cell one child projection instead of aggregating duplicates', () => {
+      const table = new Table({
+        headers: ['A', 'B'],
+        rows: [['one', 'two']],
+        width: 240,
+        selectable: false,
+      });
+      expect(table.getContentProjection()).toBeNull();
+      expect(
+        table.children.map((cell) => cell.getContentProjection()?.text).filter(Boolean),
+      ).toEqual(['A', 'B', 'one', 'two']);
+      expect(
+        table.children.every((cell) => cell.getContentProjection()?.selectable === false),
+      ).toBe(true);
+    });
+
+    it('updates normalized string cells on layout and ignores malformed overflow cells', () => {
+      const overflow = new RichText([{ text: 'must not become a ghost cell' }]);
+      const rows: Array<Array<string | RichText>> = [['before', overflow]];
+      const table = new Table({ headers: ['H'], rows, width: 160 });
+      expect(overflow.parent).toBeNull();
+      expect(table.children).toHaveLength(2);
+
+      rows[0][0] = 'after';
+      table.layout();
+      expect(table.children[1].getContentProjection()?.text).toBe('after');
+    });
+  });
+
+  describe('Markdown projection propagation', () => {
+    const descendants = (root: { children: unknown[] }): Array<{ children: unknown[] }> => {
+      const result: Array<{ children: unknown[] }> = [];
+      for (const child of root.children as Array<{ children: unknown[] }>) {
+        result.push(child, ...descendants(child));
+      }
+      return result;
+    };
+
+    it('propagates selectable through headings, body, tables, code, and runtime changes', () => {
+      const md = new Markdown(
+        '# Heading\n\nBody text\n\n```ts\nconst answer = 42;\n```\n\n| H |\n| - |\n| cell |',
+        { selectable: false, maxWidth: 240 },
+      );
+      const projected = descendants(md as unknown as { children: unknown[] })
+        .map((entity) =>
+          (
+            entity as unknown as { getContentProjection(): { selectable?: boolean } | null }
+          ).getContentProjection(),
+        )
+        .filter((projection): projection is { selectable?: boolean } => projection !== null);
+      expect(projected.length).toBeGreaterThan(3);
+      expect(projected.every((projection) => projection.selectable === false)).toBe(true);
+
+      md.setSelectable(true);
+      expect(
+        descendants(md as unknown as { children: unknown[] })
+          .map((entity) =>
+            (
+              entity as unknown as { getContentProjection(): { selectable?: boolean } | null }
+            ).getContentProjection(),
+          )
+          .filter((projection): projection is { selectable?: boolean } => projection !== null)
+          .every((projection) => projection.selectable === true),
+      ).toBe(true);
+    });
+
+    it('projects fenced code exactly once with its source line breaks', () => {
+      const md = new Markdown('```ts\nconst answer = 42;\nconsole.log(answer);\n```', {
+        selectable: true,
+      });
+      const code = descendants(md as unknown as { children: unknown[] }).find(
+        (entity) => entity instanceof CodeBlock,
+      ) as CodeBlock;
+      expect(code).toBeDefined();
+      expect(code.getContentProjection()).toMatchObject({
+        text: 'const answer = 42;\nconsole.log(answer);',
+        selectable: true,
+      });
+    });
+
+    it('styles table headers as bold heading text', () => {
+      const md = new Markdown('| Header |\n| --- |\n| body |', {
+        theme: { headingColor: '#ff00aa', textColor: '#112233' },
+      });
+      const table = descendants(md as unknown as { children: unknown[] }).find(
+        (entity) => entity instanceof Table,
+      ) as Table;
+      const header = table.headers[0] as RichText;
+      expect((header as unknown as { baseStyle?: { bold?: boolean } }).baseStyle?.bold).toBe(true);
+      expect(header.color).toBe('#ff00aa');
     });
   });
 

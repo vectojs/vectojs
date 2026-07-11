@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Entity, Scene, type A11yAttributes } from '@vectojs/core';
+import { Entity, Scene, type A11yAttributes, type ContentProjection } from '@vectojs/core';
 import { createEventTrace } from '../src/index';
 
 class Box extends Entity {
@@ -23,6 +23,20 @@ class Box extends Entity {
       point.x < this.width &&
       point.y < this.height
     );
+  }
+
+  render(): void {}
+}
+
+class ContentBox extends Entity {
+  constructor(id: string) {
+    super(id);
+    this.width = 100;
+    this.height = 30;
+  }
+
+  getContentProjection(): ContentProjection {
+    return { text: 'Selectable content', selectable: true };
   }
 
   render(): void {}
@@ -68,6 +82,47 @@ describe('EventTrace', () => {
         source: 'a11y',
         targetId: target.id,
         targetPath: expect.stringContaining('Box#a11y-t'),
+        defaultPrevented: true,
+      }),
+    ]);
+    trace.destroy();
+    host.destroy();
+  });
+
+  it('attributes projected selectable-text events to the owning entity', async () => {
+    const host = makeHost();
+    const target = new ContentBox('content-target');
+    target.setPosition(8, 10);
+    host.add(target);
+    syncA11y(host);
+    const trace = createEventTrace(host);
+    const content = (
+      host as unknown as { contentElements: Map<string, HTMLElement> }
+    ).contentElements.get(target.id)!;
+    const nested = document.createElement('span');
+    content.appendChild(nested);
+    nested.addEventListener('pointerdown', (event) => event.preventDefault());
+
+    nested.dispatchEvent(
+      new MouseEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 28,
+        clientY: 24,
+      }),
+    );
+    await Promise.resolve();
+
+    expect(trace.entries).toEqual([
+      expect.objectContaining({
+        type: 'pointerdown',
+        source: 'content',
+        targetId: target.id,
+        targetPath: expect.stringContaining('ContentBox#content-'),
+        sceneX: 28,
+        sceneY: 24,
+        localX: 20,
+        localY: 14,
         defaultPrevented: true,
       }),
     ]);

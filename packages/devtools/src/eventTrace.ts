@@ -4,15 +4,10 @@ import { pickInScene } from './model';
 
 /** Browser inputs observed by the generic development-time routing trace. */
 export type EventTraceType =
-  | 'pointerdown'
-  | 'pointerup'
-  | 'pointermove'
-  | 'wheel'
-  | 'keydown'
-  | 'keyup';
+  'pointerdown' | 'pointerup' | 'pointermove' | 'wheel' | 'keydown' | 'keyup';
 
 /** Where the trace found the routed event. */
-export type EventTraceSource = 'a11y' | 'canvas' | 'document';
+export type EventTraceSource = 'a11y' | 'content' | 'canvas' | 'document';
 
 export interface EventTraceModifiers {
   shift: boolean;
@@ -125,7 +120,7 @@ export class EventTrace {
 
   private resolveContext(event: Event, type: EventTraceType): TraceContext | null {
     const projected = this.projectedTarget(event.target);
-    if (projected) return { source: 'a11y', target: projected };
+    if (projected) return projected;
 
     const target = event.target;
     if (target === this.scene.canvas) {
@@ -138,14 +133,27 @@ export class EventTrace {
     return null;
   }
 
-  private projectedTarget(target: EventTarget | null): Entity | null {
+  private projectedTarget(target: EventTarget | null): TraceContext | null {
     if (!(target instanceof Element)) return null;
-    const element = target.closest<HTMLElement>('[data-vecto-id]');
-    const id = element?.dataset.vectoId;
-    if (!id || this.scene.getA11yElement(id) !== element) return null;
-    return (
-      findEntityById(this.scene.rootEntity, id) ?? findEntityById(this.scene.overlayRootEntity, id)
-    );
+    const element = target.closest<HTMLElement>('[data-vecto-content], [data-vecto-id]');
+    if (!element) return null;
+
+    const source: EventTraceSource = element.dataset.vectoContent ? 'content' : 'a11y';
+    const id = element.dataset.vectoContent ?? element.dataset.vectoId;
+    if (!id) return null;
+    const projectedElement =
+      source === 'content'
+        ? typeof this.scene.getContentElement === 'function'
+          ? this.scene.getContentElement(id)
+          : element.isConnected
+            ? element
+            : undefined
+        : this.scene.getA11yElement(id);
+    if (projectedElement !== element) return null;
+    const entity =
+      findEntityById(this.scene.rootEntity, id) ?? findEntityById(this.scene.overlayRootEntity, id);
+    if (!entity || (source === 'content' && !entity.getContentProjection())) return null;
+    return { source, target: entity };
   }
 
   private createEntry(event: Event, type: EventTraceType, context: TraceContext): EventTraceEntry {

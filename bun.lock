@@ -21,7 +21,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.2.0",
+      "version": "1.4.1",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
         "esbuild": "^0.28.1",
@@ -33,7 +33,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
@@ -45,6 +45,9 @@
         "@vectojs/core": ">=1.0.0 <2.0.0",
         "@vectojs/ui": ">=1.0.0 <2.0.0",
       },
+      "optionalPeers": [
+        "@vectojs/ui",
+      ],
     },
     "packages/three": {
       "name": "@vectojs/three",
@@ -62,7 +65,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.4.0",
+      "version": "1.6.3",
       "dependencies": {
         "marked": "^18.0.6",
         "mathjax-full": "^3.2.2",
@@ -76,7 +79,7 @@
         "vitest": "^4.1.10",
       },
       "peerDependencies": {
-        "@vectojs/core": ">=0.1.0",
+        "@vectojs/core": ">=1.0.0 <2.0.0",
       },
     },
     "packages/video-exporter": {

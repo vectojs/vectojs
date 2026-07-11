@@ -1,4 +1,11 @@
-import { Entity, IRenderer, type StyledSpan, type TextStyle, SVGEntity } from '@vectojs/core';
+import {
+  Entity,
+  IRenderer,
+  type ContentProjection,
+  type StyledSpan,
+  type TextStyle,
+  SVGEntity,
+} from '@vectojs/core';
 import { marked, type Token, type Tokens, type TokensList } from 'marked';
 
 marked.use({
@@ -493,18 +500,28 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
   private cellWidth = 0;
+  private source: string;
 
   private lang: string;
   private theme: Required<MarkdownTheme>;
   private lineH = 24;
   private pad = 18;
   private codeFont: string;
+  public selectable: boolean;
 
-  constructor(code: string, lang: string, maxWidth: number, theme: Required<MarkdownTheme>) {
+  constructor(
+    code: string,
+    lang: string,
+    maxWidth: number,
+    theme: Required<MarkdownTheme>,
+    selectable = true,
+  ) {
     super();
+    this.source = code;
     this.lang = lang;
     this.theme = theme;
     this.codeFont = `15px ${theme.codeFont}`;
+    this.selectable = selectable;
 
     this.lines = [];
     this.width = maxWidth;
@@ -514,8 +531,26 @@ export class CodeBlock extends UIComponent {
   /** Re-parse code content (e.g. for live editing). */
   setCode(code: string, lang?: string): this {
     if (lang !== undefined) this.lang = lang;
+    this.source = code;
     this.buildLines(code);
     return this;
+  }
+
+  /** Enable or disable browser-native selection for this code block. */
+  public setSelectable(selectable: boolean): this {
+    this.selectable = selectable;
+    this.scene?.markDirty();
+    return this;
+  }
+
+  public override getContentProjection(): ContentProjection | null {
+    if (!this.source) return null;
+    return {
+      text: this.source,
+      font: this.codeFont,
+      lineHeight: this.lineH,
+      selectable: this.selectable,
+    };
   }
 
   private buildLines(code: string): void {
@@ -672,6 +707,7 @@ function renderInlineToRichText(
   color: string,
   maxWidth: number,
   theme: Required<MarkdownTheme>,
+  selectable: boolean,
   onLinkClick?: (url: string) => void,
 ): RichText {
   const spans: StyledSpan[] = [];
@@ -682,7 +718,14 @@ function renderInlineToRichText(
   if (spans.length === 0) {
     spans.push({ text: decodeEntities(fallbackText) });
   }
-  return new RichText(spans, { font, color, maxWidth, linkColor: '#38bdf8', onLinkClick });
+  return new RichText(spans, {
+    font,
+    color,
+    maxWidth,
+    linkColor: '#38bdf8',
+    selectable,
+    onLinkClick,
+  });
 }
 
 // ── Main Markdown component ─────────────────────────────────────────────────
@@ -691,6 +734,8 @@ export interface MarkdownOptions {
   maxWidth?: number;
   theme?: MarkdownTheme;
   onLinkClick?: (url: string) => void;
+  /** Allow browser-native drag selection and copy for rendered text. Default `true`. */
+  selectable?: boolean;
 }
 
 /**
@@ -714,6 +759,7 @@ export class Markdown extends UIComponent {
   public maxWidth: number;
   public theme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
+  public selectable: boolean;
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
   private tokens: Token[];
@@ -723,6 +769,7 @@ export class Markdown extends UIComponent {
     this.maxWidth = opts.maxWidth ?? 800;
     this.theme = { ...DEFAULT_THEME, ...opts.theme };
     this.onLinkClick = opts.onLinkClick;
+    this.selectable = opts.selectable ?? true;
 
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
@@ -755,6 +802,19 @@ export class Markdown extends UIComponent {
     }
     this.tokens = [];
     this.renderMarkdown(markdown);
+    return this;
+  }
+
+  /** Enable or disable native selection for existing and future Markdown text. */
+  public setSelectable(selectable: boolean): this {
+    this.selectable = selectable;
+    const apply = (entity: Entity): void => {
+      const candidate = entity as Entity & { setSelectable?: (value: boolean) => unknown };
+      candidate.setSelectable?.(selectable);
+      for (const child of entity.children) apply(child);
+    };
+    for (const child of this.content.children) apply(child);
+    this.scene?.markDirty();
     return this;
   }
 
@@ -876,6 +936,7 @@ export class Markdown extends UIComponent {
           t.headingColor,
           this.maxWidth,
           t,
+          this.selectable,
           this.onLinkClick,
         );
       }
@@ -891,6 +952,7 @@ export class Markdown extends UIComponent {
             t.textColor,
             this.maxWidth,
             t,
+            this.selectable,
             this.onLinkClick,
           );
         }
@@ -909,6 +971,7 @@ export class Markdown extends UIComponent {
                 t.textColor,
                 this.maxWidth,
                 t,
+                this.selectable,
                 this.onLinkClick,
               ),
             );
@@ -971,7 +1034,7 @@ export class Markdown extends UIComponent {
           }
         }
 
-        return new CodeBlock(codeToken.text, lang, this.maxWidth, t);
+        return new CodeBlock(codeToken.text, lang, this.maxWidth, t, this.selectable);
       }
 
       // ── Blockquotes ──────────────────────────────────────────────────
@@ -1045,6 +1108,7 @@ export class Markdown extends UIComponent {
             color: t.textColor,
             maxWidth: this.maxWidth - 24,
             linkColor: '#38bdf8',
+            selectable: this.selectable,
             onLinkClick: this.onLinkClick,
           });
           itemRt.x = 12; // Indent
@@ -1057,20 +1121,22 @@ export class Markdown extends UIComponent {
       case 'table': {
         const tblToken = token as Tokens.Table;
 
-        const buildCell = (cell: Tokens.TableCell) => {
+        const buildCell = (cell: Tokens.TableCell, header: boolean) => {
           const spans: StyledSpan[] = [];
           collectSpans(cell.tokens, {}, t, spans);
           if (spans.length === 0) return decodeEntities(cell.text);
           return new RichText(spans, {
             font: `${t.fontSize - 2}px ${t.bodyFont}`,
-            color: t.textColor,
+            color: header ? t.headingColor : t.textColor,
+            baseStyle: header ? { bold: true } : undefined,
             linkColor: '#38bdf8',
+            selectable: this.selectable,
             onLinkClick: this.onLinkClick,
           });
         };
 
-        const headers = tblToken.header.map(buildCell);
-        const rows = tblToken.rows.map((row) => row.map(buildCell));
+        const headers = tblToken.header.map((cell) => buildCell(cell, true));
+        const rows = tblToken.rows.map((row) => row.map((cell) => buildCell(cell, false)));
 
         return new Table({
           headers,
@@ -1082,6 +1148,7 @@ export class Markdown extends UIComponent {
           borderColor: t.hrColor,
           bg: t.tableBgColor,
           headerBg: t.tableHeaderBgColor,
+          selectable: this.selectable,
         });
       }
 
@@ -1113,6 +1180,7 @@ export class Markdown extends UIComponent {
             color: t.textColor,
             maxWidth: this.maxWidth,
             lineHeight: 24,
+            selectable: this.selectable,
           });
         }
         return null;

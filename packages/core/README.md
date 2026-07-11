@@ -112,6 +112,31 @@ This projection is intentionally thin. Applications still own accessible names, 
 focus order, contrast, and correct control semantics. See the
 [accessibility guide](https://vectojs.org/learn/accessibility/).
 
+## Static content projection
+
+Canvas-rendered text can opt into browser-native find, translation, selection, and copy without
+turning the application into a DOM layout. Override `getContentProjection()` on the owning Entity;
+the Scene creates a transparent, position-synchronized mirror while the VMT remains authoritative:
+
+```ts
+class SelectableLabel extends Entity {
+  getContentProjection() {
+    return {
+      text: 'Selectable canvas text',
+      font: '18px Inter',
+      lineHeight: 24,
+      selectable: true,
+    };
+  }
+}
+```
+
+`selectable` controls whether the mirror receives pointer input. The Scene keeps projection order
+aligned with VMT order, removes descendant mirrors with their subtree, and hides mirrors fully
+outside the viewport or a `clipChildren` ancestor. Tooling can inspect the currently materialized
+node with `scene.getContentElement(entityId)`. Virtualized or non-materialized off-viewport text is
+not searchable until the application brings it into the active scene.
+
 ## Performance model
 
 Useful levers include on-demand rendering, viewport culling, spatial hashing, prepared text layout,

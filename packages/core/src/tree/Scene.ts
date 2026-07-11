@@ -438,6 +438,7 @@ export class Scene {
     if (contentEl) {
       contentEl.remove();
       this.contentElements.delete(node.id);
+      this.a11yNeedsReorder = true;
     }
     const el = this.a11yElements.get(node.id);
     if (el) {
@@ -1001,6 +1002,7 @@ export class Scene {
       if (el) {
         el.remove();
         this.contentElements.delete(node.id);
+        this.a11yNeedsReorder = true;
       }
       return;
     }
@@ -1028,6 +1030,7 @@ export class Scene {
       );
       this.a11yRoot.appendChild(el);
       this.contentElements.set(node.id, el);
+      this.a11yNeedsReorder = true;
     }
 
     if (el.textContent !== projection.text) el.textContent = projection.text;
@@ -1064,9 +1067,11 @@ export class Scene {
     if (node.height > 0) el.style.height = `${node.height}px`;
     el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
 
-    // Viewport-lazy: hide projections whose local box is fully off-screen.
+    // Viewport/clip lazy: a flat DOM mirror must not keep intercepting input
+    // after its VMT box has scrolled outside a clipChildren ancestor.
     let visible = true;
     if (node.width > 0 && node.height > 0) {
+      const worldCorners: Array<{ x: number; y: number }> = [];
       let minX = Infinity;
       let minY = Infinity;
       let maxX = -Infinity;
@@ -1076,12 +1081,34 @@ export class Scene {
         const ly = i & 2 ? node.height : 0;
         const wx = a * lx + c * ly + e;
         const wy = b * lx + d * ly + f;
+        worldCorners.push({ x: wx, y: wy });
         if (wx < minX) minX = wx;
         if (wx > maxX) maxX = wx;
         if (wy < minY) minY = wy;
         if (wy > maxY) maxY = wy;
       }
       visible = maxX >= 0 && minX <= this.width && maxY >= 0 && minY <= this.height;
+
+      for (let ancestor = node.parent; visible && ancestor; ancestor = ancestor.parent) {
+        if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
+        let localMinX = Infinity;
+        let localMinY = Infinity;
+        let localMaxX = -Infinity;
+        let localMaxY = -Infinity;
+        for (const corner of worldCorners) {
+          const local = ancestor.worldToLocal(corner.x, corner.y);
+          if (!local) continue;
+          localMinX = Math.min(localMinX, local.x);
+          localMinY = Math.min(localMinY, local.y);
+          localMaxX = Math.max(localMaxX, local.x);
+          localMaxY = Math.max(localMaxY, local.y);
+        }
+        visible =
+          localMaxX >= 0 &&
+          localMinX <= ancestor.width &&
+          localMaxY >= 0 &&
+          localMinY <= ancestor.height;
+      }
     }
     const display = visible ? '' : 'none';
     if (el.style.display !== display) el.style.display = display;
@@ -1827,6 +1854,11 @@ export class Scene {
    */
   public getA11yElement(entityId: string): HTMLElement | undefined {
     return this.a11yElements.get(entityId);
+  }
+
+  /** Gets the static-content DOM projection for an entity ID, when materialized. */
+  public getContentElement(entityId: string): HTMLElement | undefined {
+    return this.contentElements.get(entityId);
   }
 
   /**

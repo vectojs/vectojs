@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.6.3
+
+### Patch Changes
+
+- Add `tableBgColor` and `tableHeaderBgColor` to `MarkdownTheme` so applications can style Markdown table surfaces without replacing the Table renderer.
+
 ## 1.6.2
 
 ### Patch Changes

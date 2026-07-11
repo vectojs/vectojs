@@ -11,7 +11,7 @@ describe('Table', () => {
         return {
           font: '',
           fillStyle: '',
-          measureText: () => ({ width: 100 }),
+          measureText: (text: string) => ({ width: text.length * 7 }),
           fillText: vi.fn(),
           scale: () => {},
           clearRect: () => {},
@@ -76,9 +76,10 @@ describe('Table', () => {
     const fillTextSpy = vi.spyOn(renderer, 'fillText');
     const strokeSpy = vi.spyOn(renderer, 'stroke');
 
-    table.render(renderer);
+    scene.step(0);
 
-    // Should draw header text + cell text
+    // Cell Text entities draw through the VMT child pass; Table.render only
+    // paints the background and grid and must not mutate cell geometry.
     expect(fillTextSpy).toHaveBeenCalled();
     // Should draw row line / column line / outer border
     expect(strokeSpy).toHaveBeenCalled();

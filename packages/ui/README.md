@@ -95,9 +95,28 @@ Other controls expose role/name/state through `getA11yAttributes()`. This makes 
 but applications must still provide meaningful labels and validate focus order, keyboard behavior,
 contrast, error messaging, and reduced-motion behavior.
 
+Static `Text`, `RichText`, `Markdown`, fenced `CodeBlock`, and `Table` cell text use Core content
+projection for browser-native drag selection, Ctrl/Command+C, and find-in-page. Selection is enabled
+by default to preserve the existing UI behavior and can be configured or changed at runtime:
+
+```ts
+const markdown = new Markdown(source, { maxWidth: 640, selectable: false });
+markdown.setSelectable(true);
+
+const label = new Text('Copy me', { selectable: true });
+label.setSelectable(false);
+```
+
+The transparent projection carries semantics and native text machinery only; layout and pixels
+remain owned by VMT entities. Application-level shortcut routers must yield native copy when
+`window.getSelection()?.isCollapsed === false` and must not suppress Ctrl/Command+F unless the
+application intentionally replaces browser find.
+
 ## Layout and streaming guidance
 
 - `Stack` and `Flow` position children; call `layout()` after changing child dimensions directly.
+- `Table` normalizes string cells into `Text` children and performs geometry in `layout()` rather
+  than during drawing. Call `table.layout()` after changing an Entity cell's content or dimensions.
 - `ScrollView`, `VirtualList`, and `TreeView` own clipped scrolling behavior. Do not place them inside
   a page region that also captures the same wheel gesture without a clear boundary.
 - Use `Text.setMaxWidth()` for hot reflow instead of rebuilding text.
@@ -118,8 +137,8 @@ parent when finished and call `scene.destroy()` when the canvas runtime unmounts
 
 ## Compatibility
 
-The package is pre-1.0 and its peer range currently accepts `@vectojs/core >=0.1.0`. Pin matching
-tested releases in production and read the changelog before upgrading.
+The package follows SemVer and accepts `@vectojs/core >=1.0.0 <2.0.0`. Pin exact tested releases in
+applications and read the changelog before upgrading.
 
 ## License
 

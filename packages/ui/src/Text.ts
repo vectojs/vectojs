@@ -21,6 +21,8 @@ export interface TextOptions {
   lineHeight?: number;
   /** Whether to preserve leading spaces (default false). */
   preserveLeadingSpaces?: boolean;
+  /** Allow browser-native drag selection and copy. Default `true`. */
+  selectable?: boolean;
 }
 
 /**
@@ -62,6 +64,7 @@ export class Text extends UIComponent {
   public color: string;
   public maxWidth?: number;
   public lineHeight: number;
+  public selectable: boolean;
 
   private engine: LayoutEngine;
   private prepared: PreparedText;
@@ -75,6 +78,7 @@ export class Text extends UIComponent {
     this.color = opts.color ?? '#e2e8f0';
     this.maxWidth = opts.maxWidth;
     this.lineHeight = opts.lineHeight ?? 20;
+    this.selectable = opts.selectable ?? true;
     this.fontSize = fontSizePx(this.font);
     this.engine = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, fontMeasurer(this.font));
     if (opts.preserveLeadingSpaces) {
@@ -105,8 +109,15 @@ export class Text extends UIComponent {
       text: this.lines.length > 1 ? this.lines.join('\n') : this.text,
       font: this.font,
       lineHeight: this.lineHeight,
-      selectable: true,
+      selectable: this.selectable,
     };
+  }
+
+  /** Enable or disable browser-native drag selection without rebuilding the entity. */
+  public setSelectable(selectable: boolean): this {
+    this.selectable = selectable;
+    this.scene?.markDirty();
+    return this;
   }
 
   public setText(text: string): this {

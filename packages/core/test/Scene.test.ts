@@ -842,7 +842,7 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     }
 
     function contentEl(scene: Scene, id: string): HTMLElement | undefined {
-      return (scene as any).contentElements.get(id);
+      return scene.getContentElement(id);
     }
 
     it('projects opt-in text as a transparent, findable DOM node', () => {
@@ -908,6 +908,28 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
+    it('keeps dynamically created content projections in VMT order', () => {
+      const scene = makeDomScene();
+      const first = new ContentEntity('first');
+      const second = new ContentEntity('second');
+      first.projText = null;
+      second.projText = 'second';
+      scene.add(first);
+      scene.add(second);
+      tick(scene);
+
+      first.projText = 'first';
+      tick(scene);
+
+      const order = Array.from(
+        ((scene as any).a11yRoot as HTMLElement).querySelectorAll<HTMLElement>(
+          '[data-vecto-content]',
+        ),
+      ).map((element) => element.dataset.vectoContent);
+      expect(order).toEqual(['first', 'second']);
+      scene.destroy();
+    });
+
     it('hides fully off-viewport projections (viewport-lazy)', () => {
       const scene = makeDomScene();
       const e = new ContentEntity('off');
@@ -920,6 +942,27 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.markDirty();
       tick(scene);
       expect(contentEl(scene, 'off')!.style.display).not.toBe('none');
+      scene.destroy();
+    });
+
+    it('hides projections fully outside a clipChildren ancestor', () => {
+      const scene = makeDomScene();
+      const clip = new SpyEntity('clip', null);
+      clip.width = 100;
+      clip.height = 80;
+      clip.clipChildren = true;
+      const child = new ContentEntity('clipped');
+      child.setPosition(120, 10);
+      clip.add(child);
+      scene.add(clip);
+      tick(scene);
+
+      expect(contentEl(scene, 'clipped')!.style.display).toBe('none');
+
+      child.setPosition(20, 10);
+      scene.markDirty();
+      tick(scene);
+      expect(contentEl(scene, 'clipped')!.style.display).not.toBe('none');
       scene.destroy();
     });
 
