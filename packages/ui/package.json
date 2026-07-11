@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/ui",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "publishConfig": {
     "access": "public"
   },
@@ -36,15 +36,20 @@
       "types": "./dist/Input.d.ts",
       "import": "./dist/Input.mjs",
       "require": "./dist/Input.js"
+    },
+    "./measure": {
+      "types": "./dist/measure.d.ts",
+      "import": "./dist/measure.mjs",
+      "require": "./dist/measure.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "(cd ../core && bun run build) && tsup src/index.ts src/Input.ts --format cjs,esm --clean && tsc -p tsconfig.build.json && bun run verify:input-entry",
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
     "test": "vitest run",
-    "verify:input-entry": "node scripts/verify-input-entry.mjs"
+    "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs"
   },
   "dependencies": {
     "marked": "^18.0.6",

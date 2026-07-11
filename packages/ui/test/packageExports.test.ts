@@ -17,4 +17,16 @@ describe('package exports', () => {
       require: './dist/Input.js',
     });
   });
+
+  it('publishes text measurement through a lightweight subpath', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as PackageManifest;
+
+    expect(manifest.exports?.['./measure']).toEqual({
+      types: './dist/measure.d.ts',
+      import: './dist/measure.mjs',
+      require: './dist/measure.js',
+    });
+  });
 });

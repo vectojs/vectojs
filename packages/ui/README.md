@@ -23,11 +23,13 @@ bun add @vectojs/core @vectojs/ui
 
 `@vectojs/core` is a peer dependency and should be installed explicitly.
 
-Applications that only need the native text field can use the lightweight subpath. It excludes
-content-rendering dependencies such as Markdown and MathJax from the application bundle:
+Applications that only need the native text field or text-measurement helpers can use lightweight
+subpaths. They exclude content-rendering dependencies such as Markdown and MathJax from the
+application bundle:
 
 ```ts
 import { Input } from '@vectojs/ui/input';
+import { measureText, wrapLines } from '@vectojs/ui/measure';
 ```
 
 ## Example

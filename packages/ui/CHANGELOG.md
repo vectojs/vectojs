@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.6.1
+
+### Patch Changes
+
+- f93ff3b: Add lightweight `@vectojs/ui/input` and `@vectojs/ui/measure` subpaths so focused applications avoid bundling Markdown, MathJax, and unrelated UI components.
+
 ## 1.6.0
 
 ### Minor Changes
