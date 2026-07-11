@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.4.0
+
+### Minor Changes
+
+- Add MathJax inline and block support to Markdown component, and utilize a Web Worker to parse Markdown AST asynchronously to ensure smooth Canvas rendering without main thread blocking during high-speed text streaming.
+
 ## 1.3.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/ui",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publishConfig": {
     "access": "public"
   },
@@ -41,14 +41,17 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "marked": "^18.0.5"
+    "marked": "^18.0.5",
+    "mathjax-full": "^3.2.2"
   },
   "peerDependencies": {
     "@vectojs/core": ">=0.1.0"
   },
   "devDependencies": {
     "@vectojs/core": "workspace:*",
+    "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
+    "prettier": "^3.9.5",
     "tsup": "^8.3.5",
     "vitest": "^4.1.9"
   }
