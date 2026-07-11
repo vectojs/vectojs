@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.6.0
+
+### Minor Changes
+
+- feat(ui): support raw SVG HTML blocks and images in Markdown paragraphs
+
 ## 1.5.0
 
 ### Minor Changes

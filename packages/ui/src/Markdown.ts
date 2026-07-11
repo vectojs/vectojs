@@ -834,15 +834,67 @@ export class Markdown extends UIComponent {
       // ── Paragraphs ───────────────────────────────────────────────────
       case 'paragraph': {
         const pToken = token as Tokens.Paragraph;
-        return renderInlineToRichText(
-          pToken.tokens,
-          pToken.text,
-          bodyFont,
-          t.textColor,
-          this.maxWidth,
-          t,
-          this.onLinkClick,
-        );
+        if (!pToken.tokens || !pToken.tokens.some((t) => t.type === 'image')) {
+          return renderInlineToRichText(
+            pToken.tokens,
+            pToken.text,
+            bodyFont,
+            t.textColor,
+            this.maxWidth,
+            t,
+            this.onLinkClick,
+          );
+        }
+
+        // Split paragraph into a Stack if it contains images
+        const stack = new Stack({ direction: 'vertical', gap: 16, maxWidth: this.maxWidth });
+        let currentTokens: Token[] = [];
+
+        const flushText = () => {
+          if (currentTokens.length > 0) {
+            stack.add(
+              renderInlineToRichText(
+                currentTokens,
+                '',
+                bodyFont,
+                t.textColor,
+                this.maxWidth,
+                t,
+                this.onLinkClick,
+              ),
+            );
+            currentTokens = [];
+          }
+        };
+
+        for (const child of pToken.tokens) {
+          if (child.type === 'image') {
+            flushText();
+            const imgToken = child as Tokens.Image;
+            const initialWidth = Math.min(800, this.maxWidth);
+            const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
+            const img = new Image(imgToken.href, {
+              width: initialWidth,
+              height: initialHeight,
+              alt: imgToken.text,
+              radius: 8,
+              onLoad: () => {
+                const bmp = (img as any).bitmap;
+                if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
+                  const aspect = bmp.naturalHeight / bmp.naturalWidth;
+                  img.width = Math.min(bmp.naturalWidth, this.maxWidth);
+                  img.height = Math.round(img.width * aspect);
+                  if (this.scene) this.scene.markDirty();
+                }
+              },
+            });
+            stack.add(img);
+          } else {
+            currentTokens.push(child);
+          }
+        }
+        flushText();
+        return stack;
       }
 
       // ── Code blocks ──────────────────────────────────────────────────
