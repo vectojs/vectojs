@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.4.0
+
+### Minor Changes
+
+- fix(core): sort a11y content projection DOM nodes properly in the Shadow DOM overlay to allow continuous multi-block text selection
+
 ## 1.3.0
 
 ### Minor Changes

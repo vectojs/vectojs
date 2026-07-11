@@ -1092,6 +1092,13 @@ export class Scene {
 
     const collect = (node: Entity) => {
       if (node.isDOMPortal) return;
+
+      const contentEl = this.contentElements.get(node.id);
+      if (contentEl) {
+        if (node.a11yFullViewport) this.fullViewportElements.push(contentEl);
+        else this.normalElements.push(contentEl);
+      }
+
       if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
         const el = this.a11yElements.get(node.id);
         if (el) {
