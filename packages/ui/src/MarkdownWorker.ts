@@ -26,7 +26,13 @@ marked.use({
   ],
 });
 
+const TRUSTED_ORIGIN = self.location.origin;
+
 self.onmessage = (e: MessageEvent) => {
+  if (e.origin && e.origin !== TRUSTED_ORIGIN) {
+    return;
+  }
+
   const { id, text } = e.data;
   try {
     const tokens = marked.lexer(text);
