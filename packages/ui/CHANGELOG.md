@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.7.1
+
+### Patch Changes
+
+- 2c0441d: Add a lightweight `@vectojs/ui/text` entry so canvas applications can consume selectable static text without loading Markdown and MathJax dependencies.
+
 ## 1.7.0
 
 ### Minor Changes
