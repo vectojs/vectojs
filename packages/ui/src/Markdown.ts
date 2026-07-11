@@ -1,11 +1,105 @@
 import { Entity, IRenderer, type StyledSpan, type TextStyle } from '@vectojs/core';
-import { marked, type Token, type Tokens } from 'marked';
+import { marked, type Token, type Tokens, type TokensList } from 'marked';
+
+marked.use({
+  extensions: [
+    {
+      name: 'inlineMath',
+      level: 'inline',
+      start(src) {
+        return src.match(/\$/)?.index;
+      },
+      tokenizer(src) {
+        const match = /^\$([^$]+)\$/.exec(src);
+        if (match) {
+          return {
+            type: 'inlineMath',
+            raw: match[0],
+            text: match[1].trim(),
+          };
+        }
+        return undefined;
+      },
+      renderer(token) {
+        return token.raw;
+      },
+    },
+  ],
+});
+
+import { mathjax } from 'mathjax-full/js/mathjax.js';
+import { TeX } from 'mathjax-full/js/input/tex.js';
+import { SVG } from 'mathjax-full/js/output/svg.js';
+import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
+import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
+import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
 import { measureText } from './measure';
 import { RichText } from './RichText';
 import { Stack } from './Stack';
 import { Table } from './Table';
 import { Text } from './Text';
+import { Image } from './Image';
 import { UIComponent } from './UIComponent';
+
+// @ts-ignore
+import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
+
+// ── MathJax Setup ────────────────────────────────────────────────────────────
+
+const adaptor = liteAdaptor();
+RegisterHTMLHandler(adaptor);
+const tex = new TeX({ packages: AllPackages });
+const svg = new SVG({ fontCache: 'local' });
+const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
+
+function renderMathToSVGDataURI(
+  formula: string,
+  displayMode: boolean,
+): { uri: string; width: number; height: number } | null {
+  try {
+    const node = htmlMathJax.convert(formula, { display: displayMode });
+    const svgString = adaptor.innerHTML(node);
+
+    // Parse ex sizes (e.g. width="40.3ex" height="5.2ex")
+    const wMatch = svgString.match(/width="([^"]+)ex"/);
+    const hMatch = svgString.match(/height="([^"]+)ex"/);
+    const wEx = wMatch ? parseFloat(wMatch[1]) : 10;
+    const hEx = hMatch ? parseFloat(hMatch[1]) : 2;
+    // 1ex is approx 8px in our font size
+    const width = wEx * 8;
+    const height = hEx * 8;
+
+    // Use btoa since this executes in the browser
+    const base64 = btoa(unescape(encodeURIComponent(svgString)));
+    return { uri: `data:image/svg+xml;base64,${base64}`, width, height };
+  } catch (e) {
+    console.error('MathJax error', e);
+    return null;
+  }
+}
+
+// ── Worker Setup ─────────────────────────────────────────────────────────────
+
+let markdownWorker: Worker | null = null;
+let workerIdCounter = 0;
+const workerCallbacks = new Map<number, (tokens: TokensList) => void>();
+
+if (typeof Worker !== 'undefined') {
+  try {
+    const blob = new Blob([WORKER_SOURCE_STRING], { type: 'application/javascript' });
+    markdownWorker = new Worker(URL.createObjectURL(blob));
+    markdownWorker.onmessage = (e) => {
+      const { id, tokens, error } = e.data;
+      const cb = workerCallbacks.get(id);
+      if (cb) {
+        workerCallbacks.delete(id);
+        if (!error) cb(tokens as TokensList);
+      }
+    };
+  } catch (err) {
+    console.warn('Failed to initialize MarkdownWorker', err);
+  }
+}
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -478,6 +572,11 @@ function collectSpans(
         out.push({ text: decodeEntities(t.text), style: { ...inherited, color: theme.codeColor } });
         break;
       }
+      case 'inlineMath': {
+        const t = token as any;
+        out.push({ text: decodeEntities(t.raw), style: { ...inherited, color: '#fcd34d' } }); // yellow/gold for inline math
+        break;
+      }
       case 'link': {
         const t = token as Tokens.Link;
         // Recurse into link children (they may contain bold/italic/code)
@@ -569,6 +668,7 @@ export class Markdown extends UIComponent {
   public maxWidth: number;
   public theme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
+  public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
   private tokens: Token[];
 
@@ -615,7 +715,21 @@ export class Markdown extends UIComponent {
   /** Append a markdown chunk incrementally. Reuses unchanged prefix entities. */
   public appendMarkdown(chunk: string): this {
     this.rawMarkdown += chunk;
-    const newTokens = marked.lexer(this.rawMarkdown);
+
+    if (markdownWorker) {
+      const id = workerIdCounter++;
+      workerCallbacks.set(id, (newTokens) => {
+        this.updateTokens(newTokens);
+      });
+      markdownWorker.postMessage({ id, text: this.rawMarkdown });
+    } else {
+      const newTokens = marked.lexer(this.rawMarkdown);
+      this.updateTokens(newTokens);
+    }
+    return this;
+  }
+
+  private updateTokens(newTokens: TokensList): void {
     const oldTokens = this.tokens;
     const oldChildren = [...this.content.children]; // snapshot
 
@@ -688,7 +802,11 @@ export class Markdown extends UIComponent {
     this.content.layout();
     this.width = this.content.width;
     this.height = this.content.height;
-    return this;
+
+    this.scene?.markDirty();
+    if (this.onLayoutUpdated) {
+      this.onLayoutUpdated();
+    }
   }
 
   protected renderToken(token: Token): Entity | null {
@@ -731,6 +849,27 @@ export class Markdown extends UIComponent {
       case 'code': {
         const codeToken = token as Tokens.Code;
         const lang = (codeToken.lang ?? '').toLowerCase();
+
+        if (lang === 'math' || lang === 'latex' || lang === 'tex') {
+          const mathData = renderMathToSVGDataURI(codeToken.text, true);
+          if (mathData) {
+            // Provide a generous default height, it will scale based on width
+            const mathImg = new Image(mathData.uri, {
+              width: Math.min(this.maxWidth, mathData.width),
+              height: mathData.height * Math.min(1, this.maxWidth / mathData.width),
+              alt: codeToken.text,
+            });
+            // Let the layout flow it as a block
+            const wrapper = new MarkdownContainer();
+            mathImg.x = 16;
+            mathImg.y = 8;
+            wrapper.add(mathImg);
+            wrapper.width = mathImg.width + 16;
+            wrapper.height = mathImg.height + 16;
+            return wrapper;
+          }
+        }
+
         return new CodeBlock(codeToken.text, lang, this.maxWidth, t);
       }
 
