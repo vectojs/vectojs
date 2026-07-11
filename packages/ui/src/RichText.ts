@@ -49,7 +49,7 @@ class LinkHotspot extends UIComponent {
     });
   }
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: sanitizeUrl(this.href), label: this.href };
+    return { tag: 'a', href: sanitizeUrl(this.href), label: this.href, target: '_blank' };
   }
 
   public render(): void {

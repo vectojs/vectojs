@@ -887,6 +887,9 @@ export class Scene {
       if (attrs.href !== undefined && el instanceof HTMLAnchorElement) {
         const safeHref = sanitizeUrl(attrs.href);
         if (el.getAttribute('href') !== safeHref) el.setAttribute('href', safeHref);
+        if (attrs.target !== undefined && el.getAttribute('target') !== attrs.target) {
+          el.setAttribute('target', attrs.target);
+        }
       }
       if (el instanceof HTMLImageElement) {
         if (attrs.src !== undefined && el.src !== attrs.src) el.src = attrs.src;

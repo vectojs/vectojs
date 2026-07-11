@@ -114,6 +114,8 @@ export interface A11yAttributes {
   label?: string;
   /** Destination URL; only meaningful for `tag: 'a'`. */
   href?: string;
+  /** Link target; only meaningful for `tag: 'a'`. Defaults to current window. */
+  target?: string;
   /** Image source; only meaningful for `tag: 'img'`. */
   src?: string;
   /** Alternative text; only meaningful for `tag: 'img'`. */

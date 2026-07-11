@@ -50,7 +50,7 @@ export class Link extends UIComponent {
   }
 
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: sanitizeUrl(this.href), label: this.label };
+    return { tag: 'a', href: sanitizeUrl(this.href), label: this.label, target: '_blank' };
   }
 
   public render(r: IRenderer): void {

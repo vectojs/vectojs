@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.3.0
+
+### Minor Changes
+
+- Support projecting `target` attribute to accessibility DOM node in `@vectojs/core`. Render MathJax SVGs with intrinsic dimension measurements to maintain responsive sizing in `@vectojs/ui`. Map `target="_blank"` on links to prevent canvas escape in interactive modes.
+
 ## 1.2.0
 
 ### Minor Changes
