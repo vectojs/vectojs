@@ -148,7 +148,12 @@ describe('Button', () => {
 describe('Link', () => {
   it('projects an anchor shadow node with href', () => {
     const l = new Link('Docs', { href: 'https://example.com' });
-    expect(l.getA11yAttributes()).toEqual({ tag: 'a', href: 'https://example.com', label: 'Docs' });
+    expect(l.getA11yAttributes()).toEqual({
+      tag: 'a',
+      href: 'https://example.com',
+      target: '_blank',
+      label: 'Docs',
+    });
   });
 
   it('opens the href on click', () => {

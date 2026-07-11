@@ -20,6 +20,7 @@ describe('Table', () => {
           translate: () => {},
           rotate: () => {},
           beginPath: vi.fn(),
+          rect: vi.fn(),
           roundRect: vi.fn(),
           fill: vi.fn(),
           stroke: vi.fn(),

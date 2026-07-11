@@ -318,8 +318,15 @@ Plain paragraph at the end.
 
       // Verify that it is indeed a Table component instance
       expect(table.constructor.name).toBe('Table');
-      expect((table as any).headers).toEqual(['Header 1', 'Header 2']);
-      expect((table as any).rows).toEqual([
+      expect((table as any).headers.map((h: any) => (h.spans ? h.spans[0].text : h))).toEqual([
+        'Header 1',
+        'Header 2',
+      ]);
+      expect(
+        (table as any).rows.map((row: any) =>
+          row.map((cell: any) => (cell.spans ? cell.spans[0].text : cell)),
+        ),
+      ).toEqual([
         ['Row 1-1', 'Row 1-2'],
         ['Row 2-1', 'Row 2-2'],
       ]);

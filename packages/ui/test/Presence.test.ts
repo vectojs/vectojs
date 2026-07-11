@@ -17,6 +17,7 @@ function liveParent(): Panel {
   const root = new Panel();
   (root as unknown as { _scene: unknown })._scene = {
     markDirty() {},
+    detachA11y() {},
     a11yNeedsReorder: false,
     prefersReducedMotion: false,
   };
