@@ -13,18 +13,29 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./headless": {
+      "types": "./dist/headless.d.ts",
+      "import": "./dist/headless.mjs",
+      "require": "./dist/headless.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "(cd ../core && bun run build) && (cd ../ui && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "build": "(cd ../core && bun run build) && (cd ../ui && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/headless.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:headless-entry",
+    "test": "vitest run",
+    "verify:headless-entry": "node scripts/verify-headless-entry.mjs"
   },
   "peerDependencies": {
     "@vectojs/core": ">=1.0.0 <2.0.0",
     "@vectojs/ui": ">=1.0.0 <2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@vectojs/ui": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@vectojs/core": "workspace:*",

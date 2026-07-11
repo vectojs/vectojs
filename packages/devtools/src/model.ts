@@ -1,14 +1,23 @@
 import type { Entity, Scene } from '@vectojs/core';
-import type { TreeNode } from '@vectojs/ui';
+
+/** Framework-neutral tree shape used by inspectors and serialized tooling. */
+export interface DevtoolsTreeNode {
+  id: string;
+  label: string;
+  children?: DevtoolsTreeNode[];
+}
 
 /**
- * Build the ui `TreeView` node list for a scene graph, and an id→entity index
- * for resolving selections back to live entities. Labels carry the entity's
- * type and geometry so most questions are answered without selecting anything.
+ * Build an inspector tree for a scene graph and an id→entity index for
+ * resolving selections back to live entities. Labels carry the entity's type
+ * and geometry so most questions are answered without selecting anything.
  */
-export function buildTreeModel(root: Entity): { nodes: TreeNode[]; index: Map<string, Entity> } {
+export function buildTreeModel(root: Entity): {
+  nodes: DevtoolsTreeNode[];
+  index: Map<string, Entity>;
+} {
   const index = new Map<string, Entity>();
-  const toNode = (entity: Entity): TreeNode => {
+  const toNode = (entity: Entity): DevtoolsTreeNode => {
     index.set(entity.id, entity);
     const type = entity.constructor.name;
     const size =

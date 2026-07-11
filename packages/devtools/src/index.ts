@@ -2,31 +2,7 @@ import type { Scene } from '@vectojs/core';
 import { DevtoolsPanel, type DevtoolsOptions } from './panel';
 
 export { DevtoolsPanel, type DevtoolsOptions } from './panel';
-export { buildTreeModel, findEntityAt, describeEntity, pickInScene } from './model';
-export { inspectEntity, entityPath, textPreviewOf, type EntityInfo } from './inspect';
-export {
-  createEventTrace,
-  EventTrace,
-  type EventTraceEntry,
-  type EventTraceModifiers,
-  type EventTraceOptions,
-  type EventTraceSource,
-  type EventTraceType,
-} from './eventTrace';
-export {
-  captureSnapshot,
-  diffSnapshots,
-  type SceneSnapshot,
-  type SnapshotNode,
-  type SnapshotDiff,
-} from './snapshot';
-export {
-  auditScene,
-  auditTree,
-  type AuditFinding,
-  type AuditKind,
-  type AuditOptions,
-} from './audit';
+export * from './headless';
 
 /**
  * Attach the VMT inspector to a Scene. Returns the panel; call
