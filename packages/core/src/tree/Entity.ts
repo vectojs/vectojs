@@ -509,6 +509,7 @@ export abstract class Entity {
       child.parent = null;
       const s = this.scene;
       if (s) {
+        s.detachA11y(child);
         s.a11yNeedsReorder = true;
         s.markDirty();
       }

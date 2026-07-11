@@ -1,50 +1,27 @@
-import { A11yAttributes, IRenderer } from '@vectojs/core';
+import { A11yAttributes, IRenderer, Entity } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 /** Construction options for {@link Table}. */
 export interface TableOptions {
-  /** Array of column header strings. */
-  headers: string[];
-  /** 2D array representing table rows and columns. */
-  rows: string[][];
-  /** Custom widths per column in pixels. If omitted, widths are distributed evenly. */
+  headers: (string | Entity)[];
+  rows: (string | Entity)[][];
   colWidths?: number[];
-  /** Total physical width of the table. Default `600`. */
   width?: number;
-  /** Row height in pixels. Default `36`. */
-  rowHeight?: number;
-  /** Table background color. Default `'rgba(15, 15, 25, 0.4)'`. */
+  rowHeight?: number; // Base minimum row height
   bg?: string;
-  /** Header row background color. Default `'rgba(255, 255, 255, 0.08)'`. */
   headerBg?: string;
-  /** Grid border color. Default `'rgba(255, 255, 255, 0.15)'`. */
   borderColor?: string;
-  /** Header text color. Default `'#ffffff'`. */
   headerTextColor?: string;
-  /** Cell body text color. Default `'#e2e8f0'`. */
   textColor?: string;
-  /** Typography styling. Default `'14px sans-serif'`. */
   font?: string;
 }
 
-/**
- * A Canvas-native Data Grid Table component.
- *
- * Renders structured columns and rows with borders, custom widths and typography,
- * while exporting a dynamic `role="grid"` A11y Landmark structure for assistive tech.
- *
- * @example
- * const table = new Table({
- *   headers: ['Name', 'Value'],
- *   rows: [['Item A', '100'], ['Item B', '200']],
- *   width: 400
- * });
- */
 export class Table extends UIComponent {
-  public headers: string[];
-  public rows: string[][];
+  public headers: (string | Entity)[];
+  public rows: (string | Entity)[][];
   public colWidths: number[];
-  public rowHeight: number;
+  public rowHeights: number[];
+  public headerHeight: number;
   public bg: string;
   public headerBg: string;
   public borderColor: string;
@@ -56,7 +33,7 @@ export class Table extends UIComponent {
     super();
     this.headers = opts.headers;
     this.rows = opts.rows;
-    this.rowHeight = opts.rowHeight ?? 36;
+    const baseRowHeight = opts.rowHeight ?? 36;
     this.bg = opts.bg ?? 'rgba(15, 15, 25, 0.4)';
     this.headerBg = opts.headerBg ?? 'rgba(255, 255, 255, 0.08)';
     this.borderColor = opts.borderColor ?? 'rgba(255, 255, 255, 0.15)';
@@ -66,7 +43,6 @@ export class Table extends UIComponent {
 
     const totalWidth = opts.width ?? 600;
     this.width = totalWidth;
-    this.height = (this.rows.length + 1) * this.rowHeight;
 
     if (opts.colWidths && opts.colWidths.length === this.headers.length) {
       this.colWidths = opts.colWidths;
@@ -75,6 +51,31 @@ export class Table extends UIComponent {
       this.colWidths = Array.from({ length: this.headers.length }, () => avg);
     }
 
+    // Add child entities and compute dynamic heights
+    this.headerHeight = baseRowHeight;
+    this.headers.forEach((h, colIdx) => {
+      if (typeof h !== 'string') {
+        this.add(h);
+        if ('maxWidth' in h) (h as any).maxWidth = this.colWidths[colIdx] - 24;
+        if ('layout' in h) (h as any).layout();
+        this.headerHeight = Math.max(this.headerHeight, h.height + 16);
+      }
+    });
+
+    this.rowHeights = this.rows.map((row) => {
+      let h = baseRowHeight;
+      row.forEach((cell, colIdx) => {
+        if (typeof cell !== 'string') {
+          this.add(cell);
+          if ('maxWidth' in cell) (cell as any).maxWidth = this.colWidths[colIdx] - 24;
+          if ('layout' in cell) (cell as any).layout();
+          h = Math.max(h, cell.height + 16);
+        }
+      });
+      return h;
+    });
+
+    this.height = this.headerHeight + this.rowHeights.reduce((a, b) => a + b, 0);
     this.interactive = true;
   }
 
@@ -85,28 +86,46 @@ export class Table extends UIComponent {
     };
   }
 
+  public override getContentProjection() {
+    const getText = (cell: string | Entity) =>
+      typeof cell === 'string' ? cell : 'text' in cell ? (cell as any).text : '';
+    const text = [
+      this.headers.map(getText).join('\t'),
+      ...this.rows.map((r) => r.map(getText).join('\t')),
+    ].join('\n');
+    return { text, font: this.font, selectable: true };
+  }
+
   public render(r: IRenderer): void {
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, 8);
     r.fill(this.bg);
 
-    const textOffset = this.rowHeight / 2 + 5;
-
     // 1. Draw Headers
     r.beginPath();
-    r.roundRect(0, 0, this.width, this.rowHeight, [8, 8, 0, 0]);
+    r.roundRect(0, 0, this.width, this.headerHeight, [8, 8, 0, 0]);
     r.fill(this.headerBg);
 
     let xAcc = 0;
     for (let colIdx = 0; colIdx < this.headers.length; colIdx++) {
       const colW = this.colWidths[colIdx];
-      r.fillText(
-        this.headers[colIdx],
-        xAcc + 12,
-        textOffset,
-        `bold ${this.font}`,
-        this.headerTextColor,
-      );
+      const h = this.headers[colIdx];
+
+      if (typeof h === 'string') {
+        r.save();
+        r.clip(xAcc, 0, colW, this.headerHeight);
+        r.fillText(
+          h,
+          xAcc + 12,
+          this.headerHeight / 2 + 5,
+          `bold ${this.font}`,
+          this.headerTextColor,
+        );
+        r.restore();
+      } else {
+        h.x = xAcc + 12;
+        h.y = (this.headerHeight - h.height) / 2;
+      }
 
       if (colIdx > 0) {
         r.beginPath();
@@ -118,9 +137,10 @@ export class Table extends UIComponent {
     }
 
     // 2. Draw Rows & Cells
+    let yPos = this.headerHeight;
     for (let rowIdx = 0; rowIdx < this.rows.length; rowIdx++) {
-      const yPos = (rowIdx + 1) * this.rowHeight;
       const rowData = this.rows[rowIdx];
+      const rowH = this.rowHeights[rowIdx];
 
       r.beginPath();
       r.moveTo(0, yPos);
@@ -130,10 +150,22 @@ export class Table extends UIComponent {
       xAcc = 0;
       for (let colIdx = 0; colIdx < this.headers.length; colIdx++) {
         const colW = this.colWidths[colIdx];
-        const val = rowData[colIdx] ?? '';
-        r.fillText(val, xAcc + 12, yPos + textOffset, this.font, this.textColor);
+        const val = rowData[colIdx];
+
+        if (typeof val === 'string' || val == null) {
+          const str = val ?? '';
+          r.save();
+          r.clip(xAcc, yPos, colW, rowH);
+          r.fillText(str, xAcc + 12, yPos + rowH / 2 + 5, this.font, this.textColor);
+          r.restore();
+        } else {
+          val.x = xAcc + 12;
+          val.y = yPos + (rowH - val.height) / 2;
+        }
+
         xAcc += colW;
       }
+      yPos += rowH;
     }
 
     r.beginPath();

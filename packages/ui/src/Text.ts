@@ -94,7 +94,7 @@ export class Text extends UIComponent {
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
-    return { text: this.text, font: this.font };
+    return { text: this.text, font: this.font, selectable: true };
   }
 
   public setText(text: string): this {
