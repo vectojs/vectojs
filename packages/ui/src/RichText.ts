@@ -266,7 +266,7 @@ export class RichText extends UIComponent {
   public override getContentProjection(): ContentProjection | null {
     const text = this.spans.map((s) => s.text).join('');
     if (!text) return null;
-    return { text, font: this.font };
+    return { text, font: this.font, selectable: true };
   }
 
   public render(r: IRenderer): void {

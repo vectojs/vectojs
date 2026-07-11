@@ -815,9 +815,23 @@ export class Markdown extends UIComponent {
 
       // ── Table ────────────────────────────────────────────────────────
       case 'table': {
-        const tblToken = token as any;
-        const headers = tblToken.header.map((cell: any) => cell.text);
-        const rows = tblToken.rows.map((row: any[]) => row.map((cell: any) => cell.text));
+        const tblToken = token as Tokens.Table;
+
+        const buildCell = (cell: Tokens.TableCell) => {
+          const spans: StyledSpan[] = [];
+          collectSpans(cell.tokens, {}, t, spans);
+          if (spans.length === 0) return decodeEntities(cell.text);
+          return new RichText(spans, {
+            font: `${t.fontSize - 2}px ${t.bodyFont}`,
+            color: t.textColor,
+            linkColor: '#38bdf8',
+            onLinkClick: this.onLinkClick,
+          });
+        };
+
+        const headers = tblToken.header.map(buildCell);
+        const rows = tblToken.rows.map((row) => row.map(buildCell));
+
         return new Table({
           headers,
           rows,
