@@ -431,6 +431,14 @@ export class Scene {
       this.activePortalsThisFrame.delete(node.id);
       this.activePortalsPrevFrame.delete(node.id);
     }
+    // Content projections must go with their entity: a surviving node is
+    // still selectable (pointer-events: auto), still find-in-page-able at its
+    // stale position, and leaks — the same orphan class as a11y elements.
+    const contentEl = this.contentElements.get(node.id);
+    if (contentEl) {
+      contentEl.remove();
+      this.contentElements.delete(node.id);
+    }
     const el = this.a11yElements.get(node.id);
     if (el) {
       if (el === this.focusedA11yElement) {
@@ -472,11 +480,8 @@ export class Scene {
    * @param entity - The subtree whose shadow nodes should be removed.
    */
   public detachA11y(entity: Entity): void {
-    const contentEl = this.contentElements.get(entity.id);
-    if (contentEl) {
-      contentEl.remove();
-      this.contentElements.delete(entity.id);
-    }
+    // removeA11yRecursively prunes a11y elements, DOM portals, AND content
+    // projections for the whole subtree.
     this.removeA11yRecursively(entity);
   }
 

@@ -51,13 +51,23 @@ export class Table extends UIComponent {
       this.colWidths = Array.from({ length: this.headers.length }, () => avg);
     }
 
+    // Wrap an entity cell to its column. Assigning the `maxWidth` FIELD never
+    // reaches the layout engine — only `setMaxWidth()` re-wraps (Text and
+    // RichText both re-lay out inside it); the bare field write left cells
+    // unwrapped and row heights measured on the unwrapped content.
+    const fitCell = (cell: Entity, colIdx: number): void => {
+      const sizable = cell as Entity & { setMaxWidth?: (w: number) => unknown };
+      if (typeof sizable.setMaxWidth === 'function') {
+        sizable.setMaxWidth(this.colWidths[colIdx] - 24);
+      }
+    };
+
     // Add child entities and compute dynamic heights
     this.headerHeight = baseRowHeight;
     this.headers.forEach((h, colIdx) => {
       if (typeof h !== 'string') {
         this.add(h);
-        if ('maxWidth' in h) (h as any).maxWidth = this.colWidths[colIdx] - 24;
-        if ('layout' in h) (h as any).layout();
+        fitCell(h, colIdx);
         this.headerHeight = Math.max(this.headerHeight, h.height + 16);
       }
     });
@@ -67,8 +77,7 @@ export class Table extends UIComponent {
       row.forEach((cell, colIdx) => {
         if (typeof cell !== 'string') {
           this.add(cell);
-          if ('maxWidth' in cell) (cell as any).maxWidth = this.colWidths[colIdx] - 24;
-          if ('layout' in cell) (cell as any).layout();
+          fitCell(cell, colIdx);
           h = Math.max(h, cell.height + 16);
         }
       });

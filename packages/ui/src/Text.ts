@@ -81,7 +81,11 @@ export class Text extends UIComponent {
       this.engine.preserveLeadingSpaces = true;
     }
     this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
-    this.interactive = true;
+    // Not interactive: static text's semantic presence is its content
+    // projection. An interactive a11y div would sit ABOVE the selectable
+    // projection with pointer-events: auto and eat the mousedown — native
+    // mouse selection on the text would never start (RichText does the same).
+    this.interactive = false;
     this.applyLayout();
   }
 
@@ -94,7 +98,15 @@ export class Text extends UIComponent {
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
-    return { text: this.text, font: this.font, selectable: true };
+    // Project the text AS RENDERED — the engine's wrap points as `\n` and the
+    // drawn line advance — so the browser cannot re-wrap or re-space the DOM
+    // copy differently than the canvas and drift the selection/find highlights.
+    return {
+      text: this.lines.length > 1 ? this.lines.join('\n') : this.text,
+      font: this.font,
+      lineHeight: this.lineHeight,
+      selectable: true,
+    };
   }
 
   public setText(text: string): this {

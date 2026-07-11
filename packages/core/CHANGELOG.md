@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.4.1
+
+### Patch Changes
+
+- Scene: `detachA11y`/`Entity.remove()` now prunes content-projection nodes for the whole removed subtree, not just the top entity. A removed container's descendant text projections used to outlive it — still selectable (`pointer-events: auto`), still find-in-page-able at their stale position, and leaking DOM nodes.
+
 ## 1.4.0
 
 ### Minor Changes

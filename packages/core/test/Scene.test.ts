@@ -949,6 +949,31 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect((scene as any).contentElements.size).toBe(0);
       parentDiv.remove();
     });
+
+    it('removing a container prunes its descendants’ content projections', () => {
+      const scene = makeDomScene();
+      const container = new SpyEntity('wrap', null);
+      const deep = new ContentEntity('deep');
+      deep.projSelectable = true;
+      container.add(deep);
+      scene.add(container);
+      tick(scene);
+
+      const el = contentEl(scene, 'deep')!;
+      expect(el).toBeDefined();
+      expect(el.parentNode).not.toBeNull();
+
+      // Entity.remove() → detachA11y must reach DESCENDANT projections too —
+      // otherwise the transparent selectable node outlives the entity: it
+      // keeps intercepting pointer input (pointer-events: auto) at its old
+      // position, stays find-in-page-able, and leaks.
+      scene.rootEntity.remove(container);
+      tick(scene);
+
+      expect(contentEl(scene, 'deep')).toBeUndefined();
+      expect(el.parentNode).toBeNull();
+      scene.destroy();
+    });
   });
 
   it('exposes the scene-graph roots read-only for tooling', () => {

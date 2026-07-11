@@ -1,5 +1,17 @@
 # @vectojs/ui
 
+## 1.6.2
+
+### Patch Changes
+
+- Native text-selection fidelity and Markdown fixes:
+
+  - `Text` is no longer `interactive`: its own invisible a11y node sat above the selectable projection and swallowed the mousedown, so plain `Text` could never be mouse-selected (`RichText` already opted out).
+  - `Text` projects its rendered lines (wrap points as `\n`) and drawn `lineHeight`; `RichText` projects the engine line advance — selection and find-in-page highlights no longer drift on multi-line text.
+  - Markdown: `<br>` inside table cells (and hard-break tokens) now render as real line breaks instead of literal `<br>` text; other inline HTML tags are no longer printed as visible text.
+  - Markdown streaming: a worker parse error now falls back to a synchronous main-thread parse instead of silently dropping the update (the final chunk of a stream could vanish); a crashed worker flushes all pending parses and detaches.
+  - `Table`: entity cells are wrapped via `setMaxWidth()` — the previous bare field write never reached the layout engine, so cell content never wrapped to its column.
+
 ## 1.6.1
 
 ### Patch Changes

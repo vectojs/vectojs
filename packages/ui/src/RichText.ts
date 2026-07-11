@@ -266,7 +266,14 @@ export class RichText extends UIComponent {
   public override getContentProjection(): ContentProjection | null {
     const text = this.spans.map((s) => s.text).join('');
     if (!text) return null;
-    return { text, font: this.font, selectable: true };
+    // The engine advances lines by fontSize × 1.5; without matching the DOM
+    // line-height, multi-line selection highlights drift off the glyphs.
+    return {
+      text,
+      font: this.font,
+      lineHeight: this.baseFontSize * 1.5,
+      selectable: true,
+    };
   }
 
   public render(r: IRenderer): void {

@@ -82,7 +82,22 @@ function renderMathToSVGDataURI(
 
 let markdownWorker: Worker | null = null;
 let workerIdCounter = 0;
-const workerCallbacks = new Map<number, (tokens: TokensList) => void>();
+const workerCallbacks = new Map<number, { cb: (tokens: TokensList) => void; text: string }>();
+
+/**
+ * The worker failed for this request (lexer threw, or the worker itself
+ * died). Dropping the callback would lose that update for good — for the
+ * final chunk of a stream that means content that never renders. Parse on
+ * the main thread instead; it is the exact code path the no-Worker
+ * environments already use.
+ */
+function runSyncFallback(entry: { cb: (tokens: TokensList) => void; text: string }): void {
+  try {
+    entry.cb(marked.lexer(entry.text));
+  } catch (err) {
+    console.warn('Markdown sync fallback parse failed', err);
+  }
+}
 
 if (typeof Worker !== 'undefined') {
   try {
@@ -90,11 +105,20 @@ if (typeof Worker !== 'undefined') {
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
       const { id, tokens, error } = e.data;
-      const cb = workerCallbacks.get(id);
-      if (cb) {
+      const entry = workerCallbacks.get(id);
+      if (entry) {
         workerCallbacks.delete(id);
-        if (!error) cb(tokens as TokensList);
+        if (!error) entry.cb(tokens as TokensList);
+        else runSyncFallback(entry);
       }
+    };
+    markdownWorker.onerror = () => {
+      // The worker itself crashed: flush every pending request synchronously
+      // and stop routing to it.
+      const pending = [...workerCallbacks.values()];
+      workerCallbacks.clear();
+      markdownWorker = null;
+      for (const entry of pending) runSyncFallback(entry);
     };
   } catch (err) {
     console.warn('Failed to initialize MarkdownWorker', err);
@@ -572,6 +596,22 @@ function collectSpans(
         out.push({ text: decodeEntities(t.text), style: { ...inherited, color: theme.codeColor } });
         break;
       }
+      case 'br': {
+        // Hard break (trailing `\` / double space). The layout engine treats
+        // `\n` as a paragraph break, so a newline span renders it.
+        out.push({ text: '\n' });
+        break;
+      }
+      case 'html': {
+        // Inline HTML. `<br>` is the one tag with an inline-text meaning —
+        // table cells rely on it for line breaks (`| a<br>b |`). Everything
+        // else is markup: never print raw tags as visible text.
+        const t = token as Tokens.HTML;
+        const raw = t.raw ?? t.text ?? '';
+        const brCount = (raw.match(/<br\s*\/?>/gi) ?? []).length;
+        for (let i = 0; i < brCount; i++) out.push({ text: '\n' });
+        break;
+      }
       case 'inlineMath': {
         const t = token as any;
         out.push({ text: decodeEntities(t.raw), style: { ...inherited, color: '#fcd34d' } }); // yellow/gold for inline math
@@ -718,8 +758,11 @@ export class Markdown extends UIComponent {
 
     if (markdownWorker) {
       const id = workerIdCounter++;
-      workerCallbacks.set(id, (newTokens) => {
-        this.updateTokens(newTokens);
+      workerCallbacks.set(id, {
+        cb: (newTokens) => {
+          this.updateTokens(newTokens);
+        },
+        text: this.rawMarkdown,
       });
       markdownWorker.postMessage({ id, text: this.rawMarkdown });
     } else {
