@@ -112,6 +112,11 @@ This projection is intentionally thin. Applications still own accessible names, 
 focus order, contrast, and correct control semantics. See the
 [accessibility guide](https://vectojs.org/learn/accessibility/).
 
+Interactive projected nodes capture the active pointer on `pointerdown` and route
+`pointermove`, `pointerup`, and `pointercancel` through normal VMT capture/bubble propagation.
+Treat `pointercancel` as rollback: discard transient gesture state and do not create durable
+history. Pointer capture is released safely on both completion paths.
+
 ## Static content projection
 
 Canvas-rendered text can opt into browser-native find, translation, selection, and copy without

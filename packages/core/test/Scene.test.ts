@@ -1170,6 +1170,32 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(released).toEqual([7]);
   });
 
+  it('releases pointer capture and routes pointercancel to the projected entity', () => {
+    const scene = makeScene();
+    const entity = new SpyEntity('cancel', { x: 0, y: 0, width: 80, height: 80 }) as SpyEntity;
+    entity.interactive = true;
+    entity.width = 80;
+    entity.height = 80;
+    let canceled = 0;
+    entity.on('pointercancel', () => canceled++);
+    scene.add(entity);
+    tick(scene);
+    const el = (scene as unknown as { a11yElements: Map<string, HTMLElement> }).a11yElements.get(
+      entity.id,
+    )!;
+    const captured: number[] = [];
+    const released: number[] = [];
+    el.setPointerCapture = (id: number) => captured.push(id);
+    el.releasePointerCapture = (id: number) => released.push(id);
+
+    el.dispatchEvent(Object.assign(new Event('pointerdown'), { pointerId: 11 }));
+    el.dispatchEvent(Object.assign(new Event('pointercancel'), { pointerId: 11 }));
+
+    expect(captured).toEqual([11]);
+    expect(released).toEqual([11]);
+    expect(canceled).toBe(1);
+  });
+
   it('syncs the a11y shadow layer every frame by default', () => {
     const scene = makeScene();
     const e = new SpyEntity('s', { x: 0, y: 0, width: 50, height: 50 }) as SpyEntity;

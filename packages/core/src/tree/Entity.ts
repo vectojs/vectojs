@@ -196,6 +196,7 @@ export type VectoEvent =
   | 'hover'
   | 'pointerdown'
   | 'pointerup'
+  | 'pointercancel'
   | 'pointermove'
   | 'pointerleave'
   // Emitted from a form-control shadow node (`<input>`) when its value/checked
