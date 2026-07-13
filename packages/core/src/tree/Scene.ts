@@ -31,6 +31,28 @@ import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '../text/Typography';
 
+const INTERACTIVE_A11Y_ROLES = new Set([
+  'button',
+  'switch',
+  'checkbox',
+  'radio',
+  'link',
+  'tab',
+  'menuitem',
+  'slider',
+  'combobox',
+]);
+
+function isNativelyFocusable(element: HTMLElement): boolean {
+  return (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement ||
+    (element instanceof HTMLAnchorElement && element.hasAttribute('href'))
+  );
+}
+
 /**
  * Options for {@link Scene}.
  */
@@ -856,25 +878,7 @@ export class Scene {
         });
 
         // Keyboard accessibility for non-natively-focusable interactive controls
-        const INTERACTIVE_ROLES = new Set([
-          'button',
-          'switch',
-          'checkbox',
-          'radio',
-          'link',
-          'tab',
-          'menuitem',
-          'slider',
-          'combobox',
-        ]);
-        const nativelyFocusable =
-          el instanceof HTMLButtonElement ||
-          el instanceof HTMLInputElement ||
-          el instanceof HTMLSelectElement ||
-          el instanceof HTMLTextAreaElement ||
-          (el instanceof HTMLAnchorElement && el.hasAttribute('href'));
-        if (!nativelyFocusable && attrs.role && INTERACTIVE_ROLES.has(attrs.role)) {
-          el.setAttribute('tabindex', '0');
+        if (!isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role)) {
           el.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
@@ -899,6 +903,14 @@ export class Scene {
       }
       if (attrs.label !== undefined && el.getAttribute('aria-label') !== attrs.label) {
         el.setAttribute('aria-label', attrs.label);
+      }
+      const implicitTabIndex =
+        !isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role) ? 0 : null;
+      const desiredTabIndex = attrs.tabIndex ?? implicitTabIndex;
+      if (desiredTabIndex === null) {
+        if (el.hasAttribute('tabindex')) el.removeAttribute('tabindex');
+      } else if (el.getAttribute('tabindex') !== String(desiredTabIndex)) {
+        el.setAttribute('tabindex', String(desiredTabIndex));
       }
       if (attrs.inputType !== undefined && el.getAttribute('type') !== attrs.inputType) {
         el.setAttribute('type', attrs.inputType);

@@ -157,6 +157,8 @@ export interface A11yAttributes {
   role?: string;
   /** Accessible name applied via `aria-label`. */
   label?: string;
+  /** Explicit keyboard tab order for projected non-native interaction regions. */
+  tabIndex?: number;
   /** Destination URL; only meaningful for `tag: 'a'`. */
   href?: string;
   /** Link target; only meaningful for `tag: 'a'`. Defaults to current window. */

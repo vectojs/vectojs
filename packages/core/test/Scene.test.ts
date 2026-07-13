@@ -464,6 +464,41 @@ describe('Scene', () => {
     const grpEl = (scene as any).a11yElements.get('grp') as HTMLElement;
     expect(grpEl.hasAttribute('tabindex')).toBe(false);
   });
+
+  it('syncA11y honors and refreshes an explicit semantic tab index', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    class FocusableRegion extends Entity {
+      public semanticTabIndex: number | undefined = 0;
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { role: 'region', label: 'Canvas workspace', tabIndex: this.semanticTabIndex };
+      }
+    }
+    const region = new FocusableRegion('focusable-region');
+    region.interactive = true;
+    region.width = 100;
+    region.height = 100;
+    scene.add(region);
+
+    (scene as any).syncA11y((scene as any).root);
+    const element = (scene as any).a11yElements.get(region.id) as HTMLElement;
+    expect(element.getAttribute('tabindex')).toBe('0');
+
+    region.semanticTabIndex = -1;
+    (scene as any).syncA11y((scene as any).root);
+    expect(element.getAttribute('tabindex')).toBe('-1');
+
+    region.semanticTabIndex = undefined;
+    (scene as any).syncA11y((scene as any).root);
+    expect(element.hasAttribute('tabindex')).toBe(false);
+  });
 });
 
 describe('Scene render loop: culling, onDemand, a11y early-out', () => {
