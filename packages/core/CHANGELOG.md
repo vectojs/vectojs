@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.6.2
+
+### Patch Changes
+
+- f3206f9: Allow interactive entities to declare and dynamically update an explicit semantic `tabIndex` for focusable canvas workspaces and other non-control keyboard regions.
+
 ## 1.6.1
 
 ### Patch Changes
