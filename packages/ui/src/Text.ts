@@ -3,6 +3,7 @@ import {
   IRenderer,
   LayoutEngine,
   type GlyphMeasurer,
+  type LayoutNode,
   type PreparedText,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
@@ -70,6 +71,7 @@ export class Text extends UIComponent {
   private prepared: PreparedText;
   private fontSize: number;
   private lines: string[] = [];
+  private lineSourceRanges: Array<{ start: number; end: number }> = [];
 
   constructor(text: string, opts: TextOptions = {}) {
     super();
@@ -102,24 +104,29 @@ export class Text extends UIComponent {
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
-    // Project the text AS RENDERED — the engine's wrap points as `\n` and the
-    // drawn line advance — so the browser cannot re-wrap or re-space the DOM
-    // copy differently than the canvas and drift the selection/find highlights.
-    return {
-      text: this.lines.length > 1 ? this.lines.join('\n') : this.text,
-      font: this.font,
-      lineHeight: this.lineHeight,
-      // The canvas has already decided the exact line breaks. Project visual
-      // rows independently so browser whitespace/wrapping can never create a
-      // different selection grid at a fractional zoom level.
-      lines: this.lines.map((text, index) => ({
-        text,
+    const lines = this.lines.map((visualText, index) => {
+      const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
+      const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
+      return {
+        // Canvas keeps its visual glyph order; the semantic layer keeps logical
+        // source order so native copy and RTL text remain correct.
+        text: this.text.slice(range.start, range.end) || visualText,
+        separatorAfter: this.text.slice(range.end, Math.max(range.end, nextStart)),
         x: 0,
         y: index * this.lineHeight,
         baseline: this.lineHeight * 0.8,
         font: this.font,
         lineHeight: this.lineHeight,
-      })),
+      };
+    });
+    return {
+      text: this.text,
+      font: this.font,
+      lineHeight: this.lineHeight,
+      // The canvas has already decided the exact line breaks. Project visual
+      // rows independently so browser whitespace/wrapping can never create a
+      // different selection grid at a fractional zoom level.
+      lines,
       selectable: this.selectable,
     };
   }
@@ -170,14 +177,43 @@ export class Text extends UIComponent {
     const result = this.engine.layoutPrepared(this.prepared);
     const lineQuantum = this.fontSize * 1.5; // the engine's internal line advance
     const byLine = new Map<number, string>();
+    const nodesByLine = new Map<number, LayoutNode[]>();
     let maxIdx = -1;
     for (const node of result.nodes) {
       const idx = Math.round(node.y / lineQuantum);
       byLine.set(idx, (byLine.get(idx) ?? '') + node.char);
+      const nodes = nodesByLine.get(idx) ?? [];
+      nodes.push(node);
+      nodesByLine.set(idx, nodes);
       if (idx > maxIdx) maxIdx = idx;
     }
     this.lines = [];
-    for (let i = 0; i <= maxIdx; i++) this.lines.push(byLine.get(i) ?? '');
+    this.lineSourceRanges = [];
+    let previousEnd = 0;
+    for (let i = 0; i <= maxIdx; i++) {
+      this.lines.push(byLine.get(i) ?? '');
+      const nodes = nodesByLine.get(i) ?? [];
+      let start =
+        nodes.length > 0
+          ? Math.min(...nodes.map((node) => node.sourceIndex ?? previousEnd))
+          : previousEnd;
+      const end =
+        nodes.length > 0
+          ? Math.max(
+              ...nodes.map((node) => (node.sourceIndex ?? previousEnd) + (node.sourceLength ?? 0)),
+            )
+          : start;
+      // Source skipped before the first painted glyph (for example a leading
+      // hard break or trimmed space) still belongs to the first visual row.
+      if (i === 0) start = 0;
+      this.lineSourceRanges.push({ start, end: Math.max(start, end) });
+      previousEnd = Math.max(previousEnd, end);
+    }
+
+    if (this.lines.length === 0 && this.text) {
+      this.lines = [''];
+      this.lineSourceRanges = [{ start: 0, end: 0 }];
+    }
 
     this.width = result.totalWidth;
     this.height = Math.max(maxIdx + 1, 1) * this.lineHeight;

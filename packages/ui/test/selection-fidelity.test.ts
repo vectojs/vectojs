@@ -13,6 +13,14 @@ HTMLCanvasElement.prototype.getContext = (() => null) as never;
  * glyphs — and it must actually receive the pointer.
  */
 describe('selection fidelity of content projections', () => {
+  const projectedSource = (projection: NonNullable<ReturnType<Text['getContentProjection']>>) =>
+    projection.lines
+      ?.map(
+        (line) =>
+          line.text + ((line as typeof line & { separatorAfter?: string }).separatorAfter ?? ''),
+      )
+      .join('') ?? projection.text;
+
   describe('Text', () => {
     it('is not interactive, so its selectable projection receives the pointer', () => {
       // An interactive entity also projects an invisible a11y div with
@@ -21,7 +29,7 @@ describe('selection fidelity of content projections', () => {
       expect(new Text('hello').interactive).toBe(false);
     });
 
-    it('projects the rendered lines and the drawn lineHeight', () => {
+    it('projects visual lines without changing soft-wrap source text', () => {
       const t = new Text('alpha beta gamma delta epsilon zeta eta theta', {
         font: '16px sans-serif',
         maxWidth: 120,
@@ -32,12 +40,12 @@ describe('selection fidelity of content projections', () => {
       // The canvas draws lines this.lineHeight apart; the DOM copy must flow
       // at the same advance or multi-line selection drifts vertically.
       expect(p.lineHeight).toBe(28);
-      // Contract: "the plain text content as rendered (line breaks as \n)" —
-      // the projection carries the engine's actual wrap points so the browser
-      // cannot re-wrap differently than the canvas did.
+      // Visual lines stay independently positioned, but their text plus
+      // separators must reconstruct the original logical source exactly.
       const lines = (t as unknown as { lines: string[] }).lines;
       expect(lines.length).toBeGreaterThan(1);
-      expect(p.text).toBe(lines.join('\n'));
+      expect(p.text).toBe(t.text);
+      expect(projectedSource(p)).toBe(t.text);
       expect(p.lines).toEqual(
         lines.map((text, index) =>
           expect.objectContaining({
@@ -49,6 +57,36 @@ describe('selection fidelity of content projections', () => {
           }),
         ),
       );
+    });
+
+    it('distinguishes hard breaks, soft spaces, and space-less CJK wraps', () => {
+      for (const source of [
+        'alpha\nbeta',
+        'alpha beta gamma delta',
+        '甲乙丙丁戊己',
+        '\nalpha',
+        'alpha\n',
+        'alpha\n\nbeta',
+        '   ',
+      ]) {
+        const projection = new Text(source, {
+          font: '16px sans-serif',
+          maxWidth: 32,
+        }).getContentProjection()!;
+        expect(projection.lines!.length).toBeGreaterThan(0);
+        expect(projection.text).toBe(source);
+        expect(projectedSource(projection)).toBe(source);
+      }
+    });
+
+    it('projects Arabic with embedded LTR text in logical source order', () => {
+      const source = 'مرحبا بك في VectoJS';
+      const projection = new Text(source, {
+        font: '16px serif',
+        maxWidth: 120,
+      }).getContentProjection()!;
+      expect(projection.text).toBe(source);
+      expect(projectedSource(projection)).toBe(source);
     });
 
     it('projects single-line text unchanged', () => {
@@ -74,14 +112,16 @@ describe('selection fidelity of content projections', () => {
       expect(p.lineHeight).toBe(24);
     });
 
-    it('projects actual wrapped lines and exposes the selectable setting', () => {
+    it('projects actual wrapped lines without changing logical source text', () => {
       const rt = new RichText([{ text: 'alpha beta gamma delta epsilon' }], {
         font: '16px sans-serif',
         maxWidth: 80,
         selectable: false,
       });
       const projection = rt.getContentProjection()!;
-      expect(projection.text).toContain('\n');
+      expect(projection.lines!.length).toBeGreaterThan(1);
+      expect(projection.text).toBe('alpha beta gamma delta epsilon');
+      expect(projectedSource(projection)).toBe('alpha beta gamma delta epsilon');
       expect(projection.selectable).toBe(false);
       rt.setSelectable(true);
       expect(rt.getContentProjection()!.selectable).toBe(true);
@@ -99,6 +139,22 @@ describe('selection fidelity of content projections', () => {
       expect(line?.lineHeight).toBe(42);
       expect(line?.runs?.find((run) => run.text === 'large')?.font).toContain('28px');
       expect(line?.runs?.find((run) => run.text === 'large')?.font).toContain('bold');
+    });
+
+    it('preserves logical mixed-run and RTL source across visual rows', () => {
+      const source = 'small office مرحبا VectoJS';
+      const rt = new RichText(
+        [
+          { text: 'small ', style: { fontSize: 12 } },
+          { text: 'office ', style: { bold: true } },
+          { text: 'مرحبا VectoJS', style: { fontSize: 20 } },
+        ],
+        { font: '16px serif', maxWidth: 96 },
+      );
+      const projection = rt.getContentProjection()!;
+      expect(projection.lines!.length).toBeGreaterThan(1);
+      expect(projection.text).toBe(source);
+      expect(projectedSource(projection)).toBe(source);
     });
   });
 
@@ -232,6 +288,29 @@ describe('selection fidelity of content projections', () => {
         text: 'const answer = 42;\nconsole.log(answer);',
         selectable: true,
       });
+      expect(projectedSource(code.getContentProjection()!)).toBe(
+        'const answer = 42;\nconsole.log(answer);',
+      );
+    });
+
+    it('keeps list items and Markdown table cells selectable once in VMT order', () => {
+      const md = new Markdown(
+        '- Item A\n- Item B\n\n1. First\n2. Second\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |',
+        { maxWidth: 400, selectable: true },
+      );
+      const text = descendants(md as unknown as { children: unknown[] })
+        .filter((entity) => entity instanceof RichText)
+        .map((entity) => (entity as RichText).getContentProjection()!.text);
+      expect(text).toEqual([
+        '• Item A',
+        '• Item B',
+        '1. First',
+        '2. Second',
+        'Name',
+        'Value',
+        'Alpha',
+        '1',
+      ]);
     });
 
     it('projects each fenced-code row from the same inset and baseline as canvas', () => {
@@ -253,6 +332,30 @@ describe('selection fidelity of content projections', () => {
       expect(projection.lines).toEqual([
         expect.objectContaining({ text: 'const answer = 42;', x: 18, y: 18, baseline: 18 }),
       ]);
+    });
+
+    it('owns each hard newline on the preceding CodeBlock row', () => {
+      const code = new CodeBlock('const a = 1;\nconsole.log(a);', 'ts', 400, {
+        textColor: '#e2e8f0',
+        headingColor: '#f8fafc',
+        codeColor: '#a5f3fc',
+        codeBgColor: '#0f172a',
+        quoteBorderColor: '#6366f1',
+        quoteTextColor: '#94a3b8',
+        hrColor: '#334155',
+        tableBgColor: '#0f172a',
+        tableHeaderBgColor: '#1e293b',
+        bodyFont: 'sans-serif',
+        codeFont: 'monospace',
+        fontSize: 16,
+      });
+      const lines = code.getContentProjection()!.lines!;
+      expect(
+        (lines[0] as (typeof lines)[number] & { separatorAfter?: string }).separatorAfter,
+      ).toBe('\n');
+      expect(
+        (lines[1] as (typeof lines)[number] & { separatorAfter?: string }).separatorAfter,
+      ).toBeUndefined();
     });
 
     it('styles table headers as bold heading text', () => {

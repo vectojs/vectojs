@@ -266,19 +266,26 @@ export class RichText extends UIComponent {
     return this.spans.map((s) => s.text).join('');
   }
 
-  /** Reconstruct the text in the exact visual line order produced by LayoutEngine. */
-  private projectedText(): string {
-    if (this.result.nodes.length === 0) return this.fullText();
-    let text = '';
-    let lineY = this.result.nodes[0].y;
-    for (const node of this.result.nodes) {
-      if (node.y > lineY + 0.01) {
-        text += '\n';
-        lineY = node.y;
+  /** Rebuild styled DOM runs from a logical UTF-16 source interval. */
+  private logicalRuns(start: number, end: number): Array<{ text: string; font: string }> {
+    const runs: Array<{ text: string; font: string }> = [];
+    let offset = 0;
+    for (const span of this.spans) {
+      const spanEnd = offset + span.text.length;
+      const from = Math.max(start, offset);
+      const to = Math.min(end, spanEnd);
+      if (from < to) {
+        const style =
+          span.style || this.baseStyle ? { ...this.baseStyle, ...span.style } : undefined;
+        const font = this.nodeFont(style, style?.fontSize ?? this.baseFontSize);
+        const text = span.text.slice(from - offset, to - offset);
+        const previous = runs.at(-1);
+        if (previous?.font === font) previous.text += text;
+        else runs.push({ text, font });
       }
-      text += node.char;
+      offset = spanEnd;
     }
-    return text;
+    return runs;
   }
 
   /**
@@ -299,22 +306,27 @@ export class RichText extends UIComponent {
       else previous.push(node);
     }
 
-    return groups.map((nodes) => {
+    const source = this.fullText();
+    return groups.map((nodes, index) => {
       const largest = Math.max(...nodes.map((node) => node.height));
       const font = this.nodeFont(undefined, largest);
-      const runs: Array<{ text: string; font: string }> = [];
-      for (const node of nodes) {
-        const nodeFont = this.nodeFont(node.style, node.height);
-        const previous = runs.at(-1);
-        if (previous && previous.font === nodeFont) previous.text += node.char;
-        else runs.push({ text: node.char, font: nodeFont });
-      }
+      let sourceStart = Math.min(...nodes.map((node) => node.sourceIndex ?? 0));
+      const sourceEnd = Math.max(
+        ...nodes.map((node) => (node.sourceIndex ?? 0) + (node.sourceLength ?? 0)),
+      );
+      if (index === 0) sourceStart = 0;
+      const nextNodes = groups[index + 1];
+      const nextStart = nextNodes
+        ? Math.min(...nextNodes.map((node) => node.sourceIndex ?? sourceEnd))
+        : source.length;
+      const runs = this.logicalRuns(sourceStart, sourceEnd);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
       return {
         nodes,
         projection: {
-          text: nodes.map((node) => node.char).join(''),
+          text: source.slice(sourceStart, sourceEnd),
+          separatorAfter: source.slice(sourceEnd, Math.max(sourceEnd, nextStart)),
           x: Math.min(...nodes.map((node) => node.x)),
           y,
           baseline,
@@ -346,7 +358,7 @@ export class RichText extends UIComponent {
 
   /** Mirror the concatenated span text into the DOM content layer. */
   public override getContentProjection(): ContentProjection | null {
-    const text = this.projectedText();
+    const text = this.fullText();
     if (!text) return null;
     // The engine advances lines by fontSize × 1.5; without matching the DOM
     // line-height, multi-line selection highlights drift off the glyphs.

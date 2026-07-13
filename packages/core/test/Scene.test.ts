@@ -10,6 +10,11 @@ const mockCtx = {
   translate: vi.fn(),
   rotate: vi.fn(),
   fillText: vi.fn(),
+  measureText: vi.fn(() => ({
+    width: 20,
+    actualBoundingBoxAscent: 12,
+    actualBoundingBoxDescent: 4,
+  })),
   beginPath: vi.fn(),
   moveTo: vi.fn(),
   arc: vi.fn(),
@@ -965,6 +970,118 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       const el = contentEl(scene, 'sel')!;
       expect(el.style.pointerEvents).toBe('auto');
       expect(el.style.userSelect).toBe('text');
+      scene.destroy();
+    });
+
+    it('keeps visual-line separators inside positioned line elements', () => {
+      class MultilineContentEntity extends ContentEntity {
+        override getContentProjection() {
+          return {
+            text: 'alpha beta\ngamma',
+            font: '16px sans-serif',
+            selectable: true,
+            lines: [
+              {
+                text: 'alpha',
+                x: 4,
+                y: 6,
+                baseline: 14,
+                lineHeight: 20,
+                separatorAfter: ' ',
+              },
+              {
+                text: 'beta',
+                x: 4,
+                y: 26,
+                baseline: 14,
+                lineHeight: 20,
+                separatorAfter: '\n',
+              },
+              { text: 'gamma', x: 4, y: 46, baseline: 14, lineHeight: 20 },
+            ],
+          };
+        }
+      }
+
+      const scene = makeDomScene();
+      scene.add(new MultilineContentEntity('multiline'));
+      tick(scene);
+
+      const root = contentEl(scene, 'multiline')!;
+      expect(
+        Array.from(root.childNodes).every((child) => child.nodeType === Node.ELEMENT_NODE),
+      ).toBe(true);
+      expect(Array.from(root.children).map((line) => line.textContent)).toEqual([
+        'alpha ',
+        'beta\n',
+        'gamma',
+      ]);
+      expect(root.textContent).toBe('alpha beta\ngamma');
+      scene.destroy();
+    });
+
+    it('keeps the legacy newline fallback inside each preceding line element', () => {
+      class LegacyMultilineContentEntity extends ContentEntity {
+        override getContentProjection() {
+          return {
+            text: 'first\nsecond',
+            font: '16px sans-serif',
+            lines: [
+              { text: 'first', x: 0, y: 0, baseline: 14, lineHeight: 20 },
+              { text: 'second', x: 0, y: 20, baseline: 14, lineHeight: 20 },
+            ],
+          };
+        }
+      }
+
+      const scene = makeDomScene();
+      scene.add(new LegacyMultilineContentEntity('legacy-multiline'));
+      tick(scene);
+
+      const root = contentEl(scene, 'legacy-multiline')!;
+      expect(
+        Array.from(root.childNodes).every((child) => child.nodeType === Node.ELEMENT_NODE),
+      ).toBe(true);
+      expect(Array.from(root.children).map((line) => line.textContent)).toEqual([
+        'first\n',
+        'second',
+      ]);
+      scene.destroy();
+    });
+
+    it('merges a run-based separator into the final run text node', () => {
+      class RunContentEntity extends ContentEntity {
+        override getContentProjection() {
+          return {
+            text: 'small large\nnext',
+            font: '16px sans-serif',
+            lines: [
+              {
+                text: 'small large',
+                x: 0,
+                y: 0,
+                baseline: 14,
+                lineHeight: 20,
+                runs: [
+                  { text: 'small ', font: '12px sans-serif' },
+                  { text: 'large', font: '20px sans-serif' },
+                ],
+                separatorAfter: '\n',
+              },
+              { text: 'next', x: 0, y: 20, baseline: 14, lineHeight: 20 },
+            ],
+          };
+        }
+      }
+
+      const scene = makeDomScene();
+      scene.add(new RunContentEntity('run-multiline'));
+      tick(scene);
+
+      const firstLine = contentEl(scene, 'run-multiline')!.children[0] as HTMLElement;
+      expect(firstLine.childNodes).toHaveLength(2);
+      expect(firstLine.children[1].childNodes).toHaveLength(1);
+      expect(firstLine.children[1].textContent).toBe('large\n');
       scene.destroy();
     });
 

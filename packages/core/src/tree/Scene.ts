@@ -1062,6 +1062,8 @@ export class Scene {
       s.padding = '0';
       // The canvas owns the pixels; the DOM node only carries the text.
       s.color = 'transparent';
+      s.forcedColorAdjust = 'none';
+      s.setProperty('-webkit-text-fill-color', 'transparent');
       s.whiteSpace = 'pre-wrap';
       s.overflow = 'hidden';
       s.zIndex = '0'; // beneath the interactive a11y elements
@@ -1093,6 +1095,7 @@ export class Scene {
           const lineFont = line.font ?? projection.font ?? '';
           const lineHeight = line.lineHeight ?? projection.lineHeight ?? 16;
           lineElement.style.position = 'absolute';
+          lineElement.dir = 'auto';
           lineElement.style.left = `${line.x}px`;
           lineElement.style.top = `${line.y + line.baseline - cssLineBoxBaseline(lineFont, lineHeight)}px`;
           lineElement.style.whiteSpace = 'pre';
@@ -1101,10 +1104,16 @@ export class Scene {
           // Set the explicit line box afterwards, or selection geometry drifts
           // differently in each browser for mixed-size text.
           lineElement.style.lineHeight = `${lineHeight}px`;
+          const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
           if (line.runs && line.runs.length > 0) {
-            for (const run of line.runs) {
+            for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
+              const run = line.runs[runIndex];
               const runElement = document.createElement('span');
-              runElement.textContent = run.text;
+              // Keep the separator in the final logical Text node. Firefox
+              // emits a duplicate Range rectangle when the same positioned
+              // line contains a second, separator-only Text node.
+              runElement.textContent =
+                run.text + (runIndex === line.runs.length - 1 ? separator : '');
               if (run.font) runElement.style.font = run.font;
               // A run-level font shorthand also resets line-height. Preserve
               // the visual line's shared baseline for every mixed-size run.
@@ -1112,10 +1121,9 @@ export class Scene {
               lineElement.appendChild(runElement);
             }
           } else {
-            lineElement.textContent = line.text;
+            lineElement.textContent = line.text + separator;
           }
           el.appendChild(lineElement);
-          if (index < lines.length - 1) el.appendChild(document.createTextNode('\n'));
         }
         el.dataset.vectoProjectionLines = signature;
       }

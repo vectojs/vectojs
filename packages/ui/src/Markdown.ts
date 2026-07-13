@@ -173,7 +173,7 @@ const DEFAULT_THEME: Required<MarkdownTheme> = {
   tableBgColor: 'rgba(15, 15, 25, 0.4)',
   tableHeaderBgColor: 'rgba(255, 255, 255, 0.08)',
   bodyFont: 'Inter, system-ui, sans-serif',
-  codeFont: '"JetBrains Mono", "Fira Code", monospace',
+  codeFont: 'ui-monospace, "JetBrains Mono", "Fira Code", monospace',
   fontSize: 16,
 };
 
@@ -546,6 +546,7 @@ export class CodeBlock extends UIComponent {
 
   public override getContentProjection(): ContentProjection | null {
     if (!this.source) return null;
+    const sourceLines = this.source.split('\n');
     return {
       text: this.source,
       font: this.codeFont,
@@ -553,8 +554,9 @@ export class CodeBlock extends UIComponent {
       // Every row is absolutely positioned from the same local coordinates as
       // render(). A single pre-wrap DOM text node would introduce browser
       // wrapping for long source lines that canvas intentionally keeps intact.
-      lines: this.source.split('\n').map((text, row) => ({
+      lines: sourceLines.map((text, row) => ({
         text,
+        separatorAfter: row < sourceLines.length - 1 ? '\n' : undefined,
         x: this.pad,
         y: this.pad + row * this.lineH,
         baseline: this.lineH * 0.75,

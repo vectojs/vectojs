@@ -93,6 +93,13 @@ export interface ContentProjectionRun {
 export interface ContentProjectionLine {
   /** Text for browser find-in-page and native selection. */
   text: string;
+  /**
+   * Logical source content between this visual line and the next one. Use a
+   * space for a consumed soft-wrap separator, `"\n"` for a hard break, or an
+   * empty string for a space-less wrap. Omit to retain the legacy newline
+   * fallback between non-final lines.
+   */
+  separatorAfter?: string;
   /** Local origin of the visual line inside the entity. */
   x: number;
   y: number;
@@ -107,7 +114,7 @@ export interface ContentProjectionLine {
 }
 
 export interface ContentProjection {
-  /** The plain text content as rendered (line breaks as `\n`). */
+  /** The logical source text exposed to find, selection, copy, and assistive technology. */
   text: string;
   /** CSS font shorthand matching the drawn glyphs, e.g. `'24px sans-serif'`. */
   font?: string;

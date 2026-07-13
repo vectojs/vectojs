@@ -42,9 +42,15 @@ jobs:
           cd ../devtools && bun run build
           cd ../three && bun run build
           cd ../video-exporter && bun run build
-      - name: HiDPI e2e (deviceScaleFactor 2)
-        # Uses the runner's preinstalled Chrome; the script resolves
-        # PUPPETEER_EXECUTABLE_PATH → /usr/bin/chromium → /usr/bin/google-chrome.
+      - name: Install Firefox for cross-browser text projection tests
+        id: setup-firefox
+        uses: browser-actions/setup-firefox@v1
+      - name: Browser e2e (HiDPI, selection, RTL, and font substitution)
+        # Chrome comes from the hosted runner. Firefox is resolved from the
+        # setup action output, then the suite also exercises Noto Serif and
+        # forced-color profiles.
+        env:
+          FIREFOX_EXECUTABLE_PATH: ${{ steps.setup-firefox.outputs.firefox-path }}
         run: cd packages/core && bun run test:e2e
       - name: DevTools event trace e2e
         run: cd packages/devtools && bun run test:e2e
