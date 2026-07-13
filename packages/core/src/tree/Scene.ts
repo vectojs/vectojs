@@ -746,14 +746,31 @@ export class Scene {
         });
 
         const capEl = el;
+        const releasePointer = (event: PointerEvent): void => {
+          if (typeof capEl.releasePointerCapture !== 'function') return;
+          if (
+            typeof capEl.hasPointerCapture === 'function' &&
+            !capEl.hasPointerCapture(event.pointerId)
+          ) {
+            return;
+          }
+          try {
+            capEl.releasePointerCapture(event.pointerId);
+          } catch (error) {
+            if (!(error instanceof DOMException) || error.name !== 'NotFoundError') throw error;
+          }
+        };
         el.addEventListener('pointerdown', (e) => {
           if (typeof capEl.setPointerCapture === 'function') capEl.setPointerCapture(e.pointerId);
           node.dispatchEvent(new VectoJSEvent('pointerdown', node, e));
         });
         el.addEventListener('pointerup', (e) => {
-          if (typeof capEl.releasePointerCapture === 'function')
-            capEl.releasePointerCapture(e.pointerId);
+          releasePointer(e);
           node.dispatchEvent(new VectoJSEvent('pointerup', node, e));
+        });
+        el.addEventListener('pointercancel', (e) => {
+          releasePointer(e);
+          node.dispatchEvent(new VectoJSEvent('pointercancel', node, e));
         });
         el.addEventListener('pointermove', (e) =>
           node.dispatchEvent(new VectoJSEvent('pointermove', node, e)),

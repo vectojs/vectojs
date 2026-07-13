@@ -41,7 +41,14 @@ export class DOMPortalEntity extends Entity {
         this.resizeObserver.observe(this.domElement);
       }
 
-      const events: VectoEvent[] = ['click', 'pointerdown', 'pointerup', 'pointermove', 'wheel'];
+      const events: VectoEvent[] = [
+        'click',
+        'pointerdown',
+        'pointerup',
+        'pointercancel',
+        'pointermove',
+        'wheel',
+      ];
       for (const type of events) {
         const handler = (e: any) => {
           this.dispatchEvent(new VectoJSEvent(type, this, e));

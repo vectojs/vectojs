@@ -130,6 +130,38 @@ describe('EventTrace', () => {
     host.destroy();
   });
 
+  it('records projected pointer cancellation for gesture rollback diagnostics', async () => {
+    const host = makeHost();
+    const target = new Box('cancel-target');
+    target.setPosition(10, 12);
+    host.add(target);
+    syncA11y(host);
+    const trace = createEventTrace(host);
+
+    host.getA11yElement(target.id)!.dispatchEvent(
+      new MouseEvent('pointercancel', {
+        bubbles: true,
+        clientX: 30,
+        clientY: 34,
+      }),
+    );
+    await Promise.resolve();
+
+    expect(trace.entries).toEqual([
+      expect.objectContaining({
+        type: 'pointercancel',
+        source: 'a11y',
+        targetId: target.id,
+        sceneX: 30,
+        sceneY: 34,
+        localX: 20,
+        localY: 22,
+      }),
+    ]);
+    trace.destroy();
+    host.destroy();
+  });
+
   it('picks canvas events and evicts the oldest records at capacity', async () => {
     const host = makeHost();
     const target = new Box('canvas-target');

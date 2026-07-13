@@ -38,6 +38,16 @@ describe('DOMPortalEntity', () => {
     expect(clickHandler).toHaveBeenCalled();
   });
 
+  it('forwards native pointer cancellation into the Vecto event tree', () => {
+    const div = document.createElement('div');
+    const portal = new DOMPortalEntity(div, 200, 100);
+    const cancelHandler = vi.fn();
+    portal.on('pointercancel', cancelHandler);
+
+    div.dispatchEvent(new Event('pointercancel', { bubbles: true }));
+    expect(cancelHandler).toHaveBeenCalledOnce();
+  });
+
   it('rejects child entities because portal nodes are leaves', () => {
     const portal = new DOMPortalEntity(document.createElement('div'));
     const child = new Entity('child');

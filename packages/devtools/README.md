@@ -36,7 +36,8 @@ trace.destroy();
 Each event records its routing surface as `source: "canvas"`, `"a11y"`, `"content"`, or
 `"document"`. The `content` source identifies browser input that started on a selectable static-text
 projection; `targetId`, `targetPath`, scene/local coordinates, and the finalized `defaultPrevented`
-value make shortcut and selection conflicts reproducible without inspecting pixels.
+value make shortcut and selection conflicts reproducible without inspecting pixels. Pointer traces
+include `pointercancel`, so canceled drag/selection sessions remain diagnosable.
 
 ## Visual inspector
 

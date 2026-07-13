@@ -4,7 +4,7 @@ import { pickInScene } from './model';
 
 /** Browser inputs observed by the generic development-time routing trace. */
 export type EventTraceType =
-  'pointerdown' | 'pointerup' | 'pointermove' | 'wheel' | 'keydown' | 'keyup';
+  'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove' | 'wheel' | 'keydown' | 'keyup';
 
 /** Where the trace found the routed event. */
 export type EventTraceSource = 'a11y' | 'content' | 'canvas' | 'document';
@@ -46,6 +46,7 @@ type EventTraceListener = (entry: EventTraceEntry) => void;
 const TRACE_TYPES: readonly EventTraceType[] = [
   'pointerdown',
   'pointerup',
+  'pointercancel',
   'pointermove',
   'wheel',
   'keydown',
