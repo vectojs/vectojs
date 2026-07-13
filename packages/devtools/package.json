@@ -26,6 +26,7 @@
   "scripts": {
     "build": "(cd ../core && bun run build) && (cd ../ui && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/headless.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:headless-entry",
     "test": "vitest run",
+    "test:e2e": "bun e2e/event-trace.e2e.ts",
     "verify:headless-entry": "node scripts/verify-headless-entry.mjs"
   },
   "peerDependencies": {
@@ -40,6 +41,7 @@
   "devDependencies": {
     "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
+    "puppeteer-core": "^25.3.0",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10",
     "jsdom": "^29.1.1"

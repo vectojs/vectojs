@@ -43,6 +43,11 @@ export interface EventTraceOptions {
 
 type EventTraceListener = (entry: EventTraceEntry) => void;
 
+interface PendingTrace {
+  prevented: boolean;
+  finalize(): void;
+}
+
 const TRACE_TYPES: readonly EventTraceType[] = [
   'pointerdown',
   'pointerup',
@@ -57,15 +62,24 @@ const isKeyboardType = (type: EventTraceType): boolean => type === 'keydown' || 
 
 /**
  * Observes browser inputs without adding VMT listeners or changing dispatch.
- * Records are finalized in a microtask so `defaultPrevented` reflects all app
- * handlers that ran during the browser event's target and bubble phases.
+ * Target and document-bubble observers sample `defaultPrevented` after projected
+ * VMT routing. Document-bubble records finalize in a microtask; a timer handles
+ * native propagation stops without running subscribers inside event dispatch.
  */
 export class EventTrace {
   private readonly capacity: number;
   private readonly includeGlobalKeyboard: boolean;
   private readonly records: EventTraceEntry[] = [];
   private readonly listeners = new Set<EventTraceListener>();
+  private readonly pendingDefaults = new WeakMap<Event, PendingTrace>();
   private destroyed = false;
+
+  private readonly onEventBubbled = (event: Event): void => {
+    const pending = this.pendingDefaults.get(event);
+    if (!pending) return;
+    pending.prevented ||= event.defaultPrevented;
+    queueMicrotask(pending.finalize);
+  };
 
   private readonly onEvent = (event: Event): void => {
     const type = event.type as EventTraceType;
@@ -73,13 +87,28 @@ export class EventTrace {
     const context = this.resolveContext(event, type);
     if (!context) return;
 
-    queueMicrotask(() => {
-      if (this.destroyed) return;
-      const entry = this.createEntry(event, type, context);
-      this.records.push(entry);
-      if (this.records.length > this.capacity) this.records.shift();
-      for (const listener of this.listeners) listener(entry);
-    });
+    const target = event.target;
+    let finalized = false;
+    const pending: PendingTrace = {
+      prevented: event.defaultPrevented,
+      finalize: () => {
+        if (finalized) return;
+        finalized = true;
+        target?.removeEventListener(type, observeTargetResult);
+        this.pendingDefaults.delete(event);
+        if (this.destroyed) return;
+        const entry = this.createEntry(event, type, context, pending.prevented);
+        this.records.push(entry);
+        if (this.records.length > this.capacity) this.records.shift();
+        for (const listener of this.listeners) listener(entry);
+      },
+    };
+    const observeTargetResult = (): void => {
+      pending.prevented ||= event.defaultPrevented;
+    };
+    this.pendingDefaults.set(event, pending);
+    target?.addEventListener(type, observeTargetResult, { once: true });
+    setTimeout(pending.finalize, 0);
   };
 
   constructor(
@@ -89,7 +118,10 @@ export class EventTrace {
     this.capacity = Math.max(1, Math.floor(options.capacity ?? 50));
     this.includeGlobalKeyboard = options.includeGlobalKeyboard ?? true;
     if (typeof document === 'undefined') return;
-    for (const type of TRACE_TYPES) document.addEventListener(type, this.onEvent, true);
+    for (const type of TRACE_TYPES) {
+      document.addEventListener(type, this.onEvent, true);
+      document.addEventListener(type, this.onEventBubbled);
+    }
   }
 
   /** Retained records ordered from oldest to newest. */
@@ -114,7 +146,10 @@ export class EventTrace {
     if (this.destroyed) return;
     this.destroyed = true;
     if (typeof document !== 'undefined') {
-      for (const type of TRACE_TYPES) document.removeEventListener(type, this.onEvent, true);
+      for (const type of TRACE_TYPES) {
+        document.removeEventListener(type, this.onEvent, true);
+        document.removeEventListener(type, this.onEventBubbled);
+      }
     }
     this.listeners.clear();
   }
@@ -157,7 +192,12 @@ export class EventTrace {
     return { source, target: entity };
   }
 
-  private createEntry(event: Event, type: EventTraceType, context: TraceContext): EventTraceEntry {
+  private createEntry(
+    event: Event,
+    type: EventTraceType,
+    context: TraceContext,
+    defaultPrevented: boolean,
+  ): EventTraceEntry {
     const pointer = scenePointOf(this.scene, event);
     const local =
       context.target && pointer ? context.target.worldToLocal(pointer.x, pointer.y) : null;
@@ -180,7 +220,7 @@ export class EventTrace {
         meta: keyboard.metaKey,
       },
       ...(type === 'wheel' ? { deltaX: wheel.deltaX, deltaY: wheel.deltaY } : {}),
-      defaultPrevented: event.defaultPrevented,
+      defaultPrevented,
     });
   }
 }
