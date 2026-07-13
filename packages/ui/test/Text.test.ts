@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { IRenderer } from '@vectojs/core';
 import { Text } from '../src/Text';
 
@@ -31,6 +31,14 @@ describe('Text streaming (流式打字机)', () => {
     t.append('\nline2');
     t.render(r);
     expect(lines).toEqual(['line1', 'line2']);
+  });
+
+  it('wakes an on-demand scene after a streamed append', () => {
+    const t = new Text('first');
+    const markDirty = vi.fn();
+    (t as unknown as { _scene: { markDirty: () => void } })._scene = { markDirty };
+    t.append(' second');
+    expect(markDirty).toHaveBeenCalledOnce();
   });
 
   it('exposes its text for DOM content projection', () => {

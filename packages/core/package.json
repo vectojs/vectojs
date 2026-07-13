@@ -54,7 +54,7 @@
   "scripts": {
     "build": "node scripts/build-worker.js && tsup && tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:e2e": "bun e2e/hidpi.e2e.ts"
+    "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts"
   },
   "dependencies": {},
   "devDependencies": {

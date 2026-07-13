@@ -152,6 +152,7 @@ export class RichText extends UIComponent {
   public setSpans(spans: StyledSpan[]): this {
     this.spans = spans;
     this.result = this.layout();
+    this.scene?.markDirty();
     return this;
   }
 
@@ -160,6 +161,7 @@ export class RichText extends UIComponent {
     this.maxWidth = maxWidth;
     this.engine.maxWidth = maxWidth;
     this.result = this.layout();
+    this.scene?.markDirty();
     return this;
   }
 
@@ -167,6 +169,7 @@ export class RichText extends UIComponent {
   public setExclusions(exclusions: ExclusionRect[]): this {
     this.exclusions = exclusions;
     this.result = this.layout();
+    this.scene?.markDirty();
     return this;
   }
 
@@ -178,6 +181,7 @@ export class RichText extends UIComponent {
   public appendSpans(spans: StyledSpan[]): this {
     this.spans = [...this.spans, ...spans];
     this.result = this.layout();
+    this.scene?.markDirty();
     return this;
   }
 
@@ -277,6 +281,58 @@ export class RichText extends UIComponent {
     return text;
   }
 
+  /**
+   * Group the laid-out glyphs into the same visual lines the canvas draws.
+   * Each line keeps its real local origin and run fonts, so the semantic DOM
+   * never has to re-flow mixed-size markdown differently from the canvas.
+   */
+  private visualLineGroups(): Array<{
+    nodes: LayoutResult['nodes'];
+    projection: NonNullable<ContentProjection['lines']>[number];
+  }> {
+    const groups: LayoutResult['nodes'][] = [];
+    for (const node of this.result.nodes) {
+      const previous = groups.at(-1);
+      const baseline = node.y + node.height * 0.8;
+      const previousBaseline = previous ? previous[0].y + previous[0].height * 0.8 : Number.NaN;
+      if (!previous || Math.abs(previousBaseline - baseline) > 0.01) groups.push([node]);
+      else previous.push(node);
+    }
+
+    return groups.map((nodes) => {
+      const largest = Math.max(...nodes.map((node) => node.height));
+      const font = this.nodeFont(undefined, largest);
+      const runs: Array<{ text: string; font: string }> = [];
+      for (const node of nodes) {
+        const nodeFont = this.nodeFont(node.style, node.height);
+        const previous = runs.at(-1);
+        if (previous && previous.font === nodeFont) previous.text += node.char;
+        else runs.push({ text: node.char, font: nodeFont });
+      }
+      const y = Math.min(...nodes.map((node) => node.y));
+      const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
+      return {
+        nodes,
+        projection: {
+          text: nodes.map((node) => node.char).join(''),
+          x: Math.min(...nodes.map((node) => node.x)),
+          y,
+          baseline,
+          font,
+          // LayoutEngine advances a paragraph by its largest run, not the
+          // component default. Keep the native selection box on that same
+          // rhythm when a heading or inline large text shares a line.
+          lineHeight: largest * 1.5,
+          runs,
+        },
+      };
+    });
+  }
+
+  private projectedLines(): NonNullable<ContentProjection['lines']> {
+    return this.visualLineGroups().map(({ projection }) => projection);
+  }
+
   /** Build the CSS font shorthand for a node's style. */
   private nodeFont(style: TextStyle | undefined, size: number): string {
     const italic = style?.italic ? 'italic ' : '';
@@ -298,25 +354,28 @@ export class RichText extends UIComponent {
       text,
       font: this.font,
       lineHeight: this.baseFontSize * 1.5,
+      lines: this.projectedLines(),
       selectable: this.selectable,
     };
   }
 
   public render(r: IRenderer): void {
-    for (const node of this.result.nodes) {
-      if (node.char.trim().length === 0) continue;
-      const size = node.height;
-      const font = this.nodeFont(node.style, size);
-      const isLink = !!node.style?.href;
-      const color = node.style?.color ?? (isLink ? this.linkColor : this.color);
-      const baseline = node.y + size * 0.8; // node.y is the top; fillText y is the baseline
-      r.fillText(node.char, node.x, baseline, font, color);
-      if (isLink) {
-        const uy = baseline + 2;
-        r.beginPath();
-        r.moveTo(node.x, uy);
-        r.lineTo(node.x + node.width, uy);
-        r.stroke(color, 1);
+    for (const { nodes, projection: line } of this.visualLineGroups()) {
+      for (const node of nodes) {
+        if (node.char.trim().length === 0) continue;
+        const size = node.height;
+        const font = this.nodeFont(node.style, size);
+        const isLink = !!node.style?.href;
+        const color = node.style?.color ?? (isLink ? this.linkColor : this.color);
+        const baseline = line.y + line.baseline;
+        r.fillText(node.char, node.x, baseline, font, color);
+        if (isLink) {
+          const uy = baseline + 2;
+          r.beginPath();
+          r.moveTo(node.x, uy);
+          r.lineTo(node.x + node.width, uy);
+          r.stroke(color, 1);
+        }
       }
     }
   }

@@ -3,3 +3,4 @@ export * from './BidiResolver';
 export * from './MSDFFont';
 export * from './MSDFTextEntity';
 export * from './SVGEntity';
+export * from './Typography';

@@ -77,6 +77,14 @@ describe('RichText', () => {
     expect(rt.getA11yAttributes().label).toBe('ab');
   });
 
+  it('wakes an on-demand scene after streaming styled spans', () => {
+    const rt = new RichText([{ text: 'first' }]);
+    const markDirty = vi.fn();
+    (rt as unknown as { _scene: { markDirty: () => void } })._scene = { markDirty };
+    rt.appendSpans([{ text: ' second', style: { bold: true } }]);
+    expect(markDirty).toHaveBeenCalledOnce();
+  });
+
   it('paints link runs in the link color by default', () => {
     const { r, calls } = recordingRenderer();
     new RichText([{ text: 'L', style: { href: 'https://x.dev' } }], {

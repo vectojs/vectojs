@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer, LayoutEngine } from '@vectojs/core';
+import { A11yAttributes, cssLineBoxBaseline, IRenderer, LayoutEngine } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText, fontSizePx } from './measure';
 
@@ -108,6 +108,11 @@ export class Input extends UIComponent {
       placeholder: this.placeholder,
       value: this.value,
       label: this.placeholder,
+      textInputStyle: {
+        font: this.font,
+        lineHeight: this.height - 2 * this.padding,
+        padding: this.padding,
+      },
     };
   }
 
@@ -241,11 +246,12 @@ export class Input extends UIComponent {
 
     this.updateScroll();
     const innerWidth = this.width - 2 * this.padding;
-    const baseline = this.height * 0.66;
+    const editorLineHeight = this.height - 2 * this.padding;
+    const baseline = this.padding + cssLineBoxBaseline(this.font, editorLineHeight);
     const textOriginX = this.padding - this.scrollLeft;
 
     r.save();
-    r.clip(this.padding, 0, innerWidth, this.height);
+    r.clip(this.padding, this.padding, innerWidth, editorLineHeight);
 
     // Selection highlight (drawn behind the text, even when not focused).
     if (this.selectionStart !== this.selectionEnd) {
@@ -256,7 +262,7 @@ export class Input extends UIComponent {
         const sx = textOriginX + this.charOffset(a);
         const ex = textOriginX + this.charOffset(b);
         r.beginPath();
-        r.roundRect(sx, this.height * 0.2, ex - sx, this.height * 0.6, 0);
+        r.roundRect(sx, this.padding, ex - sx, editorLineHeight, 0);
         r.fill(this.selectionColor);
       } else {
         const layout = this.getLayout();
@@ -265,7 +271,7 @@ export class Input extends UIComponent {
           const start = node.sourceIndex ?? 0;
           const len = node.sourceLength ?? 0;
           if (!(start + len <= a || start >= b)) {
-            r.roundRect(textOriginX + node.x, this.height * 0.2, node.width, this.height * 0.6, 0);
+            r.roundRect(textOriginX + node.x, this.padding, node.width, editorLineHeight, 0);
           }
         }
         r.fill(this.selectionColor);
@@ -292,8 +298,8 @@ export class Input extends UIComponent {
     if (this.focused && this.caretOn()) {
       const cx = this.caretScreenX();
       r.beginPath();
-      r.moveTo(cx, this.height * 0.2);
-      r.lineTo(cx, this.height * 0.8);
+      r.moveTo(cx, this.padding + 2);
+      r.lineTo(cx, this.padding + editorLineHeight - 2);
       r.stroke(this.color, 1);
     }
 

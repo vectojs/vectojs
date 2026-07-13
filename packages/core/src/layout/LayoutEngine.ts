@@ -915,8 +915,11 @@ export class LayoutEngine {
           currentLineNodes.push({
             char: glyph.char,
             x: currentX,
-            // Drop smaller glyphs to the shared baseline (no-op when gfs === pMax).
-            y: currentY + (pMax - gfs),
+            // Canvas text is positioned by baseline, while `y` is the local
+            // top used by the renderer. Offset smaller runs by their baseline
+            // delta, not by their full em-box delta, so mixed-size glyphs share
+            // one real baseline in every Canvas 2D implementation.
+            y: currentY + (pMax - gfs) * 0.8,
             width: charWidth,
             height: gfs,
             style: glyph.style,

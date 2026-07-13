@@ -533,6 +533,7 @@ export class CodeBlock extends UIComponent {
     if (lang !== undefined) this.lang = lang;
     this.source = code;
     this.buildLines(code);
+    this.scene?.markDirty();
     return this;
   }
 
@@ -549,6 +550,17 @@ export class CodeBlock extends UIComponent {
       text: this.source,
       font: this.codeFont,
       lineHeight: this.lineH,
+      // Every row is absolutely positioned from the same local coordinates as
+      // render(). A single pre-wrap DOM text node would introduce browser
+      // wrapping for long source lines that canvas intentionally keeps intact.
+      lines: this.source.split('\n').map((text, row) => ({
+        text,
+        x: this.pad,
+        y: this.pad + row * this.lineH,
+        baseline: this.lineH * 0.75,
+        font: this.codeFont,
+        lineHeight: this.lineH,
+      })),
       selectable: this.selectable,
     };
   }

@@ -816,6 +816,8 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     class ContentEntity extends SpyEntity {
       public projText: string | null = 'Hello VectoJS';
       public projSelectable = false;
+      public projContentX = 0;
+      public projContentY = 0;
       constructor(id: string) {
         super(id, null);
         this.width = 200;
@@ -828,6 +830,8 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
               text: this.projText,
               font: '24px sans-serif',
               selectable: this.projSelectable,
+              contentX: this.projContentX,
+              contentY: this.projContentY,
             };
       }
     }
@@ -862,6 +866,43 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect(el.style.top).toBe('50px');
       expect(el.style.width).toBe('200px');
       expect(el.getAttribute('aria-hidden')).toBeNull(); // static text IS the SR content
+      scene.destroy();
+    });
+
+    it('places projected text at its declared local content origin', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('inset');
+      e.setPosition(30, 50);
+      e.projContentX = 18;
+      e.projContentY = 12;
+      scene.add(e);
+
+      tick(scene);
+
+      const el = contentEl(scene, 'inset')!;
+      expect(el.style.left).toBe('48px');
+      expect(el.style.top).toBe('62px');
+      scene.destroy();
+    });
+
+    it('maps a projected local content origin through the entity transform', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('scaled-inset');
+      e.setPosition(30, 50);
+      e.scaleX = 2;
+      e.scaleY = 3;
+      e.projContentX = 18;
+      e.projContentY = 12;
+      scene.add(e);
+
+      tick(scene);
+
+      const el = contentEl(scene, 'scaled-inset')!;
+      // The visible glyph origin is a local point. Moving the root by an
+      // unscaled inset makes its transparent selection surface diverge under
+      // scale/rotation even when the untransformed case looks correct.
+      expect(el.style.left).toBe('66px');
+      expect(el.style.top).toBe('86px');
       scene.destroy();
     });
 

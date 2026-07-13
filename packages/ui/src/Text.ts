@@ -109,6 +109,17 @@ export class Text extends UIComponent {
       text: this.lines.length > 1 ? this.lines.join('\n') : this.text,
       font: this.font,
       lineHeight: this.lineHeight,
+      // The canvas has already decided the exact line breaks. Project visual
+      // rows independently so browser whitespace/wrapping can never create a
+      // different selection grid at a fractional zoom level.
+      lines: this.lines.map((text, index) => ({
+        text,
+        x: 0,
+        y: index * this.lineHeight,
+        baseline: this.lineHeight * 0.8,
+        font: this.font,
+        lineHeight: this.lineHeight,
+      })),
       selectable: this.selectable,
     };
   }
@@ -124,6 +135,7 @@ export class Text extends UIComponent {
     this.text = text;
     this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
     this.applyLayout();
+    this.scene?.markDirty();
     return this;
   }
 
@@ -149,6 +161,7 @@ export class Text extends UIComponent {
     this.maxWidth = maxWidth;
     this.engine.maxWidth = maxWidth;
     this.applyLayout();
+    this.scene?.markDirty();
     return this;
   }
 

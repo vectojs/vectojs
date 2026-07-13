@@ -99,11 +99,13 @@ describe('layoutPrepared — styled output', () => {
     );
     const A = result.nodes.find((n) => n.char === 'A')!;
     const b = result.nodes.find((n) => n.char === 'b')!;
-    // Line max size = 40 → A sits at the top (y=0); b is dropped by (40-20)=20.
+    // Canvas `fillText` receives a baseline. The two top origins may differ,
+    // but their rendered baselines (y + 0.8 × glyph height) must agree.
     expect(A.y).toBeCloseTo(0);
-    expect(b.y).toBeCloseTo(20);
+    expect(b.y).toBeCloseTo(16);
     expect(A.height).toBeCloseTo(40);
     expect(b.height).toBeCloseTo(20);
+    expect(A.y + A.height * 0.8).toBeCloseTo(b.y + b.height * 0.8);
   });
 
   it('leaves the plain (unstyled) layout byte-for-byte unchanged', () => {

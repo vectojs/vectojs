@@ -38,6 +38,17 @@ describe('selection fidelity of content projections', () => {
       const lines = (t as unknown as { lines: string[] }).lines;
       expect(lines.length).toBeGreaterThan(1);
       expect(p.text).toBe(lines.join('\n'));
+      expect(p.lines).toEqual(
+        lines.map((text, index) =>
+          expect.objectContaining({
+            text,
+            x: 0,
+            y: index * 28,
+            baseline: 28 * 0.8,
+            lineHeight: 28,
+          }),
+        ),
+      );
     });
 
     it('projects single-line text unchanged', () => {
@@ -74,6 +85,20 @@ describe('selection fidelity of content projections', () => {
       expect(projection.selectable).toBe(false);
       rt.setSelectable(true);
       expect(rt.getContentProjection()!.selectable).toBe(true);
+    });
+
+    it('projects mixed-size runs with their rendered font and line baseline', () => {
+      const rt = new RichText(
+        [{ text: 'base ' }, { text: 'large', style: { bold: true, fontSize: 28 } }],
+        { font: '16px sans-serif' },
+      );
+      const line = rt.getContentProjection()!.lines?.[0];
+      expect(line?.baseline).toBeGreaterThan(0);
+      // LayoutEngine advances a rich line by its largest font size × 1.5.
+      // The DOM line box must retain that same advance for selection geometry.
+      expect(line?.lineHeight).toBe(42);
+      expect(line?.runs?.find((run) => run.text === 'large')?.font).toContain('28px');
+      expect(line?.runs?.find((run) => run.text === 'large')?.font).toContain('bold');
     });
   });
 
@@ -207,6 +232,27 @@ describe('selection fidelity of content projections', () => {
         text: 'const answer = 42;\nconsole.log(answer);',
         selectable: true,
       });
+    });
+
+    it('projects each fenced-code row from the same inset and baseline as canvas', () => {
+      const code = new CodeBlock('const answer = 42;', 'ts', 400, {
+        textColor: '#e2e8f0',
+        headingColor: '#f8fafc',
+        codeColor: '#a5f3fc',
+        codeBgColor: '#0f172a',
+        quoteBorderColor: '#6366f1',
+        quoteTextColor: '#94a3b8',
+        hrColor: '#334155',
+        tableBgColor: '#0f172a',
+        tableHeaderBgColor: '#1e293b',
+        bodyFont: 'sans-serif',
+        codeFont: 'monospace',
+        fontSize: 16,
+      });
+      const projection = code.getContentProjection()!;
+      expect(projection.lines).toEqual([
+        expect.objectContaining({ text: 'const answer = 42;', x: 18, y: 18, baseline: 18 }),
+      ]);
     });
 
     it('styles table headers as bold heading text', () => {

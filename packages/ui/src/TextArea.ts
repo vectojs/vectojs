@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer, LayoutEngine } from '@vectojs/core';
+import { A11yAttributes, cssLineBoxBaseline, IRenderer, LayoutEngine } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText, fontSizePx } from './measure';
 
@@ -229,6 +229,11 @@ export class TextArea extends UIComponent {
       placeholder: this.placeholder,
       value: this.value,
       label: this.placeholder,
+      textInputStyle: {
+        font: this.font,
+        lineHeight: this.lineHeight(),
+        padding: this.padding,
+      },
     };
   }
 
@@ -414,7 +419,6 @@ export class TextArea extends UIComponent {
 
     const lines = this.computeLines();
     const lh = this.lineHeight();
-    const fs = fontSizePx(this.font);
     const innerW = this.innerWidth();
     const innerH = this.height - 2 * this.padding;
 
@@ -423,13 +427,20 @@ export class TextArea extends UIComponent {
 
     const originX = this.padding;
     const originY = this.padding - this.scrollTop;
+    const baselineOffset = cssLineBoxBaseline(this.font, lh);
 
     r.save();
     r.clip(this.padding, this.padding, innerW, innerH);
 
     // Placeholder (only when empty).
     if (!this.value && this.placeholder) {
-      r.fillText(this.placeholder, originX, originY + fs, this.font, this.placeholderColor);
+      r.fillText(
+        this.placeholder,
+        originX,
+        originY + baselineOffset,
+        this.font,
+        this.placeholderColor,
+      );
     }
 
     // Selection highlight across lines (drawn behind the text).
@@ -470,7 +481,13 @@ export class TextArea extends UIComponent {
     // Text, line by line.
     if (this.value) {
       for (let i = 0; i < lines.length; i++) {
-        r.fillText(lines[i].text, originX, originY + i * lh + fs, this.font, this.color);
+        r.fillText(
+          lines[i].text,
+          originX,
+          originY + i * lh + baselineOffset,
+          this.font,
+          this.color,
+        );
       }
     }
 

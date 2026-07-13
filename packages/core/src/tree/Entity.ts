@@ -83,6 +83,29 @@ export interface BatchRect {
  * find-in-page, screen readers, SEO crawlers, translation, `#:~:text=`
  * fragments — operates on canvas-rendered text.
  */
+export interface ContentProjectionRun {
+  /** Text written with one CSS font inside a projected visual line. */
+  text: string;
+  /** CSS font shorthand matching the canvas run. */
+  font?: string;
+}
+
+export interface ContentProjectionLine {
+  /** Text for browser find-in-page and native selection. */
+  text: string;
+  /** Local origin of the visual line inside the entity. */
+  x: number;
+  y: number;
+  /** Canvas baseline relative to `y`. */
+  baseline: number;
+  /** CSS font used for the line when it has no styled runs. */
+  font?: string;
+  /** Explicit line height for this line. */
+  lineHeight?: number;
+  /** Styled text runs in visual order. */
+  runs?: ContentProjectionRun[];
+}
+
 export interface ContentProjection {
   /** The plain text content as rendered (line breaks as `\n`). */
   text: string;
@@ -95,6 +118,28 @@ export interface ContentProjection {
    * projection never intercepts pointer input meant for the canvas.
    */
   selectable?: boolean;
+  /** Local x-origin of the rendered text inside the owning entity. */
+  contentX?: number;
+  /** Local y-origin of the rendered text inside the owning entity. */
+  contentY?: number;
+  /**
+   * Canvas baseline relative to `contentY` for the first line. When supplied,
+   * Scene aligns the DOM line box baseline instead of assuming both engines
+   * interpret the entity top as a text baseline.
+   */
+  baseline?: number;
+  /** Explicit visual lines for mixed-style or internally inset text. */
+  lines?: ContentProjectionLine[];
+}
+
+/** Typography for a native input projected by the accessibility layer. */
+export interface TextInputStyle {
+  /** CSS font shorthand shared with the canvas mirror. */
+  font: string;
+  /** Explicit line advance in CSS pixels. */
+  lineHeight: number;
+  /** Inner text inset in CSS pixels. */
+  padding: number;
 }
 
 /**
@@ -139,6 +184,8 @@ export interface A11yAttributes {
   activedescendant?: string;
   valuemin?: string;
   valuemax?: string;
+  /** Explicit native editor typography; ignored for non-input elements. */
+  textInputStyle?: TextInputStyle;
 }
 
 /**
@@ -688,8 +735,7 @@ export abstract class Entity {
           new Promise<void>((resolve) => {
             this._spawnDriver(e[0], e[1], cfg);
             const d = this._drivers.get(e[0]) as
-              | (PropertyDriver & { onDone?: () => void })
-              | undefined;
+              (PropertyDriver & { onDone?: () => void }) | undefined;
             if (!d)
               resolve(); // spawn resolved instantly (e.g. reduced motion) -> no driver
             else d.onDone = resolve;

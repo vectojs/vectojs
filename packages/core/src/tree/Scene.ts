@@ -29,6 +29,7 @@ import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { sanitizeUrl } from '../renderer/url';
+import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '../text/Typography';
 
 /**
  * Options for {@link Scene}.
@@ -382,6 +383,7 @@ export class Scene {
 
     if (typeof document !== 'undefined' && document.fonts) {
       this.fontLoadHandler = () => {
+        clearCssLineBoxMetrics();
         this.markDirty();
       };
       document.fonts.ready.then(this.fontLoadHandler);
@@ -961,6 +963,20 @@ export class Scene {
         }
       }
 
+      if (
+        attrs.textInputStyle !== undefined &&
+        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+      ) {
+        const textStyle = attrs.textInputStyle;
+        if (el.style.font !== textStyle.font) el.style.font = textStyle.font;
+        const lineHeight = `${textStyle.lineHeight}px`;
+        if (el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
+        const padding = `${textStyle.padding}px`;
+        if (el.style.padding !== padding) el.style.padding = padding;
+        if (el.style.boxSizing !== 'border-box') el.style.boxSizing = 'border-box';
+        if (el instanceof HTMLTextAreaElement) el.style.resize = 'none';
+      }
+
       // Sync position mappings
       if (node.a11yFullViewport) {
         el.style.left = '0px';
@@ -1033,7 +1049,51 @@ export class Scene {
       this.a11yNeedsReorder = true;
     }
 
-    if (el.textContent !== projection.text) el.textContent = projection.text;
+    const lines = projection.lines;
+    if (lines && lines.length > 0) {
+      const signature = JSON.stringify({
+        lines,
+        fallbackFont: projection.font ?? '',
+        fallbackLineHeight: projection.lineHeight ?? 16,
+      });
+      if (el.dataset.vectoProjectionLines !== signature) {
+        el.replaceChildren();
+        for (let index = 0; index < lines.length; index++) {
+          const line = lines[index];
+          const lineElement = document.createElement('span');
+          const lineFont = line.font ?? projection.font ?? '';
+          const lineHeight = line.lineHeight ?? projection.lineHeight ?? 16;
+          lineElement.style.position = 'absolute';
+          lineElement.style.left = `${line.x}px`;
+          lineElement.style.top = `${line.y + line.baseline - cssLineBoxBaseline(lineFont, lineHeight)}px`;
+          lineElement.style.whiteSpace = 'pre';
+          if (lineFont) lineElement.style.font = lineFont;
+          // Assigning the CSS `font` shorthand resets line-height to `normal`.
+          // Set the explicit line box afterwards, or selection geometry drifts
+          // differently in each browser for mixed-size text.
+          lineElement.style.lineHeight = `${lineHeight}px`;
+          if (line.runs && line.runs.length > 0) {
+            for (const run of line.runs) {
+              const runElement = document.createElement('span');
+              runElement.textContent = run.text;
+              if (run.font) runElement.style.font = run.font;
+              // A run-level font shorthand also resets line-height. Preserve
+              // the visual line's shared baseline for every mixed-size run.
+              runElement.style.lineHeight = `${lineHeight}px`;
+              lineElement.appendChild(runElement);
+            }
+          } else {
+            lineElement.textContent = line.text;
+          }
+          el.appendChild(lineElement);
+          if (index < lines.length - 1) el.appendChild(document.createTextNode('\n'));
+        }
+        el.dataset.vectoProjectionLines = signature;
+      }
+    } else {
+      if (el.textContent !== projection.text) el.textContent = projection.text;
+      delete el.dataset.vectoProjectionLines;
+    }
 
     const font = projection.font ?? '';
     if (el.style.font !== font) el.style.font = font;
@@ -1061,8 +1121,20 @@ export class Scene {
 
     // Geometry: same threading as the interactive branch.
     const { a, b, c, d, e, f } = node.getWorldTransform();
-    el.style.left = `${e}px`;
-    el.style.top = `${f}px`;
+    const contentX = projection.contentX ?? 0;
+    const contentY = projection.contentY ?? 0;
+    const baselineOffset =
+      lines && lines.length > 0
+        ? 0
+        : projection.baseline === undefined
+          ? 0
+          : projection.baseline - cssLineBoxBaseline(font, projection.lineHeight ?? 16);
+    // `contentX/Y` are local coordinates, like the arguments to Canvas
+    // fillText. Map them through the world matrix before moving the DOM root;
+    // otherwise a scaled or rotated entity selects text in a different place.
+    const localY = contentY + baselineOffset;
+    el.style.left = `${e + a * contentX + c * localY}px`;
+    el.style.top = `${f + b * contentX + d * localY}px`;
     if (node.width > 0) el.style.width = `${node.width}px`;
     if (node.height > 0) el.style.height = `${node.height}px`;
     el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
