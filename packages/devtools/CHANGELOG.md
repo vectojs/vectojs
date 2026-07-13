@@ -1,5 +1,11 @@
 # @vectojs/devtools
 
+## 0.4.1
+
+### Patch Changes
+
+- e282f2f: Route browser pointer cancellation through projected entities and DOM portals, release projected pointer capture safely, and retain cancellation in DevTools event traces.
+
 ## 0.4.0
 
 ### Minor Changes
