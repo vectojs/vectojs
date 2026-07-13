@@ -1,5 +1,20 @@
 # @vectojs/core
 
+## 1.7.1
+
+### Patch Changes
+
+- Fix text selection and CodeBlock rendering
+
+  **@vectojs/core**
+
+  - Fix text selection not starting from whitespace/padding regions within selectable entities (e.g. CodeBlock padding area). Removed `overflow: hidden` from content projection divs — the a11y overlay root handles viewport clipping.
+  - Fix selection disappearing when the mouse is dragged outside an entity's bounds. The a11y root now temporarily promotes to `pointer-events: auto` during an active selection drag so the browser can extend the Selection Range across entity boundaries, matching native DOM selection behavior.
+
+  **@vectojs/ui**
+
+  - Fix CodeBlock character spacing collapse on Firefox desktop. Firefox's Canvas2D applies OpenType ligatures to monospace fonts, causing `measureText('office')` to return the ligated `ffi` width instead of 6 × cellWidth. CodeBlock now uses pure grid positioning (character count × cell width) instead of the hybrid `Math.max(grid, measured)` approach, eliminating cross-browser rendering differences.
+
 ## 1.7.0
 
 ### Minor Changes

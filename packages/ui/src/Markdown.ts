@@ -586,19 +586,21 @@ export class CodeBlock extends UIComponent {
 
     const cellWidth = this.cellWidth || Math.max(1, measureText('M', this.codeFont));
 
-    // Text lines
+    // Text lines — pure grid positioning.
+    // Firefox desktop Canvas2D applies OpenType ligatures to monospace fonts,
+    // causing measureText('office') to return the ligated 'ffi' width instead
+    // of 6 × cellWidth. A hybrid max(grid, measured) approach drifts and
+    // collapses inter-segment spacing. For monospace code, character count ×
+    // cellWidth is the authoritative position source.
     for (let row = 0; row < this.lines.length; row++) {
       const segs = this.lines[row];
       let colOffset = 0;
-      let xOffset = 0;
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       for (let col = 0; col < segs.length; col++) {
         const segment = segs[col];
-        const gridX = colOffset * cellWidth;
-        const posX = Math.max(gridX, xOffset);
+        const posX = colOffset * cellWidth;
         r.fillText(segment.text, this.pad + posX, yBaseline, this.codeFont, segment.color);
         colOffset += segment.text.length;
-        xOffset = posX + measureText(segment.text, this.codeFont);
       }
     }
   }

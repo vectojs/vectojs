@@ -359,6 +359,28 @@ export class Scene {
       this.a11yRoot.style.pointerEvents = 'none';
       this.a11yRoot.style.overflow = 'hidden';
       this.a11yRoot.style.zIndex = '10'; // Render above canvas
+      // Let text selection span across multiple content projection divs.
+      // Individual divs opt in via pointer-events:auto; during an active drag
+      // the root temporarily gains pointer-events so the browser can extend
+      // the Selection Range beyond any single entity's bounds.
+      this.a11yRoot.style.userSelect = 'text';
+      this.a11yRoot.addEventListener('mousedown', (e) => {
+        // Only promote when the mousedown lands on a selectable content div.
+        const target = e.target as HTMLElement;
+        if (
+          target !== this.a11yRoot &&
+          target.closest('[data-vecto-content]') &&
+          getComputedStyle(target.closest('[data-vecto-content]')!).pointerEvents === 'auto'
+        ) {
+          this.a11yRoot!.style.pointerEvents = 'auto';
+        }
+      });
+      const endDrag = () => {
+        if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
+      };
+      this.a11yRoot.addEventListener('mouseup', endDrag);
+      // Pointer may leave the overlay entirely (e.g. moving above the viewport).
+      this.a11yRoot.addEventListener('mouseleave', endDrag);
       if (canvas.parentElement) {
         canvas.parentElement.appendChild(this.a11yRoot);
       }
@@ -1065,7 +1087,9 @@ export class Scene {
       s.forcedColorAdjust = 'none';
       s.setProperty('-webkit-text-fill-color', 'transparent');
       s.whiteSpace = 'pre-wrap';
-      s.overflow = 'hidden';
+      // No overflow:hidden — the a11yRoot clips at the viewport boundary.
+      // Removing it lets the browser start text selection from padding/blank
+      // regions inside the entity and extend selection beyond entity bounds.
       s.zIndex = '0'; // beneath the interactive a11y elements
       // Keep scroll containers working when the pointer is over selectable text.
       el.addEventListener(
