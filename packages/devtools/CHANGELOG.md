@@ -1,5 +1,11 @@
 # @vectojs/devtools
 
+## 0.4.2
+
+### Patch Changes
+
+- d013893: Finalize event-trace default-prevention state after projected VMT keyboard routing, including in Chromium, and cover the browser timing contract with an end-to-end test.
+
 ## 0.4.1
 
 ### Patch Changes
