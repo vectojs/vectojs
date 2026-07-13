@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.6.0
+
+### Minor Changes
+
+- 38b3b8b: Align selectable DOM text and native editor shadows with Canvas 2D baselines, including explicit visual-line projections for mixed typography and code blocks.
+
 ## 1.5.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 1.7.2
+
+### Patch Changes
+
+- 38b3b8b: Align selectable DOM text and native editor shadows with Canvas 2D baselines, including explicit visual-line projections for mixed typography and code blocks.
+
 ## 1.7.1
 
 ### Patch Changes
