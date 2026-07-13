@@ -112,6 +112,11 @@ This projection is intentionally thin. Applications still own accessible names, 
 focus order, contrast, and correct control semantics. See the
 [accessibility guide](https://vectojs.org/learn/accessibility/).
 
+Non-control workspaces that own keyboard shortcuts can opt into focus order
+explicitly: return `{ role: 'region', label: 'Canvas workspace', tabIndex: 0 }`.
+The Scene refreshes the projected `tabindex` when attributes change. Keep native
+text inputs and editable content in charge of their own editing shortcuts.
+
 Interactive projected nodes capture the active pointer on `pointerdown` and route
 `pointermove`, `pointerup`, and `pointercancel` through normal VMT capture/bubble propagation.
 Treat `pointercancel` as rollback: discard transient gesture state and do not create durable
