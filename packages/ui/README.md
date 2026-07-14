@@ -113,6 +113,13 @@ remain owned by VMT entities. Application-level shortcut routers must yield nati
 `window.getSelection()?.isCollapsed === false` and must not suppress Ctrl/Command+F unless the
 application intentionally replaces browser find.
 
+`CodeBlock` uses Core's retained prepared-content grid for both canvas paint and the semantic text
+carrier. This keeps source copy/find and selection aligned across Chromium and Firefox under font
+substitution, DPR, browser zoom, forced colors, rotation, non-uniform scaling, tabs, CJK, emoji,
+Arabic shaping, and mixed-direction text. `Markdown` list and table text and standalone `Table`
+cells use the same pointer-selection contract; structural table semantics do not intercept their
+content projections.
+
 ## Layout and streaming guidance
 
 - `Stack` and `Flow` position children; call `layout()` after changing child dimensions directly.
@@ -138,7 +145,8 @@ parent when finished and call `scene.destroy()` when the canvas runtime unmounts
 
 ## Compatibility
 
-The package follows SemVer and accepts `@vectojs/core >=1.0.0 <2.0.0`. Pin exact tested releases in
+The package follows SemVer. Version 1.9 and later accept `@vectojs/core >=1.8.0 <2.0.0` because the
+shared prepared-content grid is part of the Core 1.8 public contract. Pin exact tested releases in
 applications and read the changelog before upgrading.
 
 ## License

@@ -147,6 +147,17 @@ outside the viewport or a `clipChildren` ancestor. Tooling can inspect the curre
 node with `scene.getContentElement(entityId)`. Virtualized or non-materialized off-viewport text is
 not searchable until the application brings it into the active scene.
 
+Code-like renderers can compile their logical source once with `prepareContentGrid()` and return the
+same immutable plan as `ContentProjection.grid`. The plan retains UTF-16 source ranges, legal
+grapheme carets, CR/LF ownership, tab stops, wide CJK/emoji advances, Arabic shaping, and Unicode
+bidi positions. Scene projects those cells in logical source order, performs font calibration in a
+cold offscreen batch, and uses the plan's local geometry for pointer selection even when the entity
+is rotated, scaled, or the page is zoomed.
+
+Selection routing preserves forward/reverse drag direction, Shift extension, word and line
+selection, and exact clipboard source. Projection rebuild/removal/destroy paths release active
+selection and pending calibration ownership before replacing DOM carriers.
+
 ## Performance model
 
 Useful levers include on-demand rendering, viewport culling, spatial hashing, prepared text layout,
@@ -154,7 +165,9 @@ typed reusable buffers, batched WebGL points, and optional WebGPU particle compu
 workload allocation-free or GPU-bound; profile the renderer and entity types used by your app.
 
 Run the repository benchmarks with `bun run benchmark`, `bun run compare:dom`, and
-`bun run compare`.
+`bun run compare`. Prepared-grid scaling can be measured independently with
+`bun run --cwd packages/core benchmark:grid`; benchmark timing is release evidence rather than a
+wall-clock CI gate.
 
 ## Related packages
 

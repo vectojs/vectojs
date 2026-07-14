@@ -89,6 +89,17 @@ export class ArabicShaper {
         else if (nextCode === 0x0627) ligature = 0xfefb; // Lam-Alef
 
         if (ligature !== 0) {
+          let previousBase = 0;
+          let previousIndex = i - 1;
+          while (previousIndex >= 0) {
+            const previousCode = text.charCodeAt(previousIndex);
+            if (!ArabicShaper.isHarakat(previousCode)) {
+              previousBase = previousCode;
+              break;
+            }
+            previousIndex--;
+          }
+          if (ArabicShaper.getJoiningType(previousBase) === 'D') ligature++;
           shapedChars.push(String.fromCharCode(ligature));
           sourceIndices.push(i);
           i += 2;

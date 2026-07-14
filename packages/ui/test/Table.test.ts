@@ -59,6 +59,7 @@ describe('Table', () => {
     const attrs = table.getA11yAttributes();
     expect(attrs.role).toBe('grid');
     expect(attrs.label).toContain('2 columns');
+    expect(attrs.pointerEvents).toBe('none');
   });
 
   it('draws headers, cells, and grids without errors in renderer', () => {

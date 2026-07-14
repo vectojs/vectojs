@@ -52,7 +52,8 @@ describe('BidiResolver', () => {
     }
 
     const levels = BidiResolver.resolveLevels(text);
-    // At A (index 127), level should be clamped to 125 (max nesting)
-    expect(levels[127]).toBe(125);
+    // Explicit embedding levels stop at 125, but UAX #9 implicit resolution
+    // may raise an L character inside the deepest odd embedding to 126.
+    expect(levels[127]).toBe(126);
   });
 });

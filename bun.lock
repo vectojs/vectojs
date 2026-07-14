@@ -21,9 +21,10 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.6.2",
+      "version": "1.7.1",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
+        "bidi-js": "^1.0.3",
         "esbuild": "^0.28.1",
         "jsdom": "^29.1.1",
         "puppeteer-core": "^25.3.0",
@@ -33,7 +34,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
@@ -66,7 +67,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.7.2",
+      "version": "1.8.1",
       "dependencies": {
         "marked": "^18.0.6",
         "mathjax-full": "^3.2.2",
@@ -80,7 +81,7 @@
         "vitest": "^4.1.10",
       },
       "peerDependencies": {
-        "@vectojs/core": ">=1.0.0 <2.0.0",
+        "@vectojs/core": ">=1.8.0 <2.0.0",
       },
     },
     "packages/video-exporter": {

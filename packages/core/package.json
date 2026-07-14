@@ -49,9 +49,11 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
+    "benchmark:grid": "vitest bench benchmark/PreparedContentGrid.bench.ts --run",
     "build": "node scripts/build-worker.js && tsup && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts"
@@ -59,6 +61,7 @@
   "dependencies": {},
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",
+    "bidi-js": "^1.0.3",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",

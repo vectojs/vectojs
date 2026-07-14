@@ -20,7 +20,7 @@ export interface IWebGPUParticleSystemManager {
   destroy(): void;
 }
 
-import { Entity, VectoJSEvent } from './Entity';
+import { Entity, VectoJSEvent, type ContentProjection } from './Entity';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
@@ -30,6 +30,7 @@ import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSyst
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '../text/Typography';
+import type { PreparedContentGrid } from '../text/PreparedContentGrid';
 
 const INTERACTIVE_A11Y_ROLES = new Set([
   'button',
@@ -166,27 +167,196 @@ function collectTextNodes(root: HTMLElement): Text[] {
 }
 
 /** Bounding rect of a text node's full contents (null when it has no boxes). */
-function textNodeRect(node: Text): DOMRect | null {
-  const range = document.createRange();
-  range.selectNodeContents(node);
-  const rect = range.getBoundingClientRect();
-  return rect.width > 0 || rect.height > 0 ? rect : null;
+const caretGraphemeSegmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+const caretWordSegmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'word' })
+    : null;
+
+function graphemeBoundaries(text: string): number[] {
+  if (!caretGraphemeSegmenter) {
+    const boundaries = [0];
+    for (let offset = 0; offset < text.length;) {
+      const codePoint = text.codePointAt(offset) ?? 0;
+      offset += codePoint > 0xffff ? 2 : 1;
+      boundaries.push(offset);
+    }
+    return boundaries;
+  }
+  const boundaries = [0];
+  for (const segment of caretGraphemeSegmenter.segment(text)) {
+    const end = segment.index + segment.segment.length;
+    if (end > boundaries[boundaries.length - 1]) boundaries.push(end);
+  }
+  return boundaries;
 }
 
-/** Character offset in `node` whose caret is nearest to viewport `x`. */
-function offsetForX(node: Text, x: number): number {
+function distanceToRectSquared(rect: DOMRect, x: number, y: number): number {
+  const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+  const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+  return dx * dx + dy * dy;
+}
+
+/** Grapheme-safe offset whose transformed native caret is nearest to a viewport point. */
+function nearestOffsetForPoint(
+  node: Text,
+  x: number,
+  y: number,
+): {
+  offset: number;
+  distance: number;
+} {
+  const boundaries = graphemeBoundaries(node.data);
   const range = document.createRange();
-  let lo = 0;
-  let hi = node.data.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    range.setStart(node, mid);
-    range.setEnd(node, Math.min(mid + 1, node.data.length));
+  let nearest = { offset: boundaries[0] ?? 0, distance: Infinity };
+  for (const offset of boundaries) {
+    range.setStart(node, offset);
+    range.collapse(true);
     const rect = range.getBoundingClientRect();
-    if (x < rect.left + rect.width / 2) hi = mid;
-    else lo = mid + 1;
+    const distance = distanceToRectSquared(rect, x, y);
+    if (distance < nearest.distance) nearest = { offset, distance };
   }
-  return lo;
+  return nearest;
+}
+
+function gridCellCaret(cell: HTMLElement, localX: number): TextCaretPosition | null {
+  const node = cell.firstChild;
+  if (!(node instanceof Text)) return null;
+  const sourceLength = Number(cell.dataset.vectoGridSourceLength ?? node.data.length);
+  const level = Number(cell.dataset.vectoGridLevel ?? 0);
+  const cellX = Number(cell.dataset.vectoGridX ?? 0);
+  const advance = Number(cell.dataset.vectoGridAdvance ?? 0);
+  const caretOffsets = (cell.dataset.vectoGridCaretOffsets ?? `0,${sourceLength}`)
+    .split(',')
+    .map(Number)
+    .filter((offset) => Number.isInteger(offset) && offset >= 0 && offset <= sourceLength);
+  const visuallyRtl = (level & 1) !== 0;
+  const visualFraction = advance > 0 ? Math.max(0, Math.min(1, (localX - cellX) / advance)) : 0;
+  const sourceFraction = visuallyRtl ? 1 - visualFraction : visualFraction;
+  const caretIndex = Math.round(sourceFraction * Math.max(0, caretOffsets.length - 1));
+  return {
+    node,
+    offset: caretOffsets[caretIndex] ?? 0,
+  };
+}
+
+function nearestGridPositionInLine(line: HTMLElement, localX: number): TextCaretPosition | null {
+  let nearest: { cell: HTMLElement; distance: number } | null = null;
+  for (const cell of line.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')) {
+    const x = Number(cell.dataset.vectoGridX ?? 0);
+    const advance = Number(cell.dataset.vectoGridAdvance ?? 0);
+    if (localX >= x && localX <= x + advance) return gridCellCaret(cell, localX);
+    const distance = localX < x ? x - localX : localX - (x + advance);
+    if (!nearest || distance < nearest.distance) nearest = { cell, distance };
+  }
+  if (!nearest) return null;
+  return gridCellCaret(nearest.cell, localX);
+}
+
+function parseCssMatrix(transform: string): [number, number, number, number] {
+  if (!transform || transform === 'none') return [1, 0, 0, 1];
+  const values = transform
+    .slice(transform.indexOf('(') + 1, transform.lastIndexOf(')'))
+    .split(',')
+    .map(Number);
+  return values.length >= 4 && values.slice(0, 4).every(Number.isFinite)
+    ? [values[0], values[1], values[2], values[3]]
+    : [1, 0, 0, 1];
+}
+
+function clientToGridLocal(
+  contentEl: HTMLElement,
+  canvas: HTMLCanvasElement,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } | null {
+  const line = contentEl.querySelector<HTMLElement>('[data-vecto-grid-line]');
+  const originMarker = line?.querySelector<HTMLElement>('[data-vecto-grid-basis="origin"]');
+  const xMarker = line?.querySelector<HTMLElement>('[data-vecto-grid-basis="x"]');
+  const yMarker = line?.querySelector<HTMLElement>('[data-vecto-grid-basis="y"]');
+  if (line && originMarker && xMarker && yMarker) {
+    const origin = originMarker.getBoundingClientRect();
+    const xPoint = xMarker.getBoundingClientRect();
+    const yPoint = yMarker.getBoundingClientRect();
+    const xx = xPoint.left - origin.left;
+    const xy = xPoint.top - origin.top;
+    const yx = yPoint.left - origin.left;
+    const yy = yPoint.top - origin.top;
+    const determinant = xx * yy - xy * yx;
+    if (Number.isFinite(determinant) && Math.abs(determinant) > 1e-9) {
+      const dx = clientX - origin.left;
+      const dy = clientY - origin.top;
+      return {
+        x: (Number.parseFloat(line.style.left) || 0) + (yy * dx - yx * dy) / determinant,
+        y: (Number.parseFloat(line.style.top) || 0) + (-xy * dx + xx * dy) / determinant,
+      };
+    }
+  }
+  const [a, b, c, d] = parseCssMatrix(getComputedStyle(contentEl).transform);
+  const canvasRect = canvas.getBoundingClientRect();
+  const logicalWidth = Number.parseFloat(canvas.style.width) || canvas.clientWidth || canvas.width;
+  const logicalHeight =
+    Number.parseFloat(canvas.style.height) || canvas.clientHeight || canvas.height;
+  const scaleX = logicalWidth > 0 ? canvasRect.width / logicalWidth : 1;
+  const scaleY = logicalHeight > 0 ? canvasRect.height / logicalHeight : 1;
+  const worldX = (clientX - canvasRect.left) / scaleX;
+  const worldY = (clientY - canvasRect.top) / scaleY;
+  const dx = worldX - (Number.parseFloat(contentEl.style.left) || 0);
+  const dy = worldY - (Number.parseFloat(contentEl.style.top) || 0);
+  const determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) <= 1e-9) return null;
+  return {
+    x: (d * dx - c * dy) / determinant,
+    y: (-b * dx + a * dy) / determinant,
+  };
+}
+
+function nearestGridPosition(
+  contentEl: HTMLElement,
+  canvas: HTMLCanvasElement,
+  clientX: number,
+  clientY: number,
+): TextCaretPosition | null {
+  const lines = [...contentEl.querySelectorAll<HTMLElement>('[data-vecto-grid-line]')];
+  if (lines.length === 0) return null;
+  const [a, b, c, d] = parseCssMatrix(getComputedStyle(contentEl).transform);
+  if (a > 0 && d > 0 && Math.abs(b) <= 1e-9 && Math.abs(c) <= 1e-9) {
+    let nearest: { line: HTMLElement; distance: number; rect: DOMRect } | null = null;
+    for (const line of lines) {
+      const rect = line.getBoundingClientRect();
+      const dy =
+        clientY < rect.top ? rect.top - clientY : clientY > rect.bottom ? clientY - rect.bottom : 0;
+      const dx =
+        clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
+      const distance = dy * 4096 + dx;
+      if (!nearest || distance < nearest.distance) nearest = { line, distance, rect };
+    }
+    if (!nearest) return null;
+    const localWidth = Number.parseFloat(nearest.line.style.width) || 0;
+    const scaleX = localWidth > 0 && nearest.rect.width > 0 ? nearest.rect.width / localWidth : 1;
+    const localX = (clientX - nearest.rect.left) / scaleX;
+    return nearestGridPositionInLine(nearest.line, localX);
+  }
+  const local = clientToGridLocal(contentEl, canvas, clientX, clientY);
+  if (!local) return null;
+  let nearest: { line: HTMLElement; distance: number } | null = null;
+  for (const line of lines) {
+    const left = Number.parseFloat(line.style.left) || 0;
+    const top = Number.parseFloat(line.style.top) || 0;
+    const width = Number.parseFloat(line.style.width) || 0;
+    const height = Number.parseFloat(line.style.height) || 0;
+    const dy = local.y < top ? top - local.y : local.y > top + height ? local.y - top - height : 0;
+    const dx =
+      local.x < left ? left - local.x : local.x > left + width ? local.x - left - width : 0;
+    const distance = dy * 4096 + dx;
+    if (!nearest || distance < nearest.distance) nearest = { line, distance };
+  }
+  if (!nearest) return null;
+  const lineLeft = Number.parseFloat(nearest.line.style.left) || 0;
+  return nearestGridPositionInLine(nearest.line, local.x - lineLeft);
 }
 
 /**
@@ -195,21 +365,23 @@ function offsetForX(node: Text, x: number): number {
  * visible text (excluding the trailing hard-break separator so a horizontal
  * drag through padding doesn't silently select a newline).
  */
-function nearestTextPositionInLine(line: HTMLElement, x: number): TextCaretPosition | null {
+function nearestTextPositionInLine(
+  line: HTMLElement,
+  x: number,
+  y: number,
+): TextCaretPosition | null {
   const texts = collectTextNodes(line);
   if (texts.length === 0) return null;
-  const firstRect = textNodeRect(texts[0]);
-  if (firstRect && x <= firstRect.left) return { node: texts[0], offset: 0 };
+  let nearest: { position: TextCaretPosition; distance: number } | null = null;
   for (const node of texts) {
-    const rect = textNodeRect(node);
-    if (rect && x >= rect.left && x <= rect.right) {
-      return { node, offset: offsetForX(node, x) };
+    const candidate = nearestOffsetForPoint(node, x, y);
+    if (!nearest || candidate.distance < nearest.distance) {
+      let { offset } = candidate;
+      while (offset > 0 && node.data[offset - 1] === '\n') offset--;
+      nearest = { position: { node, offset }, distance: candidate.distance };
     }
   }
-  const last = texts[texts.length - 1];
-  let end = last.data.length;
-  while (end > 0 && last.data[end - 1] === '\n') end--;
-  return { node: last, offset: end };
+  return nearest?.position ?? null;
 }
 
 /**
@@ -220,9 +392,25 @@ function nearestTextPositionInLine(line: HTMLElement, x: number): TextCaretPosit
  */
 function nearestTextPositionInProjection(
   contentEl: HTMLElement,
+  canvas: HTMLCanvasElement,
   x: number,
   y: number,
+  eventTarget?: HTMLElement | null,
 ): TextCaretPosition | null {
+  if (contentEl.dataset.vectoContentGrid !== undefined) {
+    return nearestGridPosition(contentEl, canvas, x, y);
+  }
+  let targetLine = eventTarget;
+  while (targetLine && targetLine.parentElement !== contentEl) {
+    if (!contentEl.contains(targetLine)) {
+      targetLine = null;
+      break;
+    }
+    targetLine = targetLine.parentElement;
+  }
+  if (targetLine?.parentElement === contentEl) {
+    return nearestTextPositionInLine(targetLine, x, y);
+  }
   let bestLine: HTMLElement | null = null;
   let bestDist = Infinity;
   for (let i = 0; i < contentEl.children.length; i++) {
@@ -238,39 +426,130 @@ function nearestTextPositionInProjection(
       bestLine = child;
     }
   }
-  if (bestLine) return nearestTextPositionInLine(bestLine, x);
+  if (bestLine) return nearestTextPositionInLine(bestLine, x, y);
   // Projection with a single flowed text node (no per-line children).
-  const texts = collectTextNodes(contentEl);
-  if (texts.length === 0) return null;
-  const rect = contentEl.getBoundingClientRect();
-  const node = texts[texts.length - 1];
-  return x <= rect.left ? { node: texts[0], offset: 0 } : { node, offset: node.data.length };
+  return nearestTextPositionInLine(contentEl, x, y);
 }
 
-/**
- * Caret text position under the pointer, for driving a manual selection drag:
- * the browser's caret-from-point when it lands in text, otherwise snapped to
- * the nearest text of the content projection under the pointer.
- */
-function caretTextPositionAt(x: number, y: number): TextCaretPosition | null {
-  const doc = document as Document & {
-    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-    caretRangeFromPoint?: (x: number, y: number) => Range | null;
-  };
-  if (doc.caretPositionFromPoint) {
-    const pos = doc.caretPositionFromPoint(x, y);
-    if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
-      return { node: pos.offsetNode as Text, offset: pos.offset };
-    }
-  } else if (doc.caretRangeFromPoint) {
-    const range = doc.caretRangeFromPoint(x, y);
-    if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
-      return { node: range.startContainer as Text, offset: range.startOffset };
-    }
+function projectionAbsoluteOffset(root: HTMLElement, caret: TextCaretPosition): number | null {
+  let offset = 0;
+  for (const node of collectTextNodes(root)) {
+    if (node === caret.node) return offset + Math.min(caret.offset, node.data.length);
+    offset += node.data.length;
   }
-  const el = document.elementFromPoint(x, y) as HTMLElement | null;
-  const contentEl = el?.closest('[data-vecto-content]') as HTMLElement | null;
-  return contentEl ? nearestTextPositionInProjection(contentEl, x, y) : null;
+  return null;
+}
+
+function projectionCaretAt(
+  root: HTMLElement,
+  absoluteOffset: number,
+  affinity: 'forward' | 'backward',
+): TextCaretPosition | null {
+  const nodes = collectTextNodes(root);
+  if (nodes.length === 0) return null;
+  let remaining = Math.max(0, absoluteOffset);
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index];
+    if (
+      remaining < node.data.length ||
+      (remaining === node.data.length && affinity === 'backward')
+    ) {
+      return { node, offset: remaining };
+    }
+    if (remaining === node.data.length && index === nodes.length - 1) {
+      return { node, offset: remaining };
+    }
+    remaining -= node.data.length;
+  }
+  const last = nodes[nodes.length - 1];
+  return { node: last, offset: last.data.length };
+}
+
+function selectProjectionUnit(
+  selection: Selection,
+  root: HTMLElement,
+  caret: TextCaretPosition,
+  unit: 'word' | 'line',
+): boolean {
+  const absoluteOffset = projectionAbsoluteOffset(root, caret);
+  const text = root.textContent ?? '';
+  if (absoluteOffset === null || text.length === 0) return false;
+  let start = absoluteOffset;
+  let end = absoluteOffset;
+  if (unit === 'line') {
+    for (let index = Math.max(0, absoluteOffset - 1); index >= 0; index--) {
+      if (text[index] === '\n' || text[index] === '\r') {
+        start = index + 1;
+        if (text[index] === '\r' && text[index + 1] === '\n') start++;
+        break;
+      }
+    }
+    const cr = text.indexOf('\r', absoluteOffset);
+    const lf = text.indexOf('\n', absoluteOffset);
+    const separator = [cr, lf].filter((index) => index >= 0).sort((a, b) => a - b)[0];
+    end = separator === undefined ? text.length : separator;
+  } else if (caretWordSegmenter) {
+    const segments = [...caretWordSegmenter.segment(text)];
+    const selected =
+      segments.find(
+        (segment) =>
+          segment.isWordLike &&
+          absoluteOffset >= segment.index &&
+          absoluteOffset <= segment.index + segment.segment.length,
+      ) ??
+      segments.find((segment) => segment.isWordLike && segment.index >= absoluteOffset) ??
+      [...segments].reverse().find((segment) => segment.isWordLike);
+    if (selected) {
+      start = selected.index;
+      end = selected.index + selected.segment.length;
+    }
+  } else {
+    const isWord = (character: string) => /[\p{L}\p{N}_]/u.test(character);
+    while (start > 0 && isWord(text[start - 1])) start--;
+    while (end < text.length && isWord(text[end])) end++;
+  }
+  const anchor = projectionCaretAt(root, start, 'forward');
+  const focus = projectionCaretAt(root, end, 'backward');
+  if (!anchor || !focus) return false;
+  selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+  return true;
+}
+
+function extendSelection(
+  selection: Selection,
+  anchor: TextCaretPosition,
+  focus: TextCaretPosition,
+) {
+  try {
+    selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+    return;
+  } catch {
+    // Some older engines reject a reverse cross-node base/extent. Preserve the
+    // direction through collapse/extend before the final normalized fallback.
+  }
+  try {
+    selection.collapse(anchor.node, anchor.offset);
+    selection.extend(focus.node, focus.offset);
+    return;
+  } catch {
+    // The final fallback keeps source fidelity on engines without direction APIs.
+  }
+  const anchorRange = document.createRange();
+  anchorRange.setStart(anchor.node, anchor.offset);
+  anchorRange.collapse(true);
+  const focusRange = document.createRange();
+  focusRange.setStart(focus.node, focus.offset);
+  focusRange.collapse(true);
+  const range = document.createRange();
+  if (anchorRange.compareBoundaryPoints(Range.START_TO_START, focusRange) <= 0) {
+    range.setStart(anchor.node, anchor.offset);
+    range.setEnd(focus.node, focus.offset);
+  } else {
+    range.setStart(focus.node, focus.offset);
+    range.setEnd(anchor.node, anchor.offset);
+  }
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 /**
@@ -349,6 +628,12 @@ export class Scene {
   private a11yElements: Map<string, HTMLElement> = new Map();
   /** DOM nodes mirroring static text content, keyed by entity id. */
   private contentElements: Map<string, HTMLElement> = new Map();
+  /** Pending cold font-calibration frame per projected grid entity. */
+  private contentGridCalibrationFrames: Map<string, number> = new Map();
+  /** Detached, untransformed font probes used by the cold calibration pass. */
+  private contentGridCalibrationProbes: Map<string, HTMLElement> = new Map();
+  /** Invalidates grid font calibration after browser font availability changes. */
+  private contentFontEpoch = 0;
   private contentProjectionEnabled: boolean = true;
   /**
    * True while a text-selection drag that started on a projection's blank
@@ -357,6 +642,8 @@ export class Scene {
    * from the position we resolved ourselves.
    */
   private blankRegionSelectionDrag = false;
+  private contentSelectionAnchor: TextCaretPosition | null = null;
+  private contentSelectionEndListener: (() => void) | null = null;
   // Animation/interactive flags collected during the render walk (tree-walk
   // fusion): the loop reads last frame's answers instead of re-walking the
   // tree up to 4× per tick. Start true so the first tick stays conservative.
@@ -493,44 +780,112 @@ export class Scene {
       // the Selection Range beyond any single entity's bounds.
       this.a11yRoot.style.userSelect = 'text';
       this.a11yRoot.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
         // Only promote when the mousedown lands on a selectable content div.
         const target = e.target as HTMLElement;
         const contentEl = target.closest('[data-vecto-content]') as HTMLElement | null;
         if (target === this.a11yRoot || !contentEl) return;
         if (getComputedStyle(contentEl).pointerEvents !== 'auto') return;
+        const selection = window.getSelection();
+        if (!selection) return;
         this.a11yRoot!.style.pointerEvents = 'auto';
-        // A press on the container's blank region (padding, space past a
-        // line's end, the gap between lines) has no text node under the
-        // cursor — every line box is absolutely positioned (out of flow), so
-        // the browser cannot resolve a native selection anchor there and the
-        // drag would select nothing. Anchor at the nearest text position and
-        // drive the extension manually until mouseup.
-        if (target === contentEl) {
-          const anchor = nearestTextPositionInProjection(contentEl, e.clientX, e.clientY);
-          const selection = window.getSelection();
-          if (anchor && selection) {
-            selection.collapse(anchor.node, anchor.offset);
-            this.blankRegionSelectionDrag = true;
-            // Without this the browser's own (failed) anchor attempt runs
-            // after the listener and clears the collapsed range.
+        // Transparent absolute projections expose browser inconsistencies at
+        // CSS zoom: Chromium can hit the correct node yet derive its native
+        // caret from the document origin. Resolve the source anchor from the
+        // projection's own Range geometry for both ink and blank regions.
+        const resolved = nearestTextPositionInProjection(
+          contentEl,
+          this.canvas,
+          e.clientX,
+          e.clientY,
+          target,
+        );
+        if (resolved) {
+          if (e.detail >= 2) {
+            selection.removeAllRanges();
+            selectProjectionUnit(selection, contentEl, resolved, e.detail >= 3 ? 'line' : 'word');
+            this.endContentSelectionDrag();
             e.preventDefault();
+            return;
           }
+          const existingAnchor =
+            e.shiftKey && selection.anchorNode instanceof Text
+              ? { node: selection.anchorNode, offset: selection.anchorOffset }
+              : null;
+          const anchor =
+            existingAnchor && this.a11yRoot!.contains(existingAnchor.node)
+              ? existingAnchor
+              : resolved;
+          if (e.shiftKey && existingAnchor) extendSelection(selection, anchor, resolved);
+          else selection.collapse(resolved.node, resolved.offset);
+          this.contentSelectionAnchor = anchor;
+          this.blankRegionSelectionDrag = true;
+          e.preventDefault();
         }
+      });
+      this.a11yRoot.addEventListener('dblclick', (e) => {
+        const target = e.target as HTMLElement;
+        const contentEl = target.closest('[data-vecto-content]') as HTMLElement | null;
+        if (!contentEl || getComputedStyle(contentEl).pointerEvents !== 'auto') return;
+        const selection = window.getSelection();
+        const caret = nearestTextPositionInProjection(
+          contentEl,
+          this.canvas,
+          e.clientX,
+          e.clientY,
+          target,
+        );
+        if (!selection || !caret) return;
+        selection.removeAllRanges();
+        selectProjectionUnit(selection, contentEl, caret, 'word');
+        this.endContentSelectionDrag();
+        e.preventDefault();
       });
       this.a11yRoot.addEventListener('mousemove', (e) => {
         if (!this.blankRegionSelectionDrag) return;
         const selection = window.getSelection();
         if (!selection || selection.rangeCount === 0) return;
-        const focus = caretTextPositionAt(e.clientX, e.clientY);
-        if (focus) selection.extend(focus.node, focus.offset);
+        const target = e.target as HTMLElement;
+        let contentEl = target.closest('[data-vecto-content]') as HTMLElement | null;
+        if (!contentEl) {
+          let bestDistance = Infinity;
+          for (const candidate of this.contentElements.values()) {
+            if (getComputedStyle(candidate).pointerEvents !== 'auto') continue;
+            const rect = candidate.getBoundingClientRect();
+            const dx =
+              e.clientX < rect.left
+                ? rect.left - e.clientX
+                : e.clientX > rect.right
+                  ? e.clientX - rect.right
+                  : 0;
+            const dy =
+              e.clientY < rect.top
+                ? rect.top - e.clientY
+                : e.clientY > rect.bottom
+                  ? e.clientY - rect.bottom
+                  : 0;
+            const distance = dx * dx + dy * dy;
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              contentEl = candidate;
+            }
+          }
+        }
+        const focus = contentEl
+          ? nearestTextPositionInProjection(contentEl, this.canvas, e.clientX, e.clientY, target)
+          : null;
+        const anchor = this.contentSelectionAnchor;
+        if (focus && anchor) {
+          extendSelection(selection, anchor, focus);
+        }
       });
-      const endDrag = () => {
-        this.blankRegionSelectionDrag = false;
-        if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
-      };
+      const endDrag = () => this.endContentSelectionDrag();
       this.a11yRoot.addEventListener('mouseup', endDrag);
       // Pointer may leave the overlay entirely (e.g. moving above the viewport).
       this.a11yRoot.addEventListener('mouseleave', endDrag);
+      window.addEventListener('mouseup', endDrag);
+      window.addEventListener('blur', endDrag);
+      this.contentSelectionEndListener = endDrag;
       if (canvas.parentElement) {
         canvas.parentElement.appendChild(this.a11yRoot);
       }
@@ -578,6 +933,7 @@ export class Scene {
     if (typeof document !== 'undefined' && document.fonts) {
       this.fontLoadHandler = () => {
         clearCssLineBoxMetrics();
+        this.contentFontEpoch++;
         this.markDirty();
       };
       document.fonts.ready.then(this.fontLoadHandler);
@@ -585,6 +941,26 @@ export class Scene {
     }
 
     this.setupEvents();
+  }
+
+  private endContentSelectionDrag(): void {
+    this.blankRegionSelectionDrag = false;
+    this.contentSelectionAnchor = null;
+    if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
+  }
+
+  private releaseContentSelectionForRebuild(el: HTMLElement): void {
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    const ownsSelection =
+      (this.contentSelectionAnchor && el.contains(this.contentSelectionAnchor.node)) ||
+      (selection?.anchorNode ? el.contains(selection.anchorNode) : false) ||
+      (selection?.focusNode ? el.contains(selection.focusNode) : false);
+    if (!ownsSelection) return;
+    this.endContentSelectionDrag();
+    selection?.removeAllRanges();
   }
 
   /**
@@ -620,6 +996,25 @@ export class Scene {
     return this;
   }
 
+  private clearContentGridState(entityId: string, el: HTMLElement): void {
+    const calibrationFrame = this.contentGridCalibrationFrames.get(entityId);
+    if (calibrationFrame !== undefined && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(calibrationFrame);
+    }
+    this.contentGridCalibrationFrames.delete(entityId);
+    this.contentGridCalibrationProbes.get(entityId)?.remove();
+    this.contentGridCalibrationProbes.delete(entityId);
+    delete el.dataset.vectoGridCalibrationPending;
+    delete el.dataset.vectoGridCalibration;
+    delete el.dataset.vectoGridReady;
+    delete el.dataset.vectoContentGrid;
+    delete el.dataset.vectoGridCarriers;
+    delete el.dataset.vectoGridMaterializeMs;
+    delete el.dataset.vectoGridCalibrationSamples;
+    delete el.dataset.vectoGridCalibrationMs;
+    this.releaseContentSelectionForRebuild(el);
+  }
+
   private removeA11yRecursively(node: Entity) {
     if (node.isDOMPortal) {
       (node as any).domElement.remove();
@@ -632,6 +1027,7 @@ export class Scene {
     // stale position, and leaks — the same orphan class as a11y elements.
     const contentEl = this.contentElements.get(node.id);
     if (contentEl) {
+      this.clearContentGridState(node.id, contentEl);
       contentEl.remove();
       this.contentElements.delete(node.id);
       this.a11yNeedsReorder = true;
@@ -721,6 +1117,11 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
+    if (typeof window !== 'undefined' && this.contentSelectionEndListener) {
+      window.removeEventListener('mouseup', this.contentSelectionEndListener);
+      window.removeEventListener('blur', this.contentSelectionEndListener);
+      this.contentSelectionEndListener = null;
+    }
     if (
       typeof window !== 'undefined' &&
       this.canvas &&
@@ -738,6 +1139,15 @@ export class Scene {
     this.a11yElements.clear();
     for (const el of this.contentElements.values()) el.remove();
     this.contentElements.clear();
+    if (typeof cancelAnimationFrame === 'function') {
+      for (const frame of this.contentGridCalibrationFrames.values()) {
+        cancelAnimationFrame(frame);
+      }
+    }
+    this.contentGridCalibrationFrames.clear();
+    for (const probe of this.contentGridCalibrationProbes.values()) probe.remove();
+    this.contentGridCalibrationProbes.clear();
+    this.endContentSelectionDrag();
     this.pointRenderer?.destroy();
     // Release the main renderer's backend (e.g. WebGLRenderer + GL context)
     // before GC — prevents context leakage across SPA/XR recreate cycles.
@@ -1076,6 +1486,10 @@ export class Scene {
       if (attrs.label !== undefined && el.getAttribute('aria-label') !== attrs.label) {
         el.setAttribute('aria-label', attrs.label);
       }
+      const semanticPointerEvents = attrs.pointerEvents ?? 'auto';
+      if (el.style.pointerEvents !== semanticPointerEvents) {
+        el.style.pointerEvents = semanticPointerEvents;
+      }
       const implicitTabIndex =
         !isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role) ? 0 : null;
       const desiredTabIndex = attrs.tabIndex ?? implicitTabIndex;
@@ -1217,6 +1631,7 @@ export class Scene {
 
     if (!projection || !projection.text) {
       if (el) {
+        this.clearContentGridState(node.id, el);
         el.remove();
         this.contentElements.delete(node.id);
         this.a11yNeedsReorder = true;
@@ -1255,13 +1670,19 @@ export class Scene {
     }
 
     const lines = projection.lines;
-    if (lines && lines.length > 0) {
+    if (!projection.grid && el.dataset.vectoContentGrid !== undefined) {
+      this.clearContentGridState(node.id, el);
+    }
+    if (projection.grid) {
+      this.syncContentGridProjection(node, el, projection, projection.grid);
+    } else if (lines && lines.length > 0) {
       const signature = JSON.stringify({
         lines,
         fallbackFont: projection.font ?? '',
         fallbackLineHeight: projection.lineHeight ?? 16,
       });
       if (el.dataset.vectoProjectionLines !== signature) {
+        this.releaseContentSelectionForRebuild(el);
         el.replaceChildren();
         for (let index = 0; index < lines.length; index++) {
           const line = lines[index];
@@ -1302,7 +1723,10 @@ export class Scene {
         el.dataset.vectoProjectionLines = signature;
       }
     } else {
-      if (el.textContent !== projection.text) el.textContent = projection.text;
+      if (el.textContent !== projection.text) {
+        this.releaseContentSelectionForRebuild(el);
+        el.textContent = projection.text;
+      }
       delete el.dataset.vectoProjectionLines;
     }
 
@@ -1403,6 +1827,249 @@ export class Scene {
     }
     const display = visible ? '' : 'none';
     if (el.style.display !== display) el.style.display = display;
+  }
+
+  /**
+   * Materialize a prepared grid in logical source order while positioning each
+   * carrier from the shared canvas geometry. Browser font measurement happens
+   * later in one cold read/write batch, never inside projection synchronization.
+   */
+  private syncContentGridProjection(
+    node: Entity,
+    el: HTMLElement,
+    projection: ContentProjection,
+    grid: PreparedContentGrid,
+  ): void {
+    if (grid.source !== projection.text) {
+      throw new Error('ContentProjection.grid.source must equal ContentProjection.text');
+    }
+    const signature = `${grid.revision}`;
+    if (el.dataset.vectoContentGrid !== signature) {
+      const materializeStart = typeof performance !== 'undefined' ? performance.now() : 0;
+      this.clearContentGridState(node.id, el);
+      el.replaceChildren();
+      const projectionLines = projection.lines ?? [];
+      for (let lineIndex = 0; lineIndex < grid.lines.length; lineIndex++) {
+        const gridLine = grid.lines[lineIndex];
+        const projectedLine = projectionLines[lineIndex];
+        const lineHeight = projectedLine?.lineHeight ?? grid.lineHeight;
+        const baseline = projectedLine?.baseline ?? grid.baseline;
+        const lineFont = projectedLine?.font ?? grid.font;
+        const lineElement = document.createElement('span');
+        // The prepared grid already resolved bidi x coordinates. Keep carrier
+        // flow logical/LTR so the browser does not reorder it a second time.
+        lineElement.dir = 'ltr';
+        lineElement.dataset.vectoGridLine = `${lineIndex}`;
+        lineElement.style.position = 'absolute';
+        lineElement.style.left = `${projectedLine?.x ?? 0}px`;
+        lineElement.style.top = `${
+          (projectedLine?.y ?? lineIndex * grid.lineHeight) +
+          baseline -
+          cssLineBoxBaseline(lineFont, lineHeight)
+        }px`;
+        lineElement.style.width = `${gridLine.width}px`;
+        lineElement.style.height = `${lineHeight}px`;
+        lineElement.style.whiteSpace = 'pre';
+        lineElement.style.font = lineFont;
+        lineElement.style.lineHeight = `${lineHeight}px`;
+
+        if (gridLine.cells.length === 0) {
+          lineElement.textContent = grid.source.slice(gridLine.sourceEnd, gridLine.nextSourceStart);
+        } else {
+          let logicalX = 0;
+          for (let cellIndex = 0; cellIndex < gridLine.cells.length; cellIndex++) {
+            const cell = gridLine.cells[cellIndex];
+            const cellElement = document.createElement('span');
+            cellElement.dir = 'ltr';
+            const separator =
+              cellIndex === gridLine.cells.length - 1
+                ? grid.source.slice(gridLine.sourceEnd, gridLine.nextSourceStart)
+                : '';
+            const sourceText = grid.source.slice(cell.sourceStart, cell.sourceEnd);
+            cellElement.textContent = sourceText + separator;
+            cellElement.dataset.vectoGridCell = `${cellIndex}`;
+            cellElement.dataset.vectoGridSourceLength = `${sourceText.length}`;
+            cellElement.dataset.vectoGridSourceStart = `${cell.sourceStart}`;
+            cellElement.dataset.vectoGridSourceEnd = `${cell.sourceEnd}`;
+            cellElement.dataset.vectoGridCaretOffsets = cell.sourceCaretOffsets.join(',');
+            cellElement.dataset.vectoGridLevel = `${cell.level}`;
+            cellElement.dataset.vectoGridAdvance = `${cell.advance}`;
+            cellElement.dataset.vectoGridX = `${cell.x}`;
+            // Stay in one logical inline flow so Firefox copy/find does not
+            // synthesize a newline between carriers. Relative offsets encode
+            // bidi visual order without changing DOM source order.
+            cellElement.style.position = 'relative';
+            cellElement.style.display = 'inline-block';
+            cellElement.style.left = `${cell.x - logicalX}px`;
+            cellElement.style.top = '0';
+            cellElement.style.width = `${cell.advance}px`;
+            cellElement.style.height = `${lineHeight}px`;
+            cellElement.style.boxSizing = 'border-box';
+            cellElement.style.verticalAlign = 'top';
+            cellElement.style.whiteSpace = 'pre';
+            cellElement.style.font = lineFont;
+            cellElement.style.lineHeight = `${lineHeight}px`;
+            cellElement.style.transformOrigin = '0 50%';
+            lineElement.appendChild(cellElement);
+            logicalX += cell.advance;
+          }
+        }
+        if (lineIndex === 0) {
+          for (const [basis, left, top] of [
+            ['origin', 0, 0],
+            ['x', 1, 0],
+            ['y', 0, 1],
+          ] as const) {
+            const marker = document.createElement('span');
+            marker.dataset.vectoGridBasis = basis;
+            marker.setAttribute('aria-hidden', 'true');
+            marker.style.position = 'absolute';
+            marker.style.left = `${left}px`;
+            marker.style.top = `${top}px`;
+            marker.style.width = '0';
+            marker.style.height = '0';
+            marker.style.pointerEvents = 'none';
+            marker.style.userSelect = 'none';
+            lineElement.appendChild(marker);
+          }
+        }
+        el.appendChild(lineElement);
+      }
+      el.dataset.vectoProjectionLines = signature;
+      el.dataset.vectoContentGrid = signature;
+      el.dataset.vectoGridCarriers = `${el.querySelectorAll('[data-vecto-grid-cell]').length}`;
+      if (typeof performance !== 'undefined') {
+        el.dataset.vectoGridMaterializeMs = `${performance.now() - materializeStart}`;
+      }
+      delete el.dataset.vectoGridCalibration;
+      delete el.dataset.vectoGridReady;
+    }
+
+    const calibrationKey = `${signature}:${this.contentFontEpoch}`;
+    if (el.dataset.vectoGridCalibration !== calibrationKey) {
+      this.scheduleContentGridCalibration(node.id, el, calibrationKey);
+    }
+  }
+
+  private scheduleContentGridCalibration(
+    entityId: string,
+    el: HTMLElement,
+    calibrationKey: string,
+  ): void {
+    if (typeof requestAnimationFrame !== 'function') return;
+    if (el.dataset.vectoGridCalibrationPending === calibrationKey) return;
+    const previous = this.contentGridCalibrationFrames.get(entityId);
+    if (previous !== undefined && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(previous);
+    }
+    this.contentGridCalibrationProbes.get(entityId)?.remove();
+    this.contentGridCalibrationProbes.delete(entityId);
+    const calibrationStart = typeof performance !== 'undefined' ? performance.now() : 0;
+
+    const probe = document.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.dataset.vectoGridProbe = entityId;
+    probe.style.position = 'fixed';
+    probe.style.left = '-100000px';
+    probe.style.top = '0';
+    probe.style.width = '100000px';
+    probe.style.height = '1px';
+    probe.style.visibility = 'hidden';
+    probe.style.pointerEvents = 'none';
+    probe.style.whiteSpace = 'pre';
+    probe.style.contain = 'layout style paint';
+    const measurements: Array<{
+      targets: HTMLElement[];
+      targetWidth: number;
+      sourceLength: number;
+      source: Text;
+    }> = [];
+    const measurementsByKey = new Map<string, (typeof measurements)[number]>();
+    for (const target of el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')) {
+      const sourceLength = Number(target.dataset.vectoGridSourceLength ?? 0);
+      const targetWidth = Number(target.dataset.vectoGridAdvance ?? 0);
+      if (sourceLength <= 0 || targetWidth <= 0) continue;
+      const sourceText = target.textContent?.slice(0, sourceLength) ?? '';
+      if (!sourceText) continue;
+      const measurementKey = JSON.stringify([
+        target.style.font,
+        target.style.lineHeight,
+        targetWidth,
+        sourceText,
+      ]);
+      const shared = measurementsByKey.get(measurementKey);
+      if (shared) {
+        shared.targets.push(target);
+        continue;
+      }
+      const carrier = document.createElement('span');
+      carrier.dir = 'ltr';
+      carrier.style.position = 'absolute';
+      carrier.style.left = '0';
+      carrier.style.top = '0';
+      carrier.style.whiteSpace = 'pre';
+      carrier.style.font = target.style.font;
+      carrier.style.lineHeight = target.style.lineHeight;
+      carrier.style.fontVariantLigatures = 'none';
+      carrier.style.fontKerning = 'none';
+      const source = document.createTextNode(sourceText);
+      carrier.appendChild(source);
+      probe.appendChild(carrier);
+      const measurement = { targets: [target], targetWidth, sourceLength, source };
+      measurements.push(measurement);
+      measurementsByKey.set(measurementKey, measurement);
+    }
+    document.documentElement.appendChild(probe);
+    el.dataset.vectoGridCalibrationSamples = `${measurements.length}`;
+    this.contentGridCalibrationProbes.set(entityId, probe);
+    el.dataset.vectoGridCalibrationPending = calibrationKey;
+    const readFrame = requestAnimationFrame(() => {
+      if (!el.isConnected || el.dataset.vectoGridCalibrationPending !== calibrationKey) {
+        probe.remove();
+        this.contentGridCalibrationProbes.delete(entityId);
+        this.contentGridCalibrationFrames.delete(entityId);
+        return;
+      }
+      const updates: Array<{ element: HTMLElement; scale: number }> = [];
+      let valid = true;
+      for (const measurement of measurements) {
+        const range = document.createRange();
+        range.setStart(measurement.source, 0);
+        range.setEnd(measurement.source, measurement.sourceLength);
+        const natural = range.getBoundingClientRect().width;
+        if (!Number.isFinite(natural) || natural <= 0) {
+          valid = false;
+          break;
+        }
+        const scale = measurement.targetWidth / natural;
+        for (const element of measurement.targets) updates.push({ element, scale });
+      }
+      probe.remove();
+      this.contentGridCalibrationProbes.delete(entityId);
+      if (!valid) {
+        delete el.dataset.vectoGridCalibrationPending;
+        this.contentGridCalibrationFrames.delete(entityId);
+        return;
+      }
+      const writeFrame = requestAnimationFrame(() => {
+        if (!el.isConnected || el.dataset.vectoGridCalibrationPending !== calibrationKey) {
+          this.contentGridCalibrationFrames.delete(entityId);
+          return;
+        }
+        for (const { element, scale } of updates) {
+          element.style.transform = Math.abs(scale - 1) <= 0.001 ? '' : `scaleX(${scale})`;
+        }
+        el.dataset.vectoGridCalibration = calibrationKey;
+        el.dataset.vectoGridReady = 'true';
+        if (typeof performance !== 'undefined') {
+          el.dataset.vectoGridCalibrationMs = `${performance.now() - calibrationStart}`;
+        }
+        delete el.dataset.vectoGridCalibrationPending;
+        this.contentGridCalibrationFrames.delete(entityId);
+      });
+      this.contentGridCalibrationFrames.set(entityId, writeFrame);
+    });
+    this.contentGridCalibrationFrames.set(entityId, readFrame);
   }
 
   private enforceA11yDomOrder(): void {

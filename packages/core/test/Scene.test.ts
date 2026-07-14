@@ -973,6 +973,23 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
+    it('lets semantic containers opt out of pointer hit testing', () => {
+      class SemanticContainer extends ContentEntity {
+        override getA11yAttributes() {
+          return { role: 'grid', pointerEvents: 'none' as const };
+        }
+      }
+
+      const scene = makeDomScene();
+      const container = new SemanticContainer('semantic-container');
+      container.interactive = true;
+      scene.add(container);
+      tick(scene);
+
+      expect(scene.getA11yElement(container.id)?.style.pointerEvents).toBe('none');
+      scene.destroy();
+    });
+
     it('keeps visual-line separators inside positioned line elements', () => {
       class MultilineContentEntity extends ContentEntity {
         override getContentProjection() {

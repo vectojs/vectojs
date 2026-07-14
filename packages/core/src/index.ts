@@ -34,4 +34,5 @@ export { SVGEntity } from './text/SVGEntity';
 export * from './tree/ComputeParticleEntity';
 export * from './text/ArabicShaper';
 export * from './text/BidiResolver';
+export * from './text/PreparedContentGrid';
 export * from './text/Typography';

@@ -197,6 +197,7 @@ export class Table extends UIComponent {
     return {
       role: 'grid',
       label: `Data table with ${this.headers.length} columns and ${this.rows.length} rows.`,
+      pointerEvents: 'none',
     };
   }
 

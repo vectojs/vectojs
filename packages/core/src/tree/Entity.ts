@@ -7,6 +7,7 @@ import {
   type TweenConfig,
   type SpringConfig,
 } from '../animation/drivers';
+import type { PreparedContentGrid } from '../text/PreparedContentGrid';
 
 /** A numeric transform/visual property that participates in the animation system. */
 export type AnimatableProp = 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity';
@@ -145,6 +146,12 @@ export interface ContentProjection {
    * highlight drifts off the drawn glyphs.
    */
   ligatures?: 'normal' | 'none';
+  /**
+   * Retained source-aware grid geometry for code-like content. Canvas paint
+   * and semantic projection share this plan so grapheme, tab, wide-character,
+   * shaping, and bidi boundaries cannot drift between the two surfaces.
+   */
+  grid?: PreparedContentGrid;
 }
 
 /** Typography for a native input projected by the accessibility layer. */
@@ -174,6 +181,12 @@ export interface A11yAttributes {
   label?: string;
   /** Explicit keyboard tab order for projected non-native interaction regions. */
   tabIndex?: number;
+  /**
+   * Whether the semantic shadow element participates in pointer hit testing.
+   * Use `'none'` for structural containers whose selectable or interactive
+   * descendants own the pointer surface. Defaults to `'auto'`.
+   */
+  pointerEvents?: 'auto' | 'none';
   /** Destination URL; only meaningful for `tag: 'a'`. */
   href?: string;
   /** Link target; only meaningful for `tag: 'a'`. Defaults to current window. */

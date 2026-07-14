@@ -1,8 +1,9 @@
 import {
-  ArabicShaper,
   Entity,
   IRenderer,
+  prepareContentGrid,
   type ContentProjection,
+  type PreparedContentGrid,
   type StyledSpan,
   type TextStyle,
   SVGEntity,
@@ -407,29 +408,6 @@ interface CodeSegment {
   color: string;
 }
 
-/** One drawn grid cell: a grapheme cluster pinned to a fixed column. */
-interface CodeCell {
-  text: string;
-  color: string;
-  col: number;
-}
-
-// East Asian wide / fullwidth / emoji clusters occupy two grid cells, like a
-// terminal's wcwidth. Everything else gets one cell.
-const WIDE_CLUSTER =
-  /^(?:[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Extended_Pictographic})/u;
-
-const clusterSegmenter =
-  typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter() : null;
-
-/** Split text into grapheme clusters (code points when Intl.Segmenter is unavailable). */
-function splitClusters(text: string): string[] {
-  if (clusterSegmenter) {
-    return Array.from(clusterSegmenter.segment(text), (part) => part.segment);
-  }
-  return Array.from(text);
-}
-
 /** Tokenize a line of code into colored segments (keyword / string / comment / default). */
 function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme>): CodeSegment[] {
   const keywords = KEYWORD_SETS[lang];
@@ -523,7 +501,7 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
  */
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
-  private cellRows: CodeCell[][] = [];
+  private grid: PreparedContentGrid | null = null;
   private cellWidth = 0;
   private source: string;
 
@@ -571,7 +549,7 @@ export class CodeBlock extends UIComponent {
 
   public override getContentProjection(): ContentProjection | null {
     if (!this.source) return null;
-    const sourceLines = this.source.split('\n');
+    const grid = this.ensureGrid();
     return {
       text: this.source,
       font: this.codeFont,
@@ -579,9 +557,9 @@ export class CodeBlock extends UIComponent {
       // Every row is absolutely positioned from the same local coordinates as
       // render(). A single pre-wrap DOM text node would introduce browser
       // wrapping for long source lines that canvas intentionally keeps intact.
-      lines: sourceLines.map((text, row) => ({
-        text,
-        separatorAfter: row < sourceLines.length - 1 ? '\n' : undefined,
+      lines: grid.lines.map((line, row) => ({
+        text: this.source.slice(line.sourceStart, line.sourceEnd),
+        separatorAfter: this.source.slice(line.sourceEnd, line.nextSourceStart) || undefined,
         x: this.pad,
         y: this.pad + row * this.lineH,
         baseline: this.lineH * 0.75,
@@ -592,32 +570,33 @@ export class CodeBlock extends UIComponent {
       // render() draws cell-by-cell (no ligatures can form); the DOM copy
       // must not ligate either or Firefox selection geometry drifts.
       ligatures: 'none',
+      grid,
     };
   }
 
   private buildLines(code: string): void {
-    const rawLines = code.split('\n');
+    const rawLines = code.split(/\r\n|\r|\n/);
     this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
-    // Pre-split every segment into grapheme-cluster cells with fixed columns
-    // (render() draws each cell independently — see the comment there).
-    this.cellRows = this.lines.map((segs) => {
-      const cells: CodeCell[] = [];
-      let col = 0;
-      for (const segment of segs) {
-        // Shape Arabic once per segment so cell-by-cell drawing keeps
-        // contextual letterforms — isolated raw letters would lose the
-        // browser's own run shaping.
-        const shaped = ArabicShaper.shapeArabic(segment.text).shapedText;
-        for (const cluster of splitClusters(shaped)) {
-          if (cluster !== ' ' && cluster !== '\t') {
-            cells.push({ text: cluster, color: segment.color, col });
-          }
-          col += WIDE_CLUSTER.test(cluster) ? 2 : 1;
-        }
-      }
-      return cells;
-    });
+    this.grid = null;
     this.height = this.pad * 2 + rawLines.length * this.lineH;
+  }
+
+  private ensureGrid(): PreparedContentGrid {
+    const cellWidth = this.cellWidth || Math.max(1, measureText('M', this.codeFont));
+    if (
+      !this.grid ||
+      this.grid.source !== this.source ||
+      this.grid.font !== this.codeFont ||
+      this.grid.cellWidth !== cellWidth
+    ) {
+      this.grid = prepareContentGrid(this.source, {
+        font: this.codeFont,
+        cellWidth,
+        lineHeight: this.lineH,
+        baseline: this.lineH * 0.75,
+      });
+    }
+    return this.grid;
   }
 
   /** Code blocks are decorative — not interactive. */
@@ -631,7 +610,7 @@ export class CodeBlock extends UIComponent {
     r.roundRect(0, 0, this.width, this.height, 8);
     r.fill(this.theme.codeBgColor);
 
-    const cellWidth = this.cellWidth || Math.max(1, measureText('M', this.codeFont));
+    const grid = this.ensureGrid();
 
     // Per-cluster grid drawing: every grapheme cluster is its own fillText at
     // col × cellWidth. Positioning whole segments on the grid is not enough —
@@ -643,15 +622,26 @@ export class CodeBlock extends UIComponent {
     // the one engine that needs it — doesn't implement it). Wide CJK/emoji
     // clusters advance two cells, terminal wcwidth-style, so following
     // tokens no longer overlap them.
-    for (let row = 0; row < this.cellRows.length; row++) {
+    for (let row = 0; row < grid.lines.length; row++) {
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
-      for (const cell of this.cellRows[row]) {
+      const segments = this.lines[row];
+      let segmentIndex = 0;
+      let segmentEnd = segments[0]?.text.length ?? 0;
+      const lineStart = grid.lines[row].sourceStart;
+      for (const cell of grid.lines[row].cells) {
+        const localSourceStart = cell.sourceStart - lineStart;
+        while (segmentIndex < segments.length - 1 && localSourceStart >= segmentEnd) {
+          segmentIndex++;
+          segmentEnd += segments[segmentIndex].text.length;
+        }
+        const sourceText = this.source.slice(cell.sourceStart, cell.sourceEnd);
+        if (cell.advance <= 0 || sourceText === ' ' || sourceText === '\t') continue;
         r.fillText(
-          cell.text,
-          this.pad + cell.col * cellWidth,
+          cell.glyph,
+          this.pad + cell.x,
           yBaseline,
           this.codeFont,
-          cell.color,
+          segments[segmentIndex]?.color ?? this.theme.codeColor,
         );
       }
     }

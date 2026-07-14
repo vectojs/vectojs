@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { ArabicShaper } from '../src/text/ArabicShaper';
 
 describe('ArabicShaper', () => {
+  it('uses the connected final Lam-Alef form after a dual-joining letter', () => {
+    const result = ArabicShaper.shapeArabic('بلا');
+
+    expect(result.shapedText.at(-1)).toBe('\uFEFC');
+    expect([...result.indexMap]).toEqual([0, 1]);
+  });
   it('should shape Arabic text and compute monotonic indexMap', () => {
     // "كتب" (K-T-B) -> Isolated forms: ك (0x0643), ت (0x062A), ب (0x0628)
     // Shaped forms: Initial كـ (0xFEDF), Medial ـتـ (0xFE97), Final ـب (0xFE90)
