@@ -10,6 +10,21 @@ function clickFirstLink(entity: RichText): void {
   entity.children[0].emit('click', {});
 }
 
+const CODE_THEME = {
+  textColor: '#e2e8f0',
+  headingColor: '#f8fafc',
+  codeColor: '#a5f3fc',
+  codeBgColor: 'rgba(30, 41, 59, 0.85)',
+  quoteBorderColor: '#6366f1',
+  quoteTextColor: '#94a3b8',
+  hrColor: 'rgba(148, 163, 184, 0.3)',
+  tableBgColor: 'rgba(15, 15, 25, 0.4)',
+  tableHeaderBgColor: 'rgba(30, 41, 59, 0.85)',
+  bodyFont: 'Inter, system-ui, sans-serif',
+  codeFont: '"JetBrains Mono", "Fira Code", monospace',
+  fontSize: 16,
+};
+
 describe('Markdown', () => {
   it('creates child entities from heading tokens', () => {
     const md = new Markdown('# Hello World');
@@ -116,19 +131,7 @@ describe('Markdown', () => {
   });
 
   it('positions CodeBlock highlight segments by source columns, not token widths', () => {
-    const theme = {
-      textColor: '#e2e8f0',
-      headingColor: '#f8fafc',
-      codeColor: '#a5f3fc',
-      codeBgColor: 'rgba(30, 41, 59, 0.85)',
-      quoteBorderColor: '#6366f1',
-      quoteTextColor: '#94a3b8',
-      hrColor: 'rgba(148, 163, 184, 0.3)',
-      bodyFont: 'Inter, system-ui, sans-serif',
-      codeFont: '"JetBrains Mono", "Fira Code", monospace',
-      fontSize: 16,
-    };
-    const block = new CodeBlock('const scene = new Scene(canvas);', 'ts', 400, theme);
+    const block = new CodeBlock('const scene = new Scene(canvas);', 'ts', 400, CODE_THEME);
     const rendered: Array<{ text: string; x: number }> = [];
     const renderer = {
       beginPath() {},
@@ -142,10 +145,72 @@ describe('Markdown', () => {
     (block as unknown as { cellWidth: number }).cellWidth = 10;
     block.render(renderer as any);
 
-    const base = rendered.find((call) => call.text === 'const')!.x;
-    expect(rendered.find((call) => call.text === 'scene')!.x - base).toBe(60);
-    expect(rendered.find((call) => call.text === 'new')!.x - base).toBe(140);
-    expect(rendered.find((call) => call.text === 'Scene')!.x - base).toBe(180);
+    // Cell-by-cell drawing: source column × cellWidth, one call per cluster.
+    const source = 'const scene = new Scene(canvas);';
+    const base = rendered[0].x;
+    for (const call of rendered) {
+      const col = (call.x - base) / 10;
+      expect(Number.isInteger(col)).toBe(true);
+      expect(source[col]).toBe(call.text);
+    }
+    // Every non-space character is drawn — 'scene' starts at column 6,
+    // 'Scene' at column 18 — and nothing else is.
+    const textAtCol = (col: number) => rendered.find((call) => call.x - base === col * 10)?.text;
+    expect(textAtCol(6)).toBe('s');
+    expect(textAtCol(18)).toBe('S');
+    expect(rendered.length).toBe(source.replace(/ /g, '').length);
+  });
+
+  it('draws CodeBlock text one grapheme cluster per fillText, never whole runs', () => {
+    // 'office' is the classic ffi-ligature victim: Firefox Canvas2D ligates it
+    // inside a single fillText run and the glyphs leave the monospace grid.
+    // Per-cluster calls make ligature formation impossible in any browser.
+    const block = new CodeBlock('const office = "ffi affinity";', 'ts', 400, CODE_THEME);
+    const rendered: Array<{ text: string; x: number }> = [];
+    const renderer = {
+      beginPath() {},
+      roundRect() {},
+      fill() {},
+      fillText(text: string, x: number) {
+        rendered.push({ text, x });
+      },
+    };
+    (block as unknown as { cellWidth: number }).cellWidth = 10;
+    block.render(renderer as any);
+
+    for (const call of rendered) {
+      expect([...call.text].length).toBe(1);
+    }
+    // Spaces advance the column but are never drawn.
+    expect(rendered.some((call) => call.text === ' ')).toBe(false);
+    // 'office' occupies columns 6..11 exactly.
+    const base = rendered[0].x;
+    const officeCalls = rendered.filter(
+      (call) => (call.x - base) / 10 >= 6 && (call.x - base) / 10 <= 11,
+    );
+    expect(officeCalls.map((call) => call.text).join('')).toBe('office');
+  });
+
+  it('advances two grid cells for wide CJK clusters so following tokens do not overlap', () => {
+    const block = new CodeBlock('// 你好 world', 'ts', 400, CODE_THEME);
+    const rendered: Array<{ text: string; x: number }> = [];
+    const renderer = {
+      beginPath() {},
+      roundRect() {},
+      fill() {},
+      fillText(text: string, x: number) {
+        rendered.push({ text, x });
+      },
+    };
+    (block as unknown as { cellWidth: number }).cellWidth = 10;
+    block.render(renderer as any);
+
+    const base = rendered[0].x;
+    const colOf = (text: string) => (rendered.find((call) => call.text === text)!.x - base) / 10;
+    // '//' at 0,1; space at 2; 你 at 3 (wide → 2 cells); 好 at 5; space at 7; 'world' from 8.
+    expect(colOf('你')).toBe(3);
+    expect(colOf('好')).toBe(5);
+    expect(colOf('w')).toBe(8);
   });
 
   it('handles complex markdown without throwing', () => {

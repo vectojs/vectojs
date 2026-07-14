@@ -1,4 +1,5 @@
 import {
+  ArabicShaper,
   Entity,
   IRenderer,
   type ContentProjection,
@@ -406,6 +407,29 @@ interface CodeSegment {
   color: string;
 }
 
+/** One drawn grid cell: a grapheme cluster pinned to a fixed column. */
+interface CodeCell {
+  text: string;
+  color: string;
+  col: number;
+}
+
+// East Asian wide / fullwidth / emoji clusters occupy two grid cells, like a
+// terminal's wcwidth. Everything else gets one cell.
+const WIDE_CLUSTER =
+  /^(?:[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Extended_Pictographic})/u;
+
+const clusterSegmenter =
+  typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter() : null;
+
+/** Split text into grapheme clusters (code points when Intl.Segmenter is unavailable). */
+function splitClusters(text: string): string[] {
+  if (clusterSegmenter) {
+    return Array.from(clusterSegmenter.segment(text), (part) => part.segment);
+  }
+  return Array.from(text);
+}
+
 /** Tokenize a line of code into colored segments (keyword / string / comment / default). */
 function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme>): CodeSegment[] {
   const keywords = KEYWORD_SETS[lang];
@@ -499,6 +523,7 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
  */
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
+  private cellRows: CodeCell[][] = [];
   private cellWidth = 0;
   private source: string;
 
@@ -564,12 +589,34 @@ export class CodeBlock extends UIComponent {
         lineHeight: this.lineH,
       })),
       selectable: this.selectable,
+      // render() draws cell-by-cell (no ligatures can form); the DOM copy
+      // must not ligate either or Firefox selection geometry drifts.
+      ligatures: 'none',
     };
   }
 
   private buildLines(code: string): void {
     const rawLines = code.split('\n');
     this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
+    // Pre-split every segment into grapheme-cluster cells with fixed columns
+    // (render() draws each cell independently — see the comment there).
+    this.cellRows = this.lines.map((segs) => {
+      const cells: CodeCell[] = [];
+      let col = 0;
+      for (const segment of segs) {
+        // Shape Arabic once per segment so cell-by-cell drawing keeps
+        // contextual letterforms — isolated raw letters would lose the
+        // browser's own run shaping.
+        const shaped = ArabicShaper.shapeArabic(segment.text).shapedText;
+        for (const cluster of splitClusters(shaped)) {
+          if (cluster !== ' ' && cluster !== '\t') {
+            cells.push({ text: cluster, color: segment.color, col });
+          }
+          col += WIDE_CLUSTER.test(cluster) ? 2 : 1;
+        }
+      }
+      return cells;
+    });
     this.height = this.pad * 2 + rawLines.length * this.lineH;
   }
 
@@ -586,21 +633,26 @@ export class CodeBlock extends UIComponent {
 
     const cellWidth = this.cellWidth || Math.max(1, measureText('M', this.codeFont));
 
-    // Text lines — pure grid positioning.
-    // Firefox desktop Canvas2D applies OpenType ligatures to monospace fonts,
-    // causing measureText('office') to return the ligated 'ffi' width instead
-    // of 6 × cellWidth. A hybrid max(grid, measured) approach drifts and
-    // collapses inter-segment spacing. For monospace code, character count ×
-    // cellWidth is the authoritative position source.
-    for (let row = 0; row < this.lines.length; row++) {
-      const segs = this.lines[row];
-      let colOffset = 0;
+    // Per-cluster grid drawing: every grapheme cluster is its own fillText at
+    // col × cellWidth. Positioning whole segments on the grid is not enough —
+    // Firefox applies OpenType ligatures on Canvas2D (Chrome doesn't), so a
+    // run like "ffi affinity" ligates internally, compresses, and leaves a
+    // gap before the next segment. Ligatures cannot form across separate
+    // fillText calls, which makes the drawn grid identical in every browser
+    // (canvas textRendering:'optimizeSpeed' would be cheaper, but Firefox —
+    // the one engine that needs it — doesn't implement it). Wide CJK/emoji
+    // clusters advance two cells, terminal wcwidth-style, so following
+    // tokens no longer overlap them.
+    for (let row = 0; row < this.cellRows.length; row++) {
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
-      for (let col = 0; col < segs.length; col++) {
-        const segment = segs[col];
-        const posX = colOffset * cellWidth;
-        r.fillText(segment.text, this.pad + posX, yBaseline, this.codeFont, segment.color);
-        colOffset += segment.text.length;
+      for (const cell of this.cellRows[row]) {
+        r.fillText(
+          cell.text,
+          this.pad + cell.col * cellWidth,
+          yBaseline,
+          this.codeFont,
+          cell.color,
+        );
       }
     }
   }

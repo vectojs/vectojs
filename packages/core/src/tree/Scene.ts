@@ -152,6 +152,127 @@ function parseInlinePx(value: string | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** A concrete text caret position, usable as a Selection anchor or focus. */
+interface TextCaretPosition {
+  node: Text;
+  offset: number;
+}
+
+function collectTextNodes(root: HTMLElement): Text[] {
+  const out: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n as Text);
+  return out;
+}
+
+/** Bounding rect of a text node's full contents (null when it has no boxes). */
+function textNodeRect(node: Text): DOMRect | null {
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const rect = range.getBoundingClientRect();
+  return rect.width > 0 || rect.height > 0 ? rect : null;
+}
+
+/** Character offset in `node` whose caret is nearest to viewport `x`. */
+function offsetForX(node: Text, x: number): number {
+  const range = document.createRange();
+  let lo = 0;
+  let hi = node.data.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    range.setStart(node, mid);
+    range.setEnd(node, Math.min(mid + 1, node.data.length));
+    const rect = range.getBoundingClientRect();
+    if (x < rect.left + rect.width / 2) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/**
+ * Nearest text position inside one projected visual line for viewport `x`:
+ * before the first character, at the caret under `x`, or at the end of the
+ * visible text (excluding the trailing hard-break separator so a horizontal
+ * drag through padding doesn't silently select a newline).
+ */
+function nearestTextPositionInLine(line: HTMLElement, x: number): TextCaretPosition | null {
+  const texts = collectTextNodes(line);
+  if (texts.length === 0) return null;
+  const firstRect = textNodeRect(texts[0]);
+  if (firstRect && x <= firstRect.left) return { node: texts[0], offset: 0 };
+  for (const node of texts) {
+    const rect = textNodeRect(node);
+    if (rect && x >= rect.left && x <= rect.right) {
+      return { node, offset: offsetForX(node, x) };
+    }
+  }
+  const last = texts[texts.length - 1];
+  let end = last.data.length;
+  while (end > 0 && last.data[end - 1] === '\n') end--;
+  return { node: last, offset: end };
+}
+
+/**
+ * Resolve the text position nearest to viewport `(x, y)` inside a content
+ * projection whose line boxes are absolutely positioned (out of flow — the
+ * browser itself cannot anchor a selection in the container's blank space).
+ * Picks the vertically nearest line, then the caret nearest to `x` within it.
+ */
+function nearestTextPositionInProjection(
+  contentEl: HTMLElement,
+  x: number,
+  y: number,
+): TextCaretPosition | null {
+  let bestLine: HTMLElement | null = null;
+  let bestDist = Infinity;
+  for (let i = 0; i < contentEl.children.length; i++) {
+    const child = contentEl.children[i] as HTMLElement;
+    const rect = child.getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) continue;
+    const dy = y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+    const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+    // The vertically nearest line wins; x only breaks ties within a band.
+    const dist = dy * 4096 + dx;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestLine = child;
+    }
+  }
+  if (bestLine) return nearestTextPositionInLine(bestLine, x);
+  // Projection with a single flowed text node (no per-line children).
+  const texts = collectTextNodes(contentEl);
+  if (texts.length === 0) return null;
+  const rect = contentEl.getBoundingClientRect();
+  const node = texts[texts.length - 1];
+  return x <= rect.left ? { node: texts[0], offset: 0 } : { node, offset: node.data.length };
+}
+
+/**
+ * Caret text position under the pointer, for driving a manual selection drag:
+ * the browser's caret-from-point when it lands in text, otherwise snapped to
+ * the nearest text of the content projection under the pointer.
+ */
+function caretTextPositionAt(x: number, y: number): TextCaretPosition | null {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  if (doc.caretPositionFromPoint) {
+    const pos = doc.caretPositionFromPoint(x, y);
+    if (pos && pos.offsetNode.nodeType === Node.TEXT_NODE) {
+      return { node: pos.offsetNode as Text, offset: pos.offset };
+    }
+  } else if (doc.caretRangeFromPoint) {
+    const range = doc.caretRangeFromPoint(x, y);
+    if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
+      return { node: range.startContainer as Text, offset: range.startOffset };
+    }
+  }
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  const contentEl = el?.closest('[data-vecto-content]') as HTMLElement | null;
+  return contentEl ? nearestTextPositionInProjection(contentEl, x, y) : null;
+}
+
 /**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
  * and maintains the accessibility/automation shadow layer.
@@ -229,6 +350,13 @@ export class Scene {
   /** DOM nodes mirroring static text content, keyed by entity id. */
   private contentElements: Map<string, HTMLElement> = new Map();
   private contentProjectionEnabled: boolean = true;
+  /**
+   * True while a text-selection drag that started on a projection's blank
+   * region (no text node under the press) is being driven manually — the
+   * browser has no native anchor for it, so mousemove extends the Selection
+   * from the position we resolved ourselves.
+   */
+  private blankRegionSelectionDrag = false;
   // Animation/interactive flags collected during the render walk (tree-walk
   // fusion): the loop reads last frame's answers instead of re-walking the
   // tree up to 4× per tick. Start true so the first tick stays conservative.
@@ -367,15 +495,37 @@ export class Scene {
       this.a11yRoot.addEventListener('mousedown', (e) => {
         // Only promote when the mousedown lands on a selectable content div.
         const target = e.target as HTMLElement;
-        if (
-          target !== this.a11yRoot &&
-          target.closest('[data-vecto-content]') &&
-          getComputedStyle(target.closest('[data-vecto-content]')!).pointerEvents === 'auto'
-        ) {
-          this.a11yRoot!.style.pointerEvents = 'auto';
+        const contentEl = target.closest('[data-vecto-content]') as HTMLElement | null;
+        if (target === this.a11yRoot || !contentEl) return;
+        if (getComputedStyle(contentEl).pointerEvents !== 'auto') return;
+        this.a11yRoot!.style.pointerEvents = 'auto';
+        // A press on the container's blank region (padding, space past a
+        // line's end, the gap between lines) has no text node under the
+        // cursor — every line box is absolutely positioned (out of flow), so
+        // the browser cannot resolve a native selection anchor there and the
+        // drag would select nothing. Anchor at the nearest text position and
+        // drive the extension manually until mouseup.
+        if (target === contentEl) {
+          const anchor = nearestTextPositionInProjection(contentEl, e.clientX, e.clientY);
+          const selection = window.getSelection();
+          if (anchor && selection) {
+            selection.collapse(anchor.node, anchor.offset);
+            this.blankRegionSelectionDrag = true;
+            // Without this the browser's own (failed) anchor attempt runs
+            // after the listener and clears the collapsed range.
+            e.preventDefault();
+          }
         }
       });
+      this.a11yRoot.addEventListener('mousemove', (e) => {
+        if (!this.blankRegionSelectionDrag) return;
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return;
+        const focus = caretTextPositionAt(e.clientX, e.clientY);
+        if (focus) selection.extend(focus.node, focus.offset);
+      });
       const endDrag = () => {
+        this.blankRegionSelectionDrag = false;
         if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
       };
       this.a11yRoot.addEventListener('mouseup', endDrag);
@@ -1160,6 +1310,14 @@ export class Scene {
     if (el.style.font !== font) el.style.font = font;
     const lineHeight = projection.lineHeight !== undefined ? `${projection.lineHeight}px` : '';
     if (el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
+
+    // Grid-drawn text (ligatures: 'none') needs the DOM copy laid out with
+    // the same per-cell advances as the canvas; inherited by the line spans.
+    const ligatures = projection.ligatures === 'none' ? 'none' : '';
+    if (el.style.getPropertyValue('font-variant-ligatures') !== ligatures) {
+      el.style.setProperty('font-variant-ligatures', ligatures);
+      el.style.setProperty('font-kerning', ligatures ? 'none' : '');
+    }
 
     // Interactive entities already project an a11y node — hide the text copy
     // from screen readers so nothing is announced twice. Static text has no

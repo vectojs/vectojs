@@ -137,6 +137,14 @@ export interface ContentProjection {
   baseline?: number;
   /** Explicit visual lines for mixed-style or internally inset text. */
   lines?: ContentProjectionLine[];
+  /**
+   * Set to `'none'` for grid-drawn monospace content (code blocks, editors):
+   * the Scene disables OpenType ligatures and kerning on the projected DOM
+   * text so its selection geometry matches canvas text drawn cell-by-cell.
+   * Firefox otherwise ligates sequences like `ffi` in the DOM copy and the
+   * highlight drifts off the drawn glyphs.
+   */
+  ligatures?: 'normal' | 'none';
 }
 
 /** Typography for a native input projected by the accessibility layer. */
