@@ -570,11 +570,29 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     });
     await page.waitForFunction('window.__ready === true', { timeout: 10_000 });
     if (browserCase.zoom) {
+      const calibrationBeforeZoom = await page.evaluate(() => {
+        const app = (window as any).__vecto;
+        return app.scene.getContentElement(app.code.id)?.dataset.vectoGridCalibration ?? '';
+      });
       await page.evaluate((zoom) => {
         document.body.style.zoom = String(zoom);
+        // CSS zoom is used here to reproduce fractional browser scaling in
+        // both engines. This fixture disables automatic window resize, so it
+        // mirrors the application's required explicit viewport notification.
+        const app = (window as any).__vecto;
+        app.scene.resize(app.scene.width, app.scene.height);
       }, browserCase.zoom);
-      await page.evaluate(
-        () => new Promise((done) => requestAnimationFrame(() => done(undefined))),
+      await page.waitForFunction(
+        (previous) => {
+          const app = (window as any).__vecto;
+          const root = app.scene.getContentElement(app.code.id);
+          return (
+            root?.dataset.vectoGridReady === 'true' &&
+            root.dataset.vectoGridCalibration !== previous
+          );
+        },
+        {},
+        calibrationBeforeZoom,
       );
     }
     await page.waitForFunction(() => {
@@ -795,6 +813,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         }),
       );
       const codeProjection = app.scene.getContentElement(app.code.id) as HTMLElement;
+      const codePreparedLines = app.code.getContentProjection().grid.lines;
       const codeTraceRows = [...new Set(codeTrace.map((entry) => entry.y))].map((y) =>
         codeTrace.filter((entry) => entry.y === y),
       );
@@ -813,6 +832,10 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
             range.setEnd(cell.firstChild!, sourceLength);
             const rect = range.getBoundingClientRect();
             return {
+              source: cell.textContent?.slice(0, sourceLength) ?? '',
+              target,
+              rectWidth: rect.width,
+              transform: cell.style.transform,
               startError: Math.abs(
                 rect.left - (lineRect.left + Number(cell.dataset.vectoGridX) * scale),
               ),
@@ -823,7 +846,8 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         return {
           domWidth: lineRect.width,
           localWidth,
-          cells: [10, 4, 4, 5][index],
+          expectedWidth: codePreparedLines[index].width,
+          details: cells,
           maxStartError: Math.max(0, ...cells.map((cell) => cell.startError)),
           maxWidthError: Math.max(0, ...cells.map((cell) => cell.widthError)),
         };
@@ -1146,7 +1170,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     );
     for (const [index, line] of result.codeGrid.lines.entries()) {
       const localDomWidth = line.localWidth;
-      const expectedWidth = line.cells * result.codeGrid.cellWidth;
+      const expectedWidth = line.expectedWidth;
       assert.ok(
         Math.abs(localDomWidth - expectedWidth) <= 1,
         `${browserCase.name} CodeBlock row ${index} DOM/grid width mismatch: ${localDomWidth}px versus ${expectedWidth}px`,
@@ -1157,7 +1181,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       );
       assert.ok(
         line.maxWidthError <= 1,
-        `${browserCase.name} CodeBlock row ${index} projected cell width drift ${line.maxWidthError}px`,
+        `${browserCase.name} CodeBlock row ${index} projected cell width drift ${line.maxWidthError}px ${JSON.stringify(line)}`,
       );
     }
     assert.ok(
@@ -1391,6 +1415,17 @@ async function main(): Promise<void> {
       executablePath: firefox,
       dpr: 1.5,
       zoom: 0.9,
+    },
+    {
+      name: 'firefox-missing-cjk-dpr1.5-zoom90',
+      browser: 'firefox',
+      executablePath: firefox,
+      dpr: 1.5,
+      zoom: 0.9,
+      extraPrefsFirefox: {
+        'font.system.whitelist': 'DejaVu Sans,Noto Color Emoji',
+        'font.name.monospace.x-western': 'DejaVu Sans',
+      },
     },
     {
       name: 'firefox-noto-serif',

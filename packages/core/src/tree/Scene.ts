@@ -634,6 +634,9 @@ export class Scene {
   private contentGridCalibrationProbes: Map<string, HTMLElement> = new Map();
   /** Invalidates grid font calibration after browser font availability changes. */
   private contentFontEpoch = 0;
+  /** Cached Canvas-to-client scale for the current font/viewport epoch. */
+  private contentMetricScaleEpoch = -1;
+  private contentMetricScaleX = 1;
   private contentProjectionEnabled: boolean = true;
   /**
    * True while a text-selection drag that started on a projection's blank
@@ -1945,16 +1948,31 @@ export class Scene {
       delete el.dataset.vectoGridReady;
     }
 
-    const calibrationKey = `${signature}:${this.contentFontEpoch}`;
+    const pageScaleX = this.getContentMetricScaleX();
+    const calibrationKey = `${signature}:${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
     if (el.dataset.vectoGridCalibration !== calibrationKey) {
-      this.scheduleContentGridCalibration(node.id, el, calibrationKey);
+      this.scheduleContentGridCalibration(node.id, el, calibrationKey, pageScaleX);
     }
+  }
+
+  private getContentMetricScaleX(): number {
+    if (this.contentMetricScaleEpoch === this.contentFontEpoch) {
+      return this.contentMetricScaleX;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    const inlineWidth = parseInlinePx(this.canvas.style.width);
+    const logicalWidth = inlineWidth ?? (this.canvas.clientWidth || this.width);
+    const scale = logicalWidth > 0 ? rect.width / logicalWidth : 1;
+    this.contentMetricScaleX = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    this.contentMetricScaleEpoch = this.contentFontEpoch;
+    return this.contentMetricScaleX;
   }
 
   private scheduleContentGridCalibration(
     entityId: string,
     el: HTMLElement,
     calibrationKey: string,
+    pageScaleX: number,
   ): void {
     if (typeof requestAnimationFrame !== 'function') return;
     if (el.dataset.vectoGridCalibrationPending === calibrationKey) return;
@@ -1969,7 +1987,7 @@ export class Scene {
     const probe = document.createElement('div');
     probe.setAttribute('aria-hidden', 'true');
     probe.dataset.vectoGridProbe = entityId;
-    probe.style.position = 'fixed';
+    probe.style.position = 'absolute';
     probe.style.left = '-100000px';
     probe.style.top = '0';
     probe.style.width = '100000px';
@@ -1978,6 +1996,15 @@ export class Scene {
     probe.style.pointerEvents = 'none';
     probe.style.whiteSpace = 'pre';
     probe.style.contain = 'layout style paint';
+    const probeOrigin = document.createElement('span');
+    probeOrigin.style.position = 'absolute';
+    probeOrigin.style.left = '0';
+    probeOrigin.style.top = '0';
+    const probeX = document.createElement('span');
+    probeX.style.position = 'absolute';
+    probeX.style.left = '1px';
+    probeX.style.top = '0';
+    probe.append(probeOrigin, probeX);
     const measurements: Array<{
       targets: HTMLElement[];
       targetWidth: number;
@@ -2019,10 +2046,15 @@ export class Scene {
       measurements.push(measurement);
       measurementsByKey.set(measurementKey, measurement);
     }
-    document.documentElement.appendChild(probe);
+    // Keep the probe under the projection root so CSS zoom and font
+    // substitution match the live carriers. Gecko may still return an
+    // unzoomed Range width for a missing-glyph fallback; pageScaleX below
+    // compensates that engine behavior without special-casing the font.
+    (this.a11yRoot ?? document.body ?? document.documentElement).appendChild(probe);
     el.dataset.vectoGridCalibrationSamples = `${measurements.length}`;
     this.contentGridCalibrationProbes.set(entityId, probe);
     el.dataset.vectoGridCalibrationPending = calibrationKey;
+    delete el.dataset.vectoGridReady;
     const readFrame = requestAnimationFrame(() => {
       if (!el.isConnected || el.dataset.vectoGridCalibrationPending !== calibrationKey) {
         probe.remove();
@@ -2031,6 +2063,11 @@ export class Scene {
         return;
       }
       const updates: Array<{ element: HTMLElement; scale: number }> = [];
+      const probeOriginRect = probeOrigin.getBoundingClientRect();
+      const probeXRect = probeX.getBoundingClientRect();
+      const basisScale = Math.abs(probeXRect.left - probeOriginRect.left);
+      const projectionPageScaleX =
+        Number.isFinite(basisScale) && basisScale > 0 ? basisScale : pageScaleX;
       let valid = true;
       for (const measurement of measurements) {
         const range = document.createRange();
@@ -2041,7 +2078,7 @@ export class Scene {
           valid = false;
           break;
         }
-        const scale = measurement.targetWidth / natural;
+        const scale = (measurement.targetWidth * projectionPageScaleX) / natural;
         for (const element of measurement.targets) updates.push({ element, scale });
       }
       probe.remove();
@@ -2794,6 +2831,11 @@ export class Scene {
   public resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    // Browser zoom emits resize and may change native Range geometry even
+    // when the logical Canvas font is unchanged (notably Firefox at
+    // fractional scale). Treat every explicit viewport resize as a cold text
+    // projection metric boundary so prepared grids can recalibrate once.
+    this.contentFontEpoch++;
     if (typeof (this.renderer as any).resize === 'function') {
       (this.renderer as any).resize(width, height);
     }

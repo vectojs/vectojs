@@ -10,6 +10,8 @@
 
   Route ordinary Text, RichText, and line-less custom projections through transformed two-dimensional grapheme caret geometry, including rotated, mirrored, and non-uniformly scaled content.
 
+  Recalibrate prepared grids after viewport or browser zoom changes. Cold probes now inherit the projection's zoom context and compensate Firefox missing-glyph Range metrics, including CJK fallback at fractional DPR and zoom, while hidden grids retain the same source geometry when revealed.
+
   Deduplicate cold font samples and reuse each line's source segmentation. On the release workstation, the 80,000-input-cluster preparation mean fell from 247.16 ms to 65.08 ms for ASCII and from 265.88 ms to 77.77 ms for mixed Unicode. `@vectojs/ui` 1.9 requires `@vectojs/core` 1.8 or newer within the 1.x line.
 
 ## 1.7.1

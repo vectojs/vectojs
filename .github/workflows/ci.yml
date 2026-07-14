@@ -22,7 +22,7 @@ jobs:
       - name: Install FFmpeg and deterministic browser-test fonts
         run: >-
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends
-          ffmpeg fonts-noto-core
+          ffmpeg fonts-noto-core fonts-noto-color-emoji
       - name: Run core unit tests
         run: cd packages/core && bunx vitest run
       - name: Run ui unit tests
