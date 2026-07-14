@@ -31,12 +31,14 @@ jobs:
         run: cd packages/three && bunx vitest run
       - name: Run devtools unit tests
         run: cd packages/devtools && bunx vitest run
+      - name: Run graph3d unit tests
+        run: cd packages/graph3d && bunx vitest run
       - name: Run video exporter tests
         env:
           VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd packages/video-exporter && bunx vitest run
       - name: Lint
-        run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src
+        run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
       - name: Build packages
         run: |
           cd packages/core && bun run build
@@ -44,6 +46,7 @@ jobs:
           cd ../devtools && bun run build
           cd ../three && bun run build
           cd ../video-exporter && bun run build
+          cd ../graph3d && bun run build
       - name: Install Firefox for cross-browser text projection tests
         id: setup-firefox
         uses: browser-actions/setup-firefox@v1
