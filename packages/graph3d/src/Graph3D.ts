@@ -155,6 +155,34 @@ export class Graph3D {
     }
   }
 
+  /**
+   * Hit-test the node cloud with an already-configured `THREE.Raycaster`
+   * (the caller sets it from camera + pointer NDC) and return the index of
+   * the nearest struck node, or `null` if the ray missed every node. The
+   * index is aligned with the `GraphData.nodes` array from {@link setGraphData}
+   * — feed it straight to `data.nodes[i]` or {@link GraphLayout.pinNode}.
+   *
+   * Links are never picked: only the instanced node mesh is tested, so a ray
+   * grazing a link line reports a miss.
+   */
+  public pickNode(raycaster: THREE.Raycaster): number | null {
+    if (!this.nodeMesh) return null;
+    const hit = raycaster.intersectObject(this.nodeMesh, false).find((h) => h.instanceId != null);
+    return hit?.instanceId ?? null;
+  }
+
+  /**
+   * Read the current world position of node `index` (as last written by
+   * {@link applyPositions}) into `target`, returning it. Returns `null` if the
+   * index is out of range or the node mesh does not exist. Reads straight from
+   * the instance matrix, so it reflects exactly what is on screen.
+   */
+  public getNodePosition(index: number, target: THREE.Vector3): THREE.Vector3 | null {
+    if (!this.nodeMesh || index < 0 || index >= this.nodeMesh.count) return null;
+    this.nodeMesh.getMatrixAt(index, this.scratchMatrix);
+    return target.setFromMatrixPosition(this.scratchMatrix);
+  }
+
   /** Release all GPU resources and empty {@link group}. */
   public dispose(): void {
     this.clearMeshes();

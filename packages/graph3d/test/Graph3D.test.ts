@@ -115,4 +115,54 @@ describe('Graph3D', () => {
     graph.dispose();
     expect(graph.group.children).toHaveLength(0);
   });
+
+  it('getNodePosition reads back the applied instance position', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+    graph.applyPositions(POSITIONS);
+
+    const out = new THREE.Vector3();
+    expect(graph.getNodePosition(2, out)).toBe(out);
+    expect([out.x, out.y, out.z]).toEqual([7, -8, 9]);
+    graph.dispose();
+  });
+
+  it('getNodePosition returns null for out-of-range indices', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+    const out = new THREE.Vector3();
+    expect(graph.getNodePosition(-1, out)).toBeNull();
+    expect(graph.getNodePosition(99, out)).toBeNull();
+    graph.dispose();
+  });
+
+  it('pickNode returns the struck node index for a ray through it', () => {
+    const graph = new Graph3D({ nodeRadius: 4 });
+    graph.setGraphData(DATA);
+    graph.applyPositions(POSITIONS);
+
+    // Aim a ray straight down -Z through node 1 at (-4, 5, -6).
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(new THREE.Vector3(-4, 5, 100), new THREE.Vector3(0, 0, -1));
+    expect(graph.pickNode(raycaster)).toBe(1);
+    graph.dispose();
+  });
+
+  it('pickNode returns null when the ray misses every node', () => {
+    const graph = new Graph3D({ nodeRadius: 4 });
+    graph.setGraphData(DATA);
+    graph.applyPositions(POSITIONS);
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(new THREE.Vector3(1000, 1000, 1000), new THREE.Vector3(0, 0, -1));
+    expect(graph.pickNode(raycaster)).toBeNull();
+    graph.dispose();
+  });
+
+  it('pickNode returns null before any graph data is set', () => {
+    const graph = new Graph3D();
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(new THREE.Vector3(0, 0, 10), new THREE.Vector3(0, 0, -1));
+    expect(graph.pickNode(raycaster)).toBeNull();
+  });
 });

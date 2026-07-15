@@ -32,6 +32,30 @@ export interface GraphLayout {
    */
   readonly positions: Float32Array;
 
+  /**
+   * Pin the node at `nodeIndex` (its position in the `GraphData.nodes` array)
+   * to a fixed world position, so the simulation holds it there instead of
+   * moving it. This is the runtime equivalent of the node's `fx`/`fy`/`fz`
+   * pin fields, used for interactive drag-to-pin.
+   *
+   * Optional: layouts that cannot pin individual nodes at runtime may omit
+   * it. {@link GraphInteraction} feature-detects this before enabling drag.
+   */
+  pinNode?(nodeIndex: number, x: number, y: number, z: number): void;
+
+  /**
+   * Release a previously {@link pinNode}-ed node back to free simulation.
+   * Optional, paired with {@link pinNode}.
+   */
+  unpinNode?(nodeIndex: number): void;
+
+  /**
+   * Reheat the simulation (raise alpha back toward 1) so it responds to a
+   * pin/unpin or other change after it has cooled. Optional; callers should
+   * treat its absence as "the layout stays live on its own".
+   */
+  reheat?(alpha?: number): void;
+
   /** Release simulation resources. The instance must not be used afterwards. */
   dispose(): void;
 }

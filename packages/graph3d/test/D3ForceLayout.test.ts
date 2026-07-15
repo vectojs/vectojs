@@ -98,4 +98,73 @@ describe('D3ForceLayout', () => {
     expect(() => layout.step()).toThrow(/disposed/);
     expect(() => layout.setGraph({ nodes: [], links: [] })).toThrow(/disposed/);
   });
+
+  it('pinNode holds a node at a fixed position across steps', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({
+      nodes: [{ id: 'a' }, { id: 'b' }],
+      links: [{ source: 'a', target: 'b' }],
+    });
+    layout.pinNode(0, 42, -17, 8);
+
+    // Immediately reflected in the exposed buffer, before any step.
+    expect(layout.positions[0]).toBeCloseTo(42);
+    expect(layout.positions[1]).toBeCloseTo(-17);
+    expect(layout.positions[2]).toBeCloseTo(8);
+
+    // And held there after the simulation runs.
+    layout.step(200);
+    expect(layout.positions[0]).toBeCloseTo(42);
+    expect(layout.positions[1]).toBeCloseTo(-17);
+    expect(layout.positions[2]).toBeCloseTo(8);
+    layout.dispose();
+  });
+
+  it('unpinNode releases a pinned node back to free simulation', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({
+      nodes: [{ id: 'a' }, { id: 'b' }],
+      links: [{ source: 'a', target: 'b' }],
+    });
+    layout.pinNode(0, 100, 0, 0);
+    layout.step(50);
+    expect(layout.positions[0]).toBeCloseTo(100);
+
+    layout.unpinNode(0);
+    layout.reheat(1);
+    layout.step(300);
+    // Freed and pulled toward its neighbor, no longer clamped at x=100.
+    expect(layout.positions[0]).not.toBeCloseTo(100);
+    layout.dispose();
+  });
+
+  it('ignores pin/unpin for out-of-range indices without throwing', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({ nodes: [{ id: 'a' }], links: [] });
+    expect(() => layout.pinNode(5, 1, 2, 3)).not.toThrow();
+    expect(() => layout.unpinNode(-1)).not.toThrow();
+    layout.dispose();
+  });
+
+  it('reheat lets a cooled simulation move again', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({
+      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      links: [{ source: 'a', target: 'b' }],
+    });
+    expect(layout.step(2000)).toBe(false); // cooled
+
+    layout.reheat();
+    expect(layout.step()).toBe(true); // moving again
+    layout.dispose();
+  });
+
+  it('pin/unpin/reheat throw after dispose', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({ nodes: [{ id: 'a' }], links: [] });
+    layout.dispose();
+    expect(() => layout.pinNode(0, 1, 2, 3)).toThrow(/disposed/);
+    expect(() => layout.unpinNode(0)).toThrow(/disposed/);
+    expect(() => layout.reheat()).toThrow(/disposed/);
+  });
 });

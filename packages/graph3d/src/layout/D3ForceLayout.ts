@@ -92,6 +92,46 @@ export class D3ForceLayout implements GraphLayout {
     return this.simulation.alpha() >= this.alphaMin;
   }
 
+  /**
+   * Pin a node to a fixed position by writing d3-force's `fx`/`fy`/`fz` on the
+   * internal simulation record. The simulation clamps the node there every
+   * tick until {@link unpinNode}. Out-of-range indices are ignored so a stale
+   * pointer interaction can't crash the layout.
+   */
+  public pinNode(nodeIndex: number, x: number, y: number, z: number): void {
+    this.assertUsable();
+    const node = this.simNodes[nodeIndex];
+    if (!node) return;
+    node.fx = x;
+    node.fy = y;
+    node.fz = z;
+    // Keep the exposed buffer coherent immediately, before the next step().
+    this.positions[nodeIndex * 3] = x;
+    this.positions[nodeIndex * 3 + 1] = y;
+    this.positions[nodeIndex * 3 + 2] = z;
+  }
+
+  /** Release a pinned node back to free simulation (clears `fx`/`fy`/`fz`). */
+  public unpinNode(nodeIndex: number): void {
+    this.assertUsable();
+    const node = this.simNodes[nodeIndex];
+    if (!node) return;
+    node.fx = null;
+    node.fy = null;
+    node.fz = null;
+  }
+
+  /**
+   * Raise the simulation's alpha so it resumes meaningful movement after
+   * cooling — e.g. when a drag pins a node and the rest of the graph should
+   * settle around it. Clamped to d3's usual `[0, 1]` working range.
+   */
+  public reheat(alpha = 0.3): void {
+    this.assertUsable();
+    if (!this.simulation) return;
+    this.simulation.alpha(Math.max(this.alphaMin, Math.min(1, alpha)));
+  }
+
   public dispose(): void {
     this.simulation?.stop();
     this.simulation = null;
