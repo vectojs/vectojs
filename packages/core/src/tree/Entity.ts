@@ -549,10 +549,19 @@ export abstract class Entity {
    * `child.parent` is only ever `null` or `this`'s ultimate owner, so this
    * check is O(1) for the overwhelming common case (a brand-new entity).
    *
-   * @param child - The entity to add as a child.
+   * Accepts multiple children in one call (`parent.add(a, b, c)`); each is
+   * attached in argument order with the same detach-then-attach semantics.
+   *
+   * @param children - One or more entities to add as children.
    * @returns `this` for method chaining.
    */
-  public add(child: Entity): this {
+  public add(...children: Entity[]): this {
+    for (const child of children) this._addOne(child);
+    return this;
+  }
+
+  /** Attach a single child (the O(1) common path). See {@link add}. */
+  private _addOne(child: Entity): void {
     if (child.parent) child.parent.remove(child);
     child.parent = this;
     this.children.push(child);
@@ -562,7 +571,6 @@ export abstract class Entity {
       s.markDirty();
       child._notifyMounted(); // fire onMounted for the newly-live subtree
     }
-    return this;
   }
 
   /** Called once when this entity becomes attached to a live Scene. Override to react. */
@@ -593,6 +601,25 @@ export abstract class Entity {
         s.a11yNeedsReorder = true;
         s.markDirty();
       }
+    }
+    return this;
+  }
+
+  /**
+   * Assign several own properties in one call, each through its normal setter
+   * (so a property with a configured {@link setTransition} still animates, and
+   * `interactive` still flags the scene for a11y reorder). A construction-time
+   * ergonomic only — it is a plain `for…in` over the given object and touches
+   * no per-frame path.
+   *
+   * @param props - Partial set of this entity's own properties to assign.
+   * @returns `this` for method chaining.
+   * @example rect.set({ x: 40, y: 40, width: 120, fill: '#38bdf8' });
+   */
+  public set(props: Partial<this>): this {
+    for (const key in props) {
+      const value = props[key as keyof this];
+      if (value !== undefined) this[key as keyof this] = value as this[keyof this];
     }
     return this;
   }
