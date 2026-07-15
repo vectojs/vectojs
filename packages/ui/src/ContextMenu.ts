@@ -1,5 +1,6 @@
-import { IRenderer, A11yAttributes } from '@vectojs/core';
+import { Entity, IRenderer, A11yAttributes, VectoJSEvent } from '@vectojs/core';
 import { Overlay } from './Overlay';
+import { measureText } from './measure';
 
 export interface ContextMenuItem {
   /** Display label. Use with `separator: false` (default). */
@@ -64,6 +65,11 @@ export class ContextMenu extends Overlay {
   /** Which item's `children` `_submenu` currently represents, if any. */
   private _submenuFor: ContextMenuItem | null = null;
   private _opts: ContextMenuOptions;
+  /** Full-screen invisible entity mounted behind the menu while open, so a
+   * click anywhere outside it closes the menu — the way every native context
+   * menu behaves. Without this the menu only ever closed by selecting one of
+   * its own (non-disabled) items. */
+  private _backdrop: Entity | null = null;
 
   constructor(opts: ContextMenuOptions) {
     const iH = opts.itemHeight ?? 32;
@@ -113,6 +119,50 @@ export class ContextMenu extends Overlay {
         this.hide();
       }
     });
+  }
+
+  public override showAtPoint(x: number, y: number): void {
+    if (!this._backdrop && this.scene) {
+      const scene = this.scene;
+      const backdrop = new (class ContextMenuBackdrop extends Entity {
+        isPointInside(): boolean {
+          return true;
+        }
+        render(): void {
+          // Invisible — exists only to intercept the outside click.
+        }
+      })('context-menu-backdrop');
+      backdrop.width = scene.width;
+      backdrop.height = scene.height;
+      backdrop.interactive = true;
+      backdrop.on('click', (e: VectoJSEvent) => {
+        e.stopPropagation();
+        this.hide();
+      });
+      // Hit-testing checks the most-recently-added child first (the one
+      // visually on top), and the backdrop's isPointInside() always returns
+      // true — so it must be added *before* the menu, never after, or it
+      // would swallow clicks meant for the menu's own items. The menu is
+      // typically already mounted (consumers call `scene.add(menu)` once up
+      // front, per the class-level usage example), so re-parenting it after
+      // the backdrop is the only way to get that order using the public
+      // add()/remove() API instead of reaching into the children array.
+      const parent = this.parent ?? scene.overlayRoot;
+      if (this.parent) this.parent.remove(this);
+      scene.overlayRoot.add(backdrop);
+      parent.add(this);
+      this._backdrop = backdrop;
+    }
+    super.showAtPoint(x, y);
+  }
+
+  public override hide(): void {
+    if (this._backdrop) {
+      this._backdrop.destroy();
+      this._backdrop = null;
+    }
+    if (this._submenu) this._submenu.hide();
+    super.hide();
   }
 
   private _idxAt(localY: number): number {
@@ -175,11 +225,16 @@ export class ContextMenu extends Overlay {
       // Label
       r.fillText(item.label ?? '', lx, ty, this._font, col);
 
-      // Shortcut (right-aligned)
+      // Shortcut (right-aligned). fillText's x/y is the text's left/baseline
+      // origin, not an anchor IRenderer right-aligns for you — drawing at
+      // `this.width - 12` unconditionally made the hint start there and run
+      // rightward, overflowing past the menu's own border for anything wider
+      // than a couple of characters (e.g. "Ctrl+C"). Subtract the measured
+      // width so the text's *right* edge lands at that inset instead.
       if (item.shortcut) {
         r.fillText(
           item.shortcut,
-          this.width - 12,
+          this.width - 12 - measureText(item.shortcut, this._font),
           ty,
           this._font,
           item.disabled ? this._disColor : 'rgba(255,255,255,0.4)',
