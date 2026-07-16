@@ -88,7 +88,7 @@ export class DOMPortalEntity extends Entity {
     return local.x >= 0 && local.x <= w && local.y >= 0 && local.y <= h;
   }
 
-  public override add(_child: Entity): this {
+  public override add(..._children: Entity[]): this {
     console.warn(`DOMPortalEntity (${this.id}) is a leaf node. Child entities are not supported.`);
     return this;
   }

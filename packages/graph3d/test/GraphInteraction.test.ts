@@ -156,6 +156,74 @@ describe('GraphInteraction', () => {
     interaction.dispose();
   });
 
+  it('ignores a pointer release whose press never touched the canvas (no stray deselect)', () => {
+    const onSelect = vi.fn();
+    const interaction = new GraphInteraction({ ...rig, onSelect });
+
+    // e.g. the user clicks a button elsewhere on the page; only the release
+    // bubbles to window. This must not deselect the current node.
+    window.dispatchEvent(pointer('pointerup', 400, 400));
+    expect(onSelect).not.toHaveBeenCalled();
+    interaction.dispose();
+  });
+
+  it('pointercancel ends a drag: controls re-enabled, onDragEnd fired, nothing selected', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph(DATA);
+    const onSelect = vi.fn();
+    const onDragEnd = vi.fn();
+    const setControlsEnabled = vi.fn();
+    const interaction = new GraphInteraction({
+      ...rig,
+      layout,
+      onSelect,
+      onDragEnd,
+      setControlsEnabled,
+    });
+
+    rig.domElement.dispatchEvent(pointer('pointerdown', CENTER, CENTER));
+    rig.domElement.dispatchEvent(pointer('pointermove', CENTER + 40, CENTER));
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(false);
+
+    // A cancelled pointer (touch scroll takeover, pen out of range) never
+    // delivers pointerup — the drag must still end and re-enable controls.
+    window.dispatchEvent(pointer('pointercancel', CENTER + 40, CENTER));
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(true);
+    expect(onDragEnd).toHaveBeenCalledWith(1);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    // A stray pointerup arriving after the cancel is inert.
+    window.dispatchEvent(pointer('pointerup', CENTER, CENTER));
+    expect(onSelect).not.toHaveBeenCalled();
+    interaction.dispose();
+  });
+
+  it('pointercancel releases the node when pinOnDrag is false', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph(DATA);
+    const unpinSpy = vi.spyOn(layout, 'unpinNode');
+    const interaction = new GraphInteraction({ ...rig, layout, pinOnDrag: false });
+
+    rig.domElement.dispatchEvent(pointer('pointerdown', CENTER, CENTER));
+    rig.domElement.dispatchEvent(pointer('pointermove', CENTER + 40, CENTER));
+    window.dispatchEvent(pointer('pointercancel', CENTER + 40, CENTER));
+    expect(unpinSpy).toHaveBeenCalledWith(1);
+    interaction.dispose();
+  });
+
+  it('dragReheat: 0 never reheats the layout', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph(DATA);
+    const reheatSpy = vi.spyOn(layout, 'reheat');
+    const interaction = new GraphInteraction({ ...rig, layout, dragReheat: 0, pinOnDrag: false });
+
+    rig.domElement.dispatchEvent(pointer('pointerdown', CENTER, CENTER));
+    rig.domElement.dispatchEvent(pointer('pointermove', CENTER + 40, CENTER));
+    window.dispatchEvent(pointer('pointerup', CENTER + 40, CENTER));
+    expect(reheatSpy).not.toHaveBeenCalled();
+    interaction.dispose();
+  });
+
   it('dispose removes listeners so later events are ignored', () => {
     const onHover = vi.fn();
     const interaction = new GraphInteraction({ ...rig, onHover });

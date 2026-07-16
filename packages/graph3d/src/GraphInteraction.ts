@@ -51,7 +51,8 @@ export interface GraphInteractionOptions {
   pinOnDrag?: boolean;
   /**
    * Alpha the layout is reheated to at drag start (so the graph settles
-   * around the dragged node). Default 0.3. Set 0 to never reheat.
+   * around the dragged node). Default 0.3. Set 0 to never reheat — the
+   * `reheat` call is skipped entirely.
    */
   dragReheat?: number;
   /**
@@ -90,6 +91,13 @@ export class GraphInteraction {
   private hoveredIndex: number | null = null;
   /** Node under an active press; becomes a drag once the threshold is passed. */
   private pressIndex: number | null = null;
+  /**
+   * Whether the current press started on `domElement`. pointerup/pointercancel
+   * are bound on `window` (so releases outside the canvas still end a drag),
+   * which means they also fire for presses that never touched the canvas —
+   * those must not be treated as clicks or deselects.
+   */
+  private pressActive = false;
   private pressX = 0;
   private pressY = 0;
   private dragging = false;
@@ -108,8 +116,12 @@ export class GraphInteraction {
     this.domElement.addEventListener('pointermove', this.onPointerMove);
     this.domElement.addEventListener('pointerdown', this.onPointerDown);
     // pointerup is bound on window so a release outside the canvas still ends
-    // the drag cleanly rather than leaving a node stuck to the cursor.
+    // the drag cleanly rather than leaving a node stuck to the cursor. A
+    // cancelled pointer (touch scroll takeover, pen out of range) never
+    // delivers pointerup at all, so pointercancel must end the drag too —
+    // otherwise the host's controls stay disabled forever.
     window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerCancel);
   }
 
   /** The currently hovered node index, or `null`. */
@@ -145,7 +157,7 @@ export class GraphInteraction {
       const dy = event.clientY - this.pressY;
       const threshold = this.options.dragThreshold ?? 4;
       if (dx * dx + dy * dy >= threshold * threshold) {
-        this.beginDrag(this.pressIndex);
+        this.beginDrag(this.pressIndex, event);
         this.updateDrag(event, this.pressIndex);
       }
       return;
@@ -160,6 +172,7 @@ export class GraphInteraction {
   };
 
   private readonly onPointerDown = (event: PointerEvent): void => {
+    this.pressActive = true;
     const index = this.pick(event);
     if (index === null) {
       // Press on empty space: a click here means "deselect".
@@ -172,16 +185,11 @@ export class GraphInteraction {
   };
 
   private readonly onPointerUp = (event: PointerEvent): void => {
+    if (!this.pressActive) return; // press never touched the canvas
+    this.pressActive = false;
+
     if (this.dragging && this.pressIndex !== null) {
-      const dragged = this.pressIndex;
-      this.dragging = false;
-      this.pressIndex = null;
-      if (this.options.pinOnDrag === false && this.layout?.unpinNode) {
-        this.layout.unpinNode(dragged);
-        this.layout.reheat?.(this.options.dragReheat ?? 0.3);
-      }
-      this.options.setControlsEnabled?.(true);
-      this.options.onDragEnd?.(dragged);
+      this.finishDrag(this.pressIndex, event);
       return;
     }
 
@@ -198,10 +206,51 @@ export class GraphInteraction {
     }
   };
 
-  private beginDrag(index: number): void {
+  /** Ends an interrupted press/drag without ever counting it as a click. */
+  private readonly onPointerCancel = (event: PointerEvent): void => {
+    if (!this.pressActive) return;
+    this.pressActive = false;
+    if (this.dragging && this.pressIndex !== null) {
+      this.finishDrag(this.pressIndex, event);
+    }
+    this.pressIndex = null;
+  };
+
+  /** Shared drag teardown for pointerup and pointercancel. */
+  private finishDrag(dragged: number, event: PointerEvent): void {
+    this.dragging = false;
+    this.pressIndex = null;
+    try {
+      this.domElement.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Synthetic events carry no valid pointerId; capture never happened.
+    }
+    if (this.options.pinOnDrag === false && this.layout?.unpinNode) {
+      this.layout.unpinNode(dragged);
+      this.reheatLayout();
+    }
+    this.options.setControlsEnabled?.(true);
+    this.options.onDragEnd?.(dragged);
+  }
+
+  /** Reheat unless the host opted out with `dragReheat: 0`. */
+  private reheatLayout(): void {
+    const alpha = this.options.dragReheat ?? 0.3;
+    if (alpha > 0) this.layout?.reheat?.(alpha);
+  }
+
+  private beginDrag(index: number, event: PointerEvent): void {
     this.dragging = true;
+    // Capture the pointer so the node keeps tracking while the cursor is
+    // outside the canvas; window-level up/cancel still fire via bubbling.
+    try {
+      this.domElement.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Synthetic events (tests) carry no valid pointerId — capture is a
+      // progressive enhancement, the drag works without it.
+    }
     this.options.setControlsEnabled?.(false);
-    this.layout?.reheat?.(this.options.dragReheat ?? 0.3);
+    this.reheatLayout();
     this.options.onDragStart?.(index);
   }
 
@@ -227,5 +276,6 @@ export class GraphInteraction {
     this.domElement.removeEventListener('pointermove', this.onPointerMove);
     this.domElement.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointercancel', this.onPointerCancel);
   }
 }

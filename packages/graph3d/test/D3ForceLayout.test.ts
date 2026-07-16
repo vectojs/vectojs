@@ -66,6 +66,17 @@ describe('D3ForceLayout', () => {
     layout.dispose();
   });
 
+  it('honors x/y/z initial position seeds', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph({
+      nodes: [{ id: 'a', x: 10, y: -5, z: 3 }, { id: 'b' }],
+      links: [],
+    });
+
+    // Before any step, the seeded node sits exactly where it was declared.
+    expect(Array.from(layout.positions.slice(0, 3))).toEqual([10, -5, 3]);
+  });
+
   it('honors fx/fy/fz pins', () => {
     const layout = new D3ForceLayout();
     layout.setGraph({

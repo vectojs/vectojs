@@ -97,8 +97,14 @@ export class Input extends UIComponent {
         opts.onChange?.(this.value);
       },
     );
-    this.on('focus', () => (this.focused = true));
-    this.on('blur', () => (this.focused = false));
+    this.on('focus', () => {
+      this.focused = true;
+      this.startCaretBlinkWake();
+    });
+    this.on('blur', () => {
+      this.focused = false;
+      this.stopCaretBlinkWake();
+    });
   }
 
   public getA11yAttributes(): A11yAttributes {

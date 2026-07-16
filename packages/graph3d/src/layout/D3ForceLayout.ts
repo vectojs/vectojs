@@ -28,8 +28,9 @@ export interface D3ForceLayoutOptions {
  *
  * The d3 simulation mutates its node objects (x/y/z/vx/…), so `setGraph`
  * clones each node into an internal simulation record instead of handing the
- * caller's objects to d3; only the declared `fx`/`fy`/`fz` pins are carried
- * over. The simulation's own timer is never started — the caller drives it
+ * caller's objects to d3; only the declared `x`/`y`/`z` position seeds and
+ * `fx`/`fy`/`fz` pins are carried over. The simulation's own timer is never
+ * started — the caller drives it
  * synchronously through `step()`, which also keeps the class usable inside a
  * Web Worker without a fake rAF.
  */
@@ -56,6 +57,11 @@ export class D3ForceLayout implements GraphLayout {
 
     this.simNodes = data.nodes.map((node) => {
       const simNode: SimulationNode = { id: node.id };
+      // Position seeds: d3 keeps a pre-set x/y/z instead of its phyllotaxis
+      // default, so seeded graphs start (and cool) deterministically.
+      if (node.x !== undefined) simNode.x = node.x;
+      if (node.y !== undefined) simNode.y = node.y;
+      if (node.z !== undefined) simNode.z = node.z;
       if (node.fx !== undefined) simNode.fx = node.fx;
       if (node.fy !== undefined) simNode.fy = node.fy;
       if (node.fz !== undefined) simNode.fz = node.fz;
