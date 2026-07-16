@@ -16,6 +16,15 @@ export interface GraphNode {
   val?: number;
   /** CSS color for this node. Falls back to the renderer's default. */
   color?: string;
+  /**
+   * Initial x position seed: the layout starts the node here instead of its
+   * default placement, then simulates freely (unlike `fx`, which pins).
+   */
+  x?: number;
+  /** Initial y position seed. */
+  y?: number;
+  /** Initial z position seed. */
+  z?: number;
   /** Pin the node at a fixed x coordinate (layout will not move it). */
   fx?: number;
   /** Pin the node at a fixed y coordinate. */

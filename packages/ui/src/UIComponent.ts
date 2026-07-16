@@ -60,6 +60,50 @@ export abstract class UIComponent extends Entity {
     this.parent?.remove(this);
   }
 
+  /** Wakes the render loop at the next caret-blink phase boundary, or `null`. */
+  private caretBlinkTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Keep a focused text component's caret blink visible to the idle throttle.
+   * The blink phase is derived from `Date.now()` inside `render()`, so nothing
+   * marks the scene dirty when the phase flips — an idle `onDemand` scene
+   * would freeze the caret solid (the ScrollView 0.2.x regression class).
+   * One timeout per 500 ms phase boundary costs ~2 renders/s while focused;
+   * reporting a permanent pending animation instead would pin the scene at
+   * full frame rate for as long as the field holds focus.
+   */
+  protected startCaretBlinkWake(): void {
+    this.stopCaretBlinkWake();
+    const schedule = () => {
+      this.caretBlinkTimer = setTimeout(
+        () => {
+          this.scene?.markDirty();
+          schedule();
+        },
+        500 - (Date.now() % 500),
+      );
+    };
+    schedule();
+    this.scene?.markDirty(); // show the caret promptly, not at the next boundary
+  }
+
+  /** Stop the caret-blink wake-up (on blur; destroy also clears it). */
+  protected stopCaretBlinkWake(): void {
+    if (this.caretBlinkTimer !== null) {
+      clearTimeout(this.caretBlinkTimer);
+      this.caretBlinkTimer = null;
+    }
+    this.scene?.markDirty(); // erase the caret promptly on blur
+  }
+
+  public override destroy(): void {
+    if (this.caretBlinkTimer !== null) {
+      clearTimeout(this.caretBlinkTimer);
+      this.caretBlinkTimer = null;
+    }
+    super.destroy();
+  }
+
   /**
    * Axis-aligned hit-test against the component's box in global space.
    *
