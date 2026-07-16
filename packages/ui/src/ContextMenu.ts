@@ -48,7 +48,11 @@ export interface ContextMenuOptions {
  *   ],
  * });
  * scene.add(menu);
- * entity.on('contextmenu', (e) => menu.showAtPoint(e.globalX, e.globalY));
+ * entity.on('pointerdown', (event) => {
+ *   const pointer = event.nativeEvent as PointerEvent | undefined;
+ *   if (pointer?.button !== 2 || event.sceneX === undefined || event.sceneY === undefined) return;
+ *   menu.showAtPoint(event.sceneX, event.sceneY);
+ * });
  */
 export class ContextMenu extends Overlay {
   private _items: ContextMenuItem[];

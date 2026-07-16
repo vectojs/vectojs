@@ -46,13 +46,18 @@
       "types": "./dist/measure.d.ts",
       "import": "./dist/measure.mjs",
       "require": "./dist/measure.js"
+    },
+    "./context-menu": {
+      "types": "./dist/ContextMenu.d.ts",
+      "import": "./dist/ContextMenu.mjs",
+      "require": "./dist/ContextMenu.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsup src/ContextMenu.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
     "test": "vitest run",
     "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs"
   },
