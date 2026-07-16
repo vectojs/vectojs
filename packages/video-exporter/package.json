@@ -20,7 +20,7 @@
   "dependencies": {
     "cli-progress": "^3.12.0",
     "puppeteer": "^25.3.0",
-    "vite": "^8.1.4"
+    "vite": "^8.1.5"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
