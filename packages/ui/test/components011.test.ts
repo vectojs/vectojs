@@ -540,6 +540,82 @@ describe('UI 0.1.1 Components', () => {
       expect(scrollX).toBeLessThanOrEqual(activeLeft);
       expect(scrollX + 600).toBeGreaterThanOrEqual(activeLeft + w);
     });
+
+    it('autoHideTabBar hides the bar for a single tab and gives content the full height', () => {
+      const content = new Entity();
+      const onClose = vi.fn();
+      const tabs = new Tabs({
+        width: 400,
+        height: 300,
+        tabHeight: 30,
+        closable: true,
+        autoHideTabBar: true,
+        onClose,
+        tabs: [{ id: 'only', label: 'untitled', content }],
+        value: 'only',
+      });
+      tabs.update(0, 0);
+
+      expect(tabs.effectiveTabBarHeight).toBe(0);
+      expect(content.y).toBe(0);
+      expect(content.height).toBe(300);
+
+      // The former bar strip must be inert — no invisible tab switching or
+      // closing where the bar used to be.
+      tabs.emit('pointerdown', { localX: 138, localY: 10 });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(tabs.value).toBe('only');
+    });
+
+    it('autoHideTabBar brings the bar back as soon as a second tab exists', () => {
+      const first = new Entity();
+      const second = new Entity();
+      const tabs = new Tabs({
+        width: 400,
+        height: 300,
+        tabHeight: 30,
+        autoHideTabBar: true,
+        tabs: [{ id: 'a', label: 'a', content: first }],
+        value: 'a',
+      });
+      tabs.update(0, 0);
+      expect(tabs.effectiveTabBarHeight).toBe(0);
+
+      // Owners reassign the public `tabs` field directly (no change emit) —
+      // geometry must still follow on the next frame.
+      tabs.tabs = [
+        { id: 'a', label: 'a', content: first },
+        { id: 'b', label: 'b', content: second },
+      ];
+      tabs.update(0, 0);
+
+      expect(tabs.effectiveTabBarHeight).toBe(30);
+      expect(first.y).toBe(30);
+      expect(first.height).toBe(270);
+
+      // And it hides again when back to one tab (last-tab close reset).
+      tabs.tabs = [{ id: 'a', label: 'a', content: first }];
+      tabs.update(0, 0);
+      expect(tabs.effectiveTabBarHeight).toBe(0);
+      expect(first.y).toBe(0);
+      expect(first.height).toBe(300);
+    });
+
+    it('keeps the bar for a single tab by default (autoHideTabBar off)', () => {
+      const content = new Entity();
+      const tabs = new Tabs({
+        width: 400,
+        height: 300,
+        tabHeight: 30,
+        tabs: [{ id: 'only', label: 'untitled', content }],
+        value: 'only',
+      });
+      tabs.update(0, 0);
+
+      expect(tabs.effectiveTabBarHeight).toBe(30);
+      expect(content.y).toBe(30);
+      expect(content.height).toBe(270);
+    });
   });
 
   describe('ProgressBar', () => {

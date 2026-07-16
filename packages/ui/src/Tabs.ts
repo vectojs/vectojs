@@ -28,6 +28,12 @@ export interface TabsOptions {
   tabWidth?: number;
   /** Lower bound the preferred width collapses to before scrolling kicks in. Default `96`. */
   minTabWidth?: number;
+  /**
+   * Hide the tab bar while there are fewer than two tabs and let the content
+   * occupy the full height — Vim's `showtabline=1` behavior. The bar (and its
+   * hit region) reappears as soon as a second tab is added. Default `false`.
+   */
+  autoHideTabBar?: boolean;
   onChange?: (value: string) => void;
   onClose?: (value: string) => void;
 }
@@ -63,6 +69,7 @@ export class Tabs extends UIComponent {
   public closable: boolean;
   public tabWidth: number;
   public minTabWidth: number;
+  public autoHideTabBar: boolean;
 
   private _hoverIdx: number = -1;
   private _hoverClose: boolean = false;
@@ -83,6 +90,7 @@ export class Tabs extends UIComponent {
     this.closable = opts.closable ?? false;
     this.tabWidth = opts.tabWidth ?? 160;
     this.minTabWidth = opts.minTabWidth ?? 96;
+    this.autoHideTabBar = opts.autoHideTabBar ?? false;
     this.interactive = true;
 
     this._updateContentVisibility();
@@ -90,7 +98,8 @@ export class Tabs extends UIComponent {
     this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
       const { localX: lx, localY: ly } = e;
       if (lx === undefined || ly === undefined) return;
-      if (ly < 0 || ly > this.tabHeight) return;
+      const barH = this._barHeight();
+      if (barH === 0 || ly < 0 || ly > barH) return;
       const idx = this._tabIdxAt(lx);
       if (idx === -1) return;
       const tab = this.tabs[idx];
@@ -106,7 +115,8 @@ export class Tabs extends UIComponent {
     this.on('pointermove', (e: { localX?: number; localY?: number }) => {
       const { localX: lx, localY: ly } = e;
       if (lx === undefined || ly === undefined) return;
-      if (ly >= 0 && ly <= this.tabHeight) {
+      const barH = this._barHeight();
+      if (barH > 0 && ly >= 0 && ly <= barH) {
         this._hoverIdx = this._tabIdxAt(lx);
         this._hoverClose =
           this.closable && this._hoverIdx !== -1 && this._isOverClose(lx, this._hoverIdx);
@@ -144,6 +154,19 @@ export class Tabs extends UIComponent {
       opts.onChange?.(this.value);
       this.scene?.markDirty();
     });
+  }
+
+  /**
+   * The height the tab bar currently occupies — `0` when `autoHideTabBar`
+   * has hidden it. Owners that lay out siblings around the bar (status
+   * lines, gutters) should read this instead of assuming `tabHeight`.
+   */
+  public get effectiveTabBarHeight(): number {
+    return this._barHeight();
+  }
+
+  private _barHeight(): number {
+    return this.autoHideTabBar && this.tabs.length < 2 ? 0 : this.tabHeight;
   }
 
   private _tabW(): number {
@@ -194,8 +217,8 @@ export class Tabs extends UIComponent {
   }
 
   private _updateContentVisibility(): void {
-    const contentY = this.tabHeight;
-    const contentH = this.height - this.tabHeight;
+    const contentY = this._barHeight();
+    const contentH = this.height - contentY;
 
     for (const tab of this.tabs) {
       if (tab.id === this.value) {
@@ -214,7 +237,19 @@ export class Tabs extends UIComponent {
     }
   }
 
+  /**
+   * Re-derive content geometry every frame: `tabs` is a public field owners
+   * reassign directly (no setter to intercept), and the bar height itself is
+   * dynamic under `autoHideTabBar` — the active content must follow both
+   * without requiring a `change` emit.
+   */
+  public update(dt: number, time: number): void {
+    super.update(dt, time);
+    this._updateContentVisibility();
+  }
+
   public render(r: IRenderer): void {
+    if (this._barHeight() === 0) return;
     const tabW = this._tabW();
     this._scrollX = Math.max(0, Math.min(this._maxScroll(), this._scrollX));
 
