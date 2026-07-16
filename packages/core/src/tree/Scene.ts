@@ -1286,6 +1286,18 @@ export class Scene {
 
   /** True when any node in the subtree has a pending animation. */
   /** True when any node in the subtree is interactive (drives a11y sync). */
+  private syncOptionalAttribute(
+    element: HTMLElement,
+    name: string,
+    value: string | undefined,
+  ): void {
+    if (value === undefined) {
+      if (element.hasAttribute(name)) element.removeAttribute(name);
+      return;
+    }
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+  }
+
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
@@ -1483,12 +1495,8 @@ export class Scene {
       }
 
       // Refresh dynamic attributes (with Dirty Checking to minimize DOM API calls)
-      if (attrs.role !== undefined && el.getAttribute('role') !== attrs.role) {
-        el.setAttribute('role', attrs.role);
-      }
-      if (attrs.label !== undefined && el.getAttribute('aria-label') !== attrs.label) {
-        el.setAttribute('aria-label', attrs.label);
-      }
+      this.syncOptionalAttribute(el, 'role', attrs.role);
+      this.syncOptionalAttribute(el, 'aria-label', attrs.label);
       const semanticPointerEvents = attrs.pointerEvents ?? 'auto';
       if (el.style.pointerEvents !== semanticPointerEvents) {
         el.style.pointerEvents = semanticPointerEvents;
@@ -1501,71 +1509,59 @@ export class Scene {
       } else if (el.getAttribute('tabindex') !== String(desiredTabIndex)) {
         el.setAttribute('tabindex', String(desiredTabIndex));
       }
-      if (attrs.inputType !== undefined && el.getAttribute('type') !== attrs.inputType) {
-        el.setAttribute('type', attrs.inputType);
+      this.syncOptionalAttribute(el, 'type', attrs.inputType);
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        const placeholder = attrs.placeholder ?? '';
+        if (el.placeholder !== placeholder) el.placeholder = placeholder;
       }
-      if (
-        attrs.placeholder !== undefined &&
-        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
-      ) {
-        if (el.placeholder !== attrs.placeholder) el.placeholder = attrs.placeholder;
-      }
-      if (attrs.href !== undefined && el instanceof HTMLAnchorElement) {
-        const safeHref = sanitizeUrl(attrs.href);
-        if (el.getAttribute('href') !== safeHref) el.setAttribute('href', safeHref);
-        if (attrs.target !== undefined && el.getAttribute('target') !== attrs.target) {
-          el.setAttribute('target', attrs.target);
-        }
+      if (el instanceof HTMLAnchorElement) {
+        this.syncOptionalAttribute(
+          el,
+          'href',
+          attrs.href === undefined ? undefined : sanitizeUrl(attrs.href),
+        );
+        this.syncOptionalAttribute(el, 'target', attrs.target);
       }
       if (el instanceof HTMLImageElement) {
-        if (attrs.src !== undefined && el.src !== attrs.src) el.src = attrs.src;
-        if (attrs.alt !== undefined && el.alt !== attrs.alt) el.alt = attrs.alt;
+        this.syncOptionalAttribute(el, 'src', attrs.src);
+        this.syncOptionalAttribute(el, 'alt', attrs.alt);
       }
 
-      if (attrs.checked !== undefined) {
-        if (el instanceof HTMLInputElement) {
-          if (el.checked !== attrs.checked) el.checked = attrs.checked;
-        } else if (el.getAttribute('aria-checked') !== String(attrs.checked)) {
-          el.setAttribute('aria-checked', String(attrs.checked));
-        }
+      if (el instanceof HTMLInputElement) {
+        const checked = attrs.checked ?? false;
+        if (el.checked !== checked) el.checked = checked;
+      } else {
+        this.syncOptionalAttribute(
+          el,
+          'aria-checked',
+          attrs.checked === undefined ? undefined : String(attrs.checked),
+        );
       }
-      if (attrs.disabled !== undefined) {
-        if ('disabled' in el) {
-          if ((el as any).disabled !== attrs.disabled) (el as any).disabled = attrs.disabled;
-        } else if (el.getAttribute('aria-disabled') !== String(attrs.disabled)) {
-          el.setAttribute('aria-disabled', String(attrs.disabled));
-        }
+      if ('disabled' in el) {
+        const disabled = attrs.disabled ?? false;
+        if ((el as any).disabled !== disabled) (el as any).disabled = disabled;
+      } else {
+        this.syncOptionalAttribute(
+          el,
+          'aria-disabled',
+          attrs.disabled === undefined ? undefined : String(attrs.disabled),
+        );
       }
-      if (
-        attrs.expanded !== undefined &&
-        el.getAttribute('aria-expanded') !== String(attrs.expanded)
-      ) {
-        el.setAttribute('aria-expanded', String(attrs.expanded));
-      }
-      if (attrs.controls !== undefined && el.getAttribute('aria-controls') !== attrs.controls) {
-        el.setAttribute('aria-controls', attrs.controls);
-      }
-      if (attrs.haspopup !== undefined && el.getAttribute('aria-haspopup') !== attrs.haspopup) {
-        el.setAttribute('aria-haspopup', attrs.haspopup);
-      }
-      if (
-        attrs.selected !== undefined &&
-        el.getAttribute('aria-selected') !== String(attrs.selected)
-      ) {
-        el.setAttribute('aria-selected', String(attrs.selected));
-      }
-      if (
-        attrs.activedescendant !== undefined &&
-        el.getAttribute('aria-activedescendant') !== attrs.activedescendant
-      ) {
-        el.setAttribute('aria-activedescendant', attrs.activedescendant);
-      }
-      if (attrs.valuemin !== undefined && el.getAttribute('aria-valuemin') !== attrs.valuemin) {
-        el.setAttribute('aria-valuemin', attrs.valuemin);
-      }
-      if (attrs.valuemax !== undefined && el.getAttribute('aria-valuemax') !== attrs.valuemax) {
-        el.setAttribute('aria-valuemax', attrs.valuemax);
-      }
+      this.syncOptionalAttribute(
+        el,
+        'aria-expanded',
+        attrs.expanded === undefined ? undefined : String(attrs.expanded),
+      );
+      this.syncOptionalAttribute(el, 'aria-controls', attrs.controls);
+      this.syncOptionalAttribute(el, 'aria-haspopup', attrs.haspopup);
+      this.syncOptionalAttribute(
+        el,
+        'aria-selected',
+        attrs.selected === undefined ? undefined : String(attrs.selected),
+      );
+      this.syncOptionalAttribute(el, 'aria-activedescendant', attrs.activedescendant);
+      this.syncOptionalAttribute(el, 'aria-valuemin', attrs.valuemin);
+      this.syncOptionalAttribute(el, 'aria-valuemax', attrs.valuemax);
 
       if (attrs.value !== undefined) {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
@@ -1576,9 +1572,11 @@ export class Scene {
               (el as any)._lastSyncedValue = attrs.value;
             }
           }
-        } else if (el.getAttribute('aria-valuenow') !== attrs.value) {
-          el.setAttribute('aria-valuenow', attrs.value);
+        } else {
+          this.syncOptionalAttribute(el, 'aria-valuenow', attrs.value);
         }
+      } else if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+        this.syncOptionalAttribute(el, 'aria-valuenow', undefined);
       }
 
       if (

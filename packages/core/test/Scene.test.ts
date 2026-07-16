@@ -398,6 +398,96 @@ describe('Scene', () => {
     expect((scene as any).a11yElements.size).toBe(1);
   });
 
+  it('syncA11y clears optional native and ARIA state when attributes become undefined', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    let enabled = false;
+    class DynamicButton extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes(): A11yAttributes {
+        return {
+          tag: 'button',
+          role: enabled ? undefined : 'button',
+          label: enabled ? undefined : 'Undo',
+          disabled: enabled ? undefined : true,
+        };
+      }
+    }
+
+    let detailed = true;
+    class DynamicOption extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes(): A11yAttributes {
+        return {
+          role: 'option',
+          checked: detailed ? true : undefined,
+          expanded: detailed ? true : undefined,
+          controls: detailed ? 'details' : undefined,
+          haspopup: detailed ? 'menu' : undefined,
+          selected: detailed ? true : undefined,
+          activedescendant: detailed ? 'active' : undefined,
+          valuemin: detailed ? '0' : undefined,
+          valuemax: detailed ? '10' : undefined,
+          value: detailed ? '4' : undefined,
+        };
+      }
+    }
+
+    const button = new DynamicButton('dynamic-button');
+    const option = new DynamicOption('dynamic-option');
+    for (const entity of [button, option]) {
+      entity.interactive = true;
+      entity.width = 40;
+      entity.height = 20;
+      scene.add(entity);
+    }
+
+    (scene as any).syncA11y((scene as any).root);
+    const buttonElement = (scene as any).a11yElements.get(button.id) as HTMLButtonElement;
+    const optionElement = (scene as any).a11yElements.get(option.id) as HTMLElement;
+    expect(buttonElement.disabled).toBe(true);
+    expect(buttonElement.getAttribute('role')).toBe('button');
+    expect(buttonElement.getAttribute('aria-label')).toBe('Undo');
+    expect(optionElement.getAttribute('aria-checked')).toBe('true');
+    expect(optionElement.getAttribute('aria-expanded')).toBe('true');
+    expect(optionElement.getAttribute('aria-controls')).toBe('details');
+    expect(optionElement.getAttribute('aria-haspopup')).toBe('menu');
+    expect(optionElement.getAttribute('aria-selected')).toBe('true');
+    expect(optionElement.getAttribute('aria-activedescendant')).toBe('active');
+    expect(optionElement.getAttribute('aria-valuemin')).toBe('0');
+    expect(optionElement.getAttribute('aria-valuemax')).toBe('10');
+    expect(optionElement.getAttribute('aria-valuenow')).toBe('4');
+
+    enabled = true;
+    detailed = false;
+    (scene as any).syncA11y((scene as any).root);
+    expect(buttonElement.disabled).toBe(false);
+    expect(buttonElement.hasAttribute('role')).toBe(false);
+    expect(buttonElement.hasAttribute('aria-label')).toBe(false);
+    for (const name of [
+      'aria-checked',
+      'aria-expanded',
+      'aria-controls',
+      'aria-haspopup',
+      'aria-selected',
+      'aria-activedescendant',
+      'aria-valuemin',
+      'aria-valuemax',
+      'aria-valuenow',
+    ]) {
+      expect(optionElement.hasAttribute(name)).toBe(false);
+    }
+  });
+
   it('syncA11y defaults to a div when getA11yAttributes is not overridden', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
