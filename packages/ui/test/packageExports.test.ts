@@ -29,4 +29,16 @@ describe('package exports', () => {
       require: './dist/measure.js',
     });
   });
+
+  it('publishes ContextMenu through a lightweight subpath', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as PackageManifest;
+
+    expect(manifest.exports?.['./context-menu']).toEqual({
+      types: './dist/ContextMenu.d.ts',
+      import: './dist/ContextMenu.mjs',
+      require: './dist/ContextMenu.js',
+    });
+  });
 });

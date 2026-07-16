@@ -1,5 +1,14 @@
 # @vectojs/ui
 
+## Unreleased
+
+### Patch Changes
+
+- Add a lightweight `@vectojs/ui/context-menu` entry so canvas editors can use
+  `ContextMenu` without bundling Markdown and MathJax. The public example now
+  routes secondary `pointerdown` events with the current `sceneX`/`sceneY`
+  coordinates instead of unsupported legacy event names.
+
 ## 1.9.1
 
 ### Patch Changes

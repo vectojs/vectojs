@@ -4,6 +4,7 @@ const entries = [
   { name: 'Input', path: './dist/Input.mjs' },
   { name: 'Text', path: './dist/Text.mjs' },
   { name: 'measure', path: './dist/measure.mjs' },
+  { name: 'ContextMenu', path: './dist/ContextMenu.mjs' },
 ];
 
 for (const entry of entries) {
