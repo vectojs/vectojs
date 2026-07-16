@@ -497,6 +497,21 @@ describe('UI 0.1.1 Components', () => {
       expect(tabs.value).toBe('a');
     });
 
+    it('does not stretch tabs beyond tabWidth when the bar has surplus width', () => {
+      // Stretched tabs put the right-edge × glyph directly beside the NEXT
+      // tab's label — users click the × they see next to a label and close
+      // the wrong tab (vem 2026-07-16 finding). Surplus bar width must stay
+      // empty instead.
+      const tabs = new Tabs({
+        width: 1600,
+        height: 200,
+        tabWidth: 150,
+        tabs: ['a', 'b', 'c'].map((id) => ({ id, label: id, content: new Entity(id) })),
+        value: 'a',
+      });
+      expect((tabs as unknown as { _tabW(): number })._tabW()).toBe(150);
+    });
+
     it('keeps a fixed tab width and scrolls instead of shrinking with many tabs', () => {
       const many = Array.from({ length: 20 }, (_, i) => ({
         id: `t${i}`,

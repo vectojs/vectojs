@@ -40,7 +40,7 @@ export class Overlay extends UIComponent {
   public visible: boolean = false;
 
   constructor(opts: OverlayOptions) {
-    super('Overlay');
+    super();
     this.width = opts.width;
     this.height = opts.height;
     this.placement = opts.placement ?? 'bottom';

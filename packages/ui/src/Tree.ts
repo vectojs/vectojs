@@ -70,7 +70,7 @@ export class TreeView extends UIComponent {
   private _onExpand?: (n: TreeNode) => void;
 
   constructor(opts: TreeViewOptions) {
-    super('TreeView');
+    super();
     this._roots = opts.nodes;
     this.width = opts.width;
     this.height = opts.height;

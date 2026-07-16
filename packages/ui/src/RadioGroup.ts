@@ -48,7 +48,7 @@ export class RadioGroup extends UIComponent {
   private _hoverIdx: number = -1;
 
   constructor(opts: RadioGroupOptions) {
-    super('RadioGroup');
+    super();
     this.options = opts.options;
     this.value = opts.value ?? (opts.options.length > 0 ? opts.options[0].value : '');
     this.direction = opts.direction ?? 'vertical';

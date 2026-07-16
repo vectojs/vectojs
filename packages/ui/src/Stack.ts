@@ -39,7 +39,7 @@ export class Stack extends UIComponent {
   public maxHeight: number;
 
   constructor(opts: StackOptions = {}) {
-    super('Stack');
+    super();
     this.direction = opts.direction ?? 'vertical';
     this.gap = opts.gap ?? 0;
     this.align = opts.align ?? 'start';

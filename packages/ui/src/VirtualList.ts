@@ -53,7 +53,7 @@ export class VirtualList<T = unknown> extends UIComponent {
   private _lastPY = 0;
 
   constructor(opts: VirtualListOptions<T>) {
-    super('VirtualList');
+    super();
     this._items = opts.items;
     this._renderItem = opts.renderItem;
     this._estH = opts.estimatedRowHeight;

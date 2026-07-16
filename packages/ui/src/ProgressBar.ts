@@ -39,7 +39,7 @@ export class ProgressBar extends UIComponent {
   public color: string;
 
   constructor(opts: ProgressBarOptions = { value: 0 }) {
-    super('ProgressBar');
+    super();
     this.value = opts.value;
     this.width = opts.width ?? 200;
     this.height = opts.height ?? 16;
