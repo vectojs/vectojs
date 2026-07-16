@@ -19,7 +19,7 @@ export class ScrollView extends UIComponent {
   private lastPointerY: number = 0;
 
   constructor(opts: ScrollViewOptions) {
-    super('ScrollView');
+    super();
     this.width = opts.width;
     this.height = opts.height;
     this.interactive = true;

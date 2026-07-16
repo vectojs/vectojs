@@ -42,7 +42,7 @@ export class PanelResizeHandle extends UIComponent {
     hoverColor: string,
     onResize: (delta: number) => void,
   ) {
-    super('PanelResizeHandle');
+    super();
     this.direction = dir;
     this._color = color;
     this._hoverColor = hoverColor;
@@ -114,7 +114,7 @@ export class Panel extends UIComponent {
   private _content: Entity | null = null;
 
   constructor(opts: PanelOptions = {}) {
-    super('Panel');
+    super();
     this.minSize = opts.minSize ?? 60;
     this.defaultSize = opts.defaultSize;
     this.clipChildren = true;
@@ -159,7 +159,7 @@ export class PanelGroup extends UIComponent {
   private _hHoverColor: string;
 
   constructor(opts: PanelGroupOptions) {
-    super('PanelGroup');
+    super();
     this.width = opts.width;
     this.height = opts.height;
     this.direction = opts.direction;

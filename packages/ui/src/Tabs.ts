@@ -70,7 +70,7 @@ export class Tabs extends UIComponent {
   private readonly _closeBox = 14; // px hit region for the × glyph
 
   constructor(opts: TabsOptions) {
-    super('Tabs');
+    super();
     this.tabs = opts.tabs;
     this.value = opts.value ?? (opts.tabs.length > 0 ? opts.tabs[0].id : '');
     this.width = opts.width;
@@ -149,9 +149,12 @@ export class Tabs extends UIComponent {
   private _tabW(): number {
     // Prefer the fixed width; only compress toward minTabWidth if that lets
     // every tab fit without scrolling. Below that, scroll instead of shrink.
+    // Never stretch past tabWidth: on a wide bar the stretched tab's
+    // right-edge × renders directly beside the NEXT tab's label, and users
+    // close the wrong tab. Surplus bar width stays empty.
     if (this.tabs.length === 0) return this.tabWidth;
     const even = this.width / this.tabs.length;
-    if (even >= this.tabWidth) return even; // few tabs: fill the bar
+    if (even >= this.tabWidth) return this.tabWidth;
     return Math.max(this.minTabWidth, Math.min(this.tabWidth, even));
   }
 
