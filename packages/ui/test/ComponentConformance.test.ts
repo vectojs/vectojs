@@ -169,7 +169,19 @@ const SPECS: ComponentSpec[] = [
     interactive: true,
     resizeExempt: true,
   },
-  { name: 'Panel', make: () => new Panel(), interactive: false, resizeExempt: true },
+  {
+    name: 'Panel',
+    make: () => new Panel(),
+    interactive: false,
+    // Still exempt for check (d)'s actual question ("does an ANCESTOR's
+    // resize propagate into this bare component"), which is unaffected by
+    // Panel.setContent's new fitContent contract — that contract governs
+    // the OPPOSITE relationship (Panel -> its own hosted content), covered
+    // by dedicated tests in ResizablePanel.test.ts instead, since check (d)
+    // never constructs a Panel via setContent() (spec.make() here returns a
+    // bare, content-less Panel).
+    resizeExempt: true,
+  },
   {
     name: 'PanelGroup',
     make: () => new PanelGroup({ width: 100, height: 100, direction: 'horizontal' }),
@@ -201,11 +213,23 @@ const SPECS: ComponentSpec[] = [
     resizeExempt: true,
   },
   {
+    // No `label`/`onClick` → not interactive — a purely decorative Card
+    // still has no click surface of its own, by design (see the interactive
+    // variant below for the Pressable-style `onClick` contract, Tier 1 #2
+    // companion fix, container-sizing-contract-design.md).
     name: 'Card',
-    // No `label` → not interactive; matches the Pressable/Card gap (Tier 1
-    // #2 companion finding) — a plain Card has no click surface today.
     make: () => new Card({ width: 100, height: 60 }),
     interactive: false,
+    // Still exempt for check (d)'s ancestor-resize question, same rationale
+    // as Panel above — Card.setContent's fitContent contract governs the
+    // Card-to-its-own-hosted-content relationship instead, covered by
+    // dedicated tests in Card.test.ts.
+    resizeExempt: true,
+  },
+  {
+    name: 'Card (interactive, onClick)',
+    make: () => new Card({ width: 100, height: 60, label: 'Feature card', onClick: () => {} }),
+    interactive: true,
     resizeExempt: true,
   },
   {

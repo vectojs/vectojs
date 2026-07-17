@@ -1,6 +1,18 @@
 import { Entity, IRenderer } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
+/**
+ * Which axes {@link Panel.setContent}/{@link import('./Card').Card.setContent}
+ * should keep synced to the container's own box. Pass `true`/`false` as a
+ * shorthand for "both axes"/"neither axis"; both default to `true`.
+ */
+export interface FitContentOptions {
+  /** Track the container's width. Default `true`. */
+  width?: boolean;
+  /** Track the container's height. Default `true`. */
+  height?: boolean;
+}
+
 export interface PanelGroupOptions {
   direction: 'horizontal' | 'vertical';
   width: number;
@@ -112,6 +124,8 @@ export class Panel extends UIComponent {
   public minSize: number;
   public defaultSize: number | undefined;
   private _content: Entity | null = null;
+  private _fitWidth = false;
+  private _fitHeight = false;
 
   constructor(opts: PanelOptions = {}) {
     super();
@@ -121,14 +135,53 @@ export class Panel extends UIComponent {
     this.interactive = false;
   }
 
-  /** Replace the panel's content entity. */
-  public setContent(content: Entity): this {
+  /**
+   * Replace the panel's content entity.
+   *
+   * `fit` (default `true`, both axes) keeps the content's `width`/`height`
+   * synced to the panel's own box — on this call and on every subsequent
+   * resize of the panel (e.g. from a {@link PanelGroup} divider drag or
+   * {@link PanelGroup.resize}). A viewport that doesn't track the thing it's
+   * a viewport onto is the surprising case, not the default one — pass
+   * `false` (or a per-axis object) to restore the old position-only
+   * behavior, e.g. for content deliberately larger than its viewport and
+   * scrolled via `clipChildren`.
+   *
+   * Panel has no setter hook on `width`/`height` to intercept a resize from
+   * the outside (`Entity.width`/`height` are plain fields — see the
+   * container-sizing-contract design doc), so the fit is re-applied once per
+   * frame from {@link update} rather than reactively — the same approach
+   * `Tabs` already uses for its own hosted content.
+   */
+  public setContent(content: Entity, fit: FitContentOptions | boolean = true): this {
     if (this._content) super.remove(this._content);
     this._content = content;
     content.x = 0;
     content.y = 0;
+    if (fit === false) {
+      this._fitWidth = false;
+      this._fitHeight = false;
+    } else if (fit === true) {
+      this._fitWidth = true;
+      this._fitHeight = true;
+    } else {
+      this._fitWidth = fit.width ?? true;
+      this._fitHeight = fit.height ?? true;
+    }
+    this._applyFit();
     super.add(content);
     return this;
+  }
+
+  private _applyFit(): void {
+    if (!this._content) return;
+    if (this._fitWidth) this._content.width = this.width;
+    if (this._fitHeight) this._content.height = this.height;
+  }
+
+  public update(dt: number, time: number): void {
+    super.update(dt, time);
+    this._applyFit();
   }
 
   public render(_r: IRenderer): void {

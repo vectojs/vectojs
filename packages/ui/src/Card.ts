@@ -1,5 +1,6 @@
-import { A11yAttributes, IRenderer } from '@vectojs/core';
+import { Entity, A11yAttributes, IRenderer } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
+import { type FitContentOptions } from './ResizablePanel';
 
 /** Construction options for {@link Card}. */
 export interface CardOptions {
@@ -22,6 +23,16 @@ export interface CardOptions {
    * `role="group"` shadow node so assistive tech / agents can find the region.
    */
   label?: string;
+  /**
+   * Makes the whole card clickable and interactive, the same `onClick`
+   * pattern {@link import('./Button').Button} already uses — no more
+   * stacking a transparent `Button` over a `Card` to make it pressable.
+   * Requires `label`: the a11y projection needs an accessible name for the
+   * interactive region this creates, and an unlabeled clickable Card would
+   * recreate the exact "empty-label button in the a11y tree" problem this
+   * option exists to remove.
+   */
+  onClick?: (e: unknown) => void;
 }
 
 /**
@@ -41,6 +52,9 @@ export class Card extends UIComponent {
   public borderWidth: number;
   public radius: number;
   public label: string | null;
+  private _content: Entity | null = null;
+  private _fitWidth = false;
+  private _fitHeight = false;
 
   constructor(opts: CardOptions) {
     super();
@@ -53,10 +67,57 @@ export class Card extends UIComponent {
     this.padding = opts.padding ?? 0;
     this.label = opts.label ?? null;
     if (this.label) this.interactive = true;
+    if (opts.onClick) {
+      if (!this.label) {
+        throw new Error(
+          'Card: onClick requires a label (the a11y projection needs an accessible name for the interactive region it creates).',
+        );
+      }
+      this.on('click', opts.onClick);
+    }
   }
 
   public getA11yAttributes(): A11yAttributes {
     return this.label ? { role: 'group', label: this.label } : {};
+  }
+
+  /**
+   * Place a single content entity inside the card, sized to match by
+   * default. Same `fitContent` contract as {@link import('./ResizablePanel').Panel.setContent}
+   * — pass `false` (or a per-axis object) to keep the old position-only
+   * `add()` behavior instead. Unlike `Panel`, a `Card` is not required to
+   * host content this way; use plain {@link add} for cards whose children
+   * are manually positioned decorations rather than a single sized region.
+   */
+  public setContent(content: Entity, fit: FitContentOptions | boolean = true): this {
+    if (this._content) super.remove(this._content);
+    this._content = content;
+    content.x = 0;
+    content.y = 0;
+    if (fit === false) {
+      this._fitWidth = false;
+      this._fitHeight = false;
+    } else if (fit === true) {
+      this._fitWidth = true;
+      this._fitHeight = true;
+    } else {
+      this._fitWidth = fit.width ?? true;
+      this._fitHeight = fit.height ?? true;
+    }
+    this._applyFit();
+    super.add(content);
+    return this;
+  }
+
+  private _applyFit(): void {
+    if (!this._content) return;
+    if (this._fitWidth) this._content.width = this.width;
+    if (this._fitHeight) this._content.height = this.height;
+  }
+
+  public update(dt: number, time: number): void {
+    super.update(dt, time);
+    if (this._content) this._applyFit();
   }
 
   public render(r: IRenderer): void {
