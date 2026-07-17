@@ -9,6 +9,18 @@ import { parseColorToRGBA } from './colorParse';
 export interface PointRenderer {
   /** Resize the backing buffer + GL viewport to a logical `w × h` (DPR applied). */
   resize(width: number, height: number): void;
+  /**
+   * Cap on the effective device pixel ratio applied by {@link resize}.
+   * `undefined` (default) uses the real, uncapped `devicePixelRatio`. Set
+   * before calling `resize()` for it to take effect on that call (matches
+   * {@link import('../tree/Scene').SceneOptions.maxDPR} — `Scene` sets this
+   * once at construction and again before every `resize()` call, since a
+   * factory function has no other way to receive the option: the WebGL point
+   * layer's creator is a plain `(canvas) => PointRenderer` registered once by
+   * `@vectojs/core`'s module init, with no room for a per-Scene constructor
+   * argument).
+   */
+  maxDPR?: number;
   /** Begin a frame: reset the accumulated primitive buffers. */
   begin(): void;
   /** Add one circle in world (CSS-pixel) coordinates; `alpha` multiplies the color's. */
@@ -418,11 +430,13 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     glyphCount = 0;
   };
 
-  return {
+  const renderer: PointRenderer = {
+    maxDPR: undefined,
     resize(width, height) {
       logicalW = width;
       logicalH = height;
-      dpr = typeof devicePixelRatio !== 'undefined' ? devicePixelRatio || 1 : 1;
+      const realDpr = typeof devicePixelRatio !== 'undefined' ? devicePixelRatio || 1 : 1;
+      dpr = renderer.maxDPR !== undefined ? Math.min(realDpr, renderer.maxDPR) : realDpr;
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       canvas.style.width = `${width}px`;
@@ -709,4 +723,5 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       if (msdfTexture) gl.deleteTexture(msdfTexture);
     },
   };
+  return renderer;
 }

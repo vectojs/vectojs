@@ -27,6 +27,16 @@ export class CanvasRenderer implements IRenderer {
   private height: number;
 
   /**
+   * Cap on the effective device pixel ratio applied by the constructor and
+   * {@link resize}. `undefined` (default) uses the real, uncapped
+   * `devicePixelRatio` — unchanged from prior versions. Set directly, or via
+   * the constructor's third argument; `Scene` (see `SceneOptions.maxDPR`)
+   * keeps this in sync on every {@link resize} call, since the real DPR can
+   * change at runtime (e.g. a window dragged between displays).
+   */
+  public maxDPR?: number;
+
+  /**
    * Max circles per batched `fill()`. A single Canvas 2D `fill()` over a path is
    * superlinear in sub-path count, so an unbounded batch is *slower* than many
    * small fills at high entity counts. Capping bounds each fill's path
@@ -48,9 +58,15 @@ export class CanvasRenderer implements IRenderer {
    *   fullscreen canvas and sizes to the window — pass this for embedded /
    *   custom-container canvases (the Scene does when `disableWindowResize` is
    *   set) so the canvas's own dimensions aren't clobbered by the window's.
+   * @param maxDPR - See {@link maxDPR}.
    */
-  constructor(canvas: HTMLCanvasElement, size?: { width: number; height: number }) {
-    const dpr = getDevicePixelRatio();
+  constructor(
+    canvas: HTMLCanvasElement,
+    size?: { width: number; height: number },
+    maxDPR?: number,
+  ) {
+    this.maxDPR = maxDPR;
+    const dpr = this.effectiveDPR();
     // Fall back to the canvas's own size in SSR/Node where there is no window.
     this.width =
       size?.width ?? (typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0);
@@ -84,6 +100,12 @@ export class CanvasRenderer implements IRenderer {
     return this.ctx;
   }
 
+  /** Real `devicePixelRatio`, clamped to {@link maxDPR} when set. */
+  private effectiveDPR(): number {
+    const real = getDevicePixelRatio();
+    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
+  }
+
   /**
    * Resize the backing canvas buffer and re-apply DPR scaling.
    *
@@ -93,7 +115,7 @@ export class CanvasRenderer implements IRenderer {
    * @param height - New logical height in CSS pixels.
    */
   public resize(width: number, height: number): void {
-    const dpr = getDevicePixelRatio();
+    const dpr = this.effectiveDPR();
     this.width = width;
     this.height = height;
     this.ctx.canvas.width = width * dpr;

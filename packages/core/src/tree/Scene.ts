@@ -113,6 +113,21 @@ export interface SceneOptions {
    */
   disableWindowResize?: boolean;
   /**
+   * Cap the effective device pixel ratio used to size the Canvas2D and WebGL
+   * point-layer backing stores. `undefined` (default) reads the real,
+   * uncapped `window.devicePixelRatio` — unchanged from prior versions.
+   * Backing-store render cost scales with `logical size × dpr²`, so a
+   * full-screen HiDPI scene (`pointBackend: 'webgl'` in particular) can
+   * overrun its frame budget on a DPR-3 display while running fine on the
+   * DPR-1 dev machine it was tuned on (findings.md, 2026-07-16). `maxDPR: 2`
+   * keeps the display retina-crisp (2x already exceeds what most eyes
+   * resolve) while roughly halving the backing-store pixel count at DPR 3.
+   * Applied at construction and re-applied on every {@link resize} call
+   * (including the automatic window-resize listener), since the real DPR
+   * can change at runtime (a window dragged between displays).
+   */
+  maxDPR?: number;
+  /**
    * Enable automatic throttling to 2 FPS when the scene is static (no active transitions
    * and not marked dirty) to save power/CPU. Default is `true`.
    */
@@ -673,6 +688,8 @@ export class Scene {
   public width: number;
   public height: number;
   private disableWindowResize: boolean = false;
+  /** See {@link SceneOptions.maxDPR}. `undefined` = uncapped (real DPR). */
+  public maxDPR?: number;
 
   // WebGPU properties
   private destroyed: boolean = false;
@@ -704,6 +721,7 @@ export class Scene {
     this.canvas = canvas;
     this.debugA11y = options.debugA11y ?? false;
     this.disableWindowResize = options.disableWindowResize ?? false;
+    this.maxDPR = options.maxDPR;
     if (this.disableWindowResize) {
       // Prefer the inline px style: it's where the renderer records the
       // *logical* size. On a remount, canvas.width holds the previous
@@ -763,6 +781,7 @@ export class Scene {
       this.renderer = new CanvasRenderer(
         canvas,
         this.disableWindowResize ? { width: this.width, height: this.height } : undefined,
+        this.maxDPR,
       );
     }
 
@@ -921,6 +940,7 @@ export class Scene {
       if (canvas.parentElement) canvas.parentElement.appendChild(gl);
       const pr = Scene.webglCreator ? Scene.webglCreator(gl) : null;
       if (pr) {
+        pr.maxDPR = this.maxDPR;
         pr.resize(this.width, this.height);
         this.glCanvas = gl;
         this.pointRenderer = pr;
@@ -2835,9 +2855,13 @@ export class Scene {
     // projection metric boundary so prepared grids can recalibrate once.
     this.contentFontEpoch++;
     if (typeof (this.renderer as any).resize === 'function') {
+      if ('maxDPR' in this.renderer) (this.renderer as any).maxDPR = this.maxDPR;
       (this.renderer as any).resize(width, height);
     }
-    this.pointRenderer?.resize(width, height);
+    if (this.pointRenderer) {
+      this.pointRenderer.maxDPR = this.maxDPR;
+      this.pointRenderer.resize(width, height);
+    }
     // Keep the WebGPU particle layer's backing store in step — otherwise it
     // rasterizes at the creation-time resolution and gets CSS-stretched.
     if (this.gpuCanvas) {

@@ -708,6 +708,67 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     }
   });
 
+  it('maxDPR caps the canvas backing store at construction (findings.md, 2026-07-16)', () => {
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 3, configurable: true });
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      const scene = new Scene(canvas, { disableWindowResize: true, maxDPR: 2 });
+      expect(scene.width).toBe(400); // logical size unaffected
+      expect(canvas.width).toBe(800); // 400 × 2 (capped), not × 3
+      expect(canvas.height).toBe(600);
+      scene.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
+  it('maxDPR is re-synced to the renderer on every resize(), not just at construction', () => {
+    // This file's shared HTMLCanvasElement.prototype.getContext mock always
+    // returns the SAME mockCtx object regardless of which canvas instance
+    // calls it, and mockCtx has no `.canvas` back-reference — the same
+    // limitation the neighboring "resize() keeps the WebGPU canvas backing
+    // store in step" test works around by stubbing scene.renderer before
+    // calling resize(). CanvasRenderer's own pixel-math correctness on
+    // resize (with and without maxDPR) is already covered end-to-end in
+    // CanvasRenderer.test.ts; what's specific to Scene here is that
+    // Scene.resize() actually threads `this.maxDPR` onto the renderer
+    // instance before delegating — assert that plumbing directly.
+    const canvas = document.createElement('canvas');
+    canvas.width = 400;
+    canvas.height = 300;
+    const scene = new Scene(canvas, { disableWindowResize: true, maxDPR: 2 });
+    const renderer = (scene as any).renderer as { maxDPR?: number; resize: () => void };
+    expect(renderer.maxDPR).toBe(2);
+    renderer.resize = vi.fn(); // isolate: don't exercise CanvasRenderer's own resize math here
+    // Change maxDPR AFTER construction so the assertion below can only pass
+    // if resize() actually re-reads/re-syncs it — if resize() never touched
+    // renderer.maxDPR, it would still read the construction-time value (2),
+    // not the new one, and this would fail.
+    scene.maxDPR = 1;
+    scene.resize(500, 400);
+    expect(renderer.maxDPR).toBe(1); // re-synced to the NEW value, not the construction-time one
+    expect(renderer.resize).toHaveBeenCalledWith(500, 400);
+    scene.destroy();
+  });
+
+  it('maxDPR undefined (default) leaves DPR handling uncapped, matching prior versions', () => {
+    const prevDPR = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { value: 3, configurable: true });
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 400;
+      canvas.height = 300;
+      const scene = new Scene(canvas, { disableWindowResize: true });
+      expect(canvas.width).toBe(1200); // 400 × 3, real DPR, uncapped
+      scene.destroy();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+    }
+  });
+
   it('clientToScene mapping is DPR-independent for an embedded scene', () => {
     const prevDPR = window.devicePixelRatio;
     Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });

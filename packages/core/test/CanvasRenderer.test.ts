@@ -84,6 +84,53 @@ describe('CanvasRenderer', () => {
     expect(mockCanvas.style.height).toBe('600px');
   });
 
+  it('maxDPR passed to the constructor caps the backing store below the real DPR', () => {
+    // The fixture window has devicePixelRatio: 2 — pass maxDPR: 1 to confirm
+    // it's actually clamping (not just matching the real DPR by coincidence).
+    mockCtx.scale.mockClear();
+    const canvas = { ...mockCanvas, width: 0, height: 0, style: { width: '', height: '' } };
+    (mockCtx as any).canvas = canvas;
+    new CanvasRenderer(canvas as any, { width: 400, height: 300 }, 1);
+    expect(canvas.width).toBe(400); // 400 × 1 (capped), not × 2
+    expect(canvas.height).toBe(300);
+    expect(mockCtx.scale).toHaveBeenCalledWith(1, 1);
+  });
+
+  it('maxDPR above the real DPR is a no-op (never scales UP)', () => {
+    const canvas = { ...mockCanvas, width: 0, height: 0, style: { width: '', height: '' } };
+    (mockCtx as any).canvas = canvas;
+    new CanvasRenderer(canvas as any, { width: 400, height: 300 }, 4);
+    expect(canvas.width).toBe(800); // still 400 × 2 (the real DPR), not × 4
+    expect(canvas.height).toBe(600);
+  });
+
+  it('resize() re-applies maxDPR set directly on the instance (Scene syncs it before every resize)', () => {
+    // mockCtx.canvas is shared, mutable global state that other tests in
+    // this file reassign — resize() writes through this.ctx.canvas, not the
+    // constructor's original canvas param, so this test must re-point
+    // mockCtx.canvas back to its own local canvas (matching the isolation
+    // pattern the constructor tests above already use) or it would silently
+    // assert against whatever canvas object a PRIOR test left behind.
+    mockCtx.scale.mockClear();
+    const canvas = { ...mockCanvas, width: 0, height: 0, style: { width: '', height: '' } };
+    (mockCtx as any).canvas = canvas;
+    const renderer = new CanvasRenderer(canvas as any);
+    renderer.maxDPR = 1;
+    renderer.resize(800, 600);
+    expect(canvas.width).toBe(800); // 800 × 1 (capped), not × 2
+    expect(canvas.height).toBe(600);
+    expect(mockCtx.scale).toHaveBeenCalledWith(1, 1);
+  });
+
+  it('maxDPR undefined (default) keeps the uncapped, real-DPR behavior unchanged', () => {
+    const canvas = { ...mockCanvas, width: 0, height: 0, style: { width: '', height: '' } };
+    (mockCtx as any).canvas = canvas;
+    const renderer = new CanvasRenderer(canvas as any);
+    expect(renderer.maxDPR).toBeUndefined();
+    renderer.resize(800, 600);
+    expect(canvas.width).toBe(1600); // 800 × 2 (the real, uncapped DPR)
+  });
+
   it('clear() delegates to clearRect()', () => {
     mockCtx.clearRect.mockClear();
     const renderer = new CanvasRenderer(mockCanvas as any);

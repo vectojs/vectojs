@@ -269,4 +269,39 @@ describe('Scene — WebGL point backend', () => {
     expect(ctx.calls).toContain('arc');
     expect(ctx.calls).toContain('fill');
   });
+
+  it('maxDPR is threaded to the WebGL point layer at construction (findings.md, 2026-07-16)', () => {
+    // makeScene() fixes devicePixelRatio to 1, so this test asserts the
+    // Scene->pointRenderer plumbing (the option arrives and is stored)
+    // rather than the resulting pixel math — that math is already covered
+    // end-to-end (with a real DPR>maxDPR gap) in WebGLPointRenderer.test.ts.
+    const { gl } = mockGL();
+    (globalThis as { window?: unknown }).window = {
+      innerWidth: 800,
+      innerHeight: 600,
+      devicePixelRatio: 1,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    (globalThis as { devicePixelRatio?: number }).devicePixelRatio = 1;
+    (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = () => 0;
+
+    const realCreate = document.createElement.bind(document);
+    const twoD = realCreate('canvas');
+    const ctx = recorderCtx();
+    ctx.canvas = twoD;
+    (twoD as HTMLCanvasElement).getContext = (() => ctx) as never;
+    const glCanvas = realCreate('canvas');
+    (glCanvas as HTMLCanvasElement).getContext = (() => gl) as never;
+    const spy = vi
+      .spyOn(document, 'createElement')
+      .mockImplementation(((tag: string) =>
+        tag === 'canvas' ? glCanvas : realCreate(tag)) as never);
+    restoreCreate = () => spy.mockRestore();
+
+    const scene = new Scene(twoD, { pointBackend: 'webgl', maxDPR: 2 });
+    expect(
+      (scene as unknown as { pointRenderer?: { maxDPR?: number } }).pointRenderer?.maxDPR,
+    ).toBe(2);
+  });
 });

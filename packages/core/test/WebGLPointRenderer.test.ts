@@ -193,6 +193,39 @@ describe('createWebGLPointRenderer', () => {
     expect(captures.viewport.at(-1)).toEqual([0, 0, 1600, 1200]);
   });
 
+  it('maxDPR caps the backing store below the real DPR (findings.md, 2026-07-16)', () => {
+    const { gl, captures } = mockGL();
+    const canvas = mockCanvas(gl);
+    (globalThis as { devicePixelRatio?: number }).devicePixelRatio = 3;
+    const r = createWebGLPointRenderer(canvas)!;
+    r.maxDPR = 2;
+    r.resize(800, 600);
+    expect(canvas.width).toBe(1600); // 800 * 2 (capped), not * 3
+    expect(canvas.height).toBe(1200);
+    expect(captures.viewport.at(-1)).toEqual([0, 0, 1600, 1200]);
+  });
+
+  it('maxDPR above the real DPR is a no-op (never scales UP)', () => {
+    const { gl } = mockGL();
+    const canvas = mockCanvas(gl);
+    (globalThis as { devicePixelRatio?: number }).devicePixelRatio = 2;
+    const r = createWebGLPointRenderer(canvas)!;
+    r.maxDPR = 4;
+    r.resize(800, 600);
+    expect(canvas.width).toBe(1600); // still 800 * 2 (the real DPR), not * 4
+    expect(canvas.height).toBe(1200);
+  });
+
+  it('maxDPR undefined (default) keeps the uncapped, real-DPR behavior unchanged', () => {
+    const { gl } = mockGL();
+    const canvas = mockCanvas(gl);
+    (globalThis as { devicePixelRatio?: number }).devicePixelRatio = 2;
+    const r = createWebGLPointRenderer(canvas)!;
+    expect(r.maxDPR).toBeUndefined();
+    r.resize(800, 600);
+    expect(canvas.width).toBe(1600); // 800 * 2, unchanged
+  });
+
   it('setTexture uploads the atlas image to a GL texture', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;
