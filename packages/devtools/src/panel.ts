@@ -102,10 +102,31 @@ export class DevtoolsPanel {
     cs.zIndex = '99999';
     cs.background = PANEL_BG;
     cs.borderLeft = `1px solid ${ACCENT}`;
+    // The dock used to default to `pointer-events: auto` (the unset browser
+    // default on a plain div), so its full 320×viewport-height footprint ate
+    // every click over the host page's right edge — even across the dock's
+    // own empty background, not just its chrome — while the host Scene kept
+    // laying out at full width beneath it with zero awareness of the dock
+    // (findings.md, 2026-07-16: "silently ignores real pointer input while
+    // ?debug is on", corrupting a forge audit's own repro). `none` here
+    // mirrors how the main Scene's own a11yRoot works (Scene.ts sets
+    // a11yRoot to `none` and each interactive shadow element opts back in to
+    // `auto` individually) — the panel's own a11y-projected buttons/tree
+    // nodes below still receive real clicks because they set their own
+    // `pointer-events: auto`, but the empty background band no longer does.
+    cs.pointerEvents = 'none';
 
     const canvas = document.createElement('canvas');
     canvas.width = this.width;
     canvas.height = height;
+    // Purely visual — the panel's own interaction goes through its a11y
+    // shadow DOM (siblings of this canvas under `container`), never through
+    // native events on the canvas element itself. `none` lets clicks over
+    // painted-but-non-interactive panel chrome (backgrounds, labels, the VMT
+    // tree's connector lines) fall through to whichever shadow element is
+    // actually there — which, outside the dock's real controls, is nothing,
+    // so the click reaches the host page underneath as intended.
+    canvas.style.pointerEvents = 'none';
     this.container.appendChild(canvas);
     document.body.appendChild(this.container);
 

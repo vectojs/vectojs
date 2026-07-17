@@ -1,0 +1,5 @@
+---
+'@vectojs/devtools': patch
+---
+
+Fixed `attachDevtools`' docked panel intercepting pointer input over the host page's right edge. The dock is a fixed `320px`-wide, full-viewport-height element pinned to the right (`position: fixed; right: 0`), and both the dock container and its canvas now set `pointer-events: none` — matching how the main `Scene`'s own `a11yRoot` works (the root opts out, individual interactive shadow elements opt back in via `auto`). Previously the dock container defaulted to `pointer-events: auto` (the unset browser default), so any click landing in that 320px band silently missed whatever host content was underneath it, even when the dock had no interactive chrome at that exact pixel — this affected every app's own right-edge controls (tab close buttons, toolbar buttons, etc.) whenever `?debug`/`attachDevtools` was active, and had already corrupted a forge audit's own headless interaction test before being caught. The panel's own buttons and VMT tree remain independently clickable through their a11y shadow elements, which set their own `pointer-events: auto`.
