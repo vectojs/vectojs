@@ -1374,6 +1374,14 @@ export class Scene {
           node.dispatchEvent(new VectoJSEvent('click', node, e));
         });
 
+        // Bind double-click (the a11yRoot already has its own dblclick handler
+        // for text word-selection via selectProjectionUnit — that fires on the
+        // content-projection DOM, not on entity shadow elements, so it is
+        // unaffected by this per-entity dispatch).
+        el.addEventListener('dblclick', (e) => {
+          node.dispatchEvent(new VectoJSEvent('dblclick', node, e));
+        });
+
         // Developer debugger mode hover feedback
         el.addEventListener('mouseenter', (e) => {
           if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.2)';

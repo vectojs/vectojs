@@ -223,6 +223,7 @@ export interface A11yAttributes {
  */
 export type VectoEvent =
   | 'click'
+  | 'dblclick'
   | 'hover'
   | 'pointerdown'
   | 'pointerup'
@@ -935,6 +936,28 @@ export abstract class Entity {
     if (handlers) {
       handlers.forEach((h) => h(payload));
     }
+  }
+
+  /**
+   * Programmatically focus the entity's projected a11y shadow element, if one
+   * exists. After `scene.add(entity)` the shadow element is typically created
+   * on the next a11y sync (within one animation frame), so this method retries
+   * once on the next rAF if the element isn't immediately available — matching
+   * the timing pattern the prior workaround described in findings.md achieved
+   * with `requestAnimationFrame(() => document.getElementById(id)?.focus())`.
+   */
+  public focus(): void {
+    const el = this.scene?.getA11yElement(this.id);
+    if (el) {
+      el.focus();
+      return;
+    }
+    // Element not yet projected — retry once after the next frame (by which
+    // time Scene.syncA11y should have processed this entity).
+    requestAnimationFrame(() => {
+      const retry = this.scene?.getA11yElement(this.id);
+      if (retry) retry.focus();
+    });
   }
 
   /** Run one node's listeners for the event, honoring stopImmediatePropagation. */

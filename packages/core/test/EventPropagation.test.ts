@@ -195,4 +195,29 @@ describe('Entity event propagation', () => {
 
     expect(order).toEqual(['leaf']); // no bubbling through emit
   });
+
+  it('dblclick propagates through capture+bubble like click', () => {
+    const { parent, mid, leaf } = chain();
+    const order: string[] = [];
+    leaf.on('dblclick', () => order.push('leaf'));
+    mid.on('dblclick', () => order.push('mid'));
+    parent.on('dblclick', () => order.push('parent'));
+
+    leaf.dispatchEvent(new VectoJSEvent('dblclick', leaf));
+
+    expect(order).toEqual(['leaf', 'mid', 'parent']);
+  });
+
+  it('dblclick capture runs before bubble', () => {
+    const { parent, mid, leaf } = chain();
+    const order: string[] = [];
+    parent.on('dblclick', () => order.push('cap-parent'), { capture: true });
+    mid.on('dblclick', () => order.push('cap-mid'), { capture: true });
+    leaf.on('dblclick', () => order.push('bub-leaf'));
+    parent.on('dblclick', () => order.push('bub-parent'));
+
+    leaf.dispatchEvent(new VectoJSEvent('dblclick', leaf));
+
+    expect(order).toEqual(['cap-parent', 'cap-mid', 'bub-leaf', 'bub-parent']);
+  });
 });

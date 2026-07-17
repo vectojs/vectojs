@@ -189,4 +189,17 @@ describe('A11y Root and Agent Contract', () => {
     expect(tree[0].children[0].id).toBe('child');
     expect(tree[0].children[0].role).toBe('button');
   });
+
+  it('entity.focus() focuses the projected shadow element', () => {
+    const entity = new TestInteractiveEntity('focus-me');
+    scene.add(entity);
+    tick(); // one a11y sync pass
+
+    const spy = vi
+      .spyOn(document.getElementById('focus-me')!, 'focus')
+      .mockImplementation(() => {});
+    entity.focus();
+    expect(spy).toHaveBeenCalledExactlyOnceWith();
+    spy.mockRestore();
+  });
 });
