@@ -1,4 +1,4 @@
-import { Entity, IRenderer } from '@vectojs/core';
+import { Entity, IRenderer, type Scene } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 export type OverlayPlacement =
@@ -72,16 +72,51 @@ export class Overlay extends UIComponent {
     this.scene?.markDirty();
   }
 
-  /** Show the overlay at an absolute canvas position. */
-  public showAtPoint(x: number, y: number): void {
-    if (!this.scene) return;
-    if (!this.parent) this.scene.overlayRoot.add(this);
+  /**
+   * Show the overlay at an absolute canvas position.
+   *
+   * If the overlay has never been added to the scene tree (no `parent`), its
+   * `scene` resolves to `null` (the `Entity.scene` getter walks the parent
+   * chain). To make the documented "bare `new ContextMenu({...})` then
+   * `showAtPoint`" pattern work without forcing every caller to pre-mount,
+   * pass a `source` — either the `Scene` itself or any mounted `Entity` whose
+   * `.scene` is set (e.g. the entity whose `pointerdown` listener is calling
+   * you) — and the overlay will auto-mount to that scene's `overlayRoot`.
+   * Without a `source` and no resolvable `scene`, this method silently
+   * no-ops (preserved for backward compatibility; existing pre-mount-then-
+   * showAtPoint callers are unchanged).
+   */
+  public showAtPoint(x: number, y: number, source?: Entity | Scene): void {
+    const scene = (this.scene as Scene | null) ?? this._sceneFromSource(source);
+    if (!scene) return;
+    if (!this.parent) scene.overlayRoot.add(this);
     this._placeAt(x, y);
     this.visible = true;
     this.opacity = 1;
     this.scaleX = 1;
     this.scaleY = 1;
-    this.scene.markDirty();
+    scene.markDirty();
+  }
+
+  /**
+   * Resolve a {@link Scene} from the optional `showAtPoint` `source` arg.
+   * Accepts a `Scene` passed directly, or any mounted `Entity` whose `.scene`
+   * is the authoritative source (e.g. the entity whose `pointerdown` listener
+   * is opening the menu).
+   */
+  private _sceneFromSource(source?: Entity | Scene): Scene | null {
+    if (!source) return null;
+    // A `Scene` passed directly — duck-typed via the `markDirty` method it
+    // exposes alongside `overlayRoot`, so an `Entity` instance that happens
+    // to also have those fields doesn't get misread as a Scene.
+    if (
+      'overlayRoot' in source &&
+      typeof (source as { markDirty?: unknown }).markDirty === 'function'
+    ) {
+      return source as Scene;
+    }
+    // Otherwise treat as an Entity whose `.scene` is the authoritative source.
+    return ((source as Entity).scene as Scene | null) ?? null;
   }
 
   /** Animate the overlay out (stays mounted; re-show via showAt). */
