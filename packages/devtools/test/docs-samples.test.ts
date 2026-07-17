@@ -2,8 +2,8 @@
 // PUBLISHED packages (core 1.9.2, ui 1.9.5, devtools 0.4.2) — exactly what a
 // reader installs. Each describe block maps to one doc section.
 import { describe, it, expect } from 'vitest';
-import { Scene, Entity } from '@vectojs/core';
-import { Markdown, Text, ScrollView } from '@vectojs/ui';
+import { Scene, Entity, Circle, Rect } from '@vectojs/core';
+import { Markdown, Text, ScrollView, Card, Button, RichText } from '@vectojs/ui';
 import {
   auditScene,
   captureSnapshot,
@@ -255,5 +255,147 @@ describe('streaming doc: markDirty coalescing under onDemand', () => {
     label.append(' b');
     label.append(' c');
     expect(isDirty(scene)).toBe(true); // one repaint will cover all three
+  });
+});
+
+describe('core-entity doc: animateTo / springTo / setTransition', () => {
+  it('animateTo tweens a property and resolves when done', () => {
+    const scene = makeScene();
+    const circle = new Circle({ radius: 20, fill: '#6366f1' });
+    scene.add(circle);
+    circle.setTransition({ x: { duration: 50, easing: 'easeOutQuad' } });
+    circle.x = 200;
+    for (let i = 0; i < 5; i++) scene.step(16.67);
+    expect(circle.x).toBeGreaterThan(0);
+    expect(circle.x).toBeLessThanOrEqual(200);
+  });
+
+  it('springTo resolves when motion settles', async () => {
+    const scene = makeScene();
+    const box = new Rect({ width: 60, height: 60, fill: '#ef4444' });
+    scene.add(box);
+    const promise = box.springTo({ x: 300, y: 200 });
+    // advance past the spring settling
+    for (let i = 0; i < 120; i++) scene.step(16.67);
+    await promise;
+    expect(box.x).toBe(300);
+    expect(box.y).toBe(200);
+  });
+
+  it('setTransition auto-animates on assignment', () => {
+    const scene = makeScene();
+    const box = new Rect({ width: 80, height: 80, fill: '#10b981' });
+    scene.add(box);
+    box.setTransition({ opacity: { duration: 100, easing: 'easeOutQuad' } });
+    box.opacity = 0.3;
+    scene.step(16.67);
+    expect(box.opacity).toBeGreaterThan(0.3);
+    expect(box.opacity).toBeLessThan(1);
+    for (let i = 0; i < 10; i++) scene.step(16.67);
+    expect(box.opacity).toBe(0.3);
+  });
+});
+
+describe('core-renderer doc: getContentProjection', () => {
+  it('custom entity with content projection returns correct text', () => {
+    const scene = makeScene();
+    class Label extends Entity {
+      text = 'canvas text';
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getContentProjection() {
+        return { text: this.text, font: '16px sans-serif', selectable: true };
+      }
+    }
+    const label = new Label();
+    scene.add(label);
+    const proj = label.getContentProjection();
+    expect(proj).toEqual({ text: 'canvas text', font: '16px sans-serif', selectable: true });
+  });
+
+  it('content projection with explicit visual rows', () => {
+    const scene = makeScene();
+    class MultilineLabel extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getContentProjection() {
+        return {
+          text: 'line1\nline2',
+          selectable: true,
+          lines: [
+            { text: 'line1', x: 0, y: 0, baseline: 16, font: '16px sans-serif', lineHeight: 20 },
+            { text: 'line2', x: 0, y: 20, baseline: 36, font: '16px sans-serif', lineHeight: 20 },
+          ],
+        };
+      }
+    }
+    const label = new MultilineLabel();
+    scene.add(label);
+    const proj = label.getContentProjection();
+    expect(proj!.lines).toHaveLength(2);
+    expect(proj!.lines![0].text).toBe('line1');
+    expect(proj!.lines![1].text).toBe('line2');
+  });
+});
+
+describe('ui-card doc: setContent + onClick', () => {
+  it('Card.setContent sizes content to the card', () => {
+    const scene = makeScene();
+    const card = new Card({ width: 300, height: 200, padding: 16, label: 'Demo card' });
+    scene.add(card);
+    const inner = new Rect({ width: 50, height: 50, fill: '#6366f1' });
+    card.setContent(inner, true);
+    expect(inner.width).toBe(300); // sized to card content box width
+  });
+
+  it('Card.onClick fires via emit', () => {
+    const scene = makeScene();
+    let clicked: any = null;
+    const card = new Card({
+      width: 200,
+      height: 100,
+      label: 'Click me',
+      onClick: (e) => {
+        clicked = card;
+      },
+    });
+    scene.add(card);
+    expect(card.interactive).toBe(true);
+    card.emit('click', { type: 'click', target: card });
+    expect(clicked).toBe(card);
+  });
+});
+
+describe('ui-text doc: Text component', () => {
+  it('Text renders content with maxWidth', () => {
+    const scene = makeScene();
+    const label = new Text('Hello VectoJS', { font: '24px sans-serif', maxWidth: 400 });
+    scene.add(label);
+    expect(label.text).toBe('Hello VectoJS');
+    expect(label.height).toBeGreaterThan(0);
+  });
+
+  it('Text.append extends content incrementally', () => {
+    const scene = makeScene();
+    const label = new Text('Hello', { font: '16px sans-serif', maxWidth: 300 });
+    scene.add(label);
+    label.append(' world');
+    expect(label.text).toBe('Hello world');
+  });
+
+  it('Text.setMaxWidth reflows without re-measuring', () => {
+    const scene = makeScene();
+    const label = new Text('A longer line of text that should wrap', {
+      font: '16px sans-serif',
+      maxWidth: 400,
+    });
+    scene.add(label);
+    const h1 = label.height;
+    label.setMaxWidth(100);
+    expect(label.height).toBeGreaterThan(h1);
   });
 });
