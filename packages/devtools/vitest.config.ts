@@ -11,6 +11,7 @@ export default defineConfig({
     alias: {
       '@vectojs/core': new URL('../core/src/index.ts', import.meta.url).pathname,
       '@vectojs/ui': new URL('../ui/src/index.ts', import.meta.url).pathname,
+      '@vectojs/devtools/headless': new URL('./src/headless.ts', import.meta.url).pathname,
     },
   },
 });
