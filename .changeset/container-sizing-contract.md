@@ -1,7 +1,0 @@
----
-'@vectojs/ui': minor
----
-
-Added a container sizing contract: `Panel.setContent(content, fit?)` and `Card.setContent(content, fit?)` keep hosted content's `width`/`height` synced to the container's own box, defaulting to tracking both axes (`fit` accepts `true` | `false` | `{ width?, height?: boolean }`). Previously `Panel.setContent` only positioned its content (`content.x = 0; content.y = 0`), never sized it — while `PanelGroup` correctly resized its `Panel` children, the chain dead-ended there, requiring every app to hand-sync `child.width = panel.width` itself (the exact gap that caused a 3.2px clip-overflow in a real forge app, findings.md 2026-07-10). `Card` gains the same contract for consistency, plus a new `onClick` option (`Card.ts`, same pattern as `Button`) so a whole card can be made clickable without stacking a transparent `Button` over it — `onClick` requires `label` (throws otherwise), so the a11y projection always has an accessible name for the interactive region it creates.
-
-`Tabs`, `PanelGroup`, `Stack`, and `Flow` are unchanged — `Tabs` already sizes its hosted content correctly, and `PanelGroup` already sizes its immediate `Panel` children; the gap was specifically `Panel.setContent`'s next link. See `vectojs-docs/superpowers/specs/2026-07-17-container-sizing-contract-design.md` for the full design and scope decisions (notably: `RichText`'s `whiteSpace: 'pre'` mode is a separate, deferred design — the two-formula line-advance discrepancy it depends on needs its own root-cause pass first).
