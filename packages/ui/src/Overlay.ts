@@ -103,8 +103,14 @@ export class Overlay extends UIComponent {
    * Accepts a `Scene` passed directly, or any mounted `Entity` whose `.scene`
    * is the authoritative source (e.g. the entity whose `pointerdown` listener
    * is opening the menu).
+   *
+   * `protected`, not `private`: subclasses that override `showAtPoint` (e.g.
+   * `ContextMenu`, to mount its outside-click backdrop) need this same
+   * resolution — duplicating it drifts out of sync with the base
+   * implementation, which is exactly how `ContextMenu.showAtPoint` silently
+   * dropped the `source` arg it was handed (see its override for the fix).
    */
-  private _sceneFromSource(source?: Entity | Scene): Scene | null {
+  protected _sceneFromSource(source?: Entity | Scene): Scene | null {
     if (!source) return null;
     // A `Scene` passed directly — duck-typed via the `markDirty` method it
     // exposes alongside `overlayRoot`, so an `Entity` instance that happens

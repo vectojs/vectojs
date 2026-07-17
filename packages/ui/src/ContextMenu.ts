@@ -1,4 +1,4 @@
-import { Entity, IRenderer, A11yAttributes, VectoJSEvent } from '@vectojs/core';
+import { Entity, IRenderer, A11yAttributes, VectoJSEvent, type Scene } from '@vectojs/core';
 import { Overlay } from './Overlay';
 import { measureText } from './measure';
 
@@ -125,9 +125,15 @@ export class ContextMenu extends Overlay {
     });
   }
 
-  public override showAtPoint(x: number, y: number): void {
-    if (!this._backdrop && this.scene) {
-      const scene = this.scene;
+  public override showAtPoint(x: number, y: number, source?: Entity | Scene): void {
+    // Resolve the scene the same way the base Overlay.showAtPoint does (see
+    // its `source` doc) — this override previously checked `this.scene`
+    // directly and dropped `source` entirely when calling `super`, so a
+    // freshly-constructed ContextMenu's FIRST showAtPoint call skipped the
+    // backdrop setup (this.scene was null) and passed no source down to the
+    // base implementation either — a silent no-op on top of a silent no-op.
+    const scene: Scene | null = (this.scene as Scene | null) ?? this._sceneFromSource(source);
+    if (!this._backdrop && scene) {
       const backdrop = new (class ContextMenuBackdrop extends Entity {
         isPointInside(): boolean {
           return true;
@@ -157,7 +163,7 @@ export class ContextMenu extends Overlay {
       parent.add(this);
       this._backdrop = backdrop;
     }
-    super.showAtPoint(x, y);
+    super.showAtPoint(x, y, source);
   }
 
   public override hide(): void {

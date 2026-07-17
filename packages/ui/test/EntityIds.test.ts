@@ -1,19 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
-import {
-  Overlay,
-  Panel,
-  PanelGroup,
-  PanelResizeHandle,
-  ProgressBar,
-  RadioGroup,
-  ScrollView,
-  Stack,
-  Tabs,
-  TreeView,
-  VirtualList,
-} from '../src/index';
+import { Panel, PanelGroup, PanelResizeHandle } from '../src/index';
 
 // These components used to pass their class name as the Entity id
 // (`super('PanelGroup')`), so every instance in a scene shared ONE id — and
@@ -21,6 +9,15 @@ import {
 // dividers then shared a single DOM element, and pointer events routed to
 // whichever entity claimed the id first (vem: dragging the editor split
 // divider resized the Explorer divider instead). Ids must be unique.
+//
+// This file's plain "two instances, different ids" check (originally a loop
+// over 11 components here) has been generalized into
+// `ComponentConformance.test.ts`'s check (a), which now runs it against
+// every `@vectojs/ui` component, not just the 11 that happened to be broken
+// at the time. What's left here is the ONE thing that suite doesn't cover: a
+// live two-Scene repro proving the id collision actually corrupts a11y DOM
+// routing end-to-end (not just that ids differ in isolation) — kept as its
+// own file because it's a scenario test, not a per-component matrix check.
 
 class Leaf extends Entity {
   isPointInside(): boolean {
@@ -28,38 +25,6 @@ class Leaf extends Entity {
   }
   render(): void {}
 }
-
-const makers: Array<[string, () => Entity]> = [
-  ['Stack', () => new Stack()],
-  ['ScrollView', () => new ScrollView({ width: 100, height: 100 })],
-  ['Overlay', () => new Overlay({ width: 100, height: 100 })],
-  [
-    'VirtualList',
-    () =>
-      new VirtualList({
-        items: [1, 2],
-        renderItem: () => new Leaf(),
-        estimatedRowHeight: 20,
-        width: 100,
-        height: 100,
-      }),
-  ],
-  ['RadioGroup', () => new RadioGroup({ options: [{ value: 'a', label: 'A' }] })],
-  ['ProgressBar', () => new ProgressBar({ value: 0.5 })],
-  ['Tabs', () => new Tabs({ width: 300, height: 100, tabs: [] })],
-  ['TreeView', () => new TreeView({ nodes: [{ id: 'n', label: 'n' }], width: 100, height: 100 })],
-  ['Panel', () => new Panel()],
-  ['PanelGroup', () => new PanelGroup({ width: 100, height: 100, direction: 'horizontal' })],
-  ['PanelResizeHandle', () => new PanelResizeHandle('horizontal', 4, '#000', '#fff', () => {})],
-];
-
-describe('every UI component instance owns a unique entity id', () => {
-  for (const [name, make] of makers) {
-    it(`${name}: two instances differ`, () => {
-      expect(make().id).not.toBe(make().id);
-    });
-  }
-});
 
 describe('duplicate interactive components project distinct a11y elements', () => {
   it('two PanelGroups yield two divider shadow elements at their own positions', () => {
