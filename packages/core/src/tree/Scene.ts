@@ -717,6 +717,85 @@ export class Scene {
   private hasWarnedZeroSize: boolean = false;
   private fontLoadHandler: (() => void) | null = null;
 
+  // ── Dev-mode warning infrastructure ──────────────────────────────
+  //
+  // Enable with `Scene.devMode = true` or by setting `globalThis.__DEV__`.
+  // Auto-detected when `NODE_ENV === 'development'`.
+  //
+  // Checks run once every ~120 frames (~2s at 60fps) to keep overhead
+  // negligible even when dev mode is on.
+
+  /** Toggle development-mode runtime warnings globally. */
+  public static devMode: boolean = false;
+
+  private static _devModeDetected(): boolean {
+    if (Scene.devMode) return true;
+    const gp = typeof globalThis !== 'undefined' ? (globalThis as any) : undefined;
+    if (gp?.__DEV__) return true;
+    if (gp?.process?.env?.NODE_ENV === 'development') return true;
+    return false;
+  }
+
+  private _devActive: boolean;
+  private _devFrameCount = 0;
+
+  private _devWarn(message: string): void {
+    if (!this._devActive) return;
+    console.warn(`[vectojs/dev] ${message}`);
+  }
+
+  /** @internal Periodic dev checks — called once per frame in dev mode. */
+  private _devRunChecks(): void {
+    this._devFrameCount++;
+    if (this._devFrameCount % 120 !== 0) return; // ~every 2s
+
+    // 1. detachA11y leak detection
+    if (this.a11yElements) {
+      let interactiveCount = 0;
+      const walk = (node: Entity): void => {
+        if (node.interactive && node.width > 0) interactiveCount++;
+        for (const c of node.children) walk(c);
+      };
+      walk(this.root);
+      for (const c of this.overlayRoot.children) walk(c);
+
+      const shadowCount = this.a11yElements.size;
+      // Allow some slack for a11yFullViewport entities and timing
+      if (shadowCount > interactiveCount + 2) {
+        this._devWarn(
+          `a11yElements (${shadowCount}) exceeds interactive entities (${interactiveCount}). ` +
+            'Call scene.detachA11y(entity) before removing interactive children ' +
+            'from the tree, or their shadow nodes leak.',
+        );
+      }
+    }
+
+    // 2. Content projection mismatch — spot-check a few entities
+    let checked = 0;
+    const walkProjections = (node: Entity): void => {
+      if (checked > 10) return; // limit per frame
+      const proj = node.getContentProjection?.();
+      if (proj?.text && proj.selectable !== false) {
+        const el = this.contentElements?.get(node.id);
+        if (el) {
+          const projectedText = el.textContent || '';
+          // If the projection text differs from what's in the DOM, warn
+          if (projectedText !== '' && projectedText !== proj.text) {
+            this._devWarn(
+              `Content projection mismatch for entity "${node.id}": ` +
+                `projection says "${proj.text.slice(0, 60)}" ` +
+                `but DOM shows "${projectedText.slice(0, 60)}". ` +
+                'Ensure getContentProjection() output matches what drawSelf renders.',
+            );
+          }
+        }
+      }
+      checked++;
+      for (const c of node.children) walkProjections(c);
+    };
+    walkProjections(this.root);
+  }
+
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
     this.debugA11y = options.debugA11y ?? false;
@@ -752,6 +831,7 @@ export class Scene {
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
+    this._devActive = Scene._devModeDetected();
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -2670,6 +2750,21 @@ export class Scene {
         node.update(dt, time);
         if (!walkHadAnimation && node.hasPendingAnimations()) walkHadAnimation = true;
         if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
+
+        // Dev check: entity overrides update() but not hasPendingAnimations()
+        if (this._devActive && this._devFrameCount % 120 === 0) {
+          if (
+            node.update !== Entity.prototype.update &&
+            node.hasPendingAnimations === Entity.prototype.hasPendingAnimations
+          ) {
+            this._devWarn(
+              `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
+                'Custom motion in update() without overriding hasPendingAnimations() causes ' +
+                'the idle throttle to drop the animation to ~2fps. ' +
+                'Override hasPendingAnimations() to return true while motion is in flight.',
+            );
+          }
+        }
       }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
@@ -2840,6 +2935,10 @@ export class Scene {
     }
     // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
     renderer.present?.();
+    if (this._devActive) {
+      this._devFrameCount++;
+      this._devRunChecks();
+    }
   }
 
   /**
