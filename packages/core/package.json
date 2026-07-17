@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/core",
-  "version": "1.9.2",
+  "version": "1.10.0",
   "publishConfig": {
     "access": "public"
   },
