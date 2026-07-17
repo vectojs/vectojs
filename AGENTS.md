@@ -16,8 +16,12 @@ vectojs/
 ├── packages/
 │   ├── core/             # Mathematical core, layout engine, and renderers (WebGL/WebGPU)
 │   ├── ui/               # Reusable UI controls (Text, Button, Link, ScrollView)
-│   └── three/            # WebGL / Three.js canvas mapping & raycasting adapters
-├── scripts/              # Build and CI helper scripts
+│   ├── three/            # WebGL / Three.js canvas mapping & raycasting adapters
+│   ├── devtools/         # VMT inspector panel + headless model layer (audit, snapshot, pick)
+│   ├── video-exporter/   # Deterministic fixed-step Chromium + FFmpeg H.264 export
+│   └── graph3d/          # 3D force-directed graph visualization (instanced Three.js)
+├── scripts/              # Build, CI, and benchmark helper scripts
+├── Justfile              # Convenience recipes (downstream-versions, etc.)
 ├── tsconfig.json         # Workspace TS compilation config
 └── package.json          # Workspace root defining dependencies & scripts
 ```
@@ -61,7 +65,7 @@ bun run test
 
 ## 3. Agent Rules & Constraints
 
-1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `/mnt/data/Workspace/Projects/vecto` while working.
+1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `/mnt/data/Workspace/Projects/vectojs` while working.
 2. **Invoke Binaries Directly**: Always run globally installed tools (`prettier`, `oxlint`, `changeset`) directly. Do **not** prefix with `bunx` or `npx`.
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
