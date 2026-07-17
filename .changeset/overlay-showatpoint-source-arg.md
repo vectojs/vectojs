@@ -1,5 +1,0 @@
----
-'@vectojs/ui': minor
----
-
-`Overlay.showAtPoint(x, y, source?)` accepts an optional `source` — either a `Scene` or any mounted `Entity` — used to resolve the scene when the overlay has no `parent` yet. This fixes a long-standing silent no-op: `Entity.scene` walks the parent chain, so a freshly `new ContextMenu({...})` (or any `Overlay` subclass) has `scene === null`, and the method's first-line `if (!this.scene) return;` bailed before the auto-mount could run. The documented "bare constructor + showAtPoint" pattern now works on the very first call when `source` is passed (the typical `source` is the entity whose `pointerdown` listener is opening the menu — e.g. `menu.showAtPoint(event.sceneX, event.sceneY, target)`). Callers that already pre-mount via `scene.add(menu)` or `scene.overlayRoot.add(menu)` continue to work unchanged; the no-arg `showAtPoint(x, y)` form still silently no-ops on an unmounted instance for backward compatibility. Applies to `ContextMenu`, `Tooltip`, and `Popover`.
