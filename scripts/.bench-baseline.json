@@ -1,0 +1,22 @@
+[
+  {
+    "n": 1000,
+    "frames": 30,
+    "meanMs": 2.177,
+    "p50Ms": 2.2,
+    "p95Ms": 2.4,
+    "maxFps": 459.4,
+    "sustains60": true,
+    "glActive": false
+  },
+  {
+    "n": 5000,
+    "frames": 30,
+    "meanMs": 8.87,
+    "p50Ms": 8.7,
+    "p95Ms": 10,
+    "maxFps": 112.7,
+    "sustains60": true,
+    "glActive": false
+  }
+]

@@ -39,6 +39,8 @@ jobs:
         run: cd packages/video-exporter && bunx vitest run
       - name: Lint
         run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
+      - name: Performance micro-benchmark (accessor write gate)
+        run: bun run scripts/bench-danmaku.ts
       - name: Build packages
         run: |
           cd packages/core && bun run build
