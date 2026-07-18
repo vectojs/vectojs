@@ -150,14 +150,19 @@ export class ContextMenu extends Overlay {
         render(): void {
           // Invisible — exists only to intercept the outside click.
         }
-      })('context-menu-backdrop');
+      })(`${this.id}-backdrop`);
       backdrop.width = scene.width;
       backdrop.height = scene.height;
       backdrop.interactive = true;
-      backdrop.on('click', (e: VectoJSEvent) => {
+      const dismiss = (e: VectoJSEvent): void => {
         e.stopPropagation();
         this.hide();
-      });
+      };
+      // Dismiss on pointerdown so the menu is closed before the browser can
+      // retarget a later click after the semantic backdrop is detached. Keep
+      // click as the keyboard/assistive-technology activation path.
+      backdrop.on('pointerdown', dismiss);
+      backdrop.on('click', dismiss);
       // Hit-testing checks the most-recently-added child first (the one
       // visually on top), and the backdrop's isPointInside() always returns
       // true — so it must be added *before* the menu, never after, or it
