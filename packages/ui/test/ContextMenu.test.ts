@@ -101,6 +101,27 @@ describe('ContextMenu', () => {
     expect(scene.overlayRoot.children.filter((c) => c === firstBackdrop).length).toBe(1);
   });
 
+  it('removes its semantic hit surface while hidden and restores it when reopened', () => {
+    const { scene, menu } = setup();
+    const syncA11y = () => (scene as any).syncA11y((scene as any).root);
+    const semanticMenu = () => (scene as any).a11yElements.get(menu.id);
+
+    menu.showAtPoint(10, 10);
+    syncA11y();
+    expect(menu.interactive).toBe(true);
+    expect(semanticMenu()).toBeInstanceOf(HTMLElement);
+
+    menu.hide();
+    syncA11y();
+    expect(menu.interactive).toBe(false);
+    expect(semanticMenu()).toBeUndefined();
+
+    menu.showAtPoint(20, 20);
+    syncA11y();
+    expect(menu.interactive).toBe(true);
+    expect(semanticMenu()).toBeInstanceOf(HTMLElement);
+  });
+
   it('still selects an item and closes normally (no regression from the backdrop)', () => {
     const { scene } = setup();
     let clicked = false;

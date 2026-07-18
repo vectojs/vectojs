@@ -95,7 +95,10 @@ export class ContextMenu extends Overlay {
     this._border = opts.borderColor ?? 'rgba(255,255,255,0.12)';
     this._iH = iH;
     this._sH = sH;
-    this.interactive = true;
+    // The menu starts hidden. Its semantic pointer surface is enabled only
+    // while shown so a pre-mounted or previously hidden menu cannot remain an
+    // invisible automation/input target at its last position.
+    this.interactive = false;
 
     this.on('pointermove', (e: { localY?: number }) => {
       this._hoverIdx = e.localY === undefined ? -1 : this._idxAt(e.localY);
@@ -138,6 +141,7 @@ export class ContextMenu extends Overlay {
     // backdrop setup (this.scene was null) and passed no source down to the
     // base implementation either — a silent no-op on top of a silent no-op.
     const scene: Scene | null = (this.scene as Scene | null) ?? this._sceneFromSource(source);
+    if (scene) this.interactive = true;
     if (this._parentMenu === null && !this._backdrop && scene) {
       const backdrop = new (class ContextMenuBackdrop extends Entity {
         isPointInside(): boolean {
@@ -172,12 +176,15 @@ export class ContextMenu extends Overlay {
   }
 
   public override hide(): void {
+    const scene = this.scene;
     if (this._backdrop) {
       this._backdrop.destroy();
       this._backdrop = null;
     }
     if (this._submenu) this._submenu.hide();
     super.hide();
+    this.interactive = false;
+    scene?.detachA11y(this);
   }
 
   public override destroy(): void {
