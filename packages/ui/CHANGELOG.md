@@ -1,5 +1,13 @@
 # @vectojs/ui
 
+## Unreleased
+
+### Patch Changes
+
+- Give each ContextMenu a unique semantic entity ID, share one backdrop across
+  a nested menu chain, close the entire chain after a leaf command, and destroy
+  lazily mounted submenus with their root.
+
 ## 1.11.0
 
 ### Minor Changes
