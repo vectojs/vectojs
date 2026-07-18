@@ -680,6 +680,13 @@ export class Scene {
   private activePortalsPrevFrame: Set<string> = new Set();
   private portalEntities: Map<string, DOMPortalEntity> = new Map();
   private renderOrderCounter: number = 0;
+  /**
+   * Authoritative paint order for semantic nodes discovered during the main
+   * render. A node may not have a DOM projection until the following a11y
+   * sync, so retaining the order prevents a newly opened overlay from spending
+   * its first frame below previously projected controls.
+   */
+  private a11yRenderOrders: Map<string, number> = new Map();
 
   // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
   private pointRenderer: PointRenderer | null = null;
@@ -1608,6 +1615,10 @@ export class Scene {
       const semanticPointerEvents = attrs.pointerEvents ?? 'auto';
       if (el.style.pointerEvents !== semanticPointerEvents) {
         el.style.pointerEvents = semanticPointerEvents;
+      }
+      const renderOrder = this.a11yRenderOrders.get(node.id);
+      if (renderOrder !== undefined && el.style.zIndex !== String(renderOrder)) {
+        el.style.zIndex = String(renderOrder);
       }
       const implicitTabIndex =
         !isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role) ? 0 : null;
@@ -2566,6 +2577,7 @@ export class Scene {
 
     if (isMainRenderer) {
       this.renderOrderCounter = 0;
+      this.a11yRenderOrders.clear();
       this.activePortalsThisFrame.clear();
     }
 
@@ -2795,8 +2807,12 @@ export class Scene {
         Math.abs(a * c + b * d) <= orthogonalTolerance;
 
       const a11yEl = isMainRenderer ? this.a11yElements.get(node.id) : undefined;
-      if (a11yEl) {
-        a11yEl.style.zIndex = String(this.renderOrderCounter++);
+      const willProjectA11y =
+        isMainRenderer && node.interactive && (node.width > 0 || node.a11yFullViewport);
+      if (a11yEl || willProjectA11y) {
+        const renderOrder = this.renderOrderCounter++;
+        if (willProjectA11y) this.a11yRenderOrders.set(node.id, renderOrder);
+        if (a11yEl) a11yEl.style.zIndex = String(renderOrder);
       }
 
       if ((node as any).isDOMPortal) {

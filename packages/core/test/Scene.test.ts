@@ -1439,6 +1439,45 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(renderedOverlay).toBe(true);
   });
 
+  it('assigns semantic stacking in the frame a new overlay is projected', () => {
+    const scene = makeScene();
+    const region = new SpyEntity('design-region', {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    region.interactive = true;
+    region.width = 800;
+    region.height = 600;
+    scene.add(region);
+
+    tick(scene);
+    tick(scene);
+    const regionElement = scene.getA11yElement(region.id)!;
+    expect(regionElement.style.zIndex).not.toBe('');
+
+    const backdrop = new SpyEntity('context-menu-backdrop', {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    backdrop.interactive = true;
+    backdrop.width = 800;
+    backdrop.height = 600;
+    scene.showOverlay(backdrop);
+
+    tick(scene);
+
+    const backdropElement = scene.getA11yElement(backdrop.id)!;
+    expect(backdropElement.style.zIndex).not.toBe('');
+    expect(Number(backdropElement.style.zIndex)).toBeGreaterThan(
+      Number(regionElement.style.zIndex),
+    );
+    scene.destroy();
+  });
+
   it('forwards wheel events from the shadow node to the entity', () => {
     const scene = makeScene();
     const e = new SpyEntity('wheel-e', { x: 0, y: 0, width: 100, height: 100 }) as SpyEntity;
