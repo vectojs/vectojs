@@ -80,16 +80,44 @@ describe('ContextMenu', () => {
     expect((menu as any)._backdrop).toBeNull();
   });
 
-  it('closes when the backdrop (a click outside the menu) fires', () => {
+  it('closes on the backdrop pointerdown before the browser retargets click', () => {
     const { menu } = setup();
     menu.showAtPoint(10, 10);
     expect(menu.visible).toBe(true);
+
+    const backdrop = (menu as any)._backdrop;
+    backdrop.emit('pointerdown', { stopPropagation: () => {} });
+
+    expect(menu.visible).toBe(false);
+    expect((menu as any)._backdrop).toBeNull();
+  });
+
+  it('keeps semantic click dismissal for keyboard activation', () => {
+    const { menu } = setup();
+    menu.showAtPoint(10, 10);
 
     const backdrop = (menu as any)._backdrop;
     backdrop.emit('click', { stopPropagation: () => {} });
 
     expect(menu.visible).toBe(false);
     expect((menu as any)._backdrop).toBeNull();
+  });
+
+  it('allocates a fresh semantic backdrop identity for each root menu lifetime', () => {
+    const { scene, menu } = setup();
+    menu.showAtPoint(10, 10);
+    const firstBackdrop = (menu as any)._backdrop;
+    const firstBackdropId = firstBackdrop.id;
+    expect(firstBackdropId).toBe(`${menu.id}-backdrop`);
+
+    menu.destroy();
+    const replacement = new ContextMenu({ items: [{ label: 'Paste' }] });
+    scene.overlayRoot.add(replacement);
+    replacement.showAtPoint(20, 20);
+    const replacementBackdrop = (replacement as any)._backdrop;
+
+    expect(replacementBackdrop.id).toBe(`${replacement.id}-backdrop`);
+    expect(replacementBackdrop.id).not.toBe(firstBackdropId);
   });
 
   it('does not leak a second backdrop when reopened without an intervening hide', () => {
@@ -157,7 +185,7 @@ describe('ContextMenu', () => {
     expect(submenu.id).not.toBe(menu.id);
     expect((submenu as any)._backdrop).toBeNull();
     expect(
-      scene.overlayRoot.children.filter((child) => child.id === 'context-menu-backdrop'),
+      scene.overlayRoot.children.filter((child) => child.id === `${menu.id}-backdrop`),
     ).toHaveLength(1);
 
     submenu.emit('pointerdown', { localY: 10 });
