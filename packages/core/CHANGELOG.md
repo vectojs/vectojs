@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.11.1
+
+### Patch Changes
+
+- ec27242: Assign semantic DOM stacking order in the same frame that newly interactive overlay entities are projected.
+
 ## 1.11.0
 
 ### Minor Changes
