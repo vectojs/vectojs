@@ -2,6 +2,8 @@ import { Entity, IRenderer, A11yAttributes, VectoJSEvent, type Scene } from '@ve
 import { Overlay } from './Overlay';
 import { measureText } from './measure';
 
+let nextContextMenuId = 1;
+
 export interface ContextMenuItem {
   /** Display label. Use with `separator: false` (default). */
   label?: string;
@@ -66,6 +68,7 @@ export class ContextMenu extends Overlay {
   private _sH: number;
   private _hoverIdx = -1;
   private _submenu: ContextMenu | null = null;
+  private _parentMenu: ContextMenu | null = null;
   /** Which item's `children` `_submenu` currently represents, if any. */
   private _submenuFor: ContextMenuItem | null = null;
   private _opts: ContextMenuOptions;
@@ -80,6 +83,7 @@ export class ContextMenu extends Overlay {
     const sH = opts.separatorHeight ?? 9;
     const totalH = (opts.items ?? []).reduce((acc, it) => acc + (it.separator ? sH : iH), 0);
     super({ width: opts.width ?? 220, height: totalH + 8, placement: 'auto', offset: 2 });
+    this.id = `context-menu-${nextContextMenuId++}`;
 
     this._opts = opts;
     this._items = opts.items ?? [];
@@ -114,13 +118,14 @@ export class ContextMenu extends Overlay {
         if (!this._submenu || this._submenuFor !== item) {
           if (this._submenu) this._submenu.destroy();
           this._submenu = new ContextMenu({ ...this._opts, items: item.children });
+          this._submenu._parentMenu = this;
           this._submenuFor = item;
           if (this.scene) this.scene.overlayRoot.add(this._submenu);
         }
         this._submenu.showAtPoint(this.x + this.width, this.y + this._rowTop(idx));
       } else {
         item.onClick?.();
-        this.hide();
+        this._rootMenu().hide();
       }
     });
   }
@@ -133,7 +138,7 @@ export class ContextMenu extends Overlay {
     // backdrop setup (this.scene was null) and passed no source down to the
     // base implementation either — a silent no-op on top of a silent no-op.
     const scene: Scene | null = (this.scene as Scene | null) ?? this._sceneFromSource(source);
-    if (!this._backdrop && scene) {
+    if (this._parentMenu === null && !this._backdrop && scene) {
       const backdrop = new (class ContextMenuBackdrop extends Entity {
         isPointInside(): boolean {
           return true;
@@ -173,6 +178,23 @@ export class ContextMenu extends Overlay {
     }
     if (this._submenu) this._submenu.hide();
     super.hide();
+  }
+
+  public override destroy(): void {
+    if (this._backdrop) {
+      this._backdrop.destroy();
+      this._backdrop = null;
+    }
+    if (this._submenu) {
+      this._submenu.destroy();
+      this._submenu = null;
+    }
+    this._parentMenu = null;
+    super.destroy();
+  }
+
+  private _rootMenu(): ContextMenu {
+    return this._parentMenu?._rootMenu() ?? this;
   }
 
   private _idxAt(localY: number): number {

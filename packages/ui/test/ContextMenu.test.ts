@@ -114,4 +114,39 @@ describe('ContextMenu', () => {
     expect(clicked).toBe(true);
     expect(clickable.visible).toBe(false);
   });
+
+  it('shares one root backdrop, projects unique menu identities, and closes the full submenu chain', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    let clicked = false;
+    const menu = new ContextMenu({
+      items: [
+        {
+          label: 'Arrange',
+          children: [{ label: 'Bring forward', onClick: () => (clicked = true) }],
+        },
+      ],
+    });
+    scene.overlayRoot.add(menu);
+    menu.showAtPoint(10, 10);
+    menu.emit('pointerdown', { localY: 10 });
+
+    const submenu = (menu as any)._submenu as ContextMenu;
+    expect(submenu).toBeInstanceOf(ContextMenu);
+    expect(submenu.id).not.toBe(menu.id);
+    expect((submenu as any)._backdrop).toBeNull();
+    expect(
+      scene.overlayRoot.children.filter((child) => child.id === 'context-menu-backdrop'),
+    ).toHaveLength(1);
+
+    submenu.emit('pointerdown', { localY: 10 });
+
+    expect(clicked).toBe(true);
+    expect(menu.visible).toBe(false);
+    expect(submenu.visible).toBe(false);
+    expect((menu as any)._backdrop).toBeNull();
+
+    menu.destroy();
+    expect(submenu.parent).toBeNull();
+  });
 });
