@@ -185,6 +185,42 @@ export class ComputeParticleEntity extends Entity {
   }
 
   /**
+   * True while any live particle still has a visually meaningful velocity or
+   * sits meaningfully away from its spring target.
+   *
+   * The actual per-frame simulation (WebGPU compute pass / {@link updateCPU})
+   * runs through a dedicated Scene-level pre-pass outside the normal
+   * render-tree walk, but this entity is still a normal tree member that
+   * walk visits — without this override, the base `Entity.hasPendingAnimations()`
+   * (always `false`) is what Scene sees, so `renderMode: 'always'`'s idle
+   * auto-throttle drops the WHOLE scene to ~2fps the instant nothing else in
+   * the tree is animating, even while thousands of particles are visibly
+   * drifting or spring-settling. A spring+damping system asymptotically
+   * approaches zero velocity but never reaches it exactly, so this checks
+   * against a small epsilon rather than `!== 0` — otherwise this would
+   * always return `true` and defeat the idle throttle entirely.
+   */
+  public override hasPendingAnimations(): boolean {
+    const EPS_VELOCITY = 0.5; // px/s — below this a particle looks at rest
+    const EPS_DISTANCE = 0.5; // px — below this "still approaching origin" is imperceptible
+    for (let i = 0; i < this.maxParticles; i++) {
+      const idx = i * PARTICLE_STRIDE_FLOATS;
+      if (this.particleData[idx + PARTICLE_OFFSET_LIFE] === 0) continue; // dead
+      const vx = this.particleData[idx + PARTICLE_OFFSET_VELOCITY_X];
+      const vy = this.particleData[idx + PARTICLE_OFFSET_VELOCITY_Y];
+      if (vx * vx + vy * vy > EPS_VELOCITY * EPS_VELOCITY) return true;
+      const dx =
+        this.particleData[idx + PARTICLE_OFFSET_POSITION_X] -
+        this.particleData[idx + PARTICLE_OFFSET_ORIGIN_X];
+      const dy =
+        this.particleData[idx + PARTICLE_OFFSET_POSITION_Y] -
+        this.particleData[idx + PARTICLE_OFFSET_ORIGIN_Y];
+      if (dx * dx + dy * dy > EPS_DISTANCE * EPS_DISTANCE) return true;
+    }
+    return this.pendingExplosion !== null;
+  }
+
+  /**
    * Updates particle simulation on the CPU.
    * Handles spring forces, mouse repulsion, explosion impulses, velocity capping, and bounds bouncing/clamping.
    *

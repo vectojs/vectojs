@@ -108,4 +108,62 @@ describe('ComputeParticleEntity', () => {
     // New vx = (0 + 1450 * 0.05) * 0.9 = 65.25. (Will be capped to 100, but let's check direction / change)
     expect(entity.particleData[18]).toBeGreaterThan(0);
   });
+
+  describe('hasPendingAnimations', () => {
+    it('returns true while particles have meaningful velocity', () => {
+      const entity = new ComputeParticleEntity({ maxParticles: 2 });
+      // particle 0: fast-moving
+      entity.particleData[2] = 10; // vx
+      entity.particleData[7] = -1.0; // alive
+      expect(entity.hasPendingAnimations()).toBe(true);
+    });
+
+    it('returns true while a particle sits away from its spring origin, even at zero velocity', () => {
+      const entity = new ComputeParticleEntity({ maxParticles: 1 });
+      entity.particleData[0] = 100; // px
+      entity.particleData[1] = 100; // py
+      entity.particleData[2] = 0; // vx
+      entity.particleData[3] = 0; // vy
+      entity.particleData[4] = 150; // ox (far from px)
+      entity.particleData[5] = 100; // oy
+      entity.particleData[7] = -1.0; // alive
+      expect(entity.hasPendingAnimations()).toBe(true);
+    });
+
+    it('returns false once every live particle is at rest at its origin', () => {
+      const entity = new ComputeParticleEntity({ maxParticles: 3 });
+      entity.initRandomParticles(800, 600); // sets position === origin, velocity 0
+      expect(entity.hasPendingAnimations()).toBe(false);
+    });
+
+    it('returns false when all particles are dead (life === 0)', () => {
+      const entity = new ComputeParticleEntity({ maxParticles: 2 });
+      entity.particleData[2] = 999; // vx on a dead particle should be ignored
+      entity.particleData[7] = 0; // life === 0 -> dead
+      expect(entity.hasPendingAnimations()).toBe(false);
+    });
+
+    it('returns true while an explosion is pending, even before the next updateCPU tick applies it', () => {
+      const entity = new ComputeParticleEntity({ maxParticles: 1 });
+      entity.initRandomParticles(800, 600);
+      expect(entity.hasPendingAnimations()).toBe(false);
+      entity.triggerExplosion(10, 10, 100);
+      expect(entity.hasPendingAnimations()).toBe(true);
+    });
+
+    it('a below-threshold residual velocity/offset does not keep the scene animating forever', () => {
+      // A spring+damping system asymptotically approaches (never exactly
+      // reaches) zero velocity/offset — this is the exact case the epsilon
+      // thresholds exist to handle, so the idle throttle can still engage.
+      const entity = new ComputeParticleEntity({ maxParticles: 1 });
+      entity.particleData[0] = 100.01; // px — 0.01px from origin
+      entity.particleData[1] = 100;
+      entity.particleData[2] = 0.01; // vx — negligible residual velocity
+      entity.particleData[3] = 0;
+      entity.particleData[4] = 100; // ox
+      entity.particleData[5] = 100;
+      entity.particleData[7] = -1.0;
+      expect(entity.hasPendingAnimations()).toBe(false);
+    });
+  });
 });
