@@ -1754,6 +1754,70 @@ describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
     expect(scene.maxFPS).toBe(15);
   });
 
+  describe('frame-pacing: dt quantization near the nominal interval', () => {
+    class DtSpyEntity extends Entity {
+      public dts: number[] = [];
+      isPointInside() {
+        return false;
+      }
+      render() {
+        /* no-op */
+      }
+      override update(dt: number): void {
+        this.dts.push(dt);
+      }
+    }
+
+    function makeDtScene(maxFPS: number) {
+      const parentDiv = document.createElement('div');
+      const canvas = document.createElement('canvas');
+      parentDiv.appendChild(canvas);
+      const scene = new Scene(canvas, { maxFPS });
+      (scene as any).isRunning = true;
+      const spy = new DtSpyEntity('dt-spy');
+      scene.add(spy);
+      return { scene, spy };
+    }
+
+    it('snaps a jittery-but-close dt to the nominal 1000/cap interval', () => {
+      const { scene, spy } = makeDtScene(60); // nominal = 16.667ms
+      scene.markDirty();
+      (scene as any).lastTime = 0;
+      // Simulate 240Hz rAF jitter around the 60fps target: raw elapsed times
+      // that hover near 16.667ms but never land exactly on it (the exact
+      // failure mode a hard skip/render gate produces on a high-refresh
+      // display — see forge/findings.md).
+      const rawArrivals = [16.75, 33.62, 49.98, 66.9, 83.24, 99.61];
+      for (const t of rawArrivals) {
+        scene.markDirty();
+        (scene as any).loop(t);
+      }
+      expect(spy.dts.length).toBeGreaterThan(0);
+      for (const dt of spy.dts) {
+        expect(dt).toBeCloseTo(1000 / 60, 5);
+      }
+    });
+
+    it('does not quantize a genuine stall (dt far from nominal)', () => {
+      const { scene, spy } = makeDtScene(60);
+      scene.markDirty();
+      (scene as any).lastTime = -1000;
+      (scene as any).loop(0); // first frame, dt = 1000 (far from 16.667)
+      expect(spy.dts[0]).toBe(1000);
+      scene.markDirty();
+      (scene as any).loop(500); // 500ms stall, dt = 500 — not snapped
+      expect(spy.dts[1]).toBe(500);
+    });
+
+    it('uncapped (maxFPS=0) never quantizes dt', () => {
+      const { scene, spy } = makeDtScene(0);
+      scene.markDirty();
+      (scene as any).lastTime = 0;
+      (scene as any).loop(16.75);
+      expect(spy.dts[0]).toBe(16.75); // raw, unmodified
+    });
+  });
+
   it('prefers-reduced-motion auto-caps an uncapped scene', () => {
     const prev = (globalThis as any).window.matchMedia;
     (globalThis as any).window.matchMedia = (q: string) => ({

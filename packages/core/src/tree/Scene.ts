@@ -2510,7 +2510,26 @@ export class Scene {
       return;
     }
 
-    const dt = time - this.lastTime;
+    let dt = time - this.lastTime;
+    // Frame-pacing: on a display whose refresh interval doesn't evenly
+    // divide the render loop's own scheduling margin (e.g. maxFPS=60 on a
+    // 240Hz panel — every 4th rAF tick nominally qualifies, but sub-ms
+    // compositor/OS jitter can flip which tick actually crosses the
+    // `1000/cap - 1` gate above), the raw elapsed time can bounce by a full
+    // display-refresh interval frame-to-frame (e.g. ~13-20ms around a
+    // 16.67ms target) even though the AVERAGE dt still converges on
+    // `1000/cap`. That per-frame variance fed straight into physics/
+    // animation `update(dt)` produces visible stutter despite a correct
+    // average FPS reading. Snap dt to the nominal interval whenever it's
+    // already close (within 30%) so ordinary scheduling jitter quantizes to
+    // a stable value; a real stall (backgrounded tab, GC pause, slow frame)
+    // is far outside that band and passes through unmodified — this never
+    // hides genuine slowness or accumulates a "catch up" backlog, it only
+    // removes noise from frames that were already hitting their target.
+    if (cap > 0) {
+      const nominal = 1000 / cap;
+      if (Math.abs(dt - nominal) < nominal * 0.3) dt = nominal;
+    }
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
