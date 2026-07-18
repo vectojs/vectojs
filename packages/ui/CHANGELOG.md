@@ -1,12 +1,11 @@
 # @vectojs/ui
 
-## Unreleased
+## 1.11.2
 
 ### Patch Changes
 
-- Disable and detach a hidden ContextMenu's semantic hit surface, restoring it
-  when reopened so canvas visibility, input routing, and browser automation
-  remain consistent.
+- f797eeb: Remove the ContextMenu semantic and pointer hit surface while hidden, then
+  restore it when reopened, so visual dismissal and browser automation agree.
 
 ## 1.11.1
 
