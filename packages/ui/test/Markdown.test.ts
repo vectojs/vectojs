@@ -364,6 +364,29 @@ Plain paragraph at the end.
       expect(md.content.children[0]).toBe(para);
     });
 
+    it('keeps content/container size correct when a growing last paragraph is the only change (O(1) resize path)', () => {
+      const md = new Markdown('# Title\n\nFirst paragraph.');
+      const heading = md.content.children[0];
+      const para = md.content.children[1];
+      const headingY = para.y;
+
+      // Grow the last paragraph across several appends, as a real stream
+      // would, without any new block-level token appearing.
+      for (let i = 0; i < 20; i++) {
+        md.appendMarkdown(' more and more streamed words to force wrapping');
+      }
+
+      // Earlier sibling untouched, container resized to match the grown
+      // paragraph exactly (this is what the removed unconditional
+      // `content.layout()` call used to guarantee via a full O(children)
+      // walk on every single append; resizeLastChild() must match it).
+      expect(md.content.children[0]).toBe(heading);
+      expect(para.y).toBe(headingY);
+      expect(md.content.height).toBe(para.y + para.height);
+      expect(md.height).toBe(md.content.height);
+      expect(md.width).toBe(md.content.width);
+    });
+
     it('handles incomplete code fences without crashing', () => {
       const md = new Markdown('Some text');
       expect(() => md.appendMarkdown('\n\n```js\nconst x = 1;')).not.toThrow();

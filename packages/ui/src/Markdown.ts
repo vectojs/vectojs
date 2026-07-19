@@ -946,6 +946,12 @@ export class Markdown extends UIComponent {
         }
         (existingEntity as any).setSpans(spans);
         matchLen++; // This token is now handled
+        // Streaming's hot path: the growing paragraph is still the Stack's
+        // last child, so its own size changed but no sibling moved — resync
+        // the container's cached width/height in O(1) instead of falling
+        // through to the unconditional full `layout()` this used to run on
+        // every single streamed chunk regardless of what actually changed.
+        this.content.resizeLastChild(existingEntity);
       }
     }
 
@@ -966,7 +972,13 @@ export class Markdown extends UIComponent {
     }
 
     this.tokens = newTokens;
-    this.content.layout();
+    // No explicit layout() here: the common in-place resize above uses
+    // resizeLastChild(), and any add()/remove() calls in the loops above
+    // already keep `content`'s own width/height correct as they happen (see
+    // Stack.add()'s fastAppendDirty resync) — an unconditional full layout()
+    // on every call would silently redo (or, for the pure-resize case,
+    // needlessly perform for the first time) an O(children) walk on every
+    // single streamed chunk.
     this.width = this.content.width;
     this.height = this.content.height;
 
