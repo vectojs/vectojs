@@ -89,6 +89,46 @@ export class Stack extends UIComponent {
     return this;
   }
 
+  /**
+   * Notify the Stack that its LAST child changed its own size in place —
+   * e.g. a streaming Markdown paragraph's `RichText` grew via `setSpans()`
+   * as more text streamed in — without any `add()`/`remove()` call. Callers
+   * that resize an existing child used to have no cheap way to resync a
+   * container built around one-child-at-a-time streaming, so they fell back
+   * to a full `layout()` (an O(children) walk) on every single change, which
+   * defeats the point of `add()`'s O(1) fast path: the growing child is still
+   * the ONLY one whose bounds moved, so no earlier sibling needs touching.
+   *
+   * Same invariants as the `add()` fast path (no wrap, `align: 'start'`, not
+   * immediately after a `remove()`), PLUS one more: the resized child's
+   * cross-axis size may only GROW, never shrink — true for text that's
+   * purely being appended to (existing lines are unaffected; new content
+   * only extends the last line up to the wrap width or starts new,
+   * shorter-or-equal lines), but not safe in general (e.g. content being
+   * replaced/edited down). A shrinking resize would leave `width`/`height`
+   * stale-too-large until the next full `layout()`. Falls back to a full
+   * `layout()` whenever any invariant doesn't hold.
+   */
+  public resizeLastChild(child: Entity): void {
+    if (
+      this.fastAppendDirty ||
+      this.wrap ||
+      this.align !== 'start' ||
+      this.children[this.children.length - 1] !== child
+    ) {
+      this.layout();
+      this.fastAppendDirty = false;
+      return;
+    }
+    if (this.direction === 'vertical') {
+      this.height = child.y + child.height;
+      this.width = Math.max(this.width, child.width);
+    } else {
+      this.width = child.x + child.width;
+      this.height = Math.max(this.height, child.height);
+    }
+  }
+
   private appendFast(child: Entity): void {
     const vertical = this.direction === 'vertical';
     const hasPrior = this.children.length > 1;

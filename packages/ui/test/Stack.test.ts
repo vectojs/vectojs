@@ -153,3 +153,109 @@ describe('Stack fast-append path', () => {
     expect(h.height).toBe(34);
   });
 });
+
+describe('Stack.resizeLastChild', () => {
+  it('grows the container along the main axis without moving earlier siblings (vertical)', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    expect(b.y).toBe(15); // a(10) + gap(5)
+    expect(stack.height).toBe(25);
+
+    // Simulate a streaming paragraph growing taller in place (more text
+    // wrapped to another line) with no add()/remove() call at all.
+    b.height = 40;
+    stack.resizeLastChild(b);
+
+    expect(a.x).toBe(0);
+    expect(a.y).toBe(0); // untouched
+    expect(b.y).toBe(15); // untouched — only its own size changed
+    expect(stack.height).toBe(15 + 40);
+    expect(stack.width).toBe(20);
+  });
+
+  it('grows the container along the main axis without moving earlier siblings (horizontal)', () => {
+    const stack = new Stack({ direction: 'horizontal', gap: 4 });
+    const a = new Box(10, 20);
+    const b = new Box(10, 20);
+    stack.add(a);
+    stack.add(b);
+    expect(b.x).toBe(14);
+
+    b.width = 50;
+    stack.resizeLastChild(b);
+
+    expect(a.y).toBe(0);
+    expect(b.x).toBe(14); // untouched
+    expect(stack.width).toBe(14 + 50);
+    expect(stack.height).toBe(20);
+  });
+
+  it('grows the cross-axis size when the resized child becomes the widest', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 0 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    expect(stack.width).toBe(20);
+
+    b.width = 80;
+    stack.resizeLastChild(b);
+
+    expect(stack.width).toBe(80);
+  });
+
+  it('falls back to a full layout when the given entity is not the last child', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+
+    a.height = 999; // not the last child — must not take the O(1) shortcut
+    stack.resizeLastChild(a);
+
+    // A full layout() correctly repositions b below a's new height.
+    expect(b.y).toBe(999 + 5);
+    expect(stack.height).toBe(999 + 5 + 10);
+  });
+
+  it('falls back to a full layout for wrap or non-start align', () => {
+    const wrapStack = new Stack({ direction: 'horizontal', wrap: true, maxWidth: 100, gap: 0 });
+    const a = new Box(50, 20);
+    const b = new Box(50, 20);
+    wrapStack.add(a);
+    wrapStack.add(b);
+    b.width = 90;
+    expect(() => wrapStack.resizeLastChild(b)).not.toThrow();
+
+    const centerStack = new Stack({ direction: 'vertical', align: 'center', gap: 0 });
+    const c = new Box(20, 10);
+    const d = new Box(20, 10);
+    centerStack.add(c);
+    centerStack.add(d);
+    d.width = 60;
+    centerStack.resizeLastChild(d);
+    expect(d.x).toBe(0); // recomputed via full layout's center alignment
+  });
+
+  it('resyncs correctly if called right after a remove()', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 10);
+    const c = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    stack.add(c);
+    stack.remove(c);
+
+    b.height = 40;
+    stack.resizeLastChild(b);
+
+    // fastAppendDirty forces a full layout() resync here, which correctly
+    // reflects the post-remove, post-resize state (only a + resized b).
+    expect(stack.height).toBe(10 + 5 + 40);
+  });
+});
