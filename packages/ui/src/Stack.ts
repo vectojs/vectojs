@@ -38,6 +38,12 @@ export class Stack extends UIComponent {
   public maxWidth: number;
   public maxHeight: number;
 
+  // Set by `remove()` (or anything else that can invalidate the incremental
+  // append assumptions below) so the next `add()` falls back to a full
+  // `layout()` instead of the fast path, resynchronizing width/height/
+  // positions correctly before further fast appends resume.
+  private fastAppendDirty = false;
+
   constructor(opts: StackOptions = {}) {
     super();
     this.direction = opts.direction ?? 'vertical';
@@ -48,11 +54,55 @@ export class Stack extends UIComponent {
     this.maxHeight = opts.maxHeight ?? Infinity;
   }
 
-  /** Add a child and re-run layout. */
+  /**
+   * Add a child. Building a large Stack by calling `add()` once per item
+   * (e.g. a streaming Markdown renderer adding one paragraph at a time) used
+   * to re-run the full `layout()` — an O(children) walk — on every single
+   * call, making total layout cost scale with the SQUARE of the item count.
+   * The overwhelmingly common case (no wrapping, default start alignment)
+   * only ever needs to place the ONE new child at the end and grow the
+   * container's own size to match — every earlier child's position and the
+   * container's cross-axis size are unaffected by a start-aligned append,
+   * so this fast path only recomputes that one child instead of the whole
+   * list. Falls back to the full `layout()` whenever that invariant doesn't
+   * hold: wrapping (a new child can start a new line, shifting nothing
+   * already placed, but the grouping itself requires a full re-pass) or
+   * non-start alignment (a new child that's cross-axis-larger than every
+   * prior one would shift their centered/end-aligned offset), or right
+   * after a `remove()` (positions/size may be stale until resynchronized).
+   */
   public add(child: Entity): this {
     super.add(child);
-    this.layout();
+    if (this.fastAppendDirty || this.wrap || this.align !== 'start') {
+      this.layout();
+      this.fastAppendDirty = false;
+    } else {
+      this.appendFast(child);
+    }
     return this;
+  }
+
+  /** Remove a child. Marks layout state stale so the next `add()` resyncs via a full `layout()`. */
+  public override remove(child: Entity): this {
+    super.remove(child);
+    this.fastAppendDirty = true;
+    return this;
+  }
+
+  private appendFast(child: Entity): void {
+    const vertical = this.direction === 'vertical';
+    const hasPrior = this.children.length > 1;
+    if (vertical) {
+      child.x = 0;
+      child.y = hasPrior ? this.height + this.gap : 0;
+      this.width = hasPrior ? Math.max(this.width, child.width) : child.width;
+      this.height = (hasPrior ? this.height + this.gap : 0) + child.height;
+    } else {
+      child.y = 0;
+      child.x = hasPrior ? this.width + this.gap : 0;
+      this.height = hasPrior ? Math.max(this.height, child.height) : child.height;
+      this.width = (hasPrior ? this.width + this.gap : 0) + child.width;
+    }
   }
 
   /**
