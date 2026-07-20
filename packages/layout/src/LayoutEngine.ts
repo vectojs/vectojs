@@ -192,6 +192,77 @@ export function computeLineSegments(
 }
 
 /**
+ * True if `text` contains any character whose shaping/ordering depends on its
+ * neighbours — i.e. where appending or changing text elsewhere in the string
+ * can alter an ALREADY-shaped glyph. That rules out the incremental
+ * suffix-only reshaping in {@link LayoutEngine.prepareRich}'s streaming fast
+ * path, which assumes each grapheme shapes independently and left-to-right.
+ *
+ * Deliberately conservative: it OVER-reports (returns true for scripts that
+ * might in practice be safe) so the fast path is only ever taken for plainly
+ * context-free text (ASCII, Latin, Cyrillic, Greek, CJK, kana, standalone
+ * emoji, punctuation). Anything RTL/bidi (Hebrew, Arabic), joining/cursive,
+ * combining, Indic/SE-Asian, or emoji-sequence-forming (ZWJ, variation
+ * selectors, skin-tone modifiers) falls through to the correct full shaper.
+ */
+export function isComplexScript(text: string): boolean {
+  for (const ch of text) {
+    const c = ch.codePointAt(0)!;
+    if (c < 0x0300) continue; // ASCII + Latin-1 (nothing context-sensitive here)
+    if (
+      (c >= 0x0300 && c <= 0x036f) || // combining diacritical marks
+      (c >= 0x0483 && c <= 0x0489) || // combining Cyrillic
+      (c >= 0x0590 && c <= 0x08ff) || // Hebrew..Arabic Extended-A (RTL + joining)
+      (c >= 0x0900 && c <= 0x1cff) || // Indic + SE-Asian complex scripts
+      (c >= 0x1ab0 && c <= 0x1aff) || // combining diacritical marks extended
+      (c >= 0x1dc0 && c <= 0x1dff) || // combining diacritical marks supplement
+      (c >= 0x200b && c <= 0x200f) || // ZW space/NJ/J, LRM/RLM
+      (c >= 0x202a && c <= 0x202e) || // bidi embeddings/overrides
+      (c >= 0x2060 && c <= 0x206f) || // word joiner, bidi isolates, invisibles
+      (c >= 0x20d0 && c <= 0x20ff) || // combining marks for symbols
+      (c >= 0x1f3fb && c <= 0x1f3ff) || // emoji skin-tone modifiers
+      (c >= 0xfb1d && c <= 0xfdff) || // Hebrew/Arabic presentation forms A
+      (c >= 0xfe00 && c <= 0xfe2f) || // variation selectors + combining half marks
+      (c >= 0xfe70 && c <= 0xfeff) // Arabic presentation forms B
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Value-equality of two per-character style maps over `[0, len)`. Used by the
+ * streaming fast path to confirm an appended paragraph didn't also rewrite the
+ * styling of its reused prefix. Cheap: unstyled positions are `undefined ===
+ * undefined` (identity), and only genuinely styled runs pay a field compare —
+ * no allocation (unlike an RLE signature string).
+ */
+function styleRangeEquals(
+  a: Array<TextStyle | undefined>,
+  b: Array<TextStyle | undefined>,
+  len: number,
+): boolean {
+  if (b.length < len) return false;
+  for (let i = 0; i < len; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x === y) continue;
+    if (!x || !y) return false;
+    if (
+      x.fontSize !== y.fontSize ||
+      x.color !== y.color ||
+      x.bold !== y.bold ||
+      x.italic !== y.italic ||
+      x.href !== y.href
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * VectoJS Global Layout Engine (Intl.Segmenter)
  * Advanced Typography Engine supporting CJK, Emoji, and Western Graphemes
  */
@@ -221,6 +292,31 @@ export class LayoutEngine {
   // a per-paragraph *value* signature of the inline styles, so a streaming
   // typewriter that appends styled runs reuses its untouched paragraphs.
   private richParagraphCache: Map<string, PreparedParagraph> = new Map();
+  // Single-slot incremental cache for the streaming fast path: the most
+  // recently shaped single, simple-script paragraph plus each word's end
+  // offset in the source. When the next prepareRich() call is a strict
+  // extension of `text` (a growing Markdown block re-prepared per chunk),
+  // its shaped prefix words are reused verbatim and only the new suffix is
+  // shaped — turning a growing paragraph's per-chunk cost from O(length) into
+  // O(appended). See {@link prepareRich}'s incremental branch.
+  private streamShapeCache: {
+    fontSize: number;
+    atlas: GlyphAtlas;
+    styleAt: Array<TextStyle | undefined>;
+    text: string;
+    // The engine's own mutable arrays, distinct from anything stored in the
+    // value-keyed memo (richParagraphCache), so the streaming extension can
+    // pop/push them in place — O(appended) per chunk — without ever mutating a
+    // memoized paragraph. The latest extension DOES hand `words` out in its
+    // returned PreparedParagraph; that result is meant for immediate use (the
+    // next append mutates the array), which is exactly how RichText consumes
+    // it (prepare → layout → discard, per chunk).
+    words: PreparedWord[];
+    wordSrcEnds: number[];
+    wordFallbacks: boolean[];
+    /** Running count of fallback words, so the paragraph flag is O(1). */
+    fallbackCount: number;
+  } | null = null;
   private lastAtlas: GlyphAtlas | null = null;
   private measurer: GlyphMeasurer | null;
 
@@ -240,6 +336,7 @@ export class LayoutEngine {
     this._hyphenate = fn;
     this.paragraphCache.clear();
     this.richParagraphCache.clear();
+    this.streamShapeCache = null;
   }
 
   constructor(maxWidth: number, maxHeight: number, measurer?: GlyphMeasurer | null) {
@@ -525,6 +622,108 @@ export class LayoutEngine {
       return sig;
     };
 
+    // ── Streaming fast path ─────────────────────────────────────────────
+    // The overwhelmingly common streaming case is one simple-script paragraph
+    // re-prepared once per appended chunk (a growing Markdown block). Shaping
+    // its whole text every time makes that block cost O(length) per chunk =
+    // O(length^2) over the stream. Instead reuse the previously-shaped prefix
+    // words and shape only the appended suffix. Only single-paragraph,
+    // context-free text qualifies (see isComplexScript) — anything else falls
+    // through to the correct full shaper below, unchanged.
+    if (fullText.length > 0 && fullText.indexOf('\n') === -1 && !isComplexScript(fullText)) {
+      const cache = this.streamShapeCache;
+      // ── Streaming hot path: strict extension of the cached paragraph ──
+      // No memo key is built here (that alone is O(length) string work per
+      // chunk); the extension is verified by a cheap prefix compare and only
+      // the appended suffix is shaped.
+      if (
+        cache &&
+        cache.fontSize === baseFontSize &&
+        cache.atlas === fontAtlas &&
+        fullText.length > cache.text.length &&
+        cache.words.length > 0 &&
+        fullText.startsWith(cache.text) &&
+        styleRangeEquals(styleAt, cache.styleAt, cache.text.length)
+      ) {
+        // Keep every cached word except the last: the prefix's final word can
+        // extend into the appended text ("wor" + "d" → "word"), so it is
+        // re-segmented from its own start along with the new suffix. Mutate the
+        // private cache arrays in place — pop the last word, push the freshly
+        // shaped tail — so the per-chunk cost is O(appended), not O(word-count).
+        const keep = cache.words.length - 1;
+        const reshapeFrom = keep > 0 ? cache.wordSrcEnds[keep - 1] : 0;
+        const tail = this.shapeSimpleRun(fullText, reshapeFrom, styleAt, baseFontSize, fontAtlas);
+        if (cache.wordFallbacks[keep]) cache.fallbackCount--;
+        cache.words.length = keep;
+        cache.wordSrcEnds.length = keep;
+        cache.wordFallbacks.length = keep;
+        for (let i = 0; i < tail.words.length; i++) {
+          cache.words.push(tail.words[i]);
+          cache.wordSrcEnds.push(tail.wordSrcEnds[i]);
+          cache.wordFallbacks.push(tail.wordFallbacks[i]);
+          if (tail.wordFallbacks[i]) cache.fallbackCount++;
+        }
+        cache.text = fullText;
+        cache.styleAt = styleAt;
+        const pFallback = cache.fallbackCount > 0;
+        return {
+          paragraphs: [
+            {
+              words: cache.words,
+              isEmpty: false,
+              fallbackToCanvas: pFallback || undefined,
+              baseLevel: 0,
+            },
+          ],
+          fontSize: baseFontSize,
+          fallbackToCanvas: pFallback || undefined,
+        };
+      }
+
+      // ── Cold single-paragraph path (first shape / shrink / style change) ──
+      // Uses the value-keyed memo so identical repeats and a later multi-
+      // paragraph prepare still reuse this paragraph object by reference.
+      const sig = styleSig(0, fullText.length);
+      const key = `${baseFontSize} ${fullText} ${sig}`;
+      const cached = this.richParagraphCache.get(key);
+      if (cached) {
+        return {
+          paragraphs: [cached],
+          fontSize: baseFontSize,
+          fallbackToCanvas: cached.fallbackToCanvas,
+        };
+      }
+      const shaped = this.shapeSimpleRun(fullText, 0, styleAt, baseFontSize, fontAtlas);
+      const pFallback = shaped.wordFallbacks.some(Boolean);
+      const prepared: PreparedParagraph = {
+        words: shaped.words,
+        isEmpty: false,
+        fallbackToCanvas: pFallback || undefined,
+        baseLevel: 0,
+      };
+      if (this.richParagraphCache.size > 1000) this.richParagraphCache.clear();
+      this.richParagraphCache.set(key, prepared);
+      let fallbackCount = 0;
+      for (const f of shaped.wordFallbacks) if (f) fallbackCount++;
+      // Copies, so a later in-place streaming extension never mutates the
+      // `prepared` object just memoized above (it holds `shaped.words`).
+      this.streamShapeCache = {
+        fontSize: baseFontSize,
+        atlas: fontAtlas,
+        styleAt,
+        text: fullText,
+        words: shaped.words.slice(),
+        wordSrcEnds: shaped.wordSrcEnds.slice(),
+        wordFallbacks: shaped.wordFallbacks.slice(),
+        fallbackCount,
+      };
+      return {
+        paragraphs: [prepared],
+        fontSize: baseFontSize,
+        fallbackToCanvas: pFallback || undefined,
+      };
+    }
+
     const paragraphs: PreparedParagraph[] = [];
     let offset = 0;
     let fallbackToCanvas = false;
@@ -643,6 +842,86 @@ export class LayoutEngine {
       fontSize: baseFontSize,
       fallbackToCanvas: fallbackToCanvas || undefined,
     };
+  }
+
+  /**
+   * Shape one run of a simple, context-free single paragraph — the worker
+   * behind {@link prepareRich}'s streaming fast path. Produces exactly the
+   * per-glyph output the full rich shaper would for the same text (Arabic
+   * shaping is a no-op, BiDi levels are all 0, the source index map is the
+   * identity — so all three are skipped), but starting at `startOffset` so
+   * an already-shaped prefix can be reused. Returns each word plus its end
+   * offset in the paragraph and whether it needed a Canvas2D fallback, so the
+   * caller can splice reused and freshly-shaped words together and recompute
+   * the paragraph-level fallback flag.
+   */
+  private shapeSimpleRun(
+    paragraph: string,
+    startOffset: number,
+    styleAt: Array<TextStyle | undefined>,
+    baseFontSize: number,
+    fontAtlas: GlyphAtlas,
+  ): { words: PreparedWord[]; wordSrcEnds: number[]; wordFallbacks: boolean[] } {
+    const words: PreparedWord[] = [];
+    const wordSrcEnds: number[] = [];
+    const wordFallbacks: boolean[] = [];
+    let charIdx = startOffset; // source index within the whole paragraph
+
+    for (const segment of this.getWordSegments(paragraph.slice(startOffset))) {
+      const word = segment.segment;
+      const glyphs: PreparedGlyph[] = [];
+      let width = 0;
+      let breakPoints: number[] | undefined;
+      let wordFallback = false;
+
+      for (const char of this.getGraphemes(word)) {
+        if (char === '\u00ad') {
+          // Soft hyphen: an invisible break opportunity — record, render nothing.
+          (breakPoints ??= []).push(glyphs.length);
+          charIdx += char.length;
+          continue;
+        }
+        const glyphKey = this.glyphKeyFor(char, fontAtlas);
+        const style = styleAt[charIdx];
+        const gfs = style?.fontSize ?? baseFontSize;
+        if (char.trim().length > 0 && !fontAtlas[glyphKey]) wordFallback = true;
+        const w = this.glyphWidth(glyphKey, fontAtlas, gfs);
+        glyphs.push({
+          char,
+          width: w,
+          style,
+          level: 0,
+          sourceIndex: charIdx,
+          sourceLength: char.length,
+        });
+        width += w;
+        charIdx += char.length;
+      }
+
+      if (!breakPoints && this._hyphenate && segment.isWordLike && glyphs.length > 3) {
+        const parts = this._hyphenate(word);
+        if (parts.length > 1) {
+          breakPoints = [];
+          let count = 0;
+          for (let pi = 0; pi < parts.length - 1; pi++) {
+            for (const _g of this.getGraphemes(parts[pi])) count++;
+            breakPoints.push(count);
+          }
+        }
+      }
+
+      words.push({
+        glyphs,
+        width,
+        isWordLike: segment.isWordLike,
+        isWhitespace: word.trim().length === 0,
+        breakPoints,
+      });
+      wordSrcEnds.push(charIdx);
+      wordFallbacks.push(wordFallback);
+    }
+
+    return { words, wordSrcEnds, wordFallbacks };
   }
 
   /**
