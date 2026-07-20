@@ -1,0 +1,5 @@
+---
+'@vectojs/ui': patch
+---
+
+Fix `Markdown`'s streaming Worker sending the entire re-lexed token tree back over `postMessage` on every single streamed chunk, even though only a small suffix of tokens is usually new. `marked` has no incremental lexing API, so the Worker still re-lexes the whole accumulated text each time, but for a large streamed document the resulting token tree itself could reach several megabytes — and structured-cloning that whole object graph across the thread boundary on every chunk was a real, escalating cost independent of the lex compute itself. The Worker now diffs against the caller's own previous tokens (by raw source, the same technique `updateTokens()` already uses) and sends back only `{ matchLen, tail }` — the changed suffix — cutting per-chunk transfer size by roughly two orders of magnitude on a large real-world document. `Markdown.appendMarkdown()` now also coalesces to at most one in-flight Worker request (required for the snapshot this diff is computed against to stay valid), further reducing round-trip count for fast streams.
