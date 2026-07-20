@@ -51,6 +51,9 @@ export class CanvasRenderer implements IRenderer {
   private batchAlpha: number = 1;
   private batchCount: number = 0;
 
+  private _cachedFont: string = '';
+  private _cachedFill: string = '';
+
   /**
    * @param canvas - The target canvas. Its backing store is resized to the
    *   logical size × devicePixelRatio.
@@ -140,6 +143,8 @@ export class CanvasRenderer implements IRenderer {
   restore(): void {
     this.flush();
     this.ctx.restore();
+    this._cachedFont = '';
+    this._cachedFill = '';
   }
   /** @inheritdoc */
   translate(x: number, y: number): void {
@@ -250,7 +255,10 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   fill(color: string | any): void {
     this.flush();
-    this.ctx.fillStyle = color;
+    if (this._cachedFill !== color) {
+      this.ctx.fillStyle = color;
+      this._cachedFill = color;
+    }
     this.ctx.fill();
   }
 
@@ -267,8 +275,14 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     this.flush();
-    this.ctx.font = font;
-    this.ctx.fillStyle = color;
+    if (this._cachedFont !== font) {
+      this.ctx.font = font;
+      this._cachedFont = font;
+    }
+    if (this._cachedFill !== color) {
+      this.ctx.fillStyle = color;
+      this._cachedFill = color;
+    }
     this.ctx.fillText(text, x, y);
   }
 
@@ -297,5 +311,7 @@ export class CanvasRenderer implements IRenderer {
     this.batchColor = '';
     this.batchAlpha = 1;
     this.batchActive = false;
+    this._cachedFont = '';
+    this._cachedFill = '';
   }
 }
