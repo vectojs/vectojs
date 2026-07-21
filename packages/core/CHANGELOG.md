@@ -1,5 +1,27 @@
 # @vectojs/core
 
+## 1.15.0
+
+### Minor Changes
+
+- 3a623c1: Decouple the standalone engines out of `@vectojs/core` into their own packages:
+  `@vectojs/layout`, `@vectojs/text`, `@vectojs/math`, and `@vectojs/animation`.
+  `@vectojs/core` now depends on and re-exports them, so its barrel and its
+  `./layout`, `./text`, and `./renderer` subpaths are unchanged — existing imports
+  keep working with no source changes. This is an internal restructuring for
+  long-term maintainability; there are no breaking API changes.
+
+### Patch Changes
+
+- Updated dependencies [3a623c1]
+- Updated dependencies [3a623c1]
+- Updated dependencies [3a623c1]
+- Updated dependencies [3a623c1]
+  - @vectojs/animation@0.1.0
+  - @vectojs/text@0.1.0
+  - @vectojs/math@0.1.0
+  - @vectojs/layout@0.1.0
+
 ## 1.14.0
 
 ### Minor Changes

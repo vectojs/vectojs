@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/animation",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "publishConfig": {
     "access": "public"
   },
@@ -42,7 +42,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vectojs/math": "workspace:*"
+    "@vectojs/math": "^0.1.0"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
