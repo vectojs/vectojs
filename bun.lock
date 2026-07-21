@@ -21,7 +21,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.12.0",
+      "version": "1.13.0",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
         "bidi-js": "^1.0.3",
@@ -34,7 +34,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.4.3",
+      "version": "0.5.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
