@@ -1,0 +1,28 @@
+# Lefthook — unified git hooks (replaces husky + lint-staged + pre-commit).
+# https://lefthook.dev
+#
+# Formatting authority is oxfmt (same binary CI checks), so a commit is always
+# CI-clean regardless of the editor formatter. Biome is the local lint/editor
+# layer (see biome.json) and is intentionally NOT a formatting gate here — it
+# and oxfmt disagree on a few trivia (e.g. empty `for(;;)` spacing), and having
+# two formatters fight over the same files is a footgun.
+pre-commit:
+  parallel: false
+  jobs:
+    - name: oxfmt
+      glob: '*.{js,ts,jsx,tsx,mjs,cjs,json}'
+      run: bunx oxfmt --write {staged_files}
+      stage_fixed: true
+    - name: oxlint
+      glob: '*.{js,ts,jsx,tsx,mjs,cjs}'
+      run: bunx oxlint --fix {staged_files}
+      stage_fixed: true
+    - name: markdownlint
+      glob: '*.md'
+      run: bunx markdownlint-cli2 --fix {staged_files}
+      stage_fixed: true
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: bunx --no -- commitlint --edit {1}

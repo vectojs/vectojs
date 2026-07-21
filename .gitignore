@@ -40,3 +40,4 @@ Thumbs.db
 # Local agent skill installs
 .claude/skills/
 .agents/
+.husky/

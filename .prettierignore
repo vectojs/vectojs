@@ -1,8 +1,0 @@
-node_modules
-dist
-build
-pnpm-lock.yaml
-bun.lockb
-.DS_Store
-tmp/
-docs/

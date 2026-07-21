@@ -1862,12 +1862,14 @@ export class Scene {
       if (wy < minY) minY = wy;
       if (wy > maxY) maxY = wy;
     }
-    if (!(
-      maxX >= -margin &&
-      minX <= this.width + margin &&
-      maxY >= -margin &&
-      minY <= this.height + margin
-    )) {
+    if (
+      !(
+        maxX >= -margin &&
+        minX <= this.width + margin &&
+        maxY >= -margin &&
+        minY <= this.height + margin
+      )
+    ) {
       return false;
     }
     for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
@@ -1884,12 +1886,14 @@ export class Scene {
         localMaxX = Math.max(localMaxX, local.x);
         localMaxY = Math.max(localMaxY, local.y);
       }
-      if (!(
-        localMaxX >= -margin &&
-        localMinX <= ancestor.width + margin &&
-        localMaxY >= -margin &&
-        localMinY <= ancestor.height + margin
-      )) {
+      if (
+        !(
+          localMaxX >= -margin &&
+          localMinX <= ancestor.width + margin &&
+          localMaxY >= -margin &&
+          localMinY <= ancestor.height + margin
+        )
+      ) {
         return false;
       }
     }

@@ -3,34 +3,41 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
+  "engines": {
+    "bun": ">=1.3.0"
+  },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "build": "bun run --filter '@vectojs/math' build && bun run --filter '@vectojs/text' build && bun run --filter '@vectojs/layout' build && bun run --filter '@vectojs/animation' build && bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/markdown' build && bun run --filter '@vectojs/three' build",
     "test": "bun run --filter '@vectojs/*' test",
-    "format": "prettier --write \"**/*.{js,ts,json,md,html,yaml}\"",
+    "format": "oxfmt --write \"packages/**/*.{js,ts,jsx,tsx,mjs,cjs,json}\" \"scripts/**/*.ts\" \"benchmarks/**/*.ts\"",
+    "format:check": "oxfmt --check \"packages/**/*.{js,ts,jsx,tsx,mjs,cjs,json}\" \"scripts/**/*.ts\" \"benchmarks/**/*.ts\"",
     "lint": "oxlint --deny-warnings",
+    "lint:md": "markdownlint-cli2 \"**/*.md\"",
+    "lint:actions": "command -v actionlint >/dev/null 2>&1 && actionlint || echo 'actionlint not installed locally; CI enforces it (rhysd/actionlint action). Skipping.'",
+    "lint:biome": "biome lint",
+    "check": "bun run format:check && bun run lint && bun run lint:md && bun run lint:actions",
     "knip": "knip",
     "benchmark": "bun run scripts/benchmark.ts",
     "compare": "bun run scripts/compare-pretext.ts",
     "compare:dom": "bun run scripts/compare-dom.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "prepare": "husky"
+    "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
     "@changesets/cli": "^2.31.1",
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
-    "husky": "^9.1.7",
     "knip": "^6.27.0",
-    "lint-staged": "^17.0.8",
+    "lefthook": "^2.1.10",
+    "markdownlint-cli2": "^0.23.1",
+    "oxfmt": "^0.59.0",
     "oxlint": "^1.74.0",
-    "prettier": "^3.9.5",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "oxfmt": "^0.59.0"
   }
 }

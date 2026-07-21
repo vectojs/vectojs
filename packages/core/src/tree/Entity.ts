@@ -794,7 +794,8 @@ export abstract class Entity {
           new Promise<void>((resolve) => {
             this._spawnDriver(e[0], e[1], cfg);
             const d = this._drivers.get(e[0]) as
-              (PropertyDriver & { onDone?: () => void }) | undefined;
+              | (PropertyDriver & { onDone?: () => void })
+              | undefined;
             if (!d)
               resolve(); // spawn resolved instantly (e.g. reduced motion) -> no driver
             else d.onDone = resolve;

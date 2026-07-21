@@ -11,7 +11,6 @@ import {
   Input,
   Checkbox,
   Toggle,
-  RichText,
 } from '../src/index';
 import { LayoutEngine, type IRenderer } from '@vectojs/core';
 
@@ -88,7 +87,10 @@ describe('Text', () => {
     const prep = vi.spyOn(LayoutEngine.prototype, 'prepare');
     const hot = vi.spyOn(LayoutEngine.prototype, 'layoutPrepared');
 
-    const t = new Text('aaaa bbbb cccc dddd', { font: '16px sans-serif', maxWidth: 400 });
+    const t = new Text('aaaa bbbb cccc dddd', {
+      font: '16px sans-serif',
+      maxWidth: 400,
+    });
     const prepAfterCtor = prep.mock.calls.length;
     const hotAfterCtor = hot.mock.calls.length;
     expect(prepAfterCtor).toBeGreaterThan(0);
@@ -109,7 +111,11 @@ describe('Text', () => {
 describe('Button', () => {
   it('projects a native button shadow node', () => {
     const b = new Button('Submit');
-    expect(b.getA11yAttributes()).toEqual({ tag: 'button', role: 'button', label: 'Submit' });
+    expect(b.getA11yAttributes()).toEqual({
+      tag: 'button',
+      role: 'button',
+      label: 'Submit',
+    });
   });
 
   it('fires onClick on an emitted click', () => {
@@ -198,7 +204,12 @@ describe('Image', () => {
 
 describe('Card', () => {
   it('sizes to its options and draws a rounded background', () => {
-    const card = new Card({ width: 200, height: 120, bg: '#1e293b', radius: 12 });
+    const card = new Card({
+      width: 200,
+      height: 120,
+      bg: '#1e293b',
+      radius: 12,
+    });
     expect(card.width).toBe(200);
     expect(card.height).toBe(120);
     const { ops, r } = recorder();
@@ -211,7 +222,10 @@ describe('Card', () => {
     expect(new Card({ width: 10, height: 10 }).interactive).toBe(false);
     const labeled = new Card({ width: 10, height: 10, label: 'Feature' });
     expect(labeled.interactive).toBe(true);
-    expect(labeled.getA11yAttributes()).toMatchObject({ role: 'group', label: 'Feature' });
+    expect(labeled.getA11yAttributes()).toMatchObject({
+      role: 'group',
+      label: 'Feature',
+    });
   });
 });
 
@@ -233,7 +247,11 @@ describe('Stack', () => {
   it('lays children out horizontally and centers on the cross axis', () => {
     const a = new Button('Tall', { padding: 20 }); // taller
     const b = new Button('x', { padding: 2 }); // shorter
-    const stack = new Stack({ direction: 'horizontal', gap: 10, align: 'center' });
+    const stack = new Stack({
+      direction: 'horizontal',
+      gap: 10,
+      align: 'center',
+    });
     stack.add(a);
     stack.add(b);
 
@@ -272,7 +290,11 @@ describe('Stack', () => {
 
 describe('Input', () => {
   it('projects a text <input> with placeholder and current value', () => {
-    const input = new Input({ width: 200, placeholder: 'Email', value: 'a@b.com' });
+    const input = new Input({
+      width: 200,
+      placeholder: 'Email',
+      value: 'a@b.com',
+    });
     expect(input.getA11yAttributes()).toMatchObject({
       tag: 'input',
       inputType: 'text',
@@ -314,14 +336,24 @@ describe('Input', () => {
 
   it('charOffset maps a char index to its measured x', () => {
     const input = new Input({ width: 200 }); // default 16px font → 8px/char in jsdom
-    input.emit('change', { value: 'abcd', selectionStart: 4, selectionEnd: 4, composition: null });
+    input.emit('change', {
+      value: 'abcd',
+      selectionStart: 4,
+      selectionEnd: 4,
+      composition: null,
+    });
     expect((input as any).charOffset(2)).toBe(16); // measureText('ab') = 2 * 16 * 0.5
   });
 
   it('draws a blinking caret only when focused', () => {
     vi.spyOn(Date, 'now').mockReturnValue(0); // caret ON phase
     const input = new Input({ width: 200 });
-    input.emit('change', { value: 'ab', selectionStart: 2, selectionEnd: 2, composition: null });
+    input.emit('change', {
+      value: 'ab',
+      selectionStart: 2,
+      selectionEnd: 2,
+      composition: null,
+    });
 
     const blurred = recorder();
     input.render(blurred.r);
@@ -340,7 +372,12 @@ describe('Input', () => {
     vi.spyOn(Date, 'now').mockReturnValue(500); // caret OFF phase
     const input = new Input({ width: 200 });
     input.emit('focus', {});
-    input.emit('change', { value: 'ab', selectionStart: 2, selectionEnd: 2, composition: null });
+    input.emit('change', {
+      value: 'ab',
+      selectionStart: 2,
+      selectionEnd: 2,
+      composition: null,
+    });
     const r = recorder();
     input.render(r.r);
     expect(r.ops.filter((o) => o === 'stroke').length).toBe(1); // border only, no caret
@@ -350,12 +387,22 @@ describe('Input', () => {
   it('draws a selection highlight when a range is selected', () => {
     const input = new Input({ width: 200 });
 
-    input.emit('change', { value: 'abcd', selectionStart: 4, selectionEnd: 4, composition: null });
+    input.emit('change', {
+      value: 'abcd',
+      selectionStart: 4,
+      selectionEnd: 4,
+      composition: null,
+    });
     const noSel = recorder();
     input.render(noSel.r);
     const fillsNoSel = noSel.ops.filter((o) => o === 'fill').length;
 
-    input.emit('change', { value: 'abcd', selectionStart: 1, selectionEnd: 3, composition: null });
+    input.emit('change', {
+      value: 'abcd',
+      selectionStart: 1,
+      selectionEnd: 3,
+      composition: null,
+    });
     const sel = recorder();
     input.render(sel.r);
     const fillsSel = sel.ops.filter((o) => o === 'fill').length;
@@ -368,7 +415,12 @@ describe('Input', () => {
     const input = new Input({ width: 200 });
     input.emit('focus', {});
 
-    input.emit('change', { value: '你好', selectionStart: 2, selectionEnd: 2, composition: null });
+    input.emit('change', {
+      value: '你好',
+      selectionStart: 2,
+      selectionEnd: 2,
+      composition: null,
+    });
     const noComp = recorder();
     input.render(noComp.r);
     const strokesNoComp = noComp.ops.filter((o) => o === 'stroke').length;
@@ -390,7 +442,12 @@ describe('Input', () => {
   it('scrolls so the caret stays within the box for long text', () => {
     const input = new Input({ width: 100, padding: 10 }); // inner width = 80
     const long = 'a'.repeat(50); // charOffset(50) = 50 * 8 = 400 ≫ 80
-    input.emit('change', { value: long, selectionStart: 50, selectionEnd: 50, composition: null });
+    input.emit('change', {
+      value: long,
+      selectionStart: 50,
+      selectionEnd: 50,
+      composition: null,
+    });
     input.render(recorder().r); // computes scrollLeft
     const cx = (input as any).caretScreenX();
     expect(cx).toBeLessThanOrEqual(100 - 10 + 0.5); // pinned to right inner edge
@@ -473,7 +530,10 @@ describe('Toggle', () => {
   it('marks on-demand scenes dirty when switch state changes', () => {
     const markDirty = vi.fn();
     const t = new Toggle({});
-    (t as unknown as { _scene: unknown })._scene = { markDirty, prefersReducedMotion: false };
+    (t as unknown as { _scene: unknown })._scene = {
+      markDirty,
+      prefersReducedMotion: false,
+    };
 
     t.emit('change', { checked: true });
     const callsAfterChange = markDirty.mock.calls.length;

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: ["**"]
   pull_request:
     branches: [main]
 
@@ -45,10 +45,18 @@ jobs:
         run: cd packages/graph3d && bunx vitest run
       - name: Run video exporter tests
         env:
-          VECTO_CHROMIUM_NO_SANDBOX: '1'
+          VECTO_CHROMIUM_NO_SANDBOX: "1"
         run: cd packages/video-exporter && bunx vitest run
-      - name: Lint
+      - name: Format check (oxfmt)
+        run: bun run format:check
+      - name: Lint (oxlint)
         run: bunx oxlint packages/math/src packages/text/src packages/layout/src packages/animation/src packages/core/src packages/ui/src packages/markdown/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
+      - name: Lint Markdown (markdownlint)
+        run: bun run lint:md
+      - name: Lint GitHub Actions (actionlint)
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
       - name: Performance micro-benchmark (accessor write gate)
         run: bun run scripts/bench-danmaku.ts
       - name: Build packages

@@ -108,7 +108,8 @@ describe('PanelGroup -> Panel -> content resize propagation (findings.md, 2026-0
     expect(rightContent.width).toBe(right.width);
 
     const handle = group.children.find((c) => c instanceof PanelResizeHandle) as
-      PanelResizeHandle | undefined;
+      | PanelResizeHandle
+      | undefined;
     expect(handle).toBeTruthy();
     // Simulate a drag: PanelResizeHandle's pointerdown/pointermove handlers
     // call the group's private _onResize through the onResize callback

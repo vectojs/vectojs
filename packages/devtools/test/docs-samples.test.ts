@@ -90,7 +90,9 @@ describe('streaming doc: per-frame chunk coalescing', () => {
 describe('streaming doc: Markdown.appendMarkdown reuses prefix entities', () => {
   it('appends without rebuilding finished paragraphs', () => {
     const scene = makeScene();
-    const md = new Markdown('# Title\n\nFirst paragraph.\n\n', { maxWidth: 400 });
+    const md = new Markdown('# Title\n\nFirst paragraph.\n\n', {
+      maxWidth: 400,
+    });
     scene.add(md);
 
     const content = (md as unknown as { content: Entity }).content;
@@ -123,7 +125,10 @@ describe('streaming doc: Markdown.appendMarkdown reuses prefix entities', () => 
 describe('streaming doc: Text.append is the cold path with paragraph memo', () => {
   it('append() extends text and marks the scene dirty', () => {
     const scene = makeScene();
-    const label = new Text('Line one\n', { font: '16px sans-serif', maxWidth: 300 });
+    const label = new Text('Line one\n', {
+      font: '16px sans-serif',
+      maxWidth: 300,
+    });
     scene.add(label);
     clearDirty(scene);
 
@@ -134,7 +139,10 @@ describe('streaming doc: Text.append is the cold path with paragraph memo', () =
 
   it('setMaxWidth() reflows without changing content', () => {
     const scene = makeScene();
-    const label = new Text('word '.repeat(40), { font: '16px sans-serif', maxWidth: 320 });
+    const label = new Text('word '.repeat(40), {
+      font: '16px sans-serif',
+      maxWidth: 320,
+    });
     scene.add(label);
     const tallBefore = label.height;
     label.setMaxWidth(160);
@@ -313,7 +321,11 @@ describe('core-renderer doc: getContentProjection', () => {
     const label = new Label();
     scene.add(label);
     const proj = label.getContentProjection();
-    expect(proj).toEqual({ text: 'canvas text', font: '16px sans-serif', selectable: true });
+    expect(proj).toEqual({
+      text: 'canvas text',
+      font: '16px sans-serif',
+      selectable: true,
+    });
   });
 
   it('content projection with explicit visual rows', () => {
@@ -328,8 +340,22 @@ describe('core-renderer doc: getContentProjection', () => {
           text: 'line1\nline2',
           selectable: true,
           lines: [
-            { text: 'line1', x: 0, y: 0, baseline: 16, font: '16px sans-serif', lineHeight: 20 },
-            { text: 'line2', x: 0, y: 20, baseline: 36, font: '16px sans-serif', lineHeight: 20 },
+            {
+              text: 'line1',
+              x: 0,
+              y: 0,
+              baseline: 16,
+              font: '16px sans-serif',
+              lineHeight: 20,
+            },
+            {
+              text: 'line2',
+              x: 0,
+              y: 20,
+              baseline: 36,
+              font: '16px sans-serif',
+              lineHeight: 20,
+            },
           ],
         };
       }
@@ -346,7 +372,12 @@ describe('core-renderer doc: getContentProjection', () => {
 describe('ui-card doc: setContent + onClick', () => {
   it('Card.setContent sizes content to the card', () => {
     const scene = makeScene();
-    const card = new Card({ width: 300, height: 200, padding: 16, label: 'Demo card' });
+    const card = new Card({
+      width: 300,
+      height: 200,
+      padding: 16,
+      label: 'Demo card',
+    });
     scene.add(card);
     const inner = new Rect({ width: 50, height: 50, fill: '#6366f1' });
     card.setContent(inner, true);
@@ -360,7 +391,7 @@ describe('ui-card doc: setContent + onClick', () => {
       width: 200,
       height: 100,
       label: 'Click me',
-      onClick: (e) => {
+      onClick: () => {
         clicked = card;
       },
     });
@@ -374,7 +405,10 @@ describe('ui-card doc: setContent + onClick', () => {
 describe('ui-text doc: Text component', () => {
   it('Text renders content with maxWidth', () => {
     const scene = makeScene();
-    const label = new Text('Hello VectoJS', { font: '24px sans-serif', maxWidth: 400 });
+    const label = new Text('Hello VectoJS', {
+      font: '24px sans-serif',
+      maxWidth: 400,
+    });
     scene.add(label);
     expect(label.text).toBe('Hello VectoJS');
     expect(label.height).toBeGreaterThan(0);

@@ -8,7 +8,7 @@ Welcome, Agent. This repository (`vectojs/`) contains the framework core package
 
 This is a Bun monorepo. The codebase is modular and split into separate packages located under `packages/`:
 
-```
+```text
 vectojs/
 ├── .changeset/           # Changeset configs for package releases
 ├── .github/              # GitHub Actions CI/CD workflows
@@ -31,7 +31,7 @@ vectojs/
 └── package.json          # Workspace root defining dependencies & scripts
 ```
 
-### Core Architecture Notes:
+### Core Architecture Notes
 
 - **Zero-DOM Rendering**: The engine renders everything directly to a Single `<canvas>`.
 - **Accessibility Parity**: Interactive entities synchronize positioning to an absolute-positioned, transparent A11y DOM tree. Screen readers and automated testing agents (e.g. Playwright) interact with this A11y layer.
@@ -46,35 +46,50 @@ vectojs/
 
 Before declaring any change complete, you **must** run formatting, linting, and tests.
 
-### Required Tooling:
+### Required Tooling
 
-- **Package Manager**: Use `bun` (and `bun.lock` format).
-- **Linter**: Use `oxlint` (configured via `oxlintrc.json`). Do not invoke `eslint`.
-- **Formatter**: Prettier is strictly enforced.
-- **Compiler**: Verify types with `tsc` compile.
-- **Unit Testing**: Run Vitest-based suite via `bun run test`.
+VectoJS is a modern greenfield project and standardizes on a fast, unified,
+Rust/Go-based toolchain. Every tool is pinned as a `devDependency` in
+`package.json` (**not** installed globally) and run through `bun`, so every
+machine and CI runner uses the same locked version.
 
-### Build & Verification Workflow:
+- **Runtime & package manager**: `bun` only — `bun.lock`, `packageManager: bun@…`, and `engines.bun` are the single source of truth. Do not use `node`, `npm`, `pnpm`, or `yarn` to run or install.
+- **Formatter (authority)**: `oxfmt` (config `.oxfmtrc.json`) formats JS/TS/JSX/TSX/JSON. It is the **only** formatting gate — the pre-commit hook and CI both run it, so a commit is always CI-clean. Prettier has been removed.
+- **Linter (authority)**: `oxlint` (config `oxlintrc.json`), `--deny-warnings` in CI. Do not invoke `eslint`.
+- **Local dev layer**: `biome` (config `biome.json`) provides fast editor format + lint feedback. It is **advisory only** — it is not a commit or CI gate, because biome and oxfmt/oxlint intentionally disagree on a few trivia (e.g. empty `for(;;)` spacing) and two competing authorities over the same files is a footgun. `oxfmt`/`oxlint` always win.
+- **Markdown**: `markdownlint-cli2` (config `.markdownlint-cli2.jsonc`).
+- **GitHub Actions**: `actionlint` (Go binary; no npm package — CI runs the pinned `docker://rhysd/actionlint` image, local is optional).
+- **Git hooks**: `lefthook` (`lefthook.yml`) replaces Husky + lint-staged + the Python `pre-commit`. `bun install` runs `lefthook install` via the `prepare` script.
+- **Commit messages**: `commitlint` (conventional commits) on `commit-msg`.
+- **Compiler**: TypeScript **7.x** everywhere; verify types with the package `build` (`tsc -p tsconfig.build.json`).
+- **Unit testing**: Vitest via `bun run test`.
 
-Always run the following commands sequentially inside the modified package(s) or from the workspace root:
+### Build & Verification Workflow
+
+Run from the workspace root (all tools resolve to the locked local versions):
 
 ```bash
-# Format codebase
-prettier --write .
+# Format (oxfmt) + all lint gates (oxlint, markdownlint, actionlint)
+bun run format        # oxfmt --write
+bun run check         # format:check + lint + lint:md + lint:actions
 
-# Lint check (no warnings allowed)
-oxlint --deny-warnings
+# Lint only (no warnings allowed)
+bun run lint          # oxlint --deny-warnings
 
 # Run unit tests
 bun run test
 ```
+
+The `lefthook` pre-commit hook auto-runs `oxfmt --write`, `oxlint --fix`, and
+`markdownlint-cli2 --fix` on staged files, so formatting is applied for you at
+commit time.
 
 ---
 
 ## 3. Agent Rules & Constraints
 
 1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `/mnt/data/Workspace/Projects/vectojs` while working.
-2. **Invoke Binaries Directly**: Always run globally installed tools (`prettier`, `oxlint`, `changeset`) directly. Do **not** prefix with `bunx` or `npx`.
+2. **Use locked local tooling**: All build/lint/format tools are pinned `devDependencies` run through `bun run <script>` or `bunx <tool>`, so everyone uses the same version. Do **not** rely on globally-installed tools or `bun add -g`; do not use `npx`. (`actionlint` is the sole exception — a Go binary with no npm package, enforced in CI via a pinned Docker image.)
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.
