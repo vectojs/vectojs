@@ -48,6 +48,7 @@ shape, glyph, point, or row.
 | [`@vectojs/math`](./packages/math)                     | Standalone spatial/physics math: spatial hash grid broad-phase and spring physics                                              |
 | [`@vectojs/animation`](./packages/animation)           | Standalone easing library plus tween and spring value drivers                                                                  |
 | [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
+| [`@vectojs/markdown`](./packages/markdown)             | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + MathJax                 |
 | [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
 | [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                             |
 | [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |

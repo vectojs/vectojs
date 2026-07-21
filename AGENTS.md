@@ -19,7 +19,8 @@ vectojs/
 │   ├── layout/           # Standalone layout engine (line breaking, exclusion flow, layout worker) — deps @vectojs/text
 │   ├── math/             # Standalone spatial/physics math (SpatialHashGrid, SpringPhysics)
 │   ├── animation/        # Standalone easing + tween/spring drivers — deps @vectojs/math
-│   ├── ui/               # Reusable UI controls (Text, Button, Link, ScrollView)
+│   ├── ui/               # Reusable UI controls (Text, Button, Link, ScrollView) — no runtime deps
+│   ├── markdown/         # Markdown + TeX-math entity (marked + MathJax) — deps @vectojs/ui, @vectojs/core
 │   ├── three/            # WebGL / Three.js canvas mapping & raycasting adapters
 │   ├── devtools/         # VMT inspector panel + headless model layer (audit, snapshot, pick)
 │   ├── video-exporter/   # Deterministic fixed-step Chromium + FFmpeg H.264 export
@@ -36,7 +37,8 @@ vectojs/
 - **Accessibility Parity**: Interactive entities synchronize positioning to an absolute-positioned, transparent A11y DOM tree. Screen readers and automated testing agents (e.g. Playwright) interact with this A11y layer.
 - **Modular Renderer Registration**: WebGL (`WebGLPointRenderer`) and WebGPU (`WebGPUParticleSystemManager`) are decoupled from the base `Scene` class. They statically register themselves upon loading `packages/core/src/index.ts` to keep basic execution lightweight and clean.
 - **Decoupled engines**: The layout, text-shaping, math, and animation engines live in their own packages (`@vectojs/layout`, `@vectojs/text`, `@vectojs/math`, `@vectojs/animation`). `@vectojs/core` depends on and **re-exports** all of them, so its barrel and its `./layout`, `./text`, and `./renderer` subpaths remain backward compatible — code can keep importing everything from `@vectojs/core`. The dependency graph is acyclic: `text` and `math` are leaves; `layout → text`; `animation → math`; `core → {layout, text, math, animation}`. The `Entity`-based `MSDFTextEntity` / `SVGEntity` stay in `core` because they extend `Entity`.
-- **Build order matters**: Because packages consume each other's built `dist/` for their `.d.ts` emit, build in dependency order: `math` + `text` → `layout` + `animation` → `core` → `ui`/`three`/`devtools`/… `bun run build` at the workspace root already does this. Vitest configs alias the sibling `@vectojs/*` packages to their `src/`, so tests run against source regardless of build state.
+- **Markdown is separate**: `Markdown` + `CodeBlock` (and the heavy `marked` + `mathjax-full` deps) live in `@vectojs/markdown`, which depends on `@vectojs/ui` (it composes ui components) and sits **above** `ui` in the graph — so `ui` no longer re-exports Markdown (that would be a cycle) and has zero runtime deps. Importing Markdown is `from '@vectojs/markdown'`, not `@vectojs/ui`.
+- **Build order matters**: Because packages consume each other's built `dist/` for their `.d.ts` emit, build in dependency order: `math` + `text` → `layout` + `animation` → `core` → `ui` → `markdown` → `three`/`devtools`/… `bun run build` at the workspace root already does this. Vitest configs alias the sibling `@vectojs/*` packages to their `src/`, so tests run against source regardless of build state.
 
 ---
 
