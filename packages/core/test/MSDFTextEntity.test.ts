@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { test, expect, vi, beforeAll, afterEach } from 'vitest';
-import { MSDFFont } from '../src/text/MSDFFont';
+import { MSDFFont } from '@vectojs/text';
 import { MSDFTextEntity } from '../src/text/MSDFTextEntity';
 import { Entity } from '../src/tree/Entity';
-import { LayoutWorkerManager } from '../src/layout/LayoutWorkerManager';
+import { LayoutWorkerManager } from '@vectojs/layout';
 import fontJson from './fixtures/font.json';
 
 // Mock Worker and URL.createObjectURL since they are not supported in JSDOM/Node environment

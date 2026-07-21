@@ -1,6 +1,10 @@
 import { Entity, type ContentProjection } from '../tree/Entity';
-import { LayoutEngine, type GlyphMeasurer, type PreparedText } from '../layout/LayoutEngine';
-import { createCanvasMeasurer } from '../layout/measure';
+import {
+  LayoutEngine,
+  type GlyphMeasurer,
+  type PreparedText,
+  createCanvasMeasurer,
+} from '@vectojs/layout';
 import { IRenderer } from '../renderer/IRenderer';
 
 // Shared across all TextEntity instances so the per-glyph measurement cache is

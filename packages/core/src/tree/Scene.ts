@@ -29,8 +29,8 @@ import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { sanitizeUrl } from '../renderer/url';
-import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '../text/Typography';
-import type { PreparedContentGrid } from '../text/PreparedContentGrid';
+import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
+import type { PreparedContentGrid } from '@vectojs/text';
 
 const INTERACTIVE_A11Y_ROLES = new Set([
   'button',

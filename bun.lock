@@ -19,13 +19,28 @@
         "typescript": "^7.0.2",
       },
     },
+    "packages/animation": {
+      "name": "@vectojs/animation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@vectojs/math": "workspace:*",
+      },
+      "devDependencies": {
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+    },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.13.0",
+      "version": "1.14.0",
+      "dependencies": {
+        "@vectojs/animation": "workspace:*",
+        "@vectojs/layout": "workspace:*",
+        "@vectojs/math": "workspace:*",
+        "@vectojs/text": "workspace:*",
+      },
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
-        "bidi-js": "^1.0.3",
-        "esbuild": "^0.28.1",
         "jsdom": "^29.1.1",
         "puppeteer-core": "^25.3.0",
         "tsup": "^8.3.5",
@@ -65,6 +80,38 @@
       },
       "peerDependencies": {
         "three": "^0.160.0",
+      },
+    },
+    "packages/layout": {
+      "name": "@vectojs/layout",
+      "version": "0.0.0",
+      "dependencies": {
+        "@vectojs/text": "workspace:*",
+      },
+      "devDependencies": {
+        "esbuild": "^0.28.1",
+        "prettier": "^3.9.5",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+    },
+    "packages/math": {
+      "name": "@vectojs/math",
+      "version": "0.0.0",
+      "devDependencies": {
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+    },
+    "packages/text": {
+      "name": "@vectojs/text",
+      "version": "0.0.0",
+      "dependencies": {
+        "bidi-js": "^1.0.3",
+      },
+      "devDependencies": {
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
       },
     },
     "packages/three": {
@@ -620,11 +667,19 @@
 
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
+    "@vectojs/animation": ["@vectojs/animation@workspace:packages/animation"],
+
     "@vectojs/core": ["@vectojs/core@workspace:packages/core"],
 
     "@vectojs/devtools": ["@vectojs/devtools@workspace:packages/devtools"],
 
     "@vectojs/graph3d": ["@vectojs/graph3d@workspace:packages/graph3d"],
+
+    "@vectojs/layout": ["@vectojs/layout@workspace:packages/layout"],
+
+    "@vectojs/math": ["@vectojs/math@workspace:packages/math"],
+
+    "@vectojs/text": ["@vectojs/text@workspace:packages/text"],
 
     "@vectojs/three": ["@vectojs/three@workspace:packages/three"],
 

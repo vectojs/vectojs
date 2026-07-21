@@ -23,20 +23,15 @@ export * from './components/SplineEntity';
 export * from './components/Rect';
 export * from './components/Circle';
 export * from './components/Group';
-export * from './layout/LayoutEngine';
-export * from './layout/measure';
-export * from './text/MSDFFont';
-export * from './math/SpatialHashGrid';
-export * from './math/SpringPhysics';
-export * from './animation/easing';
-export * from './animation/drivers';
+// Re-export the extracted standalone engines so the `@vectojs/core` barrel stays
+// backward compatible. These now live in their own packages:
+//   @vectojs/layout, @vectojs/text, @vectojs/math, @vectojs/animation
+export * from '@vectojs/layout';
+export * from '@vectojs/text';
+export * from '@vectojs/math';
+export * from '@vectojs/animation';
 export { MSDFTextEntity } from './text/MSDFTextEntity';
 export type { MSDFTextEntityOptions } from './text/MSDFTextEntity';
-export { LayoutWorkerManager } from './layout/LayoutWorkerManager';
 export { DOMPortalEntity } from './tree/DOMPortalEntity';
 export { SVGEntity } from './text/SVGEntity';
 export * from './tree/ComputeParticleEntity';
-export * from './text/ArabicShaper';
-export * from './text/BidiResolver';
-export * from './text/PreparedContentGrid';
-export * from './text/Typography';

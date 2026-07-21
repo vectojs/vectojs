@@ -23,6 +23,14 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends
           ffmpeg fonts-noto-core fonts-noto-color-emoji
+      - name: Run math unit tests
+        run: cd packages/math && bunx vitest run
+      - name: Run text unit tests
+        run: cd packages/text && bunx vitest run
+      - name: Run layout unit tests
+        run: cd packages/layout && bunx vitest run
+      - name: Run animation unit tests
+        run: cd packages/animation && bunx vitest run
       - name: Run core unit tests
         run: cd packages/core && bunx vitest run
       - name: Run ui unit tests
@@ -38,12 +46,16 @@ jobs:
           VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd packages/video-exporter && bunx vitest run
       - name: Lint
-        run: bunx oxlint packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
+        run: bunx oxlint packages/math/src packages/text/src packages/layout/src packages/animation/src packages/core/src packages/ui/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
       - name: Performance micro-benchmark (accessor write gate)
         run: bun run scripts/bench-danmaku.ts
       - name: Build packages
         run: |
-          cd packages/core && bun run build
+          cd packages/math && bun run build
+          cd ../text && bun run build
+          cd ../layout && bun run build
+          cd ../animation && bun run build
+          cd ../core && bun run build
           cd ../ui && bun run build
           cd ../devtools && bun run build
           cd ../three && bun run build

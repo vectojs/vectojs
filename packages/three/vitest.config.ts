@@ -1,10 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
-// Resolve @vectojs/core to its source so tests run against the monorepo source.
+// Resolve @vectojs/core (and the engines it re-exports) to source so tests run
+// against the monorepo source without any built dists.
+const pkgSrc = (name: string) => new URL(`../${name}/src/index.ts`, import.meta.url).pathname;
+
 export default defineConfig({
   resolve: {
     alias: {
-      '@vectojs/core': new URL('../core/src/index.ts', import.meta.url).pathname,
+      '@vectojs/core': pkgSrc('core'),
+      '@vectojs/layout': pkgSrc('layout'),
+      '@vectojs/text': pkgSrc('text'),
+      '@vectojs/math': pkgSrc('math'),
+      '@vectojs/animation': pkgSrc('animation'),
     },
   },
 });

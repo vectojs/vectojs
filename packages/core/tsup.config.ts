@@ -11,6 +11,11 @@ export default defineConfig({
   dts: false,
   clean: true,
   splitting: true,
-  external: ['@vectojs/core'],
-  noExternal: ['bidi-js'],
+  external: [
+    '@vectojs/core',
+    '@vectojs/layout',
+    '@vectojs/text',
+    '@vectojs/math',
+    '@vectojs/animation',
+  ],
 });

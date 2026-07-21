@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/three' build",
+    "build": "bun run --filter '@vectojs/math' build && bun run --filter '@vectojs/text' build && bun run --filter '@vectojs/layout' build && bun run --filter '@vectojs/animation' build && bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/three' build",
     "test": "bun run --filter '@vectojs/*' test",
     "format": "prettier --write \"**/*.{js,ts,json,md,html,yaml}\"",
     "lint": "oxlint --deny-warnings",

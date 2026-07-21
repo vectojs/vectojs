@@ -6,8 +6,8 @@ import {
   type MotionConfig,
   type TweenConfig,
   type SpringConfig,
-} from '../animation/drivers';
-import type { PreparedContentGrid } from '../text/PreparedContentGrid';
+} from '@vectojs/animation';
+import type { PreparedContentGrid } from '@vectojs/text';
 
 /** A numeric transform/visual property that participates in the animation system. */
 export type AnimatableProp = 'x' | 'y' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity';

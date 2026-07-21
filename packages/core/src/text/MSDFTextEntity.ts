@@ -1,6 +1,6 @@
 import { Entity, type ContentProjection } from '../tree/Entity';
-import { MSDFFont } from './MSDFFont';
-import { LayoutWorkerManager } from '../layout/LayoutWorkerManager';
+import { MSDFFont } from '@vectojs/text';
+import { LayoutWorkerManager } from '@vectojs/layout';
 
 export interface MSDFTextEntityOptions {
   font: MSDFFont;

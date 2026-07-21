@@ -1,0 +1,53 @@
+{
+  "name": "@vectojs/text",
+  "version": "0.0.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Standalone text-shaping primitives for VectoJS: BiDi resolution, Arabic shaping, CSS-parity typography metrics, MSDF font parsing, and prepared content grids.",
+  "keywords": [
+    "bidi",
+    "arabic-shaping",
+    "typography",
+    "msdf",
+    "text-layout",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/text"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "benchmark:grid": "vitest bench benchmark/PreparedContentGrid.bench.ts --run",
+    "build": "tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "bidi-js": "^1.0.3"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}

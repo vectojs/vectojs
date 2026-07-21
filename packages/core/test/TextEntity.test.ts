@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { TextEntity } from '../src/components/TextEntity';
-import { LayoutEngine } from '../src/layout/LayoutEngine';
+import { LayoutEngine } from '@vectojs/layout';
 
 // jsdom doesn't implement canvas getContext; stub it so the shared font
 // measurer takes its portable null-fallback without logging "Not implemented".
