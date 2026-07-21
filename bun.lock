@@ -151,7 +151,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.11.6",
+      "version": "2.0.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "esbuild": "^0.28.1",
