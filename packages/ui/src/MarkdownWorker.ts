@@ -27,7 +27,16 @@ marked.use({
 });
 
 self.onmessage = (e: MessageEvent) => {
-  const { id, text, oldRaws } = e.data;
+  // A dedicated worker only receives messages from the script that created it
+  // (there is no cross-origin `postMessage` surface — `event.origin` is always
+  // "" here), so origin verification does not apply. What *is* worth doing is
+  // validating the message SHAPE before acting on it: ignore anything that
+  // isn't our `{ id, text }` request so a malformed post can't drive the lexer
+  // with a non-string or crash the handler.
+  const data = e.data;
+  if (typeof data !== 'object' || data === null) return;
+  const { id, text, oldRaws } = data as { id: unknown; text: unknown; oldRaws?: unknown };
+  if (typeof text !== 'string') return;
   try {
     // `marked` has no incremental lexing API, so re-lexing the whole
     // accumulated text on every streamed chunk is unavoidable — but shipping
