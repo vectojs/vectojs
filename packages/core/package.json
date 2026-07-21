@@ -53,7 +53,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "(cd ../math && bun run build) && (cd ../text && bun run build) && (cd ../layout && bun run build) && (cd ../animation && bun run build) && tsup && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts"
   },

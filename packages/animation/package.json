@@ -38,7 +38,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --external @vectojs/math --clean && tsc -p tsconfig.build.json",
+    "build": "(cd ../math && bun run build) && tsup src/index.ts --format cjs,esm --external @vectojs/math --clean && tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "dependencies": {

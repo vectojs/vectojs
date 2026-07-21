@@ -38,7 +38,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/build-worker.js && tsup && tsc -p tsconfig.build.json",
+    "build": "(cd ../text && bun run build) && node scripts/build-worker.js && tsup && tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "dependencies": {
