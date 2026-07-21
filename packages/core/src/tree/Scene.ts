@@ -140,6 +140,18 @@ export interface SceneOptions {
    * scenes to skip the sync walk.
    */
   contentProjection?: boolean;
+  /**
+   * How far outside the viewport (in CSS px, each side) content projections are
+   * materialized as DOM. Projections whose box is farther than this are not
+   * created — and are removed when they scroll past it — so a document taller
+   * than the viewport keeps only a bounded, near-viewport set of DOM nodes
+   * instead of one element (plus a `<span>` per line) per block for the whole
+   * document. A larger margin keeps more off-screen text ready for native
+   * find-in-page / selection at the cost of more DOM; `Infinity` restores the
+   * legacy "materialize the entire document" behavior. Default: one viewport
+   * height (`undefined` → resolved to `Scene.height` at sync time).
+   */
+  contentProjectionMargin?: number;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -690,6 +702,9 @@ export class Scene {
   private contentMetricScaleEpoch = -1;
   private contentMetricScaleX = 1;
   private contentProjectionEnabled: boolean = true;
+  // Virtualization margin (px) for content projection; `undefined` → one
+  // viewport height, resolved at sync time. `Infinity` = materialize everything.
+  private contentProjectionMargin: number | undefined = undefined;
   /**
    * True while a text-selection drag that started on a projection's blank
    * region (no text node under the press) is being driven manually — the
@@ -875,6 +890,7 @@ export class Scene {
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
+    this.contentProjectionMargin = options.contentProjectionMargin;
     this._devActive = Scene._devModeDetected();
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -1815,12 +1831,95 @@ export class Scene {
    * hidden (`display: none`) so text-heavy scenes only materialize what is
    * visible to the browser's text machinery anyway.
    */
+  /**
+   * Whether `node`'s world-space box, expanded by `margin` px on every side,
+   * overlaps the scene viewport AND every `clipChildren` ancestor's box. Used
+   * both to virtualize content projection (materialize only near-viewport text,
+   * at `margin = contentProjectionMargin`) and for the exact `display:none`
+   * visibility test (`margin = 0`). Boundless nodes (width/height 0) opt out of
+   * culling and always count as visible, matching the legacy behavior.
+   */
+  private projectionBoxVisible(
+    node: Entity,
+    tf: { a: number; b: number; c: number; d: number; e: number; f: number },
+    margin: number,
+  ): boolean {
+    if (!(node.width > 0 && node.height > 0)) return true;
+    const { a, b, c, d, e, f } = tf;
+    const worldCorners: Array<{ x: number; y: number }> = [];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      const lx = i & 1 ? node.width : 0;
+      const ly = i & 2 ? node.height : 0;
+      const wx = a * lx + c * ly + e;
+      const wy = b * lx + d * ly + f;
+      worldCorners.push({ x: wx, y: wy });
+      if (wx < minX) minX = wx;
+      if (wx > maxX) maxX = wx;
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+    }
+    if (!(
+      maxX >= -margin &&
+      minX <= this.width + margin &&
+      maxY >= -margin &&
+      minY <= this.height + margin
+    )) {
+      return false;
+    }
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
+      let localMinX = Infinity;
+      let localMinY = Infinity;
+      let localMaxX = -Infinity;
+      let localMaxY = -Infinity;
+      for (const corner of worldCorners) {
+        const local = ancestor.worldToLocal(corner.x, corner.y);
+        if (!local) continue;
+        localMinX = Math.min(localMinX, local.x);
+        localMinY = Math.min(localMinY, local.y);
+        localMaxX = Math.max(localMaxX, local.x);
+        localMaxY = Math.max(localMaxY, local.y);
+      }
+      if (!(
+        localMaxX >= -margin &&
+        localMinX <= ancestor.width + margin &&
+        localMaxY >= -margin &&
+        localMinY <= ancestor.height + margin
+      )) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private syncContentProjection(node: Entity): void {
     if (!this.contentProjectionEnabled || !this.a11yRoot) return;
     const projection = node.getContentProjection();
     let el = this.contentElements.get(node.id);
 
     if (!projection || !projection.text) {
+      if (el) {
+        this.clearContentGridState(node.id, el);
+        el.remove();
+        this.contentElements.delete(node.id);
+        this.a11yNeedsReorder = true;
+      }
+      return;
+    }
+
+    // Virtualize: only materialize projections near the viewport. Without this,
+    // a document taller than the screen creates a DOM element (plus a `<span>`
+    // per visual line) for EVERY block — measured 14.8k elements for a 346KB
+    // Markdown doc — which dominates heap and forces the browser to reflow all
+    // of them whenever the view scrolls. Far-off-screen projections are freed
+    // here and re-materialized when they scroll back within the margin.
+    const worldTf = node.getWorldTransform();
+    const margin = this.contentProjectionMargin ?? this.height;
+    if (Number.isFinite(margin) && !this.projectionBoxVisible(node, worldTf, margin)) {
       if (el) {
         this.clearContentGridState(node.id, el);
         el.remove();
@@ -1953,8 +2052,9 @@ export class Scene {
       el.style.cursor = selectable ? 'text' : '';
     }
 
-    // Geometry: same threading as the interactive branch.
-    const { a, b, c, d, e, f } = node.getWorldTransform();
+    // Geometry: same threading as the interactive branch. Reuse the world
+    // transform already read for the virtualization gate above.
+    const { a, b, c, d, e, f } = worldTf;
     const contentX = projection.contentX ?? 0;
     const contentY = projection.contentY ?? 0;
     const baselineOffset =
@@ -1973,49 +2073,10 @@ export class Scene {
     if (node.height > 0) el.style.height = `${node.height}px`;
     el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
 
-    // Viewport/clip lazy: a flat DOM mirror must not keep intercepting input
-    // after its VMT box has scrolled outside a clipChildren ancestor.
-    let visible = true;
-    if (node.width > 0 && node.height > 0) {
-      const worldCorners: Array<{ x: number; y: number }> = [];
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (let i = 0; i < 4; i++) {
-        const lx = i & 1 ? node.width : 0;
-        const ly = i & 2 ? node.height : 0;
-        const wx = a * lx + c * ly + e;
-        const wy = b * lx + d * ly + f;
-        worldCorners.push({ x: wx, y: wy });
-        if (wx < minX) minX = wx;
-        if (wx > maxX) maxX = wx;
-        if (wy < minY) minY = wy;
-        if (wy > maxY) maxY = wy;
-      }
-      visible = maxX >= 0 && minX <= this.width && maxY >= 0 && minY <= this.height;
-
-      for (let ancestor = node.parent; visible && ancestor; ancestor = ancestor.parent) {
-        if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
-        let localMinX = Infinity;
-        let localMinY = Infinity;
-        let localMaxX = -Infinity;
-        let localMaxY = -Infinity;
-        for (const corner of worldCorners) {
-          const local = ancestor.worldToLocal(corner.x, corner.y);
-          if (!local) continue;
-          localMinX = Math.min(localMinX, local.x);
-          localMinY = Math.min(localMinY, local.y);
-          localMaxX = Math.max(localMaxX, local.x);
-          localMaxY = Math.max(localMaxY, local.y);
-        }
-        visible =
-          localMaxX >= 0 &&
-          localMinX <= ancestor.width &&
-          localMaxY >= 0 &&
-          localMinY <= ancestor.height;
-      }
-    }
+    // Viewport/clip: a materialized-but-off-viewport mirror (inside the
+    // virtualization margin) must not keep intercepting input or announce text.
+    // Exact (margin 0) test against viewport + clipChildren ancestors.
+    const visible = this.projectionBoxVisible(node, worldTf, 0);
     const display = visible ? '' : 'none';
     if (el.style.display !== display) el.style.display = display;
   }

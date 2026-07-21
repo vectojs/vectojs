@@ -1361,18 +1361,44 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
-    it('hides fully off-viewport projections (viewport-lazy)', () => {
+    it('virtualizes far-off-viewport projections and re-materializes on return', () => {
       const scene = makeDomScene();
       const e = new ContentEntity('off');
-      e.setPosition(5000, 5000); // outside the 800x600 mock viewport
+      e.setPosition(5000, 5000); // far beyond the 800x600 viewport + 600px margin
       scene.add(e);
       tick(scene);
-      expect(contentEl(scene, 'off')!.style.display).toBe('none');
+      // Beyond the virtualization margin: not materialized as DOM at all.
+      expect(contentEl(scene, 'off')).toBeUndefined();
 
       e.setPosition(10, 10);
       scene.markDirty();
       tick(scene);
+      // Back in view: materialized and visible.
       expect(contentEl(scene, 'off')!.style.display).not.toBe('none');
+      scene.destroy();
+    });
+
+    it('materializes but hides near-off-viewport projections (within margin)', () => {
+      const scene = makeDomScene();
+      const e = new ContentEntity('near');
+      e.setPosition(10, -60); // just above the top edge, within the 600px margin
+      scene.add(e);
+      tick(scene);
+      const el = contentEl(scene, 'near');
+      expect(el).toBeDefined(); // kept ready for scroll / selection
+      expect(el!.style.display).toBe('none'); // but not shown (outside viewport)
+      scene.destroy();
+    });
+
+    it('contentProjectionMargin: Infinity keeps the legacy materialize-everything behavior', () => {
+      const scene = makeDomScene({ contentProjectionMargin: Infinity });
+      const e = new ContentEntity('faraway');
+      e.setPosition(5000, 5000);
+      scene.add(e);
+      tick(scene);
+      const el = contentEl(scene, 'faraway');
+      expect(el).toBeDefined(); // materialized despite being far off-screen
+      expect(el!.style.display).toBe('none'); // hidden by the exact viewport test
       scene.destroy();
     });
 
