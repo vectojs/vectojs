@@ -91,18 +91,31 @@ function renderMathToSVGDataURI(
 
 let markdownWorker: Worker | null = null;
 let workerIdCounter = 0;
-const workerCallbacks = new Map<number, { cb: (tokens: TokensList) => void; text: string }>();
+// `cb` receives (matchLen, tail): the caller's own tokens[0..matchLen) are
+// still valid (unchanged raw source) and only `tail` is new — see the
+// matching comment in MarkdownWorker.ts for why the worker sends a diff
+// instead of the full re-lexed tree on every call.
+const workerCallbacks = new Map<
+  number,
+  { cb: (matchLen: number, tail: TokensList) => void; text: string }
+>();
 
 /**
  * The worker failed for this request (lexer threw, or the worker itself
  * died). Dropping the callback would lose that update for good — for the
  * final chunk of a stream that means content that never renders. Parse on
  * the main thread instead; it is the exact code path the no-Worker
- * environments already use.
+ * environments already use. No prefix to trust here (this is a fresh local
+ * parse, not a diff against the caller's own snapshot), so treat the whole
+ * result as new — the caller's own `updateTokens` still reconciles it
+ * correctly, just without the transfer-size saving for this one call.
  */
-function runSyncFallback(entry: { cb: (tokens: TokensList) => void; text: string }): void {
+function runSyncFallback(entry: {
+  cb: (matchLen: number, tail: TokensList) => void;
+  text: string;
+}): void {
   try {
-    entry.cb(marked.lexer(entry.text));
+    entry.cb(0, marked.lexer(entry.text));
   } catch (err) {
     console.warn('Markdown sync fallback parse failed', err);
   }
@@ -113,11 +126,11 @@ if (typeof Worker !== 'undefined') {
     const blob = new Blob([WORKER_SOURCE_STRING], { type: 'application/javascript' });
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
-      const { id, tokens, error } = e.data;
+      const { id, matchLen, tail, error } = e.data;
       const entry = workerCallbacks.get(id);
       if (entry) {
         workerCallbacks.delete(id);
-        if (!error) entry.cb(tokens as TokensList);
+        if (!error) entry.cb(matchLen as number, tail as TokensList);
         else runSyncFallback(entry);
       }
     };
@@ -821,6 +834,16 @@ export class Markdown extends UIComponent {
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
   private tokens: Token[];
+  // At most one worker lex request in flight at a time. Required for the
+  // delta-transfer protocol below to be safe: the request captures a
+  // snapshot of `this.tokens` to reconstruct the full array from the
+  // worker's (matchLen, tail) response, and that snapshot would go stale if
+  // another request's callback could run — and mutate `this.tokens` — while
+  // this one is still pending. `appendPending` means "more text arrived
+  // while a request was in flight"; the in-flight callback re-dispatches
+  // with the latest accumulated text once it resolves.
+  private appendInFlight = false;
+  private appendPending = false;
 
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
@@ -880,20 +903,45 @@ export class Markdown extends UIComponent {
   public appendMarkdown(chunk: string): this {
     this.rawMarkdown += chunk;
 
-    if (markdownWorker) {
-      const id = workerIdCounter++;
-      workerCallbacks.set(id, {
-        cb: (newTokens) => {
-          this.updateTokens(newTokens);
-        },
-        text: this.rawMarkdown,
-      });
-      markdownWorker.postMessage({ id, text: this.rawMarkdown });
-    } else {
+    if (!markdownWorker) {
       const newTokens = marked.lexer(this.rawMarkdown);
       this.updateTokens(newTokens);
+      return this;
     }
+
+    if (this.appendInFlight) {
+      // `this.rawMarkdown` already has this chunk folded in — the next
+      // dispatch picks it up naturally, no separate buffer needed.
+      this.appendPending = true;
+      return this;
+    }
+    this.dispatchAppend();
     return this;
+  }
+
+  private dispatchAppend(): void {
+    if (!markdownWorker) return;
+    this.appendInFlight = true;
+    const id = workerIdCounter++;
+    // Snapshot now — this is the array the worker's `matchLen` is relative
+    // to, and it must stay fixed until this exact response is applied (see
+    // the field comment on `appendInFlight` for why that requires
+    // coalescing rather than tracking `this.tokens` live).
+    const oldTokensSnapshot = this.tokens;
+    const oldRaws = oldTokensSnapshot.map((t) => t.raw);
+    workerCallbacks.set(id, {
+      cb: (matchLen, tail) => {
+        this.appendInFlight = false;
+        const newTokens = [...oldTokensSnapshot.slice(0, matchLen), ...tail] as TokensList;
+        this.updateTokens(newTokens);
+        if (this.appendPending) {
+          this.appendPending = false;
+          this.dispatchAppend();
+        }
+      },
+      text: this.rawMarkdown,
+    });
+    markdownWorker.postMessage({ id, text: this.rawMarkdown, oldRaws });
   }
 
   private updateTokens(newTokens: TokensList): void {
