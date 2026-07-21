@@ -3,7 +3,8 @@
 // reader installs. Each describe block maps to one doc section.
 import { describe, it, expect } from 'vitest';
 import { Scene, Entity, Circle, Rect } from '@vectojs/core';
-import { Markdown, Text, ScrollView, Card } from '@vectojs/ui';
+import { Text, ScrollView, Card } from '@vectojs/ui';
+import { Markdown } from '@vectojs/markdown';
 import {
   auditScene,
   captureSnapshot,

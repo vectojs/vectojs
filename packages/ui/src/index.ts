@@ -12,7 +12,6 @@ export * from './RichText';
 export * from './Checkbox';
 export * from './Toggle';
 export * from './ScrollView';
-export * from './Markdown';
 export * from './Dropdown';
 export * from './Slider';
 export * from './Modal';

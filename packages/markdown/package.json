@@ -1,0 +1,60 @@
+{
+  "name": "@vectojs/markdown",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Canvas-native Markdown (and TeX math) rendering for VectoJS: a Markdown entity plus CodeBlock, built on @vectojs/ui components with marked + MathJax.",
+  "keywords": [
+    "markdown",
+    "marked",
+    "mathjax",
+    "canvas",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/markdown"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../ui && bun run build) && node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "marked": "^18.0.6",
+    "mathjax-full": "^3.2.2"
+  },
+  "peerDependencies": {
+    "@vectojs/core": ">=1.8.0 <2.0.0",
+    "@vectojs/ui": ">=2.0.0 <3.0.0"
+  },
+  "devDependencies": {
+    "@vectojs/core": "workspace:*",
+    "@vectojs/ui": "workspace:*",
+    "esbuild": "^0.28.1",
+    "prettier": "^3.9.5",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}

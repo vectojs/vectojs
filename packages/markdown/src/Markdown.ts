@@ -42,13 +42,7 @@ import { SVG } from 'mathjax-full/js/output/svg.js';
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
-import { measureText } from './measure';
-import { RichText } from './RichText';
-import { Stack } from './Stack';
-import { Table } from './Table';
-import { Text } from './Text';
-import { Image } from './Image';
-import { UIComponent } from './UIComponent';
+import { measureText, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
 
 // @ts-ignore
 import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';

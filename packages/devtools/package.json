@@ -31,7 +31,7 @@
   },
   "peerDependencies": {
     "@vectojs/core": ">=1.0.0 <2.0.0",
-    "@vectojs/ui": ">=1.0.0 <2.0.0"
+    "@vectojs/ui": ">=1.0.0 <3.0.0"
   },
   "peerDependenciesMeta": {
     "@vectojs/ui": {
@@ -41,6 +41,7 @@
   "devDependencies": {
     "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
+    "@vectojs/markdown": "workspace:*",
     "puppeteer-core": "^25.3.0",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10",

@@ -52,6 +52,7 @@
       "version": "0.5.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
+        "@vectojs/markdown": "workspace:*",
         "@vectojs/ui": "workspace:*",
         "jsdom": "^29.1.1",
         "puppeteer-core": "^25.3.0",
@@ -60,7 +61,7 @@
       },
       "peerDependencies": {
         "@vectojs/core": ">=1.0.0 <2.0.0",
-        "@vectojs/ui": ">=1.0.0 <2.0.0",
+        "@vectojs/ui": ">=1.0.0 <3.0.0",
       },
       "optionalPeers": [
         "@vectojs/ui",
@@ -93,6 +94,26 @@
         "prettier": "^3.9.5",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
+      },
+    },
+    "packages/markdown": {
+      "name": "@vectojs/markdown",
+      "version": "0.1.0",
+      "dependencies": {
+        "marked": "^18.0.6",
+        "mathjax-full": "^3.2.2",
+      },
+      "devDependencies": {
+        "@vectojs/core": "workspace:*",
+        "@vectojs/ui": "workspace:*",
+        "esbuild": "^0.28.1",
+        "prettier": "^3.9.5",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=1.8.0 <2.0.0",
+        "@vectojs/ui": ">=2.0.0 <3.0.0",
       },
     },
     "packages/math": {
@@ -131,15 +152,10 @@
     "packages/ui": {
       "name": "@vectojs/ui",
       "version": "1.11.6",
-      "dependencies": {
-        "marked": "^18.0.6",
-        "mathjax-full": "^3.2.2",
-      },
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "esbuild": "^0.28.1",
         "jsdom": "^29.1.1",
-        "prettier": "^3.9.5",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
       },
@@ -676,6 +692,8 @@
     "@vectojs/graph3d": ["@vectojs/graph3d@workspace:packages/graph3d"],
 
     "@vectojs/layout": ["@vectojs/layout@workspace:packages/layout"],
+
+    "@vectojs/markdown": ["@vectojs/markdown@workspace:packages/markdown"],
 
     "@vectojs/math": ["@vectojs/math@workspace:packages/math"],
 

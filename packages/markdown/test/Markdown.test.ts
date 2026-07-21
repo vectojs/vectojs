@@ -2,8 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Tokens } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
-import { RichText } from '../src/RichText';
-import { Text } from '../src/Text';
+import { RichText, Text } from '@vectojs/ui';
 
 function clickFirstLink(entity: RichText): void {
   expect(entity.children.length).toBeGreaterThan(0);

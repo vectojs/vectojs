@@ -15,6 +15,7 @@ export default defineConfig({
       '@vectojs/math': new URL('../math/src/index.ts', import.meta.url).pathname,
       '@vectojs/animation': new URL('../animation/src/index.ts', import.meta.url).pathname,
       '@vectojs/ui': new URL('../ui/src/index.ts', import.meta.url).pathname,
+      '@vectojs/markdown': new URL('../markdown/src/index.ts', import.meta.url).pathname,
       '@vectojs/devtools/headless': new URL('./src/headless.ts', import.meta.url).pathname,
     },
   },

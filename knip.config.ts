@@ -12,7 +12,7 @@ const config: KnipConfig = {
       entry: ['src/index.{js,ts}'],
       project: ['src/**/*.{js,ts}'],
     },
-    'packages/ui': {
+    'packages/markdown': {
       // MarkdownWorker.ts is the source of truth compiled into the generated
       // MarkdownWorkerSource.ts by scripts/build-worker.js at build time — the
       // only reference is a runtime path knip cannot trace.

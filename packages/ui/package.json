@@ -57,14 +57,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/build-worker.js && (cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsup src/ContextMenu.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsup src/ContextMenu.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
     "test": "vitest run",
     "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs"
   },
-  "dependencies": {
-    "marked": "^18.0.6",
-    "mathjax-full": "^3.2.2"
-  },
+  "dependencies": {},
   "peerDependencies": {
     "@vectojs/core": ">=1.8.0 <2.0.0"
   },
@@ -72,7 +69,6 @@
     "@vectojs/core": "workspace:*",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
-    "prettier": "^3.9.5",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10"
   }
