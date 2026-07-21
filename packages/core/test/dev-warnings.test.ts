@@ -9,8 +9,6 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } 
   removeEventListener: vi.fn(),
 };
 
-const originalGetContext = HTMLCanvasElement.prototype.getContext;
-
 function makeMockContext(canvas: HTMLCanvasElement) {
   const mockCtx: Record<string, any> = {
     canvas,
@@ -194,9 +192,9 @@ describe('dev warnings — Scene.devMode', () => {
     scene.remove(ent);
     // After another round of sync, shadow count should exceed interactive count
     runFrames(scene);
-    const warnings = warnSpy.mock.calls.filter((c) => c[0]?.toString().includes('a11yElements'));
-    // May or may not fire depending on timing; just check it doesn't crash
-    // and the callback structure is sound
+    // The leak-detection warning may or may not fire depending on timing; this
+    // case only asserts the sync path doesn't crash and the callback structure
+    // is sound.
     expect(true).toBe(true);
   });
 });
