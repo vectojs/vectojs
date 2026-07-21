@@ -14,6 +14,7 @@ export * from './renderer/WebGLPointRenderer';
 export * from './renderer/WebGPUParticleSystemManager';
 export * from './renderer/colorParse';
 export * from './renderer/url';
+export * from './renderer/TextRasterCache';
 export * from './tree/Entity';
 export * from './tree/Scene';
 export * from './components/TextEntity';

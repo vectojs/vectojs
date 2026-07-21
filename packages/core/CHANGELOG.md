@@ -1,5 +1,17 @@
 # @vectojs/core
 
+## 1.12.0
+
+### Minor Changes
+
+- Add `TextRasterCache`: an isolated, DPR-aware cache of pre-rasterized text runs.
+  Views that draw the same short strings thousands of times per frame
+  (danmaku/barrage, chat/log tails, data-grid cells, particle labels) can
+  rasterize each distinct `(font, color, text)` run once and blit it with
+  `drawImage` instead of paying the per-call `fillText` shaping + color-parse cost
+  every draw. Bounded by an insertion-order eviction cap; falls back to `null` in
+  headless/non-DOM contexts so callers keep a `fillText` path.
+
 ## 1.11.3
 
 ### Patch Changes

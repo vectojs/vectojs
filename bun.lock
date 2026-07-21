@@ -21,7 +21,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.9.2",
+      "version": "1.11.3",
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
         "bidi-js": "^1.0.3",
@@ -34,7 +34,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
@@ -83,7 +83,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "1.9.4",
+      "version": "1.11.5",
       "dependencies": {
         "marked": "^18.0.6",
         "mathjax-full": "^3.2.2",
