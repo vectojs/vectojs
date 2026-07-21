@@ -19,7 +19,7 @@ import { createEventTrace, type EventTrace } from './eventTrace';
 export type DockSide = 'right' | 'left';
 
 export interface DevtoolsOptions {
-  /** Panel width in px. Default 340. */
+  /** Panel width in px. Default 360. */
   width?: number;
   /** Auto-refresh interval in ms while open; 0 disables. Default 500. */
   refreshInterval?: number;
@@ -116,6 +116,14 @@ export class DevtoolsPanel {
   private editY: Input | null = null;
   private editOpacity: Input | null = null;
   private syncingEdit = false;
+  // Reflow state: pieces whose geometry depends on the live viewport height.
+  private showPerf = true;
+  private perfCard: Card | null = null;
+  private treeInner: TreeView | null = null;
+  private auditInner: TreeView | null = null;
+  private readonly tabsTop = 96;
+  private readonly perfH = 78;
+  private onWindowResize = () => this.layout();
 
   private onHostPick = (ev: MouseEvent) => {
     if (!this.pickArmed) return;
@@ -164,10 +172,11 @@ export class DevtoolsPanel {
 
   constructor(host: Scene, options: DevtoolsOptions = {}) {
     this.host = host;
-    this.width = options.width ?? 340;
+    this.width = options.width ?? 360;
     this.dockSide = options.dockSide ?? 'right';
     const height = typeof window !== 'undefined' ? window.innerHeight : 600;
-    const showPerf = options.showPerf ?? true;
+    this.showPerf = options.showPerf ?? true;
+    const showPerf = this.showPerf;
 
     this.container = document.createElement('div');
     this.container.setAttribute('data-vecto-devtools', '');
@@ -258,9 +267,11 @@ export class DevtoolsPanel {
     this.panelScene.add(this.warnPill);
 
     // --- Tabs region -----------------------------------------------------
-    const tabsTop = 96;
-    const perfH = showPerf ? 72 : 0;
-    const tabsHeight = Math.max(200, height - tabsTop - perfH - 12);
+    // Height-dependent geometry (tabs height, tree heights, perf card Y) is
+    // finalized in layout(), which also runs on every window resize so the
+    // bottom-anchored perf strip never falls below the fold.
+    const perfH = showPerf ? this.perfH : 0;
+    const tabsHeight = Math.max(200, height - this.tabsTop - perfH - 12);
     const contentW = this.width - 16;
     const barH = 30;
     const bodyH = tabsHeight - barH;
@@ -269,11 +280,12 @@ export class DevtoolsPanel {
     const treeContent = new Container();
     const search = new Input({
       width: contentW - 16,
-      height: 28,
+      height: 30,
       placeholder: 'Filter by type or id…',
-      font: '12px sans-serif',
+      font: '13px sans-serif',
+      color: '#e8eefc',
       radius: 8,
-      bg: 'rgba(15,23,42,0.85)',
+      bg: 'rgba(15,23,42,0.92)',
       onChange: (v) => this.setFilter(v),
     });
     search.setPosition(8, 8);
@@ -291,74 +303,68 @@ export class DevtoolsPanel {
         if (entity) this.select(entity);
       },
     });
-    this.tree.setPosition(8, 44);
+    this.tree.setPosition(8, 46);
+    this.treeInner = this.tree;
     treeContent.add(this.tree);
 
     // Inspect tab: readout lines + inline editors + copy actions.
     const inspectContent = new Container();
     for (let i = 0; i < 8; i++) {
-      const line = new Text('', { font: '11px monospace', color: i === 0 ? '#e8eefc' : PANEL_FG });
-      line.setPosition(10, 16 + i * 16);
+      const line = new Text('', { font: '12px monospace', color: i === 0 ? '#e8eefc' : PANEL_FG });
+      line.setPosition(10, 18 + i * 17);
       this.detailLines.push(line);
       inspectContent.add(line);
     }
-    const editTop = 16 + 8 * 16 + 8;
-    inspectContent.add(
-      new Text('edit', { font: '10px sans-serif', color: MUTED }).setPosition(10, editTop),
-    );
-    this.editX = new Input({
-      width: 84,
-      height: 26,
-      placeholder: 'x',
-      font: '11px monospace',
-      radius: 8,
-      onChange: (v) => this.applyEdit('x', v),
-    });
-    this.editX.setPosition(10, editTop + 8);
-    this.editY = new Input({
-      width: 84,
-      height: 26,
-      placeholder: 'y',
-      font: '11px monospace',
-      radius: 8,
-      onChange: (v) => this.applyEdit('y', v),
-    });
-    this.editY.setPosition(104, editTop + 8);
-    this.editOpacity = new Input({
-      width: 84,
-      height: 26,
-      placeholder: 'opacity',
-      font: '11px monospace',
-      radius: 8,
-      onChange: (v) => this.applyEdit('opacity', v),
-    });
-    this.editOpacity.setPosition(198, editTop + 8);
-    inspectContent.add(this.editX);
-    inspectContent.add(this.editY);
-    inspectContent.add(this.editOpacity);
+    // Labeled inline editors. Each field is `label + Input`, laid out in a
+    // three-column row with generous, readable inputs (13px, high contrast).
+    const editTop = 18 + 8 * 17 + 10;
+    const fieldW = Math.floor((contentW - 16 - 2 * 8) / 3);
+    const editorInput = (placeholder: string, x: number, prop: 'x' | 'y' | 'opacity'): Input => {
+      inspectContent.add(
+        new Text(placeholder, { font: '10px sans-serif', color: MUTED }).setPosition(x, editTop),
+      );
+      const input = new Input({
+        width: fieldW,
+        height: 30,
+        placeholder,
+        font: '13px monospace',
+        color: '#e8eefc',
+        bg: 'rgba(15,23,42,0.92)',
+        radius: 8,
+        onChange: (v) => this.applyEdit(prop, v),
+      });
+      input.setPosition(x, editTop + 14);
+      inspectContent.add(input);
+      return input;
+    };
+    this.editX = editorInput('x', 10, 'x');
+    this.editY = editorInput('y', 10 + fieldW + 8, 'y');
+    this.editOpacity = editorInput('opacity', 10 + 2 * (fieldW + 8), 'opacity');
 
+    const copyRowY = editTop + 14 + 30 + 12;
+    const copyW = Math.floor((contentW - 16 - 8) / 2);
     const copyPath = new Button('Copy path', {
-      width: 96,
-      height: 26,
+      width: copyW,
+      height: 30,
       radius: 8,
       bg: GHOST_BG,
       hoverBg: GHOST_HOVER,
       color: ACCENT,
-      font: '11px sans-serif',
+      font: '12px sans-serif',
       onClick: () => this.copySelection('path'),
     });
-    copyPath.setPosition(10, editTop + 44);
-    const copyJson = new Button('Copy state', {
-      width: 96,
-      height: 26,
+    copyPath.setPosition(10, copyRowY);
+    const copyJson = new Button('Copy JSON', {
+      width: copyW,
+      height: 30,
       radius: 8,
       bg: GHOST_BG,
       hoverBg: GHOST_HOVER,
       color: ACCENT,
-      font: '11px sans-serif',
+      font: '12px sans-serif',
       onClick: () => this.copySelection('json'),
     });
-    copyJson.setPosition(114, editTop + 44);
+    copyJson.setPosition(10 + copyW + 8, copyRowY);
     inspectContent.add(copyPath);
     inspectContent.add(copyJson);
 
@@ -378,6 +384,7 @@ export class DevtoolsPanel {
       },
     });
     this.auditTree.setPosition(8, 8);
+    this.auditInner = this.auditTree;
     auditContent.add(this.auditTree);
 
     const tabItems: TabItem[] = [
@@ -415,23 +422,22 @@ export class DevtoolsPanel {
       value: options.defaultTab ?? 'tree',
       tabs: tabItems,
     });
-    this.tabs.setPosition(8, tabsTop);
+    this.tabs.setPosition(8, this.tabsTop);
     this.panelScene.add(this.tabs);
 
     // --- Perf HUD strip --------------------------------------------------
+    // Positioned by layout() (below) so it tracks the live viewport bottom.
     if (showPerf) {
-      const perfCard = new Card({
+      this.perfCard = new Card({
         width: contentW,
         height: perfH,
         bg: CARD_BG,
         border: CARD_BORDER,
         radius: RADIUS,
       });
-      perfCard.setPosition(8, height - perfH - 8);
-      this.panelScene.add(perfCard);
+      this.panelScene.add(this.perfCard);
       for (let i = 0; i < 3; i++) {
-        const line = new Text('', { font: '11px monospace', color: i === 0 ? GOOD : MUTED });
-        line.setPosition(18, height - perfH + 8 + i * 18);
+        const line = new Text('', { font: '12px monospace', color: i === 0 ? GOOD : MUTED });
         this.perfLines.push(line);
         this.panelScene.add(line);
       }
@@ -441,14 +447,54 @@ export class DevtoolsPanel {
 
     document.addEventListener('click', this.onHostPick, true);
     document.addEventListener('keydown', this.onKeyNudge);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', this.onWindowResize);
+    }
 
     const interval = options.refreshInterval ?? 500;
     if (interval > 0) {
       this.refreshTimer = setInterval(() => this.refresh(), interval);
     }
 
+    this.layout();
     this.panelScene.start();
     this.refresh();
+  }
+
+  /**
+   * Reflow every height-dependent piece to the live viewport height. Runs once
+   * at construction and on each `window.resize`. Without this the panel canvas
+   * would keep the innerHeight it was built with (the scene is created with
+   * `disableWindowResize`), so a shorter viewport — later resize, browser
+   * chrome, or a zoom change — would push the bottom-anchored perf strip below
+   * the fold. Widths are fixed (the dock width never changes), so only the
+   * vertical axis is recomputed here.
+   */
+  private layout(): void {
+    if (this.destroyed) return;
+    const height = typeof window !== 'undefined' ? window.innerHeight : 600;
+    // Match the panel scene's backing store + CSS height to the viewport so
+    // painted content maps 1:1 to on-screen pixels.
+    if (this.panelScene.height !== height) this.panelScene.resize(this.width, height);
+
+    const perfH = this.showPerf ? this.perfH : 0;
+    const tabsHeight = Math.max(200, height - this.tabsTop - perfH - 12);
+    const barH = this.tabs.tabHeight;
+    const bodyH = tabsHeight - barH;
+
+    // Tabs re-derive their content geometry from `height` every frame.
+    this.tabs.height = tabsHeight;
+    if (this.treeInner) this.treeInner.height = Math.max(80, bodyH - 48);
+    if (this.auditInner) this.auditInner.height = Math.max(80, bodyH - 16);
+
+    if (this.showPerf && this.perfCard) {
+      const top = height - perfH - 8;
+      this.perfCard.setPosition(8, top);
+      for (let i = 0; i < this.perfLines.length; i++) {
+        this.perfLines[i].setPosition(18, top + 14 + i * 18);
+      }
+    }
+    this.panelScene.markDirty();
   }
 
   private applyDockSideStyle(): void {
@@ -472,13 +518,14 @@ export class DevtoolsPanel {
 
   private buildSettings(contentW: number, options: DevtoolsOptions): Entity {
     const c = new Container();
-    let y = 12;
-    const rowGap = 40;
+    let y = 14;
+    const rowGap = 46;
+    const ddW = 104;
 
     const highlightToggle = new Toggle({
       label: 'Selection highlight',
       checked: true,
-      font: '12px sans-serif',
+      font: '13px sans-serif',
       color: PANEL_FG,
       accent: ACCENT,
       onChange: (v) => this.setHighlightEnabled(v),
@@ -488,30 +535,30 @@ export class DevtoolsPanel {
     y += rowGap;
 
     c.add(
-      new Text('Refresh (ms)', { font: '12px sans-serif', color: PANEL_FG }).setPosition(10, y + 6),
+      new Text('Refresh (ms)', { font: '13px sans-serif', color: PANEL_FG }).setPosition(10, y + 8),
     );
     const refreshDd = new Dropdown(['0', '250', '500', '1000'], {
       value: String(options.refreshInterval ?? 500),
-      width: 96,
-      height: 28,
-      font: '12px sans-serif',
+      width: ddW,
+      height: 30,
+      font: '13px sans-serif',
       onChange: (v: string) => this.setRefreshInterval(Number(v)),
     });
-    refreshDd.setPosition(contentW - 116, y);
+    refreshDd.setPosition(contentW - ddW - 12, y);
     c.add(refreshDd);
     y += rowGap;
 
     c.add(
-      new Text('Dock side', { font: '12px sans-serif', color: PANEL_FG }).setPosition(10, y + 6),
+      new Text('Dock side', { font: '13px sans-serif', color: PANEL_FG }).setPosition(10, y + 8),
     );
     const sideDd = new Dropdown(['right', 'left'], {
       value: this.dockSide,
-      width: 96,
-      height: 28,
-      font: '12px sans-serif',
+      width: ddW,
+      height: 30,
+      font: '13px sans-serif',
       onChange: (v: string) => this.setDockSide(v as DockSide),
     });
-    sideDd.setPosition(contentW - 116, y);
+    sideDd.setPosition(contentW - ddW - 12, y);
     c.add(sideDd);
 
     return c;
@@ -746,6 +793,9 @@ export class DevtoolsPanel {
     this.eventTrace?.destroy();
     document.removeEventListener('click', this.onHostPick, true);
     document.removeEventListener('keydown', this.onKeyNudge);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', this.onWindowResize);
+    }
     if (this.highlight) {
       this.host.hideOverlay(this.highlight);
       this.highlight.destroy();

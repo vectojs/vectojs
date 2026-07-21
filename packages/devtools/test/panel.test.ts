@@ -390,6 +390,31 @@ describe('DevtoolsPanel — modern features', () => {
     host.destroy();
   });
 
+  it('reflows on window resize so the perf strip stays within the viewport', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, showPerf: true });
+
+    // Shrink the viewport (browser chrome / zoom / smaller window) and fire resize.
+    (window as unknown as { innerHeight: number }).innerHeight = 500;
+    window.dispatchEvent(new Event('resize'));
+
+    const panelScene = (panel as any).panelScene as { height: number };
+    expect(panelScene.height).toBe(500);
+
+    // The perf card's bottom edge must sit within the new viewport height.
+    const perfCard = (panel as any).perfCard as { y: number; height: number };
+    expect(perfCard.y + perfCard.height).toBeLessThanOrEqual(500);
+
+    // Every perf line is above the fold too.
+    for (const line of (panel as any).perfLines as Array<{ y: number }>) {
+      expect(line.y).toBeLessThan(500);
+    }
+
+    panel.detach();
+    host.destroy();
+    (window as unknown as { innerHeight: number }).innerHeight = 768;
+  });
+
   it('setRefreshInterval restarts the auto-refresh timer', () => {
     vi.useFakeTimers();
     const host = makeHost();
