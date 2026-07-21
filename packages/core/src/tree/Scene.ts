@@ -145,6 +145,29 @@ export interface SceneOptions {
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
 export const REDUCED_MOTION_FPS = 30;
 
+/**
+ * Live render-loop telemetry, read from {@link Scene.frameStats}. See that
+ * getter for how each field is measured.
+ */
+export interface FrameStats {
+  /** Rendered-frame cadence (Hz), clamped to `maxFPS`. `0` before the first pair of rendered frames. */
+  fps: number;
+  /** Wall-clock ms of the last `render()` pass (excludes a11y/content sync). */
+  frameTimeMs: number;
+  /** Smoothed interval between rendered frames, in ms (EMA). */
+  frameIntervalMs: number;
+  /** dt (ms) handed to the last rendered frame. */
+  dt: number;
+  /** Total frames rendered since `start()`. */
+  renderedFrames: number;
+  /** Total rAF ticks skipped (idle/onDemand/capped) since `start()`. */
+  skippedFrames: number;
+  /** The scene's current render mode. */
+  renderMode: 'always' | 'onDemand';
+  /** Whether a redraw is currently pending (the boolean dirty flag). */
+  dirty: boolean;
+}
+
 export interface A11yTreeNode {
   id: string;
   tag: string;
@@ -609,6 +632,20 @@ export class Scene {
   private dirty: boolean = true;
   /** Whether to throttle rendering to 2 FPS when the scene is static to save power. */
   public autoThrottle: boolean = true;
+
+  // --- Frame telemetry (read via `frameStats`) ---------------------------
+  /** Wall-clock ms spent inside the last `render()` call. */
+  private _lastFrameMs = 0;
+  /** Rolling exponential average of rendered-frame intervals, in ms. */
+  private _avgFrameIntervalMs = 0;
+  /** dt (ms) handed to the last rendered frame. */
+  private _lastDt = 0;
+  /** Count of frames actually rendered since the loop started. */
+  private _renderedFrames = 0;
+  /** Count of rAF ticks skipped (idle / capped) since the loop started. */
+  private _skippedFrames = 0;
+  /** `time` of the previous *rendered* frame, for interval measurement. */
+  private _lastRenderTick = 0;
 
   /**
    * Frame-rate cap (power saving). `0` = uncapped (native refresh). When set,
@@ -1389,6 +1426,40 @@ export class Scene {
    */
   public markDirty(): void {
     this.dirty = true;
+  }
+
+  /**
+   * Live frame telemetry for profilers and devtools overlays. All timings are
+   * measured on the `requestAnimationFrame` loop; a scene driven only by
+   * {@link step} (e.g. deterministic video export) leaves these at their zero
+   * defaults.
+   *
+   * `fps` is derived from the interval between *rendered* frames, so idle
+   * `onDemand` scenes and frames skipped by the {@link maxFPS} cap or the
+   * static auto-throttle do not deflate it — it reports the cadence of actual
+   * redraws, not the raw rAF rate. `frameTimeMs` is the wall-clock cost of the
+   * last `render()` pass alone (excludes a11y/content-projection sync).
+   *
+   * The renderer always repaints the full canvas, so there is no partial
+   * dirty-rectangle to expose; `dirty` is the boolean redraw-pending flag and
+   * `pendingRedraw` reflects whether the next `onDemand` tick will actually
+   * render.
+   */
+  public get frameStats(): FrameStats {
+    const interval = this._avgFrameIntervalMs;
+    return {
+      fps:
+        interval > 0
+          ? Math.min(1000 / interval, this.maxFPS > 0 ? this.maxFPS : 1000 / interval)
+          : 0,
+      frameTimeMs: this._lastFrameMs,
+      frameIntervalMs: interval,
+      dt: this._lastDt,
+      renderedFrames: this._renderedFrames,
+      skippedFrames: this._skippedFrames,
+      renderMode: this.renderMode,
+      dirty: this.dirty,
+    };
   }
 
   /** True when any node in the subtree has a pending animation. */
@@ -2506,6 +2577,7 @@ export class Scene {
     // arrived sooner than the target interval, skip rendering this tick.
     // `lastTime` only advances on rendered frames, so `dt` stays accurate.
     if (cap > 0 && time - this.lastTime < 1000 / cap - 1) {
+      this._skippedFrames++;
       this.scheduleFrame();
       return;
     }
@@ -2534,6 +2606,7 @@ export class Scene {
 
     // onDemand: only redraw when dirty or an animation is in flight.
     if (this.renderMode === 'onDemand' && isIdle) {
+      this._skippedFrames++;
       this.scheduleFrame();
       return;
     }
@@ -2544,7 +2617,27 @@ export class Scene {
     // render would silently wipe those marks and freeze the entity.
     this.dirty = false;
 
+    // Frame telemetry: measure the interval since the last *rendered* frame
+    // (skipped/idle ticks excluded, so FPS reflects real redraw cadence, not
+    // the rAF rate) and the wall-clock cost of the render pass itself.
+    const now = typeof performance !== 'undefined' ? performance.now() : time;
+    if (this._lastRenderTick > 0) {
+      const interval = time - this._lastRenderTick;
+      if (interval > 0) {
+        // EMA (α=0.1) smooths per-frame jitter without a ring buffer.
+        this._avgFrameIntervalMs =
+          this._avgFrameIntervalMs === 0
+            ? interval
+            : this._avgFrameIntervalMs * 0.9 + interval * 0.1;
+      }
+    }
+    this._lastRenderTick = time;
+    this._lastDt = dt;
+
     this.render(this.renderer, dt, time);
+
+    this._lastFrameMs = (typeof performance !== 'undefined' ? performance.now() : time) - now;
+    this._renderedFrames++;
 
     // Sync Automation Shadow DOM (skip the whole walk when nothing is interactive).
     // Performance Throttling: If an animation is currently flying, we freeze A11y writes

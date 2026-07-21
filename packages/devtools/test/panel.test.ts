@@ -217,3 +217,214 @@ describe('attachDevtools', () => {
     host.destroy();
   });
 });
+
+describe('DevtoolsPanel — modern features', () => {
+  it('filters the tree by type/id substring while keeping the full index', () => {
+    const host = makeHost();
+    host.add(new Box('apple'));
+    host.add(new Box('banana'));
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+
+    const tree = (panel as any).tree as { setNodes: (n: unknown[]) => void };
+    const spy = vi.spyOn(tree, 'setNodes');
+    (panel as any).setFilter('banana');
+
+    // The last setNodes call carries only the matching node(s).
+    const lastCall = spy.mock.calls.at(-1)?.[0] as Array<{ id: string }>;
+    expect(lastCall.some((n) => n.id === 'banana')).toBe(true);
+    expect(lastCall.some((n) => n.id === 'apple')).toBe(false);
+    // Index still resolves both — filtering is view-only.
+    expect((panel as any).index.get('apple')).toBeDefined();
+
+    // Clearing the filter restores every node.
+    (panel as any).setFilter('');
+    const restored = spy.mock.calls.at(-1)?.[0] as Array<{ id: string }>;
+    expect(restored).toHaveLength(2);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('counts total and interactive entities in the header badges', () => {
+    const host = makeHost();
+    const plain = new Box('plain');
+    const clickable = new Box('clickable');
+    clickable.interactive = true;
+    host.add(plain);
+    host.add(clickable);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    expect((panel as any).countPill.label).toBe('2');
+    expect((panel as any).interactivePill.label).toContain('1');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('surfaces the audit finding count in the warning badge', () => {
+    const host = makeHost();
+    host.resize(400, 300);
+    host.add(new Box('a', 100, 100));
+    host.add(new Box('b', 100, 100)); // overlap → one finding
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+
+    panel.audit();
+    expect((panel as any).warnPill.label).toContain('1');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('writes live perf lines from Scene.frameStats', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, showPerf: true });
+    (panel as any).writePerf();
+    const perf = (panel as any).perfLines.map((l: { text: string }) => l.text).join('\n');
+    expect(perf).toContain('fps');
+    expect(perf).toContain('ms/frame');
+    expect(perf).toMatch(/entities/);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('select() switches to the Inspect tab and syncs the edit fields', () => {
+    const host = makeHost();
+    const target = new Box('sel', 60, 30);
+    target.setPosition(15, 25);
+    host.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(target);
+
+    expect((panel as any).tabs.value).toBe('inspect');
+    expect((panel as any).editX.value).toBe('15');
+    expect((panel as any).editY.value).toBe('25');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('inline edit mutates the selected entity and refreshes the readout', () => {
+    const host = makeHost();
+    const target = new Box('edit', 40, 20);
+    target.setPosition(0, 0);
+    host.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(target);
+    (panel as any).applyEdit('x', '42');
+    expect(target.x).toBe(42);
+    (panel as any).applyEdit('opacity', '0.3');
+    expect(target.opacity).toBeCloseTo(0.3);
+    // Bad input is ignored.
+    (panel as any).applyEdit('y', 'not-a-number');
+    expect(target.y).toBe(0);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('audit() populates the audit tab and switches to it', () => {
+    const host = makeHost();
+    host.resize(400, 300);
+    host.add(new Box('a', 100, 100));
+    host.add(new Box('b', 100, 100));
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+
+    panel.audit();
+    expect((panel as any).tabs.value).toBe('audit');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('copySelection writes the entity path to the clipboard', () => {
+    const host = makeHost();
+    const target = new Box('copyme');
+    host.add(target);
+
+    const writeText = vi.fn();
+    (globalThis.navigator as unknown as { clipboard: { writeText: typeof writeText } }).clipboard =
+      {
+        writeText,
+      };
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(target);
+    (panel as any).copySelection('path');
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(String(writeText.mock.calls[0][0])).toContain('Scene >');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('setHighlightEnabled(false) removes the host overlay highlight', () => {
+    const host = makeHost();
+    const target = new Box('h');
+    host.add(target);
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+
+    panel.select(target);
+    expect(host.overlayRootEntity.children.length).toBe(1);
+    panel.setHighlightEnabled(false);
+    expect(host.overlayRootEntity.children.length).toBe(0);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('setDockSide flips the container edge and border radius', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, dockSide: 'right' });
+    const dock = document.querySelector('[data-vecto-devtools]') as HTMLElement;
+    expect(dock.style.right).toBe('0px');
+
+    panel.setDockSide('left');
+    expect(dock.style.left).toBe('0px');
+    expect(dock.style.right).toBe('');
+    expect(dock.style.borderRadius).toBe('0 14px 14px 0');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('reflows on window resize so the perf strip stays within the viewport', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, showPerf: true });
+
+    // Shrink the viewport (browser chrome / zoom / smaller window) and fire resize.
+    (window as unknown as { innerHeight: number }).innerHeight = 500;
+    window.dispatchEvent(new Event('resize'));
+
+    const panelScene = (panel as any).panelScene as { height: number };
+    expect(panelScene.height).toBe(500);
+
+    // The perf card's bottom edge must sit within the new viewport height.
+    const perfCard = (panel as any).perfCard as { y: number; height: number };
+    expect(perfCard.y + perfCard.height).toBeLessThanOrEqual(500);
+
+    // Every perf line is above the fold too.
+    for (const line of (panel as any).perfLines as Array<{ y: number }>) {
+      expect(line.y).toBeLessThan(500);
+    }
+
+    panel.detach();
+    host.destroy();
+    (window as unknown as { innerHeight: number }).innerHeight = 768;
+  });
+
+  it('setRefreshInterval restarts the auto-refresh timer', () => {
+    vi.useFakeTimers();
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.setRefreshInterval(100);
+    host.add(new Box('late'));
+    vi.advanceTimersByTime(150);
+    expect((panel as any).index.get('late')).toBeDefined();
+    panel.detach();
+    host.destroy();
+    vi.useRealTimers();
+  });
+});

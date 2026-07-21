@@ -928,6 +928,76 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  describe('frameStats telemetry', () => {
+    const loopAt = (scene: Scene, t: number) =>
+      (scene as unknown as { loop: (t: number) => void }).loop(t);
+
+    it('starts zeroed before any rendered frame', () => {
+      const scene = makeScene();
+      const s = scene.frameStats;
+      expect(s.fps).toBe(0);
+      expect(s.renderedFrames).toBe(0);
+      expect(s.frameTimeMs).toBe(0);
+      expect(s.renderMode).toBe('always');
+    });
+
+    it('counts rendered frames and derives fps from the rendered-frame interval', () => {
+      const scene = makeScene();
+      scene.maxFPS = 0; // uncapped, so fps reflects the raw interval
+      scene.add(new SpyEntity('e', null));
+
+      loopAt(scene, 1000); // first rendered frame (no interval yet)
+      scene.markDirty();
+      loopAt(scene, 1016); // +16ms → ~62.5 fps
+      scene.markDirty();
+      loopAt(scene, 1032); // +16ms
+
+      const s = scene.frameStats;
+      expect(s.renderedFrames).toBe(3);
+      expect(s.fps).toBeGreaterThan(55);
+      expect(s.fps).toBeLessThan(70);
+      expect(s.frameIntervalMs).toBeGreaterThan(0);
+    });
+
+    it('clamps fps to maxFPS', () => {
+      const scene = makeScene();
+      scene.maxFPS = 30;
+      scene.add(new SpyEntity('e', null));
+      // Feed intervals well under the 30fps target; fps must not exceed the cap.
+      loopAt(scene, 1000);
+      for (let t = 1100; t <= 1500; t += 100) {
+        scene.markDirty();
+        loopAt(scene, t);
+      }
+      expect(scene.frameStats.fps).toBeLessThanOrEqual(30);
+    });
+
+    it('counts skipped frames in onDemand idle', () => {
+      const scene = makeScene();
+      scene.renderMode = 'onDemand';
+      scene.maxFPS = 0;
+      scene.add(new SpyEntity('e', null));
+
+      loopAt(scene, 1000); // dirty → rendered
+      loopAt(scene, 1016); // idle → skipped
+      loopAt(scene, 1032); // idle → skipped
+
+      const s = scene.frameStats;
+      expect(s.renderedFrames).toBe(1);
+      expect(s.skippedFrames).toBe(2);
+      expect(s.renderMode).toBe('onDemand');
+    });
+
+    it('reflects the dirty flag', () => {
+      const scene = makeScene();
+      scene.maxFPS = 0;
+      loopAt(scene, 1000); // consumes initial dirty
+      expect(scene.frameStats.dirty).toBe(false);
+      scene.markDirty();
+      expect(scene.frameStats.dirty).toBe(true);
+    });
+  });
+
   describe('CPU particle fallback coordinate space', () => {
     // One live perpetual particle at local (10, 20), size 4.
     function makeParticleEntity() {
