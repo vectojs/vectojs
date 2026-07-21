@@ -1,5 +1,11 @@
 # @vectojs/devtools
 
+## 0.5.0
+
+### Minor Changes
+
+- 90a9f00: Modernize the inspector panel and add five features. Visual: the dock now has rounded inner corners, a soft drop shadow, a translucent blurred-glass background, and `Card`-grouped sections; the three actions became compact ghost text-glyph icon buttons (`⌖`/`⟳`/`⚠`) with tooltips. Features: (1) the tree, entity readout, audit findings, event trace, and settings are split across `Tabs`; (2) a filter `Input` narrows the tree by type/id substring (view-only — the index still resolves every entity) with header count badges for total/interactive/findings; (3) a live perf HUD strip reads `Scene.frameStats` (fps, ms/frame, entity count, render mode, rendered/skipped frames); (4) the Inspect tab gains inline `x`/`y`/`opacity` editors and Copy-path / Copy-state-JSON actions; (5) a Settings tab toggles the selection highlight and switches the refresh interval and dock side (left/right). New `DevtoolsOptions`: `dockSide`, `showPerf`, `defaultTab`; default `width` is now `360`. The panel now reflows on `window.resize` (the panel scene uses `disableWindowResize`, so it previously kept its construction-time height and pushed the bottom perf strip below the fold on shorter viewports/zoom); inline editors and the perf strip use larger, higher-contrast text; and tab/label/button widths were sized to avoid truncation. The `pointer-events: none` dock contract, `attachDevtools`, and all existing public methods are unchanged.
+
 ## 0.4.3
 
 ### Patch Changes
