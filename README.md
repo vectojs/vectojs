@@ -40,13 +40,17 @@ shape, glyph, point, or row.
 
 ## Packages
 
-| Package                                                | Purpose                                                                                                                  |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| [`@vectojs/core`](./packages/core)                     | Scene/Entity runtime, layout and text engine, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support |
-| [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                            |
-| [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                  |
-| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                       |
-| [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                         |
+| Package                                                | Purpose                                                                                                                        |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| [`@vectojs/core`](./packages/core)                     | Scene/Entity runtime, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support; re-exports the engines below |
+| [`@vectojs/text`](./packages/text)                     | Standalone text-shaping primitives: BiDi, Arabic shaping, CSS-parity typography, MSDF fonts, prepared content grids            |
+| [`@vectojs/layout`](./packages/layout)                 | Standalone layout engine: line breaking, BiDi-aware inline layout, exclusion flow, off-thread layout worker                    |
+| [`@vectojs/math`](./packages/math)                     | Standalone spatial/physics math: spatial hash grid broad-phase and spring physics                                              |
+| [`@vectojs/animation`](./packages/animation)           | Standalone easing library plus tween and spring value drivers                                                                  |
+| [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
+| [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
+| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                             |
+| [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
 
 ## Install
 
