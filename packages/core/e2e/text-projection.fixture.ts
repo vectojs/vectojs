@@ -1,6 +1,5 @@
 import { cssLineBoxBaseline, Entity, type IRenderer, Scene } from '../../core/src/index';
-import { CodeBlock } from '../../ui/src/Markdown';
-import { Markdown } from '../../ui/src/Markdown';
+import { CodeBlock, Markdown } from '../../markdown/src/Markdown';
 import { RichText } from '../../ui/src/RichText';
 import { Table } from '../../ui/src/Table';
 import { Text } from '../../ui/src/Text';

@@ -8,10 +8,10 @@
  * PUPPETEER_EXECUTABLE_PATH → /usr/bin/chromium → /usr/bin/google-chrome.
  */
 import puppeteer from 'puppeteer-core';
+import { build } from 'esbuild';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, extname, join, resolve, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
@@ -30,7 +30,7 @@ const PAGE = `<!doctype html>
 <html><body style="margin:0">
 <canvas id="c" width="300" height="200"></canvas>
 <script type="module">
-  import { Scene, Entity } from '/dist/index.mjs';
+  import { Scene, Entity } from '/bundle.mjs';
 
   class Target extends Entity {
     hits = [];
@@ -71,35 +71,41 @@ const PAGE = `<!doctype html>
 </body></html>`;
 
 async function main() {
-  // Tiny static server: "/" serves the page, everything else the package dir.
-  const server = createServer(async (req, res) => {
-    try {
-      if (req.url === '/' || req.url === '/index.html') {
-        res.setHeader('content-type', 'text/html');
-        res.end(PAGE);
-        return;
-      }
-      // Containment check: never serve outside the package dir, even though
-      // this server is ephemeral and bound to localhost.
-      const pathname = new URL(req.url!, 'http://localhost').pathname;
-      const filePath = resolve(pkgRoot, '.' + pathname);
-      if (filePath !== pkgRoot && !filePath.startsWith(pkgRoot + sep)) {
-        res.statusCode = 403;
-        res.end('forbidden');
-        return;
-      }
-      const body = await readFile(filePath);
-      res.setHeader(
-        'content-type',
-        extname(filePath) === '.mjs' || extname(filePath) === '.js'
-          ? 'text/javascript'
-          : 'application/octet-stream',
-      );
-      res.end(body);
-    } catch {
-      res.statusCode = 404;
-      res.end('not found');
+  // Bundle the built dist so the page loads a single self-contained module:
+  // core's dist externalizes @vectojs/{text,layout,math,animation} as bare
+  // specifiers a browser can't resolve, so esbuild inlines them from
+  // node_modules. This still exercises the published dist artifact.
+  const distEntry = join(pkgRoot, 'dist/index.mjs');
+  if (!existsSync(distEntry)) {
+    throw new Error(`Missing ${distEntry} — run \`bun run build\` in packages/core first.`);
+  }
+  const bundled = await build({
+    entryPoints: [distEntry],
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    write: false,
+    logLevel: 'silent',
+  });
+  const bundleSource = bundled.outputFiles[0]?.text;
+  if (!bundleSource) throw new Error('Failed to bundle packages/core dist for the e2e page.');
+
+  // Tiny static server: "/" serves the page, "/bundle.mjs" the inlined bundle.
+  const server = createServer((req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (pathname === '/' || pathname === '/index.html') {
+      res.setHeader('content-type', 'text/html');
+      res.end(PAGE);
+      return;
     }
+    if (pathname === '/bundle.mjs') {
+      res.setHeader('content-type', 'text/javascript');
+      res.end(bundleSource);
+      return;
+    }
+    res.statusCode = 404;
+    res.end('not found');
   });
   await new Promise<void>((r) => server.listen(0, r));
   const port = (server.address() as { port: number }).port;
