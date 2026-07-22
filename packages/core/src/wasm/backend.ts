@@ -113,6 +113,76 @@ export class WasmTransformBackend {
     store.wo.set(this.vwo.subarray(0, n));
   }
 
+  /**
+   * Run the kernel only, over data already resident in WASM memory — no upload,
+   * no readback. This is the per-frame cost the *designed* integration pays:
+   * entity accessors write `x/y/rotation` straight into the wasm input views
+   * (via {@link inputView}) and the renderer reads world matrices straight from
+   * the wasm output views (via {@link worldView}), so the batch copies in
+   * {@link compose} do not happen every frame. `compose` must have run at least
+   * once at the current capacity to size the store and set the run count; call
+   * {@link uploadRuns} after a topology change.
+   */
+  runKernel(kernel: Kernel = 'simd'): void {
+    if (kernel === 'scalar') this.ex.compose_scalar();
+    else this.ex.compose_simd();
+  }
+
+  /** Upload only the run table + count (topology), leaving per-entity inputs to
+   *  the resident views. Call when the tree structure changes, not per frame. */
+  uploadRuns(store: TransformStore): void {
+    this.ensure(store.count, store.runCount);
+    const rc = store.runCount;
+    this.vrp.set(store.runParent.subarray(0, rc));
+    this.vrs.set(store.runStart.subarray(0, rc));
+    this.vrl.set(store.runLen.subarray(0, rc));
+    this.ex.set_run_count(rc);
+  }
+
+  /** The resident wasm input views (`x,y,sx,sy,cos,sin,opacity`), valid until
+   *  the next capacity growth. Writing here is what makes uploads unnecessary. */
+  inputView(): {
+    x: Float64Array;
+    y: Float64Array;
+    sx: Float64Array;
+    sy: Float64Array;
+    cos: Float64Array;
+    sin: Float64Array;
+    opacity: Float64Array;
+  } {
+    return {
+      x: this.vx,
+      y: this.vy,
+      sx: this.vsx,
+      sy: this.vsy,
+      cos: this.vcos,
+      sin: this.vsin,
+      opacity: this.vop,
+    };
+  }
+
+  /** The resident wasm world-matrix output views (`wa..wo`). Reading here is
+   *  what makes readback unnecessary. */
+  worldView(): {
+    wa: Float64Array;
+    wb: Float64Array;
+    wc: Float64Array;
+    wd: Float64Array;
+    we: Float64Array;
+    wf: Float64Array;
+    wo: Float64Array;
+  } {
+    return {
+      wa: this.vwa,
+      wb: this.vwb,
+      wc: this.vwc,
+      wd: this.vwd,
+      we: this.vwe,
+      wf: this.vwf,
+      wo: this.vwo,
+    };
+  }
+
   private ensure(count: number, runCount: number): void {
     if (count + PAD <= this.cap && runCount <= this.runCap) return;
     this.cap = count + PAD;

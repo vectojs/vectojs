@@ -104,6 +104,41 @@ describe.skipIf(!haveWasm)('WASM/JS differential (bit-identical f64)', () => {
       assertBitIdentical(js, wasm);
     }
   });
+
+  it('resident path (inputView + runKernel + worldView) matches JS bit-for-bit', () => {
+    // The designed integration writes inputs straight into wasm memory and reads
+    // world matrices straight back out — no per-frame upload/readback copies.
+    const nodes = randomTree(2000, 'mixed', rng(4242));
+    const js = buildStore(nodes);
+    const wasm = buildStore(nodes);
+    composeJS(js);
+
+    // Size the store + publish the run table once, then write inputs in place.
+    backend.compose(wasm, 'simd');
+    backend.uploadRuns(wasm);
+    const inV = backend.inputView();
+    for (let i = 0; i < wasm.count; i++) {
+      inV.x[i] = wasm.x[i];
+      inV.y[i] = wasm.y[i];
+      inV.sx[i] = wasm.sx[i];
+      inV.sy[i] = wasm.sy[i];
+      inV.cos[i] = wasm.cos[i];
+      inV.sin[i] = wasm.sin[i];
+      inV.opacity[i] = wasm.opacity[i];
+    }
+    backend.runKernel('simd');
+
+    const outV = backend.worldView();
+    for (let i = 0; i < js.count; i++) {
+      expect(outV.wa[i]).toBe(js.wa[i]);
+      expect(outV.wb[i]).toBe(js.wb[i]);
+      expect(outV.wc[i]).toBe(js.wc[i]);
+      expect(outV.wd[i]).toBe(js.wd[i]);
+      expect(outV.we[i]).toBe(js.we[i]);
+      expect(outV.wf[i]).toBe(js.wf[i]);
+      expect(outV.wo[i]).toBe(js.wo[i]);
+    }
+  });
 });
 
 // A guard so a machine WITHOUT the asset still reports why nothing ran, rather

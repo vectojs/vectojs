@@ -31,9 +31,16 @@
 #![allow(clippy::too_many_arguments)]
 
 use core::ptr;
+use std::alloc::{Layout, alloc_zeroed};
 
 #[cfg(target_arch = "wasm32")]
 use core::arch::wasm32::*;
+
+/// SIMD load/store alignment. `v128` is 16 bytes; an 8-byte-aligned f64 array
+/// makes every `v128_load` 16-byte-unaligned, which V8 absorbs but SpiderMonkey
+/// runs on a much slower path (measured ~7x slower on the compose kernel). Every
+/// SoA field array is therefore 16-byte aligned.
+const SIMD_ALIGN: usize = 16;
 
 /// Per-field flat input arrays plus the SoA world-matrix outputs. `cos`/`sin`
 /// are precomputed on the JS side: WASM has no transcendental instructions and
@@ -86,9 +93,18 @@ static mut S: Store = Store {
     run_count: 0,
 };
 
+/// Leak a zeroed, 16-byte-aligned `f64` array of `n` elements. Leaked on
+/// purpose: the store is a process-lifetime singleton, so there is nothing to
+/// free. `alloc_zeroed` (not `vec!`) is what guarantees the 16-byte base —
+/// `Vec<f64>` is only 8-byte aligned.
 fn leak_f64(n: usize) -> *mut f64 {
-    Box::leak(vec![0f64; n].into_boxed_slice()).as_mut_ptr()
+    let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
+    let p = unsafe { alloc_zeroed(layout) } as *mut f64;
+    assert!(!p.is_null(), "allocation failed");
+    p
 }
+/// Run tables are read/written scalar (no SIMD), so 4-byte `i32` alignment is
+/// fine; a plain leaked `Vec` suffices.
 fn leak_i32(n: usize) -> *mut i32 {
     Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
 }
