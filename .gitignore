@@ -53,3 +53,7 @@ Thumbs.db
 benchmarks/core-wasm/page/index.html
 benchmarks/core-wasm/page/*.wasm
 benchmarks/*/results/
+
+# scene-wasm benchmark build artifacts + results
+benchmarks/scene-wasm/page/index.html
+benchmarks/scene-wasm/page/*.wasm
