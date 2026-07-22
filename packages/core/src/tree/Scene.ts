@@ -3045,15 +3045,67 @@ export class Scene {
     let walkHadAnimation = false;
     let walkHadInteractive = false;
 
+    // Per-node update(), shared by the interleaved JS walk and the WASM pre-pass.
+    // Passive-node update skip: the base update() only advances property drivers
+    // and queued animations, so for a node with neither — and no update()
+    // override — the call is a guaranteed no-op. Eliding it trades a virtual
+    // update() dispatch (plus its internal tickDrivers/animations early-returns)
+    // for one hasPendingAnimations() read, cheaper for the passive majority of a
+    // large tree and helping the JS and WASM transform paths equally. It reads
+    // LIVE state every frame (never a cached passive flag): a node that begins
+    // animating reports pending motion and is updated that same frame, so nothing
+    // can freeze — the correctness a cached-subtree-flag approach cannot promise.
+    const runUpdate = (node: Entity): void => {
+      const overridesUpdate = node.update !== Entity.prototype.update;
+      let pending = node.hasPendingAnimations();
+      if (pending || overridesUpdate) {
+        node.update(dt, time);
+        pending = node.hasPendingAnimations(); // update() may start/finish motion
+      }
+      if (pending) walkHadAnimation = true;
+      if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
+
+      // Dev check: entity overrides update() but not hasPendingAnimations()
+      if (this._devActive && this._devFrameCount % 120 === 0) {
+        if (
+          overridesUpdate &&
+          node.hasPendingAnimations === Entity.prototype.hasPendingAnimations
+        ) {
+          this._devWarn(
+            `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
+              'Custom motion in update() without overriding hasPendingAnimations() causes ' +
+              'the idle throttle to drop the animation to ~2fps. ' +
+              'Override hasPendingAnimations() to return true while motion is in flight.',
+          );
+        }
+      }
+    };
+
     // WASM transform path: compose every main-tree world matrix up front into an
     // SoA store, then let renderNode read each node's matrix instead of composing
     // it. Only for the main renderer; overlays and any node not in the store fall
     // through to the JS composition below. worldView() is read AFTER compose()
     // because a capacity-growing compose re-inits and re-views wasm memory.
-    const wasmWorld =
-      isMainRenderer && this._wasm && this._transformBackend === 'wasm'
-        ? this._syncWasmStore()
-        : null;
+    const wasmMain = isMainRenderer && this._wasm !== null && this._transformBackend === 'wasm';
+
+    // In WASM mode update() MUST run for the whole tree BEFORE the store is
+    // gathered: the kernel composes every world matrix up front, so a transform
+    // an entity mutates in its update() (animation/driver output) has to be
+    // finalized first — otherwise the store would render that entity one frame
+    // stale. This pre-pass walks root + overlays in pre-order (identical update()
+    // ordering to the JS walk); renderNode then skips update() in WASM mode. In
+    // JS mode update() stays interleaved with compose in the render walk below.
+    if (wasmMain) {
+      const updateWalk = (node: Entity): void => {
+        runUpdate(node);
+        const kids = node.children;
+        for (let i = 0; i < kids.length; i++) updateWalk(kids[i]);
+      };
+      updateWalk(this.root);
+      for (const overlay of this.overlayRoot.children) updateWalk(overlay);
+    }
+
+    const wasmWorld = wasmMain ? this._syncWasmStore() : null;
     const wasmSlotEntity = this._slotEntity;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
@@ -3069,25 +3121,11 @@ export class Scene {
       pf: number,
       parentOpacity: number,
     ) => {
-      if (isMainRenderer) {
-        node.update(dt, time);
-        if (!walkHadAnimation && node.hasPendingAnimations()) walkHadAnimation = true;
-        if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
-
-        // Dev check: entity overrides update() but not hasPendingAnimations()
-        if (this._devActive && this._devFrameCount % 120 === 0) {
-          if (
-            node.update !== Entity.prototype.update &&
-            node.hasPendingAnimations === Entity.prototype.hasPendingAnimations
-          ) {
-            this._devWarn(
-              `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
-                'Custom motion in update() without overriding hasPendingAnimations() causes ' +
-                'the idle throttle to drop the animation to ~2fps. ' +
-                'Override hasPendingAnimations() to return true while motion is in flight.',
-            );
-          }
-        }
+      // JS mode: update() is interleaved with compose here. WASM mode already
+      // ran the update pre-pass above (so the store gather saw final transforms),
+      // so skip it here to avoid a double update().
+      if (isMainRenderer && !wasmMain) {
+        runUpdate(node);
       }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
