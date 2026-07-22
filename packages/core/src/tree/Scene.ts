@@ -30,7 +30,12 @@ import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSyst
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { buildTreeStore } from '../wasm/scene-store';
 import type { TransformStore } from '../wasm/soa';
-import { instantiateAsync, type WasmTransformBackend } from '../wasm/backend';
+import {
+  instantiateAsync,
+  instantiateStreaming,
+  type WasmModuleSource,
+  type WasmTransformBackend,
+} from '../wasm/backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -791,14 +796,30 @@ export class Scene {
   }
 
   /**
-   * Asynchronously instantiate the WASM transform core from `bytes` and, on
-   * success, hot-swap the render walk onto it. The Scene keeps rendering on the
-   * JS path until this resolves, and stays on JS if instantiation fails (CSP,
-   * unsupported, corrupt) — failure is the default state, not an error path.
+   * Asynchronously instantiate the WASM transform core and, on success, hot-swap
+   * the render walk onto it. Accepts whatever is convenient at the call site:
+   *
+   * ```ts
+   * // The common case — a bundler-emitted, co-located asset URL:
+   * await scene.enableWasmTransforms(new URL('./vectojs_core.wasm', import.meta.url));
+   * // …or a path string, a Response, or raw bytes you already have:
+   * await scene.enableWasmTransforms('/assets/vectojs_core.wasm');
+   * await scene.enableWasmTransforms(await fetch(url));
+   * await scene.enableWasmTransforms(myUint8Array);
+   * ```
+   *
+   * A URL/Response streams (compiles while it downloads, with a buffered
+   * fallback for a wrong MIME type); raw bytes instantiate directly. The Scene
+   * keeps rendering on the JS path until this resolves, and stays on JS if
+   * instantiation fails (CSP `wasm-unsafe-eval`, unsupported SIMD, corrupt or
+   * missing bytes, a 404) — failure is the default state, not an error path.
    * Resolves `true` if WASM is now active, `false` if the JS path remains.
    */
-  public async enableWasmTransforms(bytes: BufferSource): Promise<boolean> {
-    const backend = await instantiateAsync(bytes);
+  public async enableWasmTransforms(source: WasmModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateAsync(source)
+      : await instantiateStreaming(source as Exclude<WasmModuleSource, BufferSource>);
     if (!backend) return false;
     this.setTransformBackend(backend);
     return true;

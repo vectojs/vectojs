@@ -248,3 +248,48 @@ export async function instantiateAsync(bytes: BufferSource): Promise<WasmTransfo
     return null;
   }
 }
+
+/**
+ * Anything the transform core can be loaded from: raw bytes, a URL/path string
+ * or {@link URL} to fetch, or a {@link Response} (or a promise of one) — e.g.
+ * `fetch(new URL('./vectojs_core.wasm', import.meta.url))`, the shape every
+ * bundler emits for a co-located `.wasm` asset.
+ */
+export type WasmModuleSource = BufferSource | string | URL | Response | Promise<Response>;
+
+/**
+ * Instantiate from a URL/Response using streaming compilation when the platform
+ * supports it (the module compiles while it downloads — the fastest cold start),
+ * and transparently falling back to fetch → arrayBuffer → instantiate when
+ * `WebAssembly.instantiateStreaming` is unavailable or the response's MIME type
+ * is not `application/wasm` (some engines reject the stream in that case, e.g. a
+ * dev server serving `application/octet-stream`). Returns `null` on any failure
+ * so the caller keeps the JS path — loading the accelerator is never an error path.
+ */
+export async function instantiateStreaming(
+  source: string | URL | Response | Promise<Response>,
+): Promise<WasmTransformBackend | null> {
+  try {
+    const resp =
+      typeof source === 'string' || source instanceof URL
+        ? await fetch(String(source))
+        : await source;
+
+    if (typeof WebAssembly.instantiateStreaming === 'function') {
+      // Keep an untouched clone: a failed streaming attempt has consumed `resp`.
+      const buffered = resp.clone();
+      try {
+        const { instance } = await WebAssembly.instantiateStreaming(resp, {});
+        return new WasmTransformBackend(instance);
+      } catch {
+        const { instance } = await WebAssembly.instantiate(await buffered.arrayBuffer(), {});
+        return new WasmTransformBackend(instance);
+      }
+    }
+
+    const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), {});
+    return new WasmTransformBackend(instance);
+  } catch {
+    return null;
+  }
+}
