@@ -448,8 +448,29 @@ export abstract class Entity {
   // Danmaku hot loop), so a bare `entity.x = v` is one boolean check + field write.
   private _hasTransitions = false;
   private _transitions: Map<AnimatableProp, MotionConfig> | null = null;
-  private _drivers: Map<AnimatableProp, PropertyDriver> = new Map();
+  // Lazily allocated: null until first use. A scene of many passive entities
+  // (particles, data points) never touches these, so paying an empty-Map/array
+  // allocation per entity in the constructor is pure waste at scale.
+  private _drivers: Map<AnimatableProp, PropertyDriver> | null = null;
   private _mounted = false;
+
+  // Cached cos/sin, recomputed only when rotation actually changes. renderNode
+  // and getWorldTransform() both read this instead of calling Math.cos/sin per
+  // entity per frame (V8's are ~2.5x slower than other engines).
+  private readonly _trig = { cos: 1, sin: 0 };
+  private _trigRotation = Number.NaN; // NaN !== any rotation -> first read computes
+
+  // Per-frame world-matrix cache. Written by Scene during the render walk;
+  // getWorldTransform() returns it only while `_worldFrame === scene.currentFrame`
+  // and otherwise falls back to the full ancestor walk, so it can never return a
+  // stale/wrong transform — only sometimes miss the fast path.
+  private _wa = 1;
+  private _wb = 0;
+  private _wc = 0;
+  private _wd = 1;
+  private _we = 0;
+  private _wf = 0;
+  private _worldFrame = -1;
 
   public get x(): number {
     return this._x;
@@ -528,10 +549,12 @@ export abstract class Entity {
    */
   public clipChildren: boolean = false;
 
-  protected listeners: Map<VectoEvent, Array<(e: any) => void>> = new Map();
+  // Lazily allocated (see _drivers above). Most entities never register a
+  // listener or an imperative animate() tween.
+  protected listeners: Map<VectoEvent, Array<(e: any) => void>> | null = null;
   /** Capture-phase listeners (fired root→target before bubble). */
-  protected captureListeners: Map<VectoEvent, Array<(e: any) => void>> = new Map();
-  private animations: Array<any> = [];
+  protected captureListeners: Map<VectoEvent, Array<(e: any) => void>> | null = null;
+  private animations: Array<any> | null = null;
 
   constructor(id?: string) {
     this.id = id || `entity_${Math.random().toString(36).substring(2, 9)}`;
@@ -651,7 +674,7 @@ export abstract class Entity {
    * @example entity.animate({ x: 400, opacity: 0 }, 500);
    */
   public animate(targetProps: Partial<this>, durationMs: number): this {
-    this.animations.push({
+    (this.animations ??= []).push({
       target: targetProps,
       duration: durationMs,
       startTime: -1,
@@ -709,9 +732,9 @@ export abstract class Entity {
    * that need to seed a starting state (e.g. the presence helper's enter `from`).
    */
   protected setImmediate(prop: AnimatableProp, v: number): void {
-    const existing = this._drivers.get(prop);
+    const existing = this._drivers?.get(prop);
     if (existing) this._settleDriver(existing);
-    this._drivers.delete(prop);
+    this._drivers?.delete(prop);
     this._applyAnimated(prop, v);
   }
 
@@ -725,13 +748,13 @@ export abstract class Entity {
   private _spawnDriver(prop: AnimatableProp, to: number, cfg: MotionConfig): void {
     // Reduced motion: suppress movement (transforms), keep opacity fades. Snap instantly.
     if (prop !== 'opacity' && this.scene?.prefersReducedMotion) {
-      const existing = this._drivers.get(prop);
+      const existing = this._drivers?.get(prop);
       if (existing) this._settleDriver(existing);
-      this._drivers.delete(prop);
+      this._drivers?.delete(prop);
       this._applyAnimated(prop, to);
       return;
     }
-    const existing = this._drivers.get(prop);
+    const existing = this._drivers?.get(prop);
     if (existing) {
       // Retargeting an in-flight driver: resolve the previous Promise so callers
       // awaiting the original `animateTo`/`springTo` don't leak. The new drive
@@ -744,7 +767,7 @@ export abstract class Entity {
     const driver: PropertyDriver = isTweenConfig(cfg)
       ? new TweenDriver(from, to, cfg)
       : new SpringDriver(from, to, cfg === 'spring' ? {} : (cfg as SpringConfig));
-    this._drivers.set(prop, driver);
+    (this._drivers ??= new Map()).set(prop, driver);
     this.scene?.markDirty();
   }
 
@@ -793,7 +816,7 @@ export abstract class Entity {
         (e) =>
           new Promise<void>((resolve) => {
             this._spawnDriver(e[0], e[1], cfg);
-            const d = this._drivers.get(e[0]) as
+            const d = this._drivers?.get(e[0]) as
               | (PropertyDriver & { onDone?: () => void })
               | undefined;
             if (!d)
@@ -806,7 +829,7 @@ export abstract class Entity {
 
   /** Advance active property drivers one frame. Call from update(). */
   protected tickDrivers(dt: number): void {
-    if (this._drivers.size === 0) return;
+    if (!this._drivers || this._drivers.size === 0) return;
     for (const [prop, driver] of this._drivers) {
       driver.tick(dt);
       if (driver.isDone()) {
@@ -831,7 +854,7 @@ export abstract class Entity {
    */
   public update(dt: number, time: number): void {
     this.tickDrivers(dt);
-    if (this.animations.length > 0) {
+    if (this.animations && this.animations.length > 0) {
       const anim = this.animations[0];
       if (anim.startTime === -1) {
         anim.startTime = time;
@@ -879,7 +902,9 @@ export abstract class Entity {
    * @example entity.on('click', (e) => console.log('clicked', e));
    */
   public on(event: VectoEvent, callback: (e: any) => void, options?: ListenerOptions): this {
-    const map = options?.capture ? this.captureListeners : this.listeners;
+    const map = options?.capture
+      ? (this.captureListeners ??= new Map())
+      : (this.listeners ??= new Map());
     if (!map.has(event)) {
       map.set(event, []);
     }
@@ -896,7 +921,7 @@ export abstract class Entity {
    * @returns `this` for method chaining.
    */
   public off(event: VectoEvent, callback: (e: any) => void, options?: ListenerOptions): this {
-    const handlers = (options?.capture ? this.captureListeners : this.listeners).get(event);
+    const handlers = (options?.capture ? this.captureListeners : this.listeners)?.get(event);
     if (handlers) {
       const idx = handlers.indexOf(callback);
       if (idx !== -1) handlers.splice(idx, 1);
@@ -909,15 +934,17 @@ export abstract class Entity {
    * from parent. Call before discarding an entity to prevent memory leaks.
    */
   public destroy(): void {
-    this.animations = [];
+    this.animations = null;
     // Settle in-flight property drivers so promises returned by
     // animateTo/springTo resolve instead of hanging forever.
-    for (const driver of this._drivers.values()) {
-      this._settleDriver(driver);
+    if (this._drivers) {
+      for (const driver of this._drivers.values()) {
+        this._settleDriver(driver);
+      }
+      this._drivers.clear();
     }
-    this._drivers.clear();
-    this.listeners.clear();
-    this.captureListeners.clear();
+    this.listeners?.clear();
+    this.captureListeners?.clear();
     if (this.parent) {
       this.parent.remove(this);
     }
@@ -933,7 +960,7 @@ export abstract class Entity {
    * @param payload - Arbitrary data forwarded to each listener.
    */
   public emit(event: VectoEvent, payload: any): void {
-    const handlers = this.listeners.get(event);
+    const handlers = this.listeners?.get(event);
     if (handlers) {
       handlers.forEach((h) => h(payload));
     }
@@ -964,10 +991,10 @@ export abstract class Entity {
   /** Run one node's listeners for the event, honoring stopImmediatePropagation. */
   private fireListeners(
     node: Entity,
-    map: Map<VectoEvent, Array<(e: any) => void>>,
+    map: Map<VectoEvent, Array<(e: any) => void>> | null,
     event: VectoJSEvent,
   ): void {
-    const handlers = map.get(event.type);
+    const handlers = map?.get(event.type);
     if (!handlers) return;
     event.currentTarget = node;
     // Snapshot so a handler that adds/removes listeners doesn't disturb this pass.
@@ -1018,6 +1045,19 @@ export abstract class Entity {
    * Return the exact accumulated Canvas `T * S * R` transform for this entity.
    */
   public getWorldTransform(): AffineTransform {
+    // Fast path: Scene wrote this entity's world matrix during the current
+    // frame's render walk, so return it instead of re-walking the ancestor
+    // chain. Gated on the exact frame counter — a stale cache (entity not
+    // rendered this frame, or queried between frames) fails the check and
+    // falls through to the authoritative walk below, so this can only ever
+    // skip work, never return a wrong transform.
+    if (this._worldFrame >= 0) {
+      const s = this.scene;
+      if (s && this._worldFrame === s.currentFrame) {
+        return { a: this._wa, b: this._wb, c: this._wc, d: this._wd, e: this._we, f: this._wf };
+      }
+    }
+
     // Walk all the way to the true top of the tree (Scene.root/overlayRoot,
     // whichever `.parent` is null) rather than stopping at an ancestor whose
     // `id` happens to equal the string 'root' — Scene's own root entity is
@@ -1043,8 +1083,9 @@ export abstract class Entity {
 
     for (let i = path.length - 1; i >= 0; i--) {
       const node = path[i];
-      const cos = Math.cos(node.rotation);
-      const sin = Math.sin(node.rotation);
+      const trig = node._getTrig();
+      const cos = trig.cos;
+      const sin = trig.sin;
       const la = node.scaleX * cos;
       const lb = node.scaleY * sin;
       const lc = -node.scaleX * sin;
@@ -1067,6 +1108,47 @@ export abstract class Entity {
     }
 
     return { a, b, c, d, e, f };
+  }
+
+  /**
+   * Return this entity's cached `{ cos, sin }` of its current rotation,
+   * recomputing only when `rotation` has actually changed since the last call.
+   * The same object identity is returned across calls with an unchanged
+   * rotation, so callers must treat it as read-only. Used by the render walk
+   * and {@link getWorldTransform} to avoid V8's comparatively slow Math.cos/sin
+   * (a software libm call, ~2.5x slower than other engines) per entity/frame.
+   */
+  public _getTrig(): Readonly<{ cos: number; sin: number }> {
+    if (this._trigRotation !== this._rotation) {
+      this._trig.cos = Math.cos(this._rotation);
+      this._trig.sin = Math.sin(this._rotation);
+      this._trigRotation = this._rotation;
+    }
+    return this._trig;
+  }
+
+  /**
+   * Store the world matrix Scene computed for this entity during the render
+   * walk, stamped with the frame it belongs to. {@link getWorldTransform}
+   * returns it verbatim while `frame === scene.currentFrame`. Internal: called
+   * only by Scene's renderer, never by application code.
+   */
+  public _setWorldCache(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    frame: number,
+  ): void {
+    this._wa = a;
+    this._wb = b;
+    this._wc = c;
+    this._wd = d;
+    this._we = e;
+    this._wf = f;
+    this._worldFrame = frame;
   }
 
   /** Convert a point from this entity's local space to Scene/world space. */
@@ -1255,7 +1337,7 @@ export abstract class Entity {
    * @returns `true` if at least one animation or property driver remains.
    */
   public hasPendingAnimations(): boolean {
-    return this.animations.length > 0 || this._drivers.size > 0;
+    return (this.animations?.length ?? 0) > 0 || (this._drivers?.size ?? 0) > 0;
   }
 
   public abstract isPointInside(globalX: number, globalY: number): boolean;

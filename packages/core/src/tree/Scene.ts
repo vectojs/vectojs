@@ -732,6 +732,16 @@ export class Scene {
   private activePortalsPrevFrame: Set<string> = new Set();
   private portalEntities: Map<string, DOMPortalEntity> = new Map();
   private renderOrderCounter: number = 0;
+
+  /**
+   * Monotonic render-frame counter, bumped once per authoritative `render()`
+   * pass. Entities stamp their per-frame world-matrix cache with this value and
+   * {@link Entity.getWorldTransform} trusts that cache only while it still
+   * matches, so a query outside the frame that produced it transparently falls
+   * back to the ancestor walk. Public for the same reason `Entity._getTrig`/
+   * `_setWorldCache` are: it is a cross-class render-internal contract.
+   */
+  public currentFrame = 0;
   /**
    * Authoritative paint order for semantic nodes discovered during the main
    * render. A node may not have a DOM projection until the following a11y
@@ -2753,6 +2763,11 @@ export class Scene {
     }
 
     if (isMainRenderer) {
+      // Monotonic frame counter. renderNode stamps each entity's world-matrix
+      // cache with this value; getWorldTransform() trusts the cache only while
+      // it still equals currentFrame, so bumping it here invalidates every
+      // entity's cache in O(1) at the start of the authoritative walk.
+      this.currentFrame++;
       this.renderOrderCounter = 0;
       this.a11yRenderOrders.clear();
       this.activePortalsThisFrame.clear();
@@ -2957,8 +2972,12 @@ export class Scene {
       }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
-      const cos = Math.cos(node.rotation);
-      const sin = Math.sin(node.rotation);
+      // node._getTrig() caches cos/sin and only recomputes when rotation
+      // changes — most entities never rotate, so this skips two libm calls per
+      // node per frame (V8's Math.cos/sin are software, ~2.5x slower elsewhere).
+      const trig = node._getTrig();
+      const cos = trig.cos;
+      const sin = trig.sin;
       const te = pa * node.x + pc * node.y + pe;
       const tf = pb * node.x + pd * node.y + pf;
       const sxCos = node.scaleX * cos;
@@ -2972,6 +2991,12 @@ export class Scene {
       const b = pb * sxCos + pd * sySin;
       const c = pa * -sxSin + pc * syCos;
       const d = pb * -sxSin + pd * syCos;
+      // Publish this node's world matrix for the current frame so ad-hoc
+      // getWorldTransform()/localToWorld() callers (hit-testing, content
+      // projection, app code) reuse it instead of re-walking the ancestor
+      // chain. Only the main renderer's walk is authoritative; secondary
+      // renderers (portals, overlays) must not overwrite the cache.
+      if (isMainRenderer) node._setWorldCache(a, b, c, d, te, tf, this.currentFrame);
       const worldScaleX = Math.hypot(a, b);
       const worldScaleY = Math.hypot(c, d);
       const worldOpacity = parentOpacity * node.opacity;
