@@ -28,6 +28,8 @@ import type { PointRenderer } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
+import { buildTreeStore } from '../wasm/scene-store';
+import { instantiateAsync, type WasmTransformBackend } from '../wasm/backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -742,6 +744,47 @@ export class Scene {
    * `_setWorldCache` are: it is a cross-class render-internal contract.
    */
   public currentFrame = 0;
+
+  // ── WASM transform backend (invisible accelerator) ──────────────────────────
+  // When `_transformBackend === 'wasm'`, the main render walk sources each
+  // entity's world matrix from an SoA store composed by `_wasm` (see
+  // `renderNode`), instead of composing it in JS. The JS path is the permanent
+  // fallback and the default: a null backend, a non-main renderer, or any entity
+  // absent from the store all fall back to the JS composition, so WASM can only
+  // ever change *how fast* a world matrix is produced, never *what* it is.
+  private _wasm: WasmTransformBackend | null = null;
+  private _transformBackend: 'js' | 'wasm' = 'js';
+
+  /** Which backend composes world matrices for the main render walk. */
+  public get transformBackend(): 'js' | 'wasm' {
+    return this._transformBackend;
+  }
+
+  /**
+   * Install (or clear) a WASM transform backend. Passing a backend switches the
+   * main render walk onto it; passing `null` reverts to the JS path. Synchronous
+   * and safe to call between frames — the next `render()` picks it up. Prefer
+   * {@link enableWasmTransforms} for the normal async hot-swap.
+   */
+  public setTransformBackend(backend: WasmTransformBackend | null): void {
+    this._wasm = backend;
+    this._transformBackend = backend ? 'wasm' : 'js';
+  }
+
+  /**
+   * Asynchronously instantiate the WASM transform core from `bytes` and, on
+   * success, hot-swap the render walk onto it. The Scene keeps rendering on the
+   * JS path until this resolves, and stays on JS if instantiation fails (CSP,
+   * unsupported, corrupt) — failure is the default state, not an error path.
+   * Resolves `true` if WASM is now active, `false` if the JS path remains.
+   */
+  public async enableWasmTransforms(bytes: BufferSource): Promise<boolean> {
+    const backend = await instantiateAsync(bytes);
+    if (!backend) return false;
+    this.setTransformBackend(backend);
+    return true;
+  }
+
   /**
    * Authoritative paint order for semantic nodes discovered during the main
    * render. A node may not have a DOM projection until the following a11y
@@ -2937,6 +2980,20 @@ export class Scene {
     let walkHadAnimation = false;
     let walkHadInteractive = false;
 
+    // WASM transform path: compose every main-tree world matrix up front into an
+    // SoA store, then let renderNode read each node's matrix instead of composing
+    // it. Only for the main renderer; overlays and any node not in the store fall
+    // through to the JS composition below. worldView() is read AFTER compose()
+    // because a capacity-growing compose re-inits and re-views wasm memory.
+    let wasmIndexOf: Map<Entity, number> | null = null;
+    let wasmWorld: ReturnType<WasmTransformBackend['worldView']> | null = null;
+    if (isMainRenderer && this._wasm && this._transformBackend === 'wasm') {
+      const built = buildTreeStore(this.root);
+      this._wasm.compose(built.store, 'simd');
+      wasmIndexOf = built.indexOf;
+      wasmWorld = this._wasm.worldView();
+    }
+
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
     // for large scenes. Off-viewport entities with a known getBounds() are culled.
@@ -2972,25 +3029,47 @@ export class Scene {
       }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
-      // node._getTrig() caches cos/sin and only recomputes when rotation
-      // changes — most entities never rotate, so this skips two libm calls per
-      // node per frame (V8's Math.cos/sin are software, ~2.5x slower elsewhere).
-      const trig = node._getTrig();
-      const cos = trig.cos;
-      const sin = trig.sin;
-      const te = pa * node.x + pc * node.y + pe;
-      const tf = pb * node.x + pd * node.y + pf;
-      const sxCos = node.scaleX * cos;
-      const sxSin = node.scaleX * sin;
-      const syCos = node.scaleY * cos;
-      const sySin = node.scaleY * sin;
-      // Canvas calls translate → scale → rotate, so the local matrix is
-      // T * S * R = [sx*cos, -sx*sin; sy*sin, sy*cos]. Keep culling,
-      // portals, and GPU fast paths in the exact same coordinate system.
-      const a = pa * sxCos + pc * sySin;
-      const b = pb * sxCos + pd * sySin;
-      const c = pa * -sxSin + pc * syCos;
-      const d = pb * -sxSin + pd * syCos;
+      // Six scalars of this node's world matrix. In the WASM path they are read
+      // from the pre-composed SoA store (bit-identical to the JS composition —
+      // proven by the differential tests); otherwise, and for any node the store
+      // does not cover (overlays, entities added after the store was built), they
+      // are composed here in JS. Either way the same a,b,c,d,te,tf flow into
+      // culling, _setWorldCache, and the child recursion below.
+      let a: number;
+      let b: number;
+      let c: number;
+      let d: number;
+      let te: number;
+      let tf: number;
+      const slot = wasmIndexOf !== null ? wasmIndexOf.get(node) : undefined;
+      if (slot !== undefined && wasmWorld !== null) {
+        a = wasmWorld.wa[slot];
+        b = wasmWorld.wb[slot];
+        c = wasmWorld.wc[slot];
+        d = wasmWorld.wd[slot];
+        te = wasmWorld.we[slot];
+        tf = wasmWorld.wf[slot];
+      } else {
+        // node._getTrig() caches cos/sin and only recomputes when rotation
+        // changes — most entities never rotate, so this skips two libm calls per
+        // node per frame (V8's Math.cos/sin are software, ~2.5x slower elsewhere).
+        const trig = node._getTrig();
+        const cos = trig.cos;
+        const sin = trig.sin;
+        te = pa * node.x + pc * node.y + pe;
+        tf = pb * node.x + pd * node.y + pf;
+        const sxCos = node.scaleX * cos;
+        const sxSin = node.scaleX * sin;
+        const syCos = node.scaleY * cos;
+        const sySin = node.scaleY * sin;
+        // Canvas calls translate → scale → rotate, so the local matrix is
+        // T * S * R = [sx*cos, -sx*sin; sy*sin, sy*cos]. Keep culling,
+        // portals, and GPU fast paths in the exact same coordinate system.
+        a = pa * sxCos + pc * sySin;
+        b = pb * sxCos + pd * sySin;
+        c = pa * -sxSin + pc * syCos;
+        d = pb * -sxSin + pd * syCos;
+      }
       // Publish this node's world matrix for the current frame so ad-hoc
       // getWorldTransform()/localToWorld() callers (hit-testing, content
       // projection, app code) reuse it instead of re-walking the ancestor
