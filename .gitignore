@@ -18,6 +18,13 @@ coverage/
 scripts/.bench-results.json
 scripts/.compare-results.json
 
+# Rust / WASM core (crates/vectojs-core-rs)
+# The .wasm asset is built by crates/vectojs-core-rs/build.sh in CI and
+# published to npm — never committed. Contributors touching only TypeScript
+# have no Rust toolchain, and the JS path is a permanent fallback.
+crates/**/target/
+packages/core/src/wasm/*.wasm
+
 # Logs
 *.log
 npm-debug.log*
