@@ -454,6 +454,24 @@ export abstract class Entity {
   private _drivers: Map<AnimatableProp, PropertyDriver> | null = null;
   private _mounted = false;
 
+  // Cached cos/sin, recomputed only when rotation actually changes. renderNode
+  // and getWorldTransform() both read this instead of calling Math.cos/sin per
+  // entity per frame (V8's are ~2.5x slower than other engines).
+  private readonly _trig = { cos: 1, sin: 0 };
+  private _trigRotation = Number.NaN; // NaN !== any rotation -> first read computes
+
+  // Per-frame world-matrix cache. Written by Scene during the render walk;
+  // getWorldTransform() returns it only while `_worldFrame === scene.currentFrame`
+  // and otherwise falls back to the full ancestor walk, so it can never return a
+  // stale/wrong transform — only sometimes miss the fast path.
+  private _wa = 1;
+  private _wb = 0;
+  private _wc = 0;
+  private _wd = 1;
+  private _we = 0;
+  private _wf = 0;
+  private _worldFrame = -1;
+
   public get x(): number {
     return this._x;
   }
@@ -1027,6 +1045,19 @@ export abstract class Entity {
    * Return the exact accumulated Canvas `T * S * R` transform for this entity.
    */
   public getWorldTransform(): AffineTransform {
+    // Fast path: Scene wrote this entity's world matrix during the current
+    // frame's render walk, so return it instead of re-walking the ancestor
+    // chain. Gated on the exact frame counter — a stale cache (entity not
+    // rendered this frame, or queried between frames) fails the check and
+    // falls through to the authoritative walk below, so this can only ever
+    // skip work, never return a wrong transform.
+    if (this._worldFrame >= 0) {
+      const s = this.scene;
+      if (s && this._worldFrame === s.currentFrame) {
+        return { a: this._wa, b: this._wb, c: this._wc, d: this._wd, e: this._we, f: this._wf };
+      }
+    }
+
     // Walk all the way to the true top of the tree (Scene.root/overlayRoot,
     // whichever `.parent` is null) rather than stopping at an ancestor whose
     // `id` happens to equal the string 'root' — Scene's own root entity is
@@ -1052,8 +1083,9 @@ export abstract class Entity {
 
     for (let i = path.length - 1; i >= 0; i--) {
       const node = path[i];
-      const cos = Math.cos(node.rotation);
-      const sin = Math.sin(node.rotation);
+      const trig = node._getTrig();
+      const cos = trig.cos;
+      const sin = trig.sin;
       const la = node.scaleX * cos;
       const lb = node.scaleY * sin;
       const lc = -node.scaleX * sin;
@@ -1076,6 +1108,47 @@ export abstract class Entity {
     }
 
     return { a, b, c, d, e, f };
+  }
+
+  /**
+   * Return this entity's cached `{ cos, sin }` of its current rotation,
+   * recomputing only when `rotation` has actually changed since the last call.
+   * The same object identity is returned across calls with an unchanged
+   * rotation, so callers must treat it as read-only. Used by the render walk
+   * and {@link getWorldTransform} to avoid V8's comparatively slow Math.cos/sin
+   * (a software libm call, ~2.5x slower than other engines) per entity/frame.
+   */
+  public _getTrig(): Readonly<{ cos: number; sin: number }> {
+    if (this._trigRotation !== this._rotation) {
+      this._trig.cos = Math.cos(this._rotation);
+      this._trig.sin = Math.sin(this._rotation);
+      this._trigRotation = this._rotation;
+    }
+    return this._trig;
+  }
+
+  /**
+   * Store the world matrix Scene computed for this entity during the render
+   * walk, stamped with the frame it belongs to. {@link getWorldTransform}
+   * returns it verbatim while `frame === scene.currentFrame`. Internal: called
+   * only by Scene's renderer, never by application code.
+   */
+  public _setWorldCache(
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    frame: number,
+  ): void {
+    this._wa = a;
+    this._wb = b;
+    this._wc = c;
+    this._wd = d;
+    this._we = e;
+    this._wf = f;
+    this._worldFrame = frame;
   }
 
   /** Convert a point from this entity's local space to Scene/world space. */
