@@ -34,6 +34,10 @@
 // static state; a measurement module, not part of the transform path.
 mod anim;
 
+// G3 spike — hit-test broad-phase (dense viewport grid). Same convention: its own
+// SoA + static state, a measurement module independent of the transform path.
+mod hit;
+
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
