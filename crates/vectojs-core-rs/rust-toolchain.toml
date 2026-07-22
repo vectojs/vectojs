@@ -1,0 +1,10 @@
+# Locked Rust toolchain for the WASM core, mirroring the workspace's "pin the
+# exact version, run it everywhere" philosophy (bun/oxlint/oxfmt are pinned the
+# same way). rustup reads this and auto-installs the channel, the wasm target,
+# and the clippy/rustfmt components, so a fresh machine and CI compile the crate
+# identically with no manual `rustup target add`.
+[toolchain]
+channel = "1.96.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]
+profile = "minimal"

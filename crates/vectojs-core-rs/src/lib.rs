@@ -30,6 +30,10 @@
 
 #![allow(clippy::too_many_arguments)]
 
+// G2 spike — batched animation driver kernels (spring + tween). Separate SoA and
+// static state; a measurement module, not part of the transform path.
+mod anim;
+
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
@@ -40,7 +44,7 @@ use core::arch::wasm32::*;
 /// makes every `v128_load` 16-byte-unaligned, which V8 absorbs but SpiderMonkey
 /// runs on a much slower path (measured ~7x slower on the compose kernel). Every
 /// SoA field array is therefore 16-byte aligned.
-const SIMD_ALIGN: usize = 16;
+pub(crate) const SIMD_ALIGN: usize = 16;
 
 /// Per-field flat input arrays plus the SoA world-matrix outputs. `cos`/`sin`
 /// are precomputed on the JS side: WASM has no transcendental instructions and

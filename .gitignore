@@ -57,3 +57,7 @@ benchmarks/*/results/
 # scene-wasm benchmark build artifacts + results
 benchmarks/scene-wasm/page/index.html
 benchmarks/scene-wasm/page/*.wasm
+
+# anim-wasm benchmark build artifacts + results
+benchmarks/anim-wasm/page/index.html
+benchmarks/anim-wasm/page/*.wasm
