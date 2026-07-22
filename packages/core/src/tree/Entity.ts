@@ -472,6 +472,13 @@ export abstract class Entity {
   private _wf = 0;
   private _worldFrame = -1;
 
+  // Slot in the Scene's resident WASM transform store, or -1 when this entity is
+  // not in that store (JS transform path, overlay/detached, or before the first
+  // structural rebuild). Assigned by Scene on a structural rebuild; the Scene
+  // validates it against its slot table before trusting it, so a stale value can
+  // only cost a JS-path fallback, never a wrong read.
+  public _storeSlot = -1;
+
   public get x(): number {
     return this._x;
   }
@@ -592,6 +599,7 @@ export abstract class Entity {
     const s = this.scene;
     if (s) {
       s.a11yNeedsReorder = true;
+      s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
       s.markDirty();
       child._notifyMounted(); // fire onMounted for the newly-live subtree
     }
@@ -623,6 +631,7 @@ export abstract class Entity {
       if (s) {
         s.detachA11y(child);
         s.a11yNeedsReorder = true;
+        s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
         s.markDirty();
       }
     }

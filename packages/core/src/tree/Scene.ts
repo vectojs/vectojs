@@ -29,6 +29,7 @@ import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { buildTreeStore } from '../wasm/scene-store';
+import type { TransformStore } from '../wasm/soa';
 import { instantiateAsync, type WasmTransformBackend } from '../wasm/backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
@@ -755,6 +756,24 @@ export class Scene {
   private _wasm: WasmTransformBackend | null = null;
   private _transformBackend: 'js' | 'wasm' = 'js';
 
+  // Resident store state (Stage 3). The store layout — slot assignment + sibling
+  // runs — depends only on tree TOPOLOGY, so it is rebuilt only when the
+  // structure changes (add/remove/reparent bump `_structureVersion`). Between
+  // rebuilds the per-frame cost is: gather each entity's transform into the
+  // resident wasm input view + run the kernel — no reallocation, no readback.
+  private _treeStore: TransformStore | null = null;
+  private _slotEntity: Entity[] = []; // store slot -> entity (also validates slots)
+  private _wasmInputs: ReturnType<WasmTransformBackend['inputView']> | null = null;
+  private _wasmWorld: ReturnType<WasmTransformBackend['worldView']> | null = null;
+  private _structureVersion = 0;
+  private _storeStructureVersion = -1;
+
+  /** Invalidate the resident WASM store layout; the next wasm-mode frame rebuilds
+   *  it. Called by `Entity.add`/`remove` (topology changes only). */
+  public markStructureChanged(): void {
+    this._structureVersion++;
+  }
+
   /** Which backend composes world matrices for the main render walk. */
   public get transformBackend(): 'js' | 'wasm' {
     return this._transformBackend;
@@ -783,6 +802,52 @@ export class Scene {
     if (!backend) return false;
     this.setTransformBackend(backend);
     return true;
+  }
+
+  /**
+   * Compose the whole main tree's world matrices through the resident WASM store
+   * and return the world-matrix views for the render walk to read. Rebuilds the
+   * store layout (slots + runs) only when the tree structure changed since the
+   * last rebuild; otherwise it just gathers current transforms into the resident
+   * input view and runs the kernel. Returns `null` if there is no backend.
+   */
+  private _syncWasmStore(): ReturnType<WasmTransformBackend['worldView']> | null {
+    const backend = this._wasm;
+    if (!backend) return null;
+
+    if (this._treeStore === null || this._storeStructureVersion !== this._structureVersion) {
+      const built = buildTreeStore(this.root);
+      const slotEntity = Array.from<Entity>({ length: built.store.count });
+      for (const [entity, slot] of built.indexOf) {
+        slotEntity[slot] = entity;
+        entity._storeSlot = slot;
+      }
+      backend.uploadRuns(built.store); // sizes wasm memory + publishes the run table
+      this._treeStore = built.store;
+      this._slotEntity = slotEntity;
+      this._wasmInputs = backend.inputView(); // valid until the next capacity growth
+      this._wasmWorld = backend.worldView();
+      this._storeStructureVersion = this._structureVersion;
+    }
+
+    // Gather local transforms into the resident input view. Slot 0 is the root,
+    // which the kernel seeds to identity, so start at 1. cos/sin come from the
+    // Phase-0 per-entity trig cache (recomputed only when rotation changed).
+    const inp = this._wasmInputs!;
+    const slotEntity = this._slotEntity;
+    for (let slot = 1; slot < slotEntity.length; slot++) {
+      const e = slotEntity[slot];
+      inp.x[slot] = e.x;
+      inp.y[slot] = e.y;
+      inp.sx[slot] = e.scaleX;
+      inp.sy[slot] = e.scaleY;
+      const trig = e._getTrig();
+      inp.cos[slot] = trig.cos;
+      inp.sin[slot] = trig.sin;
+      inp.opacity[slot] = e.opacity;
+    }
+    backend.runKernel('simd');
+    return this._wasmWorld;
   }
 
   /**
@@ -2985,14 +3050,11 @@ export class Scene {
     // it. Only for the main renderer; overlays and any node not in the store fall
     // through to the JS composition below. worldView() is read AFTER compose()
     // because a capacity-growing compose re-inits and re-views wasm memory.
-    let wasmIndexOf: Map<Entity, number> | null = null;
-    let wasmWorld: ReturnType<WasmTransformBackend['worldView']> | null = null;
-    if (isMainRenderer && this._wasm && this._transformBackend === 'wasm') {
-      const built = buildTreeStore(this.root);
-      this._wasm.compose(built.store, 'simd');
-      wasmIndexOf = built.indexOf;
-      wasmWorld = this._wasm.worldView();
-    }
+    const wasmWorld =
+      isMainRenderer && this._wasm && this._transformBackend === 'wasm'
+        ? this._syncWasmStore()
+        : null;
+    const wasmSlotEntity = this._slotEntity;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
@@ -3041,8 +3103,11 @@ export class Scene {
       let d: number;
       let te: number;
       let tf: number;
-      const slot = wasmIndexOf !== null ? wasmIndexOf.get(node) : undefined;
-      if (slot !== undefined && wasmWorld !== null) {
+      const slot = node._storeSlot;
+      // Trust the slot only if it still maps back to this node in the current
+      // store — guards against a stale slot on an overlay/detached/reparented
+      // entity (which then falls back to the JS composition, never a wrong read).
+      if (wasmWorld !== null && slot >= 0 && wasmSlotEntity[slot] === node) {
         a = wasmWorld.wa[slot];
         b = wasmWorld.wb[slot];
         c = wasmWorld.wc[slot];
