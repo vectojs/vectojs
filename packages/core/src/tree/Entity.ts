@@ -871,12 +871,15 @@ export abstract class Entity {
   }
 
   /**
-   * Internal: iterate this entity's active property drivers. Called only by
-   * Scene's batched WASM animation pass, never application code.
+   * Internal: this entity's active-driver map (read-only view), or `null` if
+   * it has none. Called only by Scene's batched WASM animation pass, never
+   * application code. Returns the Map directly (not a callback iteration) so
+   * a caller can `for...of` it with zero per-entity closure allocation — the
+   * integrated benchmark (benchmarks/anim-wasm-scene) found a fresh callback
+   * per entity per frame was a real cost, not a negligible one.
    */
-  public _forEachDriver(fn: (prop: AnimatableProp, driver: PropertyDriver) => void): void {
-    if (!this._drivers) return;
-    for (const [prop, driver] of this._drivers) fn(prop, driver);
+  public _driverEntries(): ReadonlyMap<AnimatableProp, PropertyDriver> | null {
+    return this._drivers;
   }
 
   /**

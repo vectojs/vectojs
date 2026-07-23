@@ -21,7 +21,7 @@ export interface IWebGPUParticleSystemManager {
 }
 
 import { Entity, VectoJSEvent, type ContentProjection, type AnimatableProp } from './Entity';
-import { SpringDriver, TweenDriver, type PropertyDriver } from '@vectojs/animation';
+import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
@@ -979,17 +979,44 @@ export class Scene {
   // what lets the batch pass find its candidates in O(active drivers), not
   // O(tree size) — the exact mistake G3's first integrated benchmark made.
   private _activeDriverEntities = new Set<Entity>();
+  // Reused across frames instead of allocating a fresh array + N {entity,prop,
+  // driver} objects every call — the integrated benchmark
+  // (benchmarks/anim-wasm-scene) found that allocation churn was the
+  // dominant integrated cost, not the wasm kernel itself. Parallel arrays,
+  // truncated to the live count after each use so a stale tail slot never
+  // pins a no-longer-active entity/driver in memory.
+  private _springEntities: Entity[] = [];
+  private _springProps: AnimatableProp[] = [];
+  private _springDrivers: SpringDriver[] = [];
+  private _tweenEntities: Entity[] = [];
+  private _tweenProps: AnimatableProp[] = [];
+  private _tweenDrivers: TweenDriver[] = [];
   /**
    * Minimum number of batchable (spring, or named-easing tween) active drivers
    * before a frame engages the WASM batch path at all; below it, every driver
-   * ticks on the normal JS per-entity path, unmodified. PROVISIONAL: carried
-   * over from the isolated kernel spike (benchmarks/anim-wasm), which measured
-   * kernel-only cost with synthetic data and no JS-side gather/scatter — per
-   * the G3 lesson (an integrated gather/scatter cost can invert an isolated
-   * kernel's verdict), this number is not yet re-validated against the
-   * INTEGRATED cost and must not be trusted as a real default until it is.
+   * ticks on the normal JS per-entity path, unmodified.
+   *
+   * Re-measured on the INTEGRATED path (benchmarks/anim-wasm-scene, real
+   * Chrome/Firefox — see vectojs-docs evidence.md for the full table): the
+   * isolated kernel spike's "<100 drivers, wins everywhere" verdict did NOT
+   * survive integration. On Chrome, the batch path is a real 1.4–2.9× win but
+   * only in roughly the 128–4096 concurrent-driver band, and a LOSS below
+   * ~64. On Firefox it is a net loss at every driver count measured, up to
+   * 16384 — not an allocation artifact (confirmed after removing all
+   * per-frame allocation from the gather/scatter path); SpiderMonkey's
+   * wasm-boundary/property-dispatch cost for this shape of call appears to
+   * structurally exceed the saving, at least at the scales tested here.
+   *
+   * 128 is set as a Chrome-oriented default so an app that opts in (this
+   * path is never engaged without an explicit {@link enableWasmAnimBatching}
+   * call) sees the gate open only where it reliably helps on Chromium.
+   * Unlike G1 (safe to default on everywhere) and G3 (opt-in, but a reliable
+   * win once its own gate condition holds), G2 has no threshold that is safe
+   * on every engine — raise or lower this per your own target browser mix,
+   * or leave WASM animation batching disabled entirely on a Firefox-heavy
+   * audience.
    */
-  public animDriverGateCount = 64;
+  public animDriverGateCount = 128;
 
   /** Which backend advances active property drivers on the current gate
    *  decision. Reflects only whether a backend is installed — the per-frame
@@ -1049,37 +1076,48 @@ export class Scene {
 
     // Pass 1 (always, cheap): prune completed entities, count batchable
     // drivers to decide the gate. O(active drivers), never O(tree size).
+    // _driverEntries() returns the entity's Map directly (no callback, no
+    // per-entity closure allocation).
     let batchable = 0;
     for (const entity of this._activeDriverEntities) {
-      if (!entity._hasActiveDrivers()) {
+      const entries = entity._driverEntries();
+      if (!entries || entries.size === 0) {
         this._activeDriverEntities.delete(entity);
         continue;
       }
-      entity._forEachDriver((_prop, driver) => {
+      for (const driver of entries.values()) {
         if (driver instanceof SpringDriver) batchable++;
         else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) batchable++;
-      });
+      }
     }
 
     const backend = this._animWasm;
     if (!backend || batchable < this.animDriverGateCount) return; // stay on the JS tick path
 
     // Pass 2: claim every registered entity. Gather batchable drivers into the
-    // wasm resident arrays; tick+finalize non-batchable ones directly in JS;
+    // reused scratch arrays; tick+finalize non-batchable ones directly in JS;
     // stamp the entity so tickDrivers() skips it later this same frame.
-    interface Slot {
-      entity: Entity;
-      prop: AnimatableProp;
-      driver: PropertyDriver;
-    }
-    const springs: Slot[] = [];
-    const tweens: Slot[] = [];
+    const sE = this._springEntities;
+    const sP = this._springProps;
+    const sD = this._springDrivers;
+    const tE = this._tweenEntities;
+    const tP = this._tweenProps;
+    const tD = this._tweenDrivers;
+    let springCount = 0;
+    let tweenCount = 0;
     for (const entity of this._activeDriverEntities) {
-      entity._forEachDriver((prop, driver) => {
+      const entries = entity._driverEntries()!;
+      for (const [prop, driver] of entries) {
         if (driver instanceof SpringDriver) {
-          springs.push({ entity, prop, driver });
+          sE[springCount] = entity;
+          sP[springCount] = prop;
+          sD[springCount] = driver;
+          springCount++;
         } else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) {
-          tweens.push({ entity, prop, driver });
+          tE[tweenCount] = entity;
+          tP[tweenCount] = prop;
+          tD[tweenCount] = driver;
+          tweenCount++;
         } else {
           // Custom-easing tween: cannot cross into WASM. Tick it here (same
           // dt, same math as tickDrivers() would use) so the entity as a
@@ -1087,51 +1125,53 @@ export class Scene {
           driver.tick(dt);
           entity._applyDriverTick(prop, driver);
         }
-      });
+      }
       entity._driversTickedFrame = this.currentFrame;
     }
+    // Drop stale tail slots beyond this frame's count so a no-longer-active
+    // entity/driver from a busier past frame isn't pinned in memory.
+    sE.length = springCount;
+    sP.length = springCount;
+    sD.length = springCount;
+    tE.length = tweenCount;
+    tP.length = tweenCount;
+    tD.length = tweenCount;
 
-    backend.ensure(springs.length, tweens.length);
-    if (springs.length > 0) {
+    backend.ensure(springCount, tweenCount);
+    if (springCount > 0) {
       const sv = backend.springView();
-      for (let i = 0; i < springs.length; i++) {
-        const g = (springs[i].driver as SpringDriver).wasmGather();
-        sv.val[i] = g.value;
-        sv.target[i] = g.target;
-        sv.vel[i] = g.velocity;
-        sv.stiff[i] = g.stiffness;
-        sv.damp[i] = g.damping;
-        sv.mass[i] = g.mass;
+      for (let i = 0; i < springCount; i++) {
+        const phys = sD[i].physics;
+        sv.val[i] = phys.value;
+        sv.target[i] = phys.target;
+        sv.vel[i] = phys.velocity;
+        sv.stiff[i] = phys.stiffness;
+        sv.damp[i] = phys.damping;
+        sv.mass[i] = phys.mass;
       }
-      backend.stepSprings(dt, springs.length);
-      for (let i = 0; i < springs.length; i++) {
-        (springs[i].driver as SpringDriver).syncExternal(sv.val[i], sv.vel[i]);
-      }
+      backend.stepSprings(dt, springCount);
+      for (let i = 0; i < springCount; i++) sD[i].syncExternal(sv.val[i], sv.vel[i]);
     }
-    if (tweens.length > 0) {
+    if (tweenCount > 0) {
       const tv = backend.tweenView();
-      for (let i = 0; i < tweens.length; i++) {
-        const d = tweens[i].driver as TweenDriver;
-        const g = d.wasmGather();
-        tv.from[i] = g.from;
-        tv.to[i] = g.to;
-        tv.elapsed[i] = g.elapsed;
-        tv.dur[i] = g.duration;
-        tv.delay[i] = g.delay;
+      for (let i = 0; i < tweenCount; i++) {
+        const d = tD[i];
+        tv.from[i] = d.fromValue;
+        tv.to[i] = d.target;
+        tv.elapsed[i] = d.elapsedMs;
+        tv.dur[i] = d.durationMs;
+        tv.delay[i] = d.delayMs;
         tv.ease[i] = d.wasmEasingId!;
       }
-      backend.stepTweens(dt, tweens.length);
-      for (let i = 0; i < tweens.length; i++) {
-        const d = tweens[i].driver as TweenDriver;
-        d.syncExternal(tv.val[i], tv.elapsed[i]);
-      }
+      backend.stepTweens(dt, tweenCount);
+      for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
     }
 
     // Finalize every batchable driver this pass touched (completion check +
     // apply + settle + delete), exactly mirroring tickDrivers()'s own
     // per-driver body — the non-batchable ones were already finalized above.
-    for (const s of springs) s.entity._applyDriverTick(s.prop, s.driver);
-    for (const t of tweens) t.entity._applyDriverTick(t.prop, t.driver);
+    for (let i = 0; i < springCount; i++) sE[i]._applyDriverTick(sP[i], sD[i]);
+    for (let i = 0; i < tweenCount; i++) tE[i]._applyDriverTick(tP[i], tD[i]);
   }
 
   /**

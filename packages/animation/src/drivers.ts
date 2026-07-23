@@ -71,15 +71,22 @@ export class TweenDriver implements PropertyDriver {
     return this.easingName === null ? null : EASING_IDS[this.easingName];
   }
 
-  /** Read-only snapshot the batched WASM tween kernel gathers from. */
-  wasmGather(): { from: number; to: number; elapsed: number; duration: number; delay: number } {
-    return {
-      from: this.from,
-      to: this.to,
-      elapsed: this.elapsed,
-      duration: this.duration,
-      delay: this.delay,
-    };
+  // Allocation-free field reads for the batched WASM tween kernel's gather
+  // step — a per-call wrapper object here would mean one extra allocation per
+  // active tween per frame, exactly the kind of per-frame garbage the
+  // integrated benchmark (benchmarks/anim-wasm-scene) found dominating the
+  // gather cost.
+  get fromValue(): number {
+    return this.from;
+  }
+  get elapsedMs(): number {
+    return this.elapsed;
+  }
+  get durationMs(): number {
+    return this.duration;
+  }
+  get delayMs(): number {
+    return this.delay;
   }
 
   retarget(to: number): void {
@@ -144,22 +151,12 @@ export class SpringDriver implements PropertyDriver {
     this.spring.velocity = velocity;
   }
 
-  /** Read-only snapshot the batched WASM spring kernel gathers from. */
-  wasmGather(): {
-    value: number;
-    target: number;
-    velocity: number;
-    stiffness: number;
-    damping: number;
-    mass: number;
-  } {
-    return {
-      value: this.spring.value,
-      target: this.spring.target,
-      velocity: this.spring.velocity,
-      stiffness: this.spring.stiffness,
-      damping: this.spring.damping,
-      mass: this.spring.mass,
-    };
+  // Read-only access to the underlying spring physics for the batched WASM
+  // kernel's gather step — returns the EXISTING SpringPhysics instance (whose
+  // value/target/velocity/stiffness/damping/mass are all already public), not
+  // a copy, so gathering one driver's state costs zero allocations instead of
+  // one wrapper object per active spring per frame.
+  get physics(): Readonly<SpringPhysics> {
+    return this.spring;
   }
 }

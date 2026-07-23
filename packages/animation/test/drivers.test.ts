@@ -40,10 +40,14 @@ describe('TweenDriver', () => {
     expect(defaulted.wasmEasingId).toBe(2);
   });
 
-  it('wasmGather reflects current from/to/elapsed/duration/delay', () => {
+  it('exposes allocation-free from/target/elapsed/duration/delay for the batched WASM gather', () => {
     const d = new TweenDriver(0, 10, { duration: 200, delay: 20, easing: 'linear' });
     d.tick(50);
-    expect(d.wasmGather()).toEqual({ from: 0, to: 10, elapsed: 50, duration: 200, delay: 20 });
+    expect(d.fromValue).toBe(0);
+    expect(d.target).toBe(10);
+    expect(d.elapsedMs).toBe(50);
+    expect(d.durationMs).toBe(200);
+    expect(d.delayMs).toBe(20);
   });
 
   it('syncExternal overwrites value + elapsed so tick()/isDone() stay correct afterward', () => {
@@ -77,10 +81,10 @@ describe('SpringDriver', () => {
     expect(after).toBeCloseTo(before, 9); // no snap on retarget
   });
 
-  it('wasmGather reflects current value/target/velocity/stiffness/damping/mass', () => {
+  it('exposes the underlying SpringPhysics (no copy) for the batched WASM gather', () => {
     const d = new SpringDriver(0, 1, { stiffness: 200, damping: 20, mass: 2 });
     d.tick(16);
-    const g = d.wasmGather();
+    const g = d.physics;
     expect(g.target).toBe(1);
     expect(g.stiffness).toBe(200);
     expect(g.damping).toBe(20);
