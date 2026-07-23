@@ -36,6 +36,13 @@ import {
   type WasmModuleSource,
   type WasmTransformBackend,
 } from '../wasm/backend';
+import { gatherHitAABBs } from '../wasm/hit-store';
+import {
+  instantiateAsync as instantiateHitAsync,
+  instantiateStreaming as instantiateHitStreaming,
+  type HitModuleSource,
+  type HitTestBackend,
+} from '../wasm/hit-backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -823,6 +830,131 @@ export class Scene {
     if (!backend) return false;
     this.setTransformBackend(backend);
     return true;
+  }
+
+  // ── WASM hit-test backend (invisible accelerator, G3) ───────────────────────
+  // A separate WASM module instance from the transform backend (each crate
+  // export lives in independent linear memory per instance, so there is no
+  // shared-state hazard in running both) that indexes the main tree's world
+  // AABBs into a dense viewport grid for findEntityAt. The JS depth-first walk
+  // (findHitRecursively) is the permanent fallback: a null backend, a build
+  // that overflows its item budget, or the overlay tree (never indexed — small
+  // and rare, not worth accelerating) all fall through to it, so WASM can only
+  // ever change *how fast* a hit is found, never *which* entity is returned —
+  // every grid candidate is re-confirmed against its own precise
+  // isPointInside before being trusted (see hit-store.ts / hit-backend.ts).
+  private _hitWasm: HitTestBackend | null = null;
+  // Cache key: which frame + structure version the grid was last (successfully,
+  // non-overflowing) built for. findEntityAt is called ad-hoc (pointer
+  // hover/click), not every frame, so the grid is refreshed lazily on demand
+  // rather than proactively every render() — unlike the transform store, which
+  // every frame's draw depends on.
+  private _hitGridFrame = -1;
+  private _hitGridOk = false;
+  private _hitSlotEntity: Entity[] = [];
+  private _hitBoundless: Array<{ entity: Entity; index: number }> = [];
+
+  /** Which backend answers `findEntityAt` for the main tree. */
+  public get hitTestBackend(): 'js' | 'wasm' {
+    return this._hitWasm ? 'wasm' : 'js';
+  }
+
+  /** Install (or clear) a WASM hit-test backend directly. Prefer
+   *  {@link enableWasmHitTest} for the normal async hot-swap. */
+  public setHitTestBackend(backend: HitTestBackend | null): void {
+    this._hitWasm = backend;
+    this._hitGridFrame = -1; // force a rebuild under the (possibly new) backend
+  }
+
+  /**
+   * Asynchronously instantiate the WASM hit-test core and, on success, hot-swap
+   * `findEntityAt` onto it. Accepts the same source shapes as
+   * {@link enableWasmTransforms} (URL, path string, Response, or raw bytes).
+   * Stays on the JS walk if instantiation fails — failure is the default
+   * state, not an error path. Resolves `true` if WASM is now active.
+   */
+  public async enableWasmHitTest(source: HitModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateHitAsync(source)
+      : await instantiateHitStreaming(source as Exclude<HitModuleSource, BufferSource>);
+    if (!backend) return false;
+    this.setHitTestBackend(backend);
+    return true;
+  }
+
+  /**
+   * Refresh the hit-test grid for the CURRENT tree state if it is stale (a
+   * structural or transform change may have happened since the last build —
+   * there is no cheap "nothing moved" shortcut for a spatial index the way
+   * there is for the transform store's topology-only run table, since ANY
+   * entity moving invalidates its AABB, not just add/remove/reparent; the
+   * measured build cost is cheap enough to redo per call). Returns `false`
+   * (grid untrustworthy — caller must use the JS walk) when there is no
+   * backend or the build overflowed its item budget.
+   */
+  private _ensureHitGrid(): boolean {
+    const backend = this._hitWasm;
+    if (!backend) return false;
+    if (this._hitGridFrame === this.currentFrame) return this._hitGridOk;
+
+    const gathered = gatherHitAABBs(this.root);
+    // ensure() must run BEFORE writing AABBs: a capacity growth detaches the
+    // previous typed-array views, so sizing after writing would write into a
+    // stale buffer.
+    backend.ensure(gathered.count, this.width, this.height, 64);
+    const view = backend.inputView();
+    view.minx.set(gathered.minx.subarray(0, gathered.count));
+    view.miny.set(gathered.miny.subarray(0, gathered.count));
+    view.maxx.set(gathered.maxx.subarray(0, gathered.count));
+    view.maxy.set(gathered.maxy.subarray(0, gathered.count));
+    const ok = backend.runBuild(gathered.count, this.width, this.height, 64);
+
+    this._hitSlotEntity = gathered.slotEntity;
+    this._hitBoundless = gathered.boundless;
+    this._hitGridFrame = this.currentFrame;
+    this._hitGridOk = ok;
+    return ok;
+  }
+
+  /**
+   * `findEntityAt`'s WASM-accelerated path for the main tree. Scans only the
+   * queried cell's candidates (confirming each against its own AABB and precise
+   * `isPointInside`) merged against the (typically empty or tiny) list of
+   * entities with no `getBounds()`, taking whichever confirmed match has the
+   * higher pre-order index — see hit-store.ts for why that is exactly
+   * equivalent to findHitRecursively's topmost-hit priority. Always
+   * conclusive: returns the correct entity or `null`, never "inconclusive".
+   */
+  private _findEntityAtWasm(x: number, y: number): Entity | null {
+    const backend = this._hitWasm!;
+    const { minx, miny, maxx, maxy } = backend.inputView();
+    let bestIndex = -1;
+    let bestEntity: Entity | null = null;
+
+    const cell = backend.candidatesAt(x, y);
+    if (cell) {
+      // Ascending index order; scan from the end for topmost (highest index)
+      // first, so the first candidate that passes both checks is already the
+      // topmost possible confirmed hit among the grid's candidates.
+      for (let k = cell.length - 1; k >= 0; k--) {
+        const idx = cell[k];
+        if (x < minx[idx] || x > maxx[idx] || y < miny[idx] || y > maxy[idx]) continue;
+        const entity = this._hitSlotEntity[idx];
+        if (entity?.isPointInside(x, y)) {
+          bestIndex = idx;
+          bestEntity = entity;
+          break;
+        }
+      }
+    }
+    for (const { entity, index } of this._hitBoundless) {
+      if (index > bestIndex && entity.isPointInside(x, y)) {
+        bestIndex = index;
+        bestEntity = entity;
+      }
+    }
+    return bestEntity;
   }
 
   /**
@@ -3422,11 +3554,20 @@ export class Scene {
    * Finds the topmost interactive entity at the given coordinates.
    */
   public findEntityAt(x: number, y: number): Entity | null {
-    // 1. Search overlay root first (drawn on top)
+    // 1. Search overlay root first (drawn on top). Overlays are never indexed
+    // by the WASM grid (modals/menus are few and rare — not worth
+    // accelerating), so this always uses the JS walk.
     const overlayHit = this.findHitRecursively(this.overlayRoot, x, y);
     if (overlayHit) return overlayHit;
 
-    // 2. Search main scene tree
+    // 2. Search main scene tree. The WASM path is conclusive whenever the
+    // grid is trustworthy (backend present, build didn't overflow) — it
+    // returns the correct entity or null, never "inconclusive" — so no
+    // further JS fallback is needed for that call. Otherwise (no backend, or
+    // an overflowing build) fall back to the permanent JS walk.
+    if (this._hitWasm && this._ensureHitGrid()) {
+      return this._findEntityAtWasm(x, y);
+    }
     return this.findHitRecursively(this.root, x, y);
   }
 

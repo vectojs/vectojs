@@ -109,6 +109,27 @@ ptr_export_f64!(p_h_miny, miny);
 ptr_export_f64!(p_h_maxx, maxx);
 ptr_export_f64!(p_h_maxy, maxy);
 
+macro_rules! ptr_export_i32 {
+    ($name:ident, $field:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name() -> *mut i32 {
+            unsafe { H.$field }
+        }
+    };
+}
+// Resident grid views for an integrated caller (e.g. Scene) that needs the
+// FULL ordered candidate list in a queried cell — not just the single topmost
+// AABB match `hit_query` returns — so it can re-check each candidate against
+// its entity's own precise `isPointInside` (non-rectangular hit shapes) and
+// fall through to the next-topmost candidate if the top one misses. Reading
+// these directly (like the transform core's resident input/world views) avoids
+// a new WASM call per candidate; `items[cell_start[c]..cell_start[c]+cell_count[c]]`
+// is ascending by entity index, so the caller scans from the end for
+// topmost-first.
+ptr_export_i32!(p_h_cell_start, cell_start);
+ptr_export_i32!(p_h_cell_count, cell_count);
+ptr_export_i32!(p_h_items, items);
+
 /// Did the last `hit_build` overflow `item_cap`? (1 = some memberships dropped.)
 #[unsafe(no_mangle)]
 pub extern "C" fn hit_overflow() -> i32 {
