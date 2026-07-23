@@ -20,6 +20,7 @@ function liveParent(): Panel {
     detachA11y() {},
     a11yNeedsReorder: false,
     prefersReducedMotion: false,
+    _registerActiveDriverEntity() {},
   };
   return root;
 }

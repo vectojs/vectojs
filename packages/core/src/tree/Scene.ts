@@ -20,7 +20,8 @@ export interface IWebGPUParticleSystemManager {
   destroy(): void;
 }
 
-import { Entity, VectoJSEvent, type ContentProjection } from './Entity';
+import { Entity, VectoJSEvent, type ContentProjection, type AnimatableProp } from './Entity';
+import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
@@ -28,6 +29,27 @@ import type { PointRenderer } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
+import { buildTreeStore } from '../wasm/scene-store';
+import type { TransformStore } from '../wasm/soa';
+import {
+  instantiateAsync,
+  instantiateStreaming,
+  type WasmModuleSource,
+  type WasmTransformBackend,
+} from '../wasm/backend';
+import { gatherHitAABBs } from '../wasm/hit-store';
+import {
+  instantiateAsync as instantiateHitAsync,
+  instantiateStreaming as instantiateHitStreaming,
+  type HitModuleSource,
+  type HitTestBackend,
+} from '../wasm/hit-backend';
+import {
+  instantiateAsync as instantiateAnimAsync,
+  instantiateStreaming as instantiateAnimStreaming,
+  type AnimModuleSource,
+  type AnimBackend,
+} from '../wasm/anim-backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -732,6 +754,472 @@ export class Scene {
   private activePortalsPrevFrame: Set<string> = new Set();
   private portalEntities: Map<string, DOMPortalEntity> = new Map();
   private renderOrderCounter: number = 0;
+
+  /**
+   * Monotonic render-frame counter, bumped once per authoritative `render()`
+   * pass. Entities stamp their per-frame world-matrix cache with this value and
+   * {@link Entity.getWorldTransform} trusts that cache only while it still
+   * matches, so a query outside the frame that produced it transparently falls
+   * back to the ancestor walk. Public for the same reason `Entity._getTrig`/
+   * `_setWorldCache` are: it is a cross-class render-internal contract.
+   */
+  public currentFrame = 0;
+
+  // ── WASM transform backend (invisible accelerator) ──────────────────────────
+  // When `_transformBackend === 'wasm'`, the main render walk sources each
+  // entity's world matrix from an SoA store composed by `_wasm` (see
+  // `renderNode`), instead of composing it in JS. The JS path is the permanent
+  // fallback and the default: a null backend, a non-main renderer, or any entity
+  // absent from the store all fall back to the JS composition, so WASM can only
+  // ever change *how fast* a world matrix is produced, never *what* it is.
+  private _wasm: WasmTransformBackend | null = null;
+  private _transformBackend: 'js' | 'wasm' = 'js';
+
+  // Resident store state (Stage 3). The store layout — slot assignment + sibling
+  // runs — depends only on tree TOPOLOGY, so it is rebuilt only when the
+  // structure changes (add/remove/reparent bump `_structureVersion`). Between
+  // rebuilds the per-frame cost is: gather each entity's transform into the
+  // resident wasm input view + run the kernel — no reallocation, no readback.
+  private _treeStore: TransformStore | null = null;
+  private _slotEntity: Entity[] = []; // store slot -> entity (also validates slots)
+  private _wasmInputs: ReturnType<WasmTransformBackend['inputView']> | null = null;
+  private _wasmWorld: ReturnType<WasmTransformBackend['worldView']> | null = null;
+  private _structureVersion = 0;
+  private _storeStructureVersion = -1;
+
+  /** Invalidate the resident WASM store layout; the next wasm-mode frame rebuilds
+   *  it. Called by `Entity.add`/`remove` (topology changes only). */
+  public markStructureChanged(): void {
+    this._structureVersion++;
+  }
+
+  /** Which backend composes world matrices for the main render walk. */
+  public get transformBackend(): 'js' | 'wasm' {
+    return this._transformBackend;
+  }
+
+  /**
+   * Install (or clear) a WASM transform backend. Passing a backend switches the
+   * main render walk onto it; passing `null` reverts to the JS path. Synchronous
+   * and safe to call between frames — the next `render()` picks it up. Prefer
+   * {@link enableWasmTransforms} for the normal async hot-swap.
+   */
+  public setTransformBackend(backend: WasmTransformBackend | null): void {
+    this._wasm = backend;
+    this._transformBackend = backend ? 'wasm' : 'js';
+  }
+
+  /**
+   * Asynchronously instantiate the WASM transform core and, on success, hot-swap
+   * the render walk onto it. Accepts whatever is convenient at the call site:
+   *
+   * ```ts
+   * // The common case — a bundler-emitted, co-located asset URL:
+   * await scene.enableWasmTransforms(new URL('./vectojs_core.wasm', import.meta.url));
+   * // …or a path string, a Response, or raw bytes you already have:
+   * await scene.enableWasmTransforms('/assets/vectojs_core.wasm');
+   * await scene.enableWasmTransforms(await fetch(url));
+   * await scene.enableWasmTransforms(myUint8Array);
+   * ```
+   *
+   * A URL/Response streams (compiles while it downloads, with a buffered
+   * fallback for a wrong MIME type); raw bytes instantiate directly. The Scene
+   * keeps rendering on the JS path until this resolves, and stays on JS if
+   * instantiation fails (CSP `wasm-unsafe-eval`, unsupported SIMD, corrupt or
+   * missing bytes, a 404) — failure is the default state, not an error path.
+   * Resolves `true` if WASM is now active, `false` if the JS path remains.
+   */
+  public async enableWasmTransforms(source: WasmModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateAsync(source)
+      : await instantiateStreaming(source as Exclude<WasmModuleSource, BufferSource>);
+    if (!backend) return false;
+    this.setTransformBackend(backend);
+    return true;
+  }
+
+  // ── WASM hit-test backend (invisible accelerator, G3) ───────────────────────
+  // A separate WASM module instance from the transform backend (each crate
+  // export lives in independent linear memory per instance, so there is no
+  // shared-state hazard in running both) that indexes the main tree's world
+  // AABBs into a dense viewport grid for findEntityAt. The JS depth-first walk
+  // (findHitRecursively) is the permanent fallback: a null backend, a build
+  // that overflows its item budget, or the overlay tree (never indexed — small
+  // and rare, not worth accelerating) all fall through to it, so WASM can only
+  // ever change *how fast* a hit is found, never *which* entity is returned —
+  // every grid candidate is re-confirmed against its own precise
+  // isPointInside before being trusted (see hit-store.ts / hit-backend.ts).
+  private _hitWasm: HitTestBackend | null = null;
+  // Cache key: which frame + structure version the grid was last (successfully,
+  // non-overflowing) built for. findEntityAt is called ad-hoc (pointer
+  // hover/click), not every frame, so the grid is refreshed lazily on demand
+  // rather than proactively every render() — unlike the transform store, which
+  // every frame's draw depends on.
+  private _hitGridFrame = -1;
+  private _hitGridOk = false;
+  private _hitSlotEntity: Entity[] = [];
+  private _hitBoundless: Array<{ entity: Entity; index: number }> = [];
+
+  /** Which backend answers `findEntityAt` for the main tree. */
+  public get hitTestBackend(): 'js' | 'wasm' {
+    return this._hitWasm ? 'wasm' : 'js';
+  }
+
+  /** Install (or clear) a WASM hit-test backend directly. Prefer
+   *  {@link enableWasmHitTest} for the normal async hot-swap. */
+  public setHitTestBackend(backend: HitTestBackend | null): void {
+    this._hitWasm = backend;
+    this._hitGridFrame = -1; // force a rebuild under the (possibly new) backend
+  }
+
+  /**
+   * Asynchronously instantiate the WASM hit-test core and, on success, hot-swap
+   * `findEntityAt` onto it. Accepts the same source shapes as
+   * {@link enableWasmTransforms} (URL, path string, Response, or raw bytes).
+   * Stays on the JS walk if instantiation fails — failure is the default
+   * state, not an error path. Resolves `true` if WASM is now active.
+   */
+  public async enableWasmHitTest(source: HitModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateHitAsync(source)
+      : await instantiateHitStreaming(source as Exclude<HitModuleSource, BufferSource>);
+    if (!backend) return false;
+    this.setHitTestBackend(backend);
+    return true;
+  }
+
+  /**
+   * Refresh the hit-test grid for the CURRENT tree state if it is stale (a
+   * structural or transform change may have happened since the last build —
+   * there is no cheap "nothing moved" shortcut for a spatial index the way
+   * there is for the transform store's topology-only run table, since ANY
+   * entity moving invalidates its AABB, not just add/remove/reparent; the
+   * measured build cost is cheap enough to redo per call). Returns `false`
+   * (grid untrustworthy — caller must use the JS walk) when there is no
+   * backend or the build overflowed its item budget.
+   */
+  private _ensureHitGrid(): boolean {
+    const backend = this._hitWasm;
+    if (!backend) return false;
+    if (this._hitGridFrame === this.currentFrame) return this._hitGridOk;
+
+    const gathered = gatherHitAABBs(this.root, this.currentFrame);
+    // ensure() must run BEFORE writing AABBs: a capacity growth detaches the
+    // previous typed-array views, so sizing after writing would write into a
+    // stale buffer.
+    backend.ensure(gathered.count, this.width, this.height, 64);
+    const view = backend.inputView();
+    view.minx.set(gathered.minx.subarray(0, gathered.count));
+    view.miny.set(gathered.miny.subarray(0, gathered.count));
+    view.maxx.set(gathered.maxx.subarray(0, gathered.count));
+    view.maxy.set(gathered.maxy.subarray(0, gathered.count));
+    const ok = backend.runBuild(gathered.count, this.width, this.height, 64);
+
+    this._hitSlotEntity = gathered.slotEntity;
+    this._hitBoundless = gathered.boundless;
+    this._hitGridFrame = this.currentFrame;
+    this._hitGridOk = ok;
+    return ok;
+  }
+
+  /**
+   * `findEntityAt`'s WASM-accelerated path for the main tree. Scans only the
+   * queried cell's candidates (confirming each against its own AABB and precise
+   * `isPointInside`) merged against the (typically empty or tiny) list of
+   * entities with no `getBounds()`, taking whichever confirmed match has the
+   * higher pre-order index — see hit-store.ts for why that is exactly
+   * equivalent to findHitRecursively's topmost-hit priority. Always
+   * conclusive: returns the correct entity or `null`, never "inconclusive".
+   */
+  private _findEntityAtWasm(x: number, y: number): Entity | null {
+    const backend = this._hitWasm!;
+    const { minx, miny, maxx, maxy } = backend.inputView();
+    let bestIndex = -1;
+    let bestEntity: Entity | null = null;
+
+    const cell = backend.candidatesAt(x, y);
+    if (cell) {
+      // Ascending index order; scan from the end for topmost (highest index)
+      // first, so the first candidate that passes both checks is already the
+      // topmost possible confirmed hit among the grid's candidates.
+      for (let k = cell.length - 1; k >= 0; k--) {
+        const idx = cell[k];
+        if (x < minx[idx] || x > maxx[idx] || y < miny[idx] || y > maxy[idx]) continue;
+        const entity = this._hitSlotEntity[idx];
+        if (entity?.isPointInside(x, y)) {
+          bestIndex = idx;
+          bestEntity = entity;
+          break;
+        }
+      }
+    }
+    for (const { entity, index } of this._hitBoundless) {
+      if (index > bestIndex && entity.isPointInside(x, y)) {
+        bestIndex = index;
+        bestEntity = entity;
+      }
+    }
+    return bestEntity;
+  }
+
+  // ── WASM batched-animation backend (invisible accelerator, G2) ──────────────
+  // Advances every currently-active SpringDriver/TweenDriver in one WASM call
+  // each (spring_step/tween_step) instead of Entity.tickDrivers()'s per-driver
+  // JS loop. The JS tick loop is the permanent fallback: a null backend, a
+  // driver count below `animDriverGateCount`, or a TweenDriver using a custom
+  // EasingFn (which cannot cross into WASM) all fall through to it — WASM can
+  // only ever change *how* a driver is advanced, never *what* value it lands
+  // on.
+  private _animWasm: AnimBackend | null = null;
+  // Entities with at least one active driver, added by Entity._spawnDriver.
+  // Self-pruning: _tickBatchedDrivers drops an entry the first time it visits
+  // an entity whose drivers have since all completed or been removed. This is
+  // what lets the batch pass find its candidates in O(active drivers), not
+  // O(tree size) — the exact mistake G3's first integrated benchmark made.
+  private _activeDriverEntities = new Set<Entity>();
+  // Reused across frames instead of allocating a fresh array + N {entity,prop,
+  // driver} objects every call — the integrated benchmark
+  // (benchmarks/anim-wasm-scene) found that allocation churn was the
+  // dominant integrated cost, not the wasm kernel itself. Parallel arrays,
+  // truncated to the live count after each use so a stale tail slot never
+  // pins a no-longer-active entity/driver in memory.
+  private _springEntities: Entity[] = [];
+  private _springProps: AnimatableProp[] = [];
+  private _springDrivers: SpringDriver[] = [];
+  private _tweenEntities: Entity[] = [];
+  private _tweenProps: AnimatableProp[] = [];
+  private _tweenDrivers: TweenDriver[] = [];
+  /**
+   * Minimum number of batchable (spring, or named-easing tween) active drivers
+   * before a frame engages the WASM batch path at all; below it, every driver
+   * ticks on the normal JS per-entity path, unmodified.
+   *
+   * Re-measured on the INTEGRATED path (benchmarks/anim-wasm-scene, real
+   * Chrome/Firefox — see vectojs-docs evidence.md for the full table): the
+   * isolated kernel spike's "<100 drivers, wins everywhere" verdict did NOT
+   * survive integration. On Chrome, the batch path is a real 1.4–2.9× win but
+   * only in roughly the 128–4096 concurrent-driver band, and a LOSS below
+   * ~64. On Firefox it is a net loss at every driver count measured, up to
+   * 16384 — not an allocation artifact (confirmed after removing all
+   * per-frame allocation from the gather/scatter path); SpiderMonkey's
+   * wasm-boundary/property-dispatch cost for this shape of call appears to
+   * structurally exceed the saving, at least at the scales tested here.
+   *
+   * 128 is set as a Chrome-oriented default so an app that opts in (this
+   * path is never engaged without an explicit {@link enableWasmAnimBatching}
+   * call) sees the gate open only where it reliably helps on Chromium.
+   * Unlike G1 (safe to default on everywhere) and G3 (opt-in, but a reliable
+   * win once its own gate condition holds), G2 has no threshold that is safe
+   * on every engine — raise or lower this per your own target browser mix,
+   * or leave WASM animation batching disabled entirely on a Firefox-heavy
+   * audience.
+   */
+  public animDriverGateCount = 128;
+
+  /** Which backend advances active property drivers on the current gate
+   *  decision. Reflects only whether a backend is installed — the per-frame
+   *  gate can still choose the JS path even when this reads `'wasm'`. */
+  public get animBackend(): 'js' | 'wasm' {
+    return this._animWasm ? 'wasm' : 'js';
+  }
+
+  /** Install (or clear) a WASM batched-animation backend directly. Prefer
+   *  {@link enableWasmAnimBatching} for the normal async hot-swap. */
+  public setAnimBackend(backend: AnimBackend | null): void {
+    this._animWasm = backend;
+  }
+
+  /**
+   * Asynchronously instantiate the WASM batched-animation core and, on
+   * success, make it available to the per-frame gate (see
+   * {@link animDriverGateCount}). Accepts the same source shapes as
+   * {@link enableWasmTransforms}. Stays on the JS tick loop if instantiation
+   * fails — failure is the default state, not an error path. Resolves `true`
+   * if WASM is now available (not necessarily active every frame).
+   */
+  public async enableWasmAnimBatching(source: AnimModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateAnimAsync(source)
+      : await instantiateAnimStreaming(source as Exclude<AnimModuleSource, BufferSource>);
+    if (!backend) return false;
+    this.setAnimBackend(backend);
+    return true;
+  }
+
+  /** Internal: called by `Entity._spawnDriver` when a new property driver
+   *  starts. See {@link _activeDriverEntities}. */
+  public _registerActiveDriverEntity(entity: Entity): void {
+    this._activeDriverEntities.add(entity);
+  }
+
+  /**
+   * Advance every registered entity's active drivers for this frame, batching
+   * whichever are batchable (`SpringDriver`; `TweenDriver` with a named
+   * easing) through one WASM call each when the driver-count gate is open, and
+   * ticking the rest (a `TweenDriver` using a custom `EasingFn`) directly in
+   * JS regardless of the gate. A "claimed" entity must have ALL its drivers
+   * advanced here so it can be safely stamped `_driversTickedFrame` — leaving
+   * one unclaimed would silently stall it, since `tickDrivers()` skips the
+   * whole entity once stamped.
+   *
+   * Must run before ANY entity's `update()`/`tickDrivers()` this frame (see
+   * the call site in {@link render}) — the same ordering constraint G1 Stage 4
+   * discovered: a value this pass writes must be final before anything reads
+   * it, including the JS-mode interleaved walk and the WASM-mode transform
+   * pre-pass.
+   */
+  private _tickBatchedDrivers(dt: number): void {
+    if (this._activeDriverEntities.size === 0) return;
+
+    // Pass 1 (always, cheap): prune completed entities, count batchable
+    // drivers to decide the gate. O(active drivers), never O(tree size).
+    // _driverEntries() returns the entity's Map directly (no callback, no
+    // per-entity closure allocation).
+    let batchable = 0;
+    for (const entity of this._activeDriverEntities) {
+      const entries = entity._driverEntries();
+      if (!entries || entries.size === 0) {
+        this._activeDriverEntities.delete(entity);
+        continue;
+      }
+      for (const driver of entries.values()) {
+        if (driver instanceof SpringDriver) batchable++;
+        else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) batchable++;
+      }
+    }
+
+    const backend = this._animWasm;
+    if (!backend || batchable < this.animDriverGateCount) return; // stay on the JS tick path
+
+    // Pass 2: claim every registered entity. Gather batchable drivers into the
+    // reused scratch arrays; tick+finalize non-batchable ones directly in JS;
+    // stamp the entity so tickDrivers() skips it later this same frame.
+    const sE = this._springEntities;
+    const sP = this._springProps;
+    const sD = this._springDrivers;
+    const tE = this._tweenEntities;
+    const tP = this._tweenProps;
+    const tD = this._tweenDrivers;
+    let springCount = 0;
+    let tweenCount = 0;
+    for (const entity of this._activeDriverEntities) {
+      const entries = entity._driverEntries()!;
+      for (const [prop, driver] of entries) {
+        if (driver instanceof SpringDriver) {
+          sE[springCount] = entity;
+          sP[springCount] = prop;
+          sD[springCount] = driver;
+          springCount++;
+        } else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) {
+          tE[tweenCount] = entity;
+          tP[tweenCount] = prop;
+          tD[tweenCount] = driver;
+          tweenCount++;
+        } else {
+          // Custom-easing tween: cannot cross into WASM. Tick it here (same
+          // dt, same math as tickDrivers() would use) so the entity as a
+          // whole can still be claimed this frame.
+          driver.tick(dt);
+          entity._applyDriverTick(prop, driver);
+        }
+      }
+      entity._driversTickedFrame = this.currentFrame;
+    }
+    // Drop stale tail slots beyond this frame's count so a no-longer-active
+    // entity/driver from a busier past frame isn't pinned in memory.
+    sE.length = springCount;
+    sP.length = springCount;
+    sD.length = springCount;
+    tE.length = tweenCount;
+    tP.length = tweenCount;
+    tD.length = tweenCount;
+
+    backend.ensure(springCount, tweenCount);
+    if (springCount > 0) {
+      const sv = backend.springView();
+      for (let i = 0; i < springCount; i++) {
+        const phys = sD[i].physics;
+        sv.val[i] = phys.value;
+        sv.target[i] = phys.target;
+        sv.vel[i] = phys.velocity;
+        sv.stiff[i] = phys.stiffness;
+        sv.damp[i] = phys.damping;
+        sv.mass[i] = phys.mass;
+      }
+      backend.stepSprings(dt, springCount);
+      for (let i = 0; i < springCount; i++) sD[i].syncExternal(sv.val[i], sv.vel[i]);
+    }
+    if (tweenCount > 0) {
+      const tv = backend.tweenView();
+      for (let i = 0; i < tweenCount; i++) {
+        const d = tD[i];
+        tv.from[i] = d.fromValue;
+        tv.to[i] = d.target;
+        tv.elapsed[i] = d.elapsedMs;
+        tv.dur[i] = d.durationMs;
+        tv.delay[i] = d.delayMs;
+        tv.ease[i] = d.wasmEasingId!;
+      }
+      backend.stepTweens(dt, tweenCount);
+      for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
+    }
+
+    // Finalize every batchable driver this pass touched (completion check +
+    // apply + settle + delete), exactly mirroring tickDrivers()'s own
+    // per-driver body — the non-batchable ones were already finalized above.
+    for (let i = 0; i < springCount; i++) sE[i]._applyDriverTick(sP[i], sD[i]);
+    for (let i = 0; i < tweenCount; i++) tE[i]._applyDriverTick(tP[i], tD[i]);
+  }
+
+  /**
+   * Compose the whole main tree's world matrices through the resident WASM store
+   * and return the world-matrix views for the render walk to read. Rebuilds the
+   * store layout (slots + runs) only when the tree structure changed since the
+   * last rebuild; otherwise it just gathers current transforms into the resident
+   * input view and runs the kernel. Returns `null` if there is no backend.
+   */
+  private _syncWasmStore(): ReturnType<WasmTransformBackend['worldView']> | null {
+    const backend = this._wasm;
+    if (!backend) return null;
+
+    if (this._treeStore === null || this._storeStructureVersion !== this._structureVersion) {
+      const built = buildTreeStore(this.root);
+      const slotEntity = Array.from<Entity>({ length: built.store.count });
+      for (const [entity, slot] of built.indexOf) {
+        slotEntity[slot] = entity;
+        entity._storeSlot = slot;
+      }
+      backend.uploadRuns(built.store); // sizes wasm memory + publishes the run table
+      this._treeStore = built.store;
+      this._slotEntity = slotEntity;
+      this._wasmInputs = backend.inputView(); // valid until the next capacity growth
+      this._wasmWorld = backend.worldView();
+      this._storeStructureVersion = this._structureVersion;
+    }
+
+    // Gather local transforms into the resident input view. Slot 0 is the root,
+    // which the kernel seeds to identity, so start at 1. cos/sin come from the
+    // Phase-0 per-entity trig cache (recomputed only when rotation changed).
+    const inp = this._wasmInputs!;
+    const slotEntity = this._slotEntity;
+    for (let slot = 1; slot < slotEntity.length; slot++) {
+      const e = slotEntity[slot];
+      inp.x[slot] = e.x;
+      inp.y[slot] = e.y;
+      inp.sx[slot] = e.scaleX;
+      inp.sy[slot] = e.scaleY;
+      const trig = e._getTrig();
+      inp.cos[slot] = trig.cos;
+      inp.sin[slot] = trig.sin;
+      inp.opacity[slot] = e.opacity;
+    }
+    backend.runKernel('simd');
+    return this._wasmWorld;
+  }
+
   /**
    * Authoritative paint order for semantic nodes discovered during the main
    * render. A node may not have a DOM projection until the following a11y
@@ -2753,9 +3241,18 @@ export class Scene {
     }
 
     if (isMainRenderer) {
+      // Monotonic frame counter. renderNode stamps each entity's world-matrix
+      // cache with this value; getWorldTransform() trusts the cache only while
+      // it still equals currentFrame, so bumping it here invalidates every
+      // entity's cache in O(1) at the start of the authoritative walk.
+      this.currentFrame++;
       this.renderOrderCounter = 0;
       this.a11yRenderOrders.clear();
       this.activePortalsThisFrame.clear();
+      // Must run before any entity's update()/tickDrivers() below (JS-mode
+      // interleaved walk or WASM-mode transform pre-pass alike) — see
+      // _tickBatchedDrivers's own doc comment for why.
+      this._tickBatchedDrivers(dt);
     }
 
     // Collect all ComputeParticleEntity instances in the tree
@@ -2922,6 +3419,69 @@ export class Scene {
     let walkHadAnimation = false;
     let walkHadInteractive = false;
 
+    // Per-node update(), shared by the interleaved JS walk and the WASM pre-pass.
+    // Passive-node update skip: the base update() only advances property drivers
+    // and queued animations, so for a node with neither — and no update()
+    // override — the call is a guaranteed no-op. Eliding it trades a virtual
+    // update() dispatch (plus its internal tickDrivers/animations early-returns)
+    // for one hasPendingAnimations() read, cheaper for the passive majority of a
+    // large tree and helping the JS and WASM transform paths equally. It reads
+    // LIVE state every frame (never a cached passive flag): a node that begins
+    // animating reports pending motion and is updated that same frame, so nothing
+    // can freeze — the correctness a cached-subtree-flag approach cannot promise.
+    const runUpdate = (node: Entity): void => {
+      const overridesUpdate = node.update !== Entity.prototype.update;
+      let pending = node.hasPendingAnimations();
+      if (pending || overridesUpdate) {
+        node.update(dt, time);
+        pending = node.hasPendingAnimations(); // update() may start/finish motion
+      }
+      if (pending) walkHadAnimation = true;
+      if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
+
+      // Dev check: entity overrides update() but not hasPendingAnimations()
+      if (this._devActive && this._devFrameCount % 120 === 0) {
+        if (
+          overridesUpdate &&
+          node.hasPendingAnimations === Entity.prototype.hasPendingAnimations
+        ) {
+          this._devWarn(
+            `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
+              'Custom motion in update() without overriding hasPendingAnimations() causes ' +
+              'the idle throttle to drop the animation to ~2fps. ' +
+              'Override hasPendingAnimations() to return true while motion is in flight.',
+          );
+        }
+      }
+    };
+
+    // WASM transform path: compose every main-tree world matrix up front into an
+    // SoA store, then let renderNode read each node's matrix instead of composing
+    // it. Only for the main renderer; overlays and any node not in the store fall
+    // through to the JS composition below. worldView() is read AFTER compose()
+    // because a capacity-growing compose re-inits and re-views wasm memory.
+    const wasmMain = isMainRenderer && this._wasm !== null && this._transformBackend === 'wasm';
+
+    // In WASM mode update() MUST run for the whole tree BEFORE the store is
+    // gathered: the kernel composes every world matrix up front, so a transform
+    // an entity mutates in its update() (animation/driver output) has to be
+    // finalized first — otherwise the store would render that entity one frame
+    // stale. This pre-pass walks root + overlays in pre-order (identical update()
+    // ordering to the JS walk); renderNode then skips update() in WASM mode. In
+    // JS mode update() stays interleaved with compose in the render walk below.
+    if (wasmMain) {
+      const updateWalk = (node: Entity): void => {
+        runUpdate(node);
+        const kids = node.children;
+        for (let i = 0; i < kids.length; i++) updateWalk(kids[i]);
+      };
+      updateWalk(this.root);
+      for (const overlay of this.overlayRoot.children) updateWalk(overlay);
+    }
+
+    const wasmWorld = wasmMain ? this._syncWasmStore() : null;
+    const wasmSlotEntity = this._slotEntity;
+
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
     // for large scenes. Off-viewport entities with a known getBounds() are culled.
@@ -2935,43 +3495,64 @@ export class Scene {
       pf: number,
       parentOpacity: number,
     ) => {
-      if (isMainRenderer) {
-        node.update(dt, time);
-        if (!walkHadAnimation && node.hasPendingAnimations()) walkHadAnimation = true;
-        if (!walkHadInteractive && node.interactive) walkHadInteractive = true;
-
-        // Dev check: entity overrides update() but not hasPendingAnimations()
-        if (this._devActive && this._devFrameCount % 120 === 0) {
-          if (
-            node.update !== Entity.prototype.update &&
-            node.hasPendingAnimations === Entity.prototype.hasPendingAnimations
-          ) {
-            this._devWarn(
-              `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
-                'Custom motion in update() without overriding hasPendingAnimations() causes ' +
-                'the idle throttle to drop the animation to ~2fps. ' +
-                'Override hasPendingAnimations() to return true while motion is in flight.',
-            );
-          }
-        }
+      // JS mode: update() is interleaved with compose here. WASM mode already
+      // ran the update pre-pass above (so the store gather saw final transforms),
+      // so skip it here to avoid a double update().
+      if (isMainRenderer && !wasmMain) {
+        runUpdate(node);
       }
 
       // Compose parent * translate(x,y) * scale(sx,sy) * rotate(rot).
-      const cos = Math.cos(node.rotation);
-      const sin = Math.sin(node.rotation);
-      const te = pa * node.x + pc * node.y + pe;
-      const tf = pb * node.x + pd * node.y + pf;
-      const sxCos = node.scaleX * cos;
-      const sxSin = node.scaleX * sin;
-      const syCos = node.scaleY * cos;
-      const sySin = node.scaleY * sin;
-      // Canvas calls translate → scale → rotate, so the local matrix is
-      // T * S * R = [sx*cos, -sx*sin; sy*sin, sy*cos]. Keep culling,
-      // portals, and GPU fast paths in the exact same coordinate system.
-      const a = pa * sxCos + pc * sySin;
-      const b = pb * sxCos + pd * sySin;
-      const c = pa * -sxSin + pc * syCos;
-      const d = pb * -sxSin + pd * syCos;
+      // Six scalars of this node's world matrix. In the WASM path they are read
+      // from the pre-composed SoA store (bit-identical to the JS composition —
+      // proven by the differential tests); otherwise, and for any node the store
+      // does not cover (overlays, entities added after the store was built), they
+      // are composed here in JS. Either way the same a,b,c,d,te,tf flow into
+      // culling, _setWorldCache, and the child recursion below.
+      let a: number;
+      let b: number;
+      let c: number;
+      let d: number;
+      let te: number;
+      let tf: number;
+      const slot = node._storeSlot;
+      // Trust the slot only if it still maps back to this node in the current
+      // store — guards against a stale slot on an overlay/detached/reparented
+      // entity (which then falls back to the JS composition, never a wrong read).
+      if (wasmWorld !== null && slot >= 0 && wasmSlotEntity[slot] === node) {
+        a = wasmWorld.wa[slot];
+        b = wasmWorld.wb[slot];
+        c = wasmWorld.wc[slot];
+        d = wasmWorld.wd[slot];
+        te = wasmWorld.we[slot];
+        tf = wasmWorld.wf[slot];
+      } else {
+        // node._getTrig() caches cos/sin and only recomputes when rotation
+        // changes — most entities never rotate, so this skips two libm calls per
+        // node per frame (V8's Math.cos/sin are software, ~2.5x slower elsewhere).
+        const trig = node._getTrig();
+        const cos = trig.cos;
+        const sin = trig.sin;
+        te = pa * node.x + pc * node.y + pe;
+        tf = pb * node.x + pd * node.y + pf;
+        const sxCos = node.scaleX * cos;
+        const sxSin = node.scaleX * sin;
+        const syCos = node.scaleY * cos;
+        const sySin = node.scaleY * sin;
+        // Canvas calls translate → scale → rotate, so the local matrix is
+        // T * S * R = [sx*cos, -sx*sin; sy*sin, sy*cos]. Keep culling,
+        // portals, and GPU fast paths in the exact same coordinate system.
+        a = pa * sxCos + pc * sySin;
+        b = pb * sxCos + pd * sySin;
+        c = pa * -sxSin + pc * syCos;
+        d = pb * -sxSin + pd * syCos;
+      }
+      // Publish this node's world matrix for the current frame so ad-hoc
+      // getWorldTransform()/localToWorld() callers (hit-testing, content
+      // projection, app code) reuse it instead of re-walking the ancestor
+      // chain. Only the main renderer's walk is authoritative; secondary
+      // renderers (portals, overlays) must not overwrite the cache.
+      if (isMainRenderer) node._setWorldCache(a, b, c, d, te, tf, this.currentFrame);
       const worldScaleX = Math.hypot(a, b);
       const worldScaleY = Math.hypot(c, d);
       const worldOpacity = parentOpacity * node.opacity;
@@ -3194,11 +3775,20 @@ export class Scene {
    * Finds the topmost interactive entity at the given coordinates.
    */
   public findEntityAt(x: number, y: number): Entity | null {
-    // 1. Search overlay root first (drawn on top)
+    // 1. Search overlay root first (drawn on top). Overlays are never indexed
+    // by the WASM grid (modals/menus are few and rare — not worth
+    // accelerating), so this always uses the JS walk.
     const overlayHit = this.findHitRecursively(this.overlayRoot, x, y);
     if (overlayHit) return overlayHit;
 
-    // 2. Search main scene tree
+    // 2. Search main scene tree. The WASM path is conclusive whenever the
+    // grid is trustworthy (backend present, build didn't overflow) — it
+    // returns the correct entity or null, never "inconclusive" — so no
+    // further JS fallback is needed for that call. Otherwise (no backend, or
+    // an overflowing build) fall back to the permanent JS walk.
+    if (this._hitWasm && this._ensureHitGrid()) {
+      return this._findEntityAtWasm(x, y);
+    }
     return this.findHitRecursively(this.root, x, y);
   }
 

@@ -11,6 +11,7 @@ describe('Overlay animation', () => {
     (o as unknown as { _scene: unknown })._scene = {
       markDirty() {},
       prefersReducedMotion: false,
+      _registerActiveDriverEntity() {},
     };
     // Override the constructor's opacity transition with a deterministic tween.
     o.setTransition({ opacity: { duration: 100, easing: 'linear' } });

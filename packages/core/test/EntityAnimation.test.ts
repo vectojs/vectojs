@@ -16,7 +16,7 @@ describe('Entity animation', () => {
     const e = new TestEntity();
     e.x = 123;
     expect(e.x).toBe(123);
-    expect((e as unknown as { _drivers: Map<string, unknown> })._drivers.size).toBe(0);
+    expect((e as unknown as { _drivers: Map<string, unknown> | null })._drivers?.size ?? 0).toBe(0);
   });
 
   it('setTransition makes a configured property animate on assignment', () => {
@@ -34,8 +34,8 @@ describe('Entity animation', () => {
     const e = new TestEntity();
     const p = e.springTo({ opacity: 0 });
     let t = 0;
-    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
-    for (let i = 0; i < 600 && drivers.size > 0; i++) e.update(16, (t += 16));
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> | null })._drivers;
+    for (let i = 0; i < 600 && (drivers?.size ?? 0) > 0; i++) e.update(16, (t += 16));
     await p;
     expect(e.opacity).toBe(0); // snapped exactly to target on completion
   });
@@ -77,7 +77,7 @@ describe('Entity animation', () => {
     e.destroy();
 
     await pending; // must resolve, not hang forever
-    expect((e as unknown as { _drivers: Map<string, unknown> })._drivers.size).toBe(0);
+    expect((e as unknown as { _drivers: Map<string, unknown> | null })._drivers?.size ?? 0).toBe(0);
     expect(e.hasPendingAnimations()).toBe(false);
   });
 
@@ -93,11 +93,11 @@ describe('Entity animation', () => {
     const e = new TestEntity();
     e.setTransition({ x: 'spring' }); // declarative transition configured…
     e.animate({ x: 100 }, 100); // …but the legacy tween must own this animation
-    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> | null })._drivers;
     let t = 0;
     for (let i = 0; i < 10; i++) {
       e.update(16, (t += 16));
-      expect(drivers.size).toBe(0); // no per-frame driver spawn/retarget fight
+      expect(drivers?.size ?? 0).toBe(0); // no per-frame driver spawn/retarget fight
     }
     expect(e.x).toBeCloseTo(100, 4); // tween completed normally
   });
@@ -108,8 +108,8 @@ describe('Entity animation', () => {
     e.opacity = 0.2;
     expect(e.hasPendingAnimations()).toBe(true);
     let t = 0;
-    const drivers = (e as unknown as { _drivers: Map<string, unknown> })._drivers;
-    for (let i = 0; i < 600 && drivers.size > 0; i++) e.update(16, (t += 16));
+    const drivers = (e as unknown as { _drivers: Map<string, unknown> | null })._drivers;
+    for (let i = 0; i < 600 && (drivers?.size ?? 0) > 0; i++) e.update(16, (t += 16));
     expect(e.hasPendingAnimations()).toBe(false);
   });
 });
@@ -125,11 +125,12 @@ describe('Entity animation — reduced motion', () => {
     (e as unknown as { _scene: unknown })._scene = {
       prefersReducedMotion: reduced,
       markDirty() {},
+      _registerActiveDriverEntity() {},
     };
     return e;
   }
   const driverCount = (e: Entity) =>
-    (e as unknown as { _drivers: Map<string, unknown> })._drivers.size;
+    (e as unknown as { _drivers: Map<string, unknown> | null })._drivers?.size ?? 0;
 
   it('snaps movement props to target instantly when reduced motion is on', () => {
     const e = liveEntity(true);

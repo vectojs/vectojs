@@ -1,0 +1,14 @@
+# Rust toolchain for the WASM core. rustup reads this and auto-provisions the
+# channel, the wasm target, and clippy/rustfmt, so a fresh machine and CI compile
+# the crate identically with no manual `rustup target add`.
+#
+# Channel is `stable`, not an exact version, deliberately: an exact pin makes
+# rustup fetch that precise toolchain, which a mirror/offline dev box may not be
+# able to serve (blocking ALL local cargo). Exact-version reproducibility is
+# pinned at the CI layer instead (the CI toolchain action), where the download
+# always succeeds. Edition 2024 already sets the real floor (needs rustc ≥ 1.85).
+[toolchain]
+channel = "stable"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]
+profile = "minimal"

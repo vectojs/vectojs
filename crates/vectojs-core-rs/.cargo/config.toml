@@ -1,0 +1,19 @@
+# NOTE: these settings are necessary but NOT sufficient on this workspace.
+#
+# A global ~/.cargo/config.toml using [target.'cfg(all())'] matches
+# wasm32-unknown-unknown too, and Cargo *joins* those rustflags with
+# target-specific ones rather than letting the more specific entry win. A host
+# `target-cpu=native` or `link-arg=-fuse-ld=mold` therefore leaks into the wasm
+# build and the link fails with e.g. `rust-lld: error: unknown argument:
+# -fuse-ld=mold`.
+#
+# Always build through ./build.sh, which sets RUSTFLAGS explicitly (env
+# RUSTFLAGS replaces config rustflags instead of joining them). CI must do the
+# same.
+
+[build]
+rustflags = ["-C", "target-cpu=generic"]
+
+[target.wasm32-unknown-unknown]
+linker = "rust-lld"
+rustflags = ["-C", "target-cpu=generic", "-C", "target-feature=+simd128"]

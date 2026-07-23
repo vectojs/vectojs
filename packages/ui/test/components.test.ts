@@ -533,6 +533,7 @@ describe('Toggle', () => {
     (t as unknown as { _scene: unknown })._scene = {
       markDirty,
       prefersReducedMotion: false,
+      _registerActiveDriverEntity() {},
     };
 
     t.emit('change', { checked: true });
