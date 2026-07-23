@@ -125,6 +125,7 @@ describe('Entity animation — reduced motion', () => {
     (e as unknown as { _scene: unknown })._scene = {
       prefersReducedMotion: reduced,
       markDirty() {},
+      _registerActiveDriverEntity() {},
     };
     return e;
   }

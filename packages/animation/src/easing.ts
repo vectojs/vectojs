@@ -26,3 +26,13 @@ export const Easing = {
 
 /** Name of a built-in easing curve. */
 export type EasingName = keyof typeof Easing;
+
+/** Numeric id for each named easing, in the exact order `Easing` declares them.
+ *  Mirrored by `ease()` in `crates/vectojs-core-rs/src/anim.rs` — the WASM
+ *  batched-animation integration uses this to tell a "named easing" tween
+ *  (batchable) from a custom `EasingFn` closure (which cannot cross into WASM
+ *  and must stay on the JS tick path). Keep in sync with anim.rs by hand;
+ *  there is no codegen link between the two. */
+export const EASING_IDS: Record<EasingName, number> = Object.fromEntries(
+  Object.keys(Easing).map((name, i) => [name, i]),
+) as Record<EasingName, number>;

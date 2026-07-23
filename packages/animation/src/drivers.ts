@@ -1,5 +1,5 @@
 import { SpringPhysics } from '@vectojs/math';
-import { Easing, type EasingFn, type EasingName } from './easing';
+import { Easing, EASING_IDS, type EasingFn, type EasingName } from './easing';
 
 export interface SpringConfig {
   stiffness?: number;
@@ -28,6 +28,15 @@ export interface PropertyDriver {
   retarget(to: number): void;
   tick(dtMs: number): void;
   isDone(): boolean;
+  /**
+   * Overwrite internal state to match an externally-advanced step (e.g. a
+   * batched/offloaded tick that ran this driver's math elsewhere), so
+   * `tick()`/`isDone()`/`retarget()`/`value` all stay correct on every call
+   * afterward, regardless of who advanced the last step. `extra` carries a
+   * kind-specific second piece of state: velocity for a spring, elapsed-ms
+   * for a tween.
+   */
+  syncExternal(value: number, extra: number): void;
 }
 
 export class TweenDriver implements PropertyDriver {
@@ -38,6 +47,9 @@ export class TweenDriver implements PropertyDriver {
   private readonly duration: number;
   private readonly delay: number;
   private readonly ease: EasingFn;
+  /** Name of the resolved easing, or `null` for a custom `EasingFn` closure —
+   *  a closure cannot cross into WASM, so `null` means "JS-tick only". */
+  private readonly easingName: EasingName | null;
 
   constructor(from: number, to: number, cfg: TweenConfig) {
     this.value = from;
@@ -45,11 +57,29 @@ export class TweenDriver implements PropertyDriver {
     this.to = to;
     this.duration = Math.max(1, cfg.duration);
     this.delay = cfg.delay ?? 0;
+    this.easingName = typeof cfg.easing === 'function' ? null : (cfg.easing ?? 'easeOutQuad');
     this.ease = typeof cfg.easing === 'function' ? cfg.easing : Easing[cfg.easing ?? 'easeOutQuad'];
   }
 
   get target(): number {
     return this.to;
+  }
+
+  /** Numeric easing id for the batched WASM tween kernel, or `null` if this
+   *  tween uses a custom `EasingFn` and must stay on the JS `tick()` path. */
+  get wasmEasingId(): number | null {
+    return this.easingName === null ? null : EASING_IDS[this.easingName];
+  }
+
+  /** Read-only snapshot the batched WASM tween kernel gathers from. */
+  wasmGather(): { from: number; to: number; elapsed: number; duration: number; delay: number } {
+    return {
+      from: this.from,
+      to: this.to,
+      elapsed: this.elapsed,
+      duration: this.duration,
+      delay: this.delay,
+    };
   }
 
   retarget(to: number): void {
@@ -68,6 +98,12 @@ export class TweenDriver implements PropertyDriver {
 
   isDone(): boolean {
     return this.elapsed - this.delay >= this.duration;
+  }
+
+  /** Write back a WASM-advanced (value, elapsedMs) pair. */
+  syncExternal(value: number, elapsedMs: number): void {
+    this.value = value;
+    this.elapsed = elapsedMs;
   }
 }
 
@@ -100,5 +136,30 @@ export class SpringDriver implements PropertyDriver {
 
   isDone(): boolean {
     return this.spring.isAtRest();
+  }
+
+  /** Write back a WASM-advanced (value, velocity) pair. */
+  syncExternal(value: number, velocity: number): void {
+    this.spring.value = value;
+    this.spring.velocity = velocity;
+  }
+
+  /** Read-only snapshot the batched WASM spring kernel gathers from. */
+  wasmGather(): {
+    value: number;
+    target: number;
+    velocity: number;
+    stiffness: number;
+    damping: number;
+    mass: number;
+  } {
+    return {
+      value: this.spring.value,
+      target: this.spring.target,
+      velocity: this.spring.velocity,
+      stiffness: this.spring.stiffness,
+      damping: this.spring.damping,
+      mass: this.spring.mass,
+    };
   }
 }

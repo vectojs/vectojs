@@ -454,6 +454,14 @@ export abstract class Entity {
   private _drivers: Map<AnimatableProp, PropertyDriver> | null = null;
   private _mounted = false;
 
+  // Frame this entity's active drivers were last advanced by Scene's batched
+  // WASM animation pass (see Scene._tickBatchedDrivers), or -1 if never. When
+  // it equals the current frame, tickDrivers() must skip its own tick loop —
+  // otherwise a driver already advanced by the batch pass would be ticked a
+  // second time by the normal per-entity update() walk in the same frame.
+  // Irrelevant (and harmless) for entities never touched by WASM batching.
+  public _driversTickedFrame = -1;
+
   // Cached cos/sin, recomputed only when rotation actually changes. renderNode
   // and getWorldTransform() both read this instead of calling Math.cos/sin per
   // entity per frame (V8's are ~2.5x slower than other engines).
@@ -778,6 +786,10 @@ export abstract class Entity {
       : new SpringDriver(from, to, cfg === 'spring' ? {} : (cfg as SpringConfig));
     (this._drivers ??= new Map()).set(prop, driver);
     this.scene?.markDirty();
+    // Register with Scene's batched-driver candidate set (cheap, self-pruning
+    // O(1) add — see Scene._registerActiveDriverEntity) so the WASM batch pass
+    // can find active drivers without walking the whole tree every frame.
+    this.scene?._registerActiveDriverEntity(this);
   }
 
   /** Assignment path when a declarative transition is configured for `prop`. */
@@ -839,6 +851,12 @@ export abstract class Entity {
   /** Advance active property drivers one frame. Call from update(). */
   protected tickDrivers(dt: number): void {
     if (!this._drivers || this._drivers.size === 0) return;
+    // Scene's batched WASM animation pass (if enabled and its driver-count gate
+    // is open) already advanced every driver on this entity earlier this same
+    // frame — ticking again here would double-advance them. See
+    // _driversTickedFrame's own comment for why this can never mask a real
+    // frame drop: the stamp only ever matches the CURRENT frame.
+    if (this.scene && this._driversTickedFrame === this.scene.currentFrame) return;
     for (const [prop, driver] of this._drivers) {
       driver.tick(dt);
       if (driver.isDone()) {
@@ -850,6 +868,38 @@ export abstract class Entity {
       }
     }
     this.scene?.markDirty();
+  }
+
+  /**
+   * Internal: iterate this entity's active property drivers. Called only by
+   * Scene's batched WASM animation pass, never application code.
+   */
+  public _forEachDriver(fn: (prop: AnimatableProp, driver: PropertyDriver) => void): void {
+    if (!this._drivers) return;
+    for (const [prop, driver] of this._drivers) fn(prop, driver);
+  }
+
+  /**
+   * Internal: finalize one driver that was ALREADY advanced externally this
+   * frame (e.g. by Scene's batched WASM tick via `driver.syncExternal`, or a
+   * direct `driver.tick()` call for a driver the batch can't offload) —
+   * exactly mirrors tickDrivers()'s own per-driver completion logic, so a
+   * driver behaves identically regardless of which path ticked it. Called
+   * only by Scene, never application code.
+   */
+  public _applyDriverTick(prop: AnimatableProp, driver: PropertyDriver): void {
+    if (driver.isDone()) {
+      this._applyAnimated(prop, driver.target);
+      this._settleDriver(driver);
+      this._drivers?.delete(prop);
+    } else {
+      this._applyAnimated(prop, driver.value);
+    }
+  }
+
+  /** Internal: true if this entity currently has any active property driver. */
+  public _hasActiveDrivers(): boolean {
+    return !!this._drivers && this._drivers.size > 0;
   }
 
   /**

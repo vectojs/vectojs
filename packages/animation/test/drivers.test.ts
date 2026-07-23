@@ -30,6 +30,33 @@ describe('TweenDriver', () => {
     d.tick(100);
     expect(d.value).toBeCloseTo(0, 6);
   });
+
+  it('wasmEasingId resolves to a stable id for a named easing, null for a custom EasingFn', () => {
+    const named = new TweenDriver(0, 1, { duration: 100, easing: 'easeOutCubic' });
+    expect(named.wasmEasingId).toBe(5); // matches EASING_IDS / anim.rs ease() order
+    const custom = new TweenDriver(0, 1, { duration: 100, easing: (t) => t });
+    expect(custom.wasmEasingId).toBeNull();
+    const defaulted = new TweenDriver(0, 1, { duration: 100 }); // defaults to easeOutQuad
+    expect(defaulted.wasmEasingId).toBe(2);
+  });
+
+  it('wasmGather reflects current from/to/elapsed/duration/delay', () => {
+    const d = new TweenDriver(0, 10, { duration: 200, delay: 20, easing: 'linear' });
+    d.tick(50);
+    expect(d.wasmGather()).toEqual({ from: 0, to: 10, elapsed: 50, duration: 200, delay: 20 });
+  });
+
+  it('syncExternal overwrites value + elapsed so tick()/isDone() stay correct afterward', () => {
+    const d = new TweenDriver(0, 100, { duration: 200, easing: 'linear' });
+    // Simulate an externally-advanced step (e.g. a batched WASM tick) that
+    // moved this tween to 75% complete without ever calling d.tick().
+    d.syncExternal(75, 150);
+    expect(d.value).toBe(75);
+    expect(d.isDone()).toBe(false);
+    d.tick(50); // remaining 25% -> done
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBeCloseTo(100, 6);
+  });
 });
 
 describe('SpringDriver', () => {
@@ -48,5 +75,30 @@ describe('SpringDriver', () => {
     d.retarget(2);
     const after = d.value;
     expect(after).toBeCloseTo(before, 9); // no snap on retarget
+  });
+
+  it('wasmGather reflects current value/target/velocity/stiffness/damping/mass', () => {
+    const d = new SpringDriver(0, 1, { stiffness: 200, damping: 20, mass: 2 });
+    d.tick(16);
+    const g = d.wasmGather();
+    expect(g.target).toBe(1);
+    expect(g.stiffness).toBe(200);
+    expect(g.damping).toBe(20);
+    expect(g.mass).toBe(2);
+    expect(g.value).toBe(d.value);
+  });
+
+  it('syncExternal overwrites value + velocity so tick()/isDone()/retarget() stay correct afterward', () => {
+    const d = new SpringDriver(0, 1, {});
+    // Simulate an externally-advanced step (e.g. a batched WASM tick) that
+    // landed the spring already at rest, without ever calling d.tick().
+    d.syncExternal(1, 0);
+    expect(d.value).toBe(1);
+    expect(d.isDone()).toBe(true);
+    d.retarget(2);
+    expect(d.isDone()).toBe(false);
+    for (let i = 0; i < 600 && !d.isDone(); i++) d.tick(16);
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBeCloseTo(2, 3);
   });
 });
