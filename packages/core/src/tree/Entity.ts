@@ -1104,6 +1104,29 @@ export abstract class Entity {
   }
 
   /**
+   * Internal: read this entity's cached world matrix into `out` — the SAME
+   * cache {@link getWorldTransform} reads — without allocating a wrapper
+   * object. Returns `false` (leaving `out` untouched) when the cache isn't
+   * valid for `frame` (typically the caller's `scene.currentFrame`), exactly
+   * mirroring {@link getWorldTransform}'s own validity check; the caller
+   * falls back to {@link getWorldTransform}'s full walk in that case. Exists
+   * so a per-entity gather that runs every entity through this (e.g. G3's
+   * `gatherHitAABBs`) pays for six scalar reads instead of one object
+   * allocation per entity per call — the exact class of per-frame garbage
+   * the G2 integrated benchmark found dominating its own gather cost.
+   */
+  public _readWorldCache(frame: number, out: AffineTransform): boolean {
+    if (this._worldFrame < 0 || this._worldFrame !== frame) return false;
+    out.a = this._wa;
+    out.b = this._wb;
+    out.c = this._wc;
+    out.d = this._wd;
+    out.e = this._we;
+    out.f = this._wf;
+    return true;
+  }
+
+  /**
    * Return the exact accumulated Canvas `T * S * R` transform for this entity.
    */
   public getWorldTransform(): AffineTransform {

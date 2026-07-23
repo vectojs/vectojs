@@ -905,7 +905,7 @@ export class Scene {
     if (!backend) return false;
     if (this._hitGridFrame === this.currentFrame) return this._hitGridOk;
 
-    const gathered = gatherHitAABBs(this.root);
+    const gathered = gatherHitAABBs(this.root, this.currentFrame);
     // ensure() must run BEFORE writing AABBs: a capacity growth detaches the
     // previous typed-array views, so sizing after writing would write into a
     // stale buffer.

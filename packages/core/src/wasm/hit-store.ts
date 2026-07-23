@@ -21,7 +21,7 @@
  * instead, each tagged with its index, so the caller can still check them and
  * compare against the grid's best candidate by that same index.
  */
-import type { Entity } from '../tree/Entity';
+import type { AffineTransform, Entity } from '../tree/Entity';
 
 export interface HitGatherResult {
   /** Total entities visited (bounded + boundless); the grid's `count`. */
@@ -38,14 +38,23 @@ export interface HitGatherResult {
   maxy: Float64Array;
 }
 
-/** Walk `root` and all descendants into a flat, pre-order-indexed AABB set. */
-export function gatherHitAABBs(root: Entity): HitGatherResult {
+/** Walk `root` and all descendants into a flat, pre-order-indexed AABB set.
+ *  `currentFrame` is the scene's frame counter — passed through to
+ *  {@link Entity._readWorldCache} so the common case (every entity was
+ *  rendered this same frame, which the "gather right after a render" call
+ *  site always guarantees) reads six cached scalars per entity instead of
+ *  allocating a fresh `{a,b,c,d,e,f}` object via `getWorldTransform()`. */
+export function gatherHitAABBs(root: Entity, currentFrame: number): HitGatherResult {
   const slotEntity: Entity[] = [];
   const boundless: Array<{ entity: Entity; index: number }> = [];
   const minxs: number[] = [];
   const minys: number[] = [];
   const maxxs: number[] = [];
   const maxys: number[] = [];
+  // Reused across every entity — _readWorldCache overwrites it in place, and
+  // getWorldTransform()'s fallback result is copied out of it immediately, so
+  // nothing ever reads a stale value left over from a previous entity.
+  const scratch: AffineTransform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
   const visit = (node: Entity): void => {
     const index = slotEntity.length;
@@ -58,7 +67,18 @@ export function gatherHitAABBs(root: Entity): HitGatherResult {
       maxxs.push(0);
       maxys.push(0);
     } else {
-      const { a, b, c, d, e, f } = node.getWorldTransform();
+      if (!node._readWorldCache(currentFrame, scratch)) {
+        // Rare fallback (entity not touched by this frame's render walk) —
+        // still allocates, but only here, not on the common per-entity path.
+        const t = node.getWorldTransform();
+        scratch.a = t.a;
+        scratch.b = t.b;
+        scratch.c = t.c;
+        scratch.d = t.d;
+        scratch.e = t.e;
+        scratch.f = t.f;
+      }
+      const { a, b, c, d, e, f } = scratch;
       let minX = Infinity;
       let minY = Infinity;
       let maxX = -Infinity;
