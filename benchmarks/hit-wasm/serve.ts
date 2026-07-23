@@ -6,10 +6,12 @@
  */
 
 import { resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 const ROOT = new URL('.', import.meta.url).pathname;
 /** Only files under page/ are servable; everything else is a 403. */
 const PAGE_ROOT = resolve(ROOT, 'page');
+const PAGE_ROOT_REAL = realpathSync(PAGE_ROOT);
 
 const ISOLATION = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -102,13 +104,24 @@ Bun.serve({
     //
     // Resolve then containment-check: browsers normalize `..` before sending,
     // but a raw client (curl --path-as-is) does not, so the check has to happen
-    // here rather than relying on the caller.
+    // here rather than relying on the caller. The lexical check alone blocks
+    // `..` traversal but not a symlink inside page/ pointing outside it, so the
+    // real (symlink-resolved) path is re-checked before the file is served.
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     const resolved = resolve(PAGE_ROOT, '.' + requested);
     if (resolved !== PAGE_ROOT && !resolved.startsWith(PAGE_ROOT + sep)) {
       return new Response('forbidden', { status: 403 });
     }
-    const file = Bun.file(resolved);
+    let real: string;
+    try {
+      real = realpathSync(resolved);
+    } catch {
+      return new Response('not found', { status: 404 });
+    }
+    if (real !== PAGE_ROOT_REAL && !real.startsWith(PAGE_ROOT_REAL + sep)) {
+      return new Response('forbidden', { status: 403 });
+    }
+    const file = Bun.file(real);
     if (!(await file.exists())) return new Response('not found', { status: 404 });
     const path = requested;
     const type = path.endsWith('.wasm')
