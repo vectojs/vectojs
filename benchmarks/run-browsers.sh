@@ -47,7 +47,24 @@ start_server() {
   local pid
   pid=$(ss -ltnp 2>/dev/null | grep -oP "${PORT}.*pid=\K[0-9]+" | head -1 || true)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && sleep 1
-  (cd "$BENCH" && PORT="$PORT" setsid bun run serve.ts >"/tmp/${BENCH}-server.log" 2>&1 </dev/null &)
+  # `serve.ts` never exits on its own (it's a long-running HTTP server, by
+  # design — left running so a later invocation can reuse it). `setsid --fork`
+  # (not bare `setsid`, and `disown` alone does NOT substitute for this) is
+  # required here: bash waits for the async children of a subshell/pipeline
+  # component before it will actually exit, REGARDLESS of `disown` — this is
+  # unconditional bash behavior (confirmed by removing every `set -e/-u/-m
+  # /pipefail` option and reproducing it anyway), not a job-control tracking
+  # bug, so it bites this script whenever its own output is piped (e.g. `|
+  # tee`, common when a caller wants a saved log). `--fork` forces a real
+  # double-fork: the immediate child exits right away and `bun` gets
+  # reparented to the nearest subreaper (verified: PPID becomes `systemd
+  # --user`'s PID, not this script's), so this script has no async child left
+  # to wait for at all. Found via `cat /proc/<pid>/wchan` showing `do_wait` on
+  # the driver script itself (not a stray child) over an hour after a run had
+  # visibly completed, then confirmed with a minimal standalone repro outside
+  # any of this script's other logic.
+  (cd "$BENCH" && PORT="$PORT" setsid --fork bun run serve.ts >"/tmp/${BENCH}-server.log" 2>&1 </dev/null) &
+  disown
   for _ in $(seq 1 20); do
     curl -sf -o /dev/null "$URL" && return 0
     sleep 0.3
@@ -77,18 +94,39 @@ close_and_return() {
 }
 
 run_one() {
-  local browser="$1" bin class cmd addr waited out before
+  local browser="$1" bin class cmd addr waited out before profile_dir
   local timeout=$RUN_TIMEOUT extend=$RUN_EXTEND
+  # A fresh, disposable profile/user-data dir per run — not just for a clean
+  # slate, but for correctness: both browsers default to a SINGLE-INSTANCE
+  # lock tied to their default profile, so without this, `--incognito`/
+  # `--private-window` against an already-running instance (e.g. the user's
+  # own daily-driver browser) silently hands the request to that instance
+  # instead of spawning a new one. That new window then opens wherever the
+  # EXISTING instance's session already lives — not on `$WORKSPACE` — so
+  # `window_on_workspace` never finds it (looks like "didn't launch"), and if
+  # it's ever found by luck, the run's timing shares that instance's other
+  # tabs/CPU/memory, contaminating whatever the benchmark measures. This
+  # showed up as "Firefox takes a long time to start, sometimes doesn't start
+  # at all" — confirmed via `hyprctl clients` showing the user's real Firefox
+  # (a single window, workspace 1, running since before any benchmark) while
+  # `ps` showed a dozen+ freshly-spawned Firefox content processes under that
+  # SAME long-lived parent PID, timed to match the benchmark runs.
+  profile_dir=$(mktemp -d)
+  trap 'rm -rf "$profile_dir"' RETURN
   case "$browser" in
     chrome)
       bin=$(command -v google-chrome-stable || command -v chromium || true)
       class="chrome"
-      cmd="$bin --incognito --new-window $URL"
+      cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
       ;;
     firefox)
       bin=$(command -v firefox || true)
       class="firefox"
-      cmd="$bin --private-window $URL"
+      # --new-instance is the documented fix ("Open new instance, not a new
+      # window in running instance" — `firefox --help`); --profile with a
+      # fresh directory additionally avoids any profile-lock contention with
+      # a concurrently running default-profile Firefox.
+      cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
       ;;
     *) echo "unknown browser: $browser" >&2; return 1 ;;
   esac
