@@ -139,4 +139,78 @@ describe.skipIf(!haveWasm)('G3 spike — hit-test broad-phase', () => {
     ex.hit_build(1, VW, VH, CS);
     expect(ex.hit_overflow()).toBe(1);
   });
+
+  // Regression coverage for the security review on the initial G3 spike: a raw
+  // pointer kernel over wasm linear memory must stay memory-safe even when a
+  // caller passes a bogus `count`, or when the grid genuinely overflows its
+  // item capacity — neither should ever read outside the allocated buffers.
+  it('clamps an over-large count to the allocated capacity instead of reading OOB', () => {
+    const VW = 400;
+    const VH = 300;
+    const CS = 64;
+    const gw = Math.ceil(VW / CS);
+    const gh = Math.ceil(VH / CS);
+    const ENTITY_CAP = 4;
+    const { ex, minx, miny, maxx, maxy } = instantiate(ENTITY_CAP, gw * gh, 64);
+
+    for (let i = 0; i < ENTITY_CAP; i++) {
+      minx[i] = 50 + i * 10;
+      miny[i] = 50;
+      maxx[i] = minx[i] + 8;
+      maxy[i] = 58;
+    }
+    // A count far beyond what hit_init allocated. Before the fix this walked
+    // cell_range's reads past the minx/miny/maxx/maxy buffers (into whatever
+    // the next leaked array happens to be in linear memory); now hit_build
+    // clamps it internally, so the call must not throw/trap and results must
+    // stay confined to real, allocated entities.
+    expect(() => ex.hit_build(1_000_000, VW, VH, CS)).not.toThrow();
+    const got = ex.hit_query(54, 54);
+    expect(got).toBeGreaterThanOrEqual(-1);
+    expect(got).toBeLessThan(ENTITY_CAP);
+  });
+
+  it('keeps every hit_query result in-bounds under item_cap overflow (no OOB read, no crash)', () => {
+    const VW = 640;
+    const VH = 640;
+    const CS = 32;
+    const gw = Math.ceil(VW / CS);
+    const gh = Math.ceil(VH / CS);
+    const ENTITY_CAP = 5;
+    // item_cap sized to overflow entity 0 (which spans the whole viewport).
+    // Note: item_cap is a single flat budget shared across ALL cells (a cell's
+    // write offset is its position in one global counting-sort layout), so an
+    // overflowing entity can legitimately crowd out registrations for OTHER
+    // cells too — that is a resource/QoS tradeoff (an entity may not register
+    // in the grid and its cell then reports fewer/no hits), not a safety bug.
+    // The property this test protects is the one the security review flagged:
+    // no result may ever read outside the allocated buffers.
+    const { ex, minx, miny, maxx, maxy } = instantiate(ENTITY_CAP, gw * gh, 4);
+
+    minx[0] = 0;
+    miny[0] = 0;
+    maxx[0] = VW;
+    maxy[0] = VH; // spans every cell — will overflow the tiny item_cap
+    minx[1] = 300;
+    miny[1] = 300;
+    maxx[1] = 320;
+    maxy[1] = 320;
+
+    ex.hit_build(2, VW, VH, CS);
+    expect(ex.hit_overflow()).toBe(1);
+
+    // Before the fix, cell_count was never reconciled to what Pass 2 actually
+    // wrote, so a query could read stale/garbage `idx` values out of `items`
+    // (or past `items` entirely) and then index the AABB arrays with them.
+    // Every result must now be -1 or a valid, in-bounds entity index.
+    const rand = ((seed: number) => {
+      let s = seed >>> 0;
+      return () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0x100000000);
+    })(0x5eed);
+    for (let t = 0; t < 500; t++) {
+      const got = ex.hit_query(rand() * VW, rand() * VH);
+      expect(got).toBeGreaterThanOrEqual(-1);
+      expect(got).toBeLessThan(ENTITY_CAP);
+    }
+  });
 });

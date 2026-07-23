@@ -41,6 +41,7 @@ struct Hit {
     grid_w: i32,
     grid_h: i32,
     cell_size: f64,
+    entity_cap: usize, // allocated length of minx/miny/maxx/maxy (incl. tail pad)
     cell_cap: usize,
     item_cap: usize,
     item_overflow: i32, // set if a build needed more item slots than allocated
@@ -58,6 +59,7 @@ static mut H: Hit = Hit {
     grid_w: 0,
     grid_h: 0,
     cell_size: 64.0,
+    entity_cap: 0,
     cell_cap: 0,
     item_cap: 0,
     item_overflow: 0,
@@ -88,6 +90,7 @@ pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) 
         H.cell_count = leak_i32(cell_cap);
         H.cursor = leak_i32(cell_cap);
         H.items = leak_i32(item_cap);
+        H.entity_cap = e;
         H.cell_cap = cell_cap;
         H.item_cap = item_cap;
     }
@@ -125,9 +128,13 @@ fn clampi(v: i32, lo: i32, hi: i32) -> i32 {
 
 /// Build the grid from the first `count` AABBs, covering `[0,vw] x [0,vh]` at
 /// `cell_size`. Counting sort: count per cell, prefix-sum to offsets, scatter.
+/// `count` is clamped to the capacity `hit_init` allocated, so a caller passing
+/// a stale/too-large count can never walk `cell_range`'s reads past the AABB
+/// arrays — the excess entities are silently not indexed rather than read OOB.
 #[unsafe(no_mangle)]
 pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
     unsafe {
+        let count = count.min(H.entity_cap);
         let cs = if cell_size > 0.0 { cell_size } else { 64.0 };
         let gw = ((vw / cs).ceil() as i32).max(1);
         let gh = ((vh / cs).ceil() as i32).max(1);
@@ -195,6 +202,19 @@ pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
                 }
             }
         }
+
+        // Reconcile cell_count to what Pass 2 ACTUALLY wrote. Under item_cap
+        // overflow, `cursor` stops advancing for a cell once item_cap is hit, so
+        // `cursor[c] - cell_start[c]` can be less than the Pass-1 count for that
+        // cell (and, near the end of the buffer, `cell_start[c] + count[c]` could
+        // exceed `item_cap` entirely). Without this, hit_query would read
+        // `items` past what was written — either uninitialized/stale slots (a
+        // stale `idx` then indexes the AABB arrays out of bounds) or, in the
+        // worst case, past the `items` allocation itself. This makes cell_count
+        // always describe real, in-bounds data regardless of overflow.
+        for c in 0..cells {
+            *H.cell_count.add(c) = *H.cursor.add(c) - *H.cell_start.add(c);
+        }
     }
 }
 
@@ -251,7 +271,18 @@ pub extern "C" fn hit_query(px: f64, py: f64) -> i32 {
         let cnt = *H.cell_count.add(c);
         let mut best = -1i32;
         for k in 0..cnt {
-            let idx = *H.items.add((start + k) as usize);
+            let slot = (start + k) as usize;
+            if slot >= H.item_cap {
+                break; // cell_count is reconciled post-build, but stay defensive
+            }
+            let idx = *H.items.add(slot);
+            // Defense in depth: idx is always a valid entity index by
+            // construction (written only from `i` in `0..count`, itself clamped
+            // to entity_cap above), but never trust a raw pointer read as a
+            // bounds guarantee — validate before it indexes the AABB arrays.
+            if idx < 0 || (idx as usize) >= H.entity_cap {
+                continue;
+            }
             let ax0 = *H.minx.add(idx as usize);
             let ay0 = *H.miny.add(idx as usize);
             let ax1 = *H.maxx.add(idx as usize);
