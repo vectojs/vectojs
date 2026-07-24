@@ -1,9 +1,9 @@
 // @vitest-environment node
 // G2 spike — correctness of the batched animation kernels BEFORE trusting any
-// benchmark number. Spring must be BIT-IDENTICAL to @vectojs/math SpringPhysics
-// (pure arithmetic); tween matches @vectojs/animation TweenDriver to ~1e-9 but
-// NOT bit-for-bit, because its cubic/back easings use Math.pow(_,3) on the JS
-// side and Rust's powi cannot reproduce V8's pow to the last ULP.
+// benchmark number. Spring is BIT-IDENTICAL to @vectojs/math SpringPhysics
+// (pure arithmetic); tween is now BIT-IDENTICAL to @vectojs/animation
+// TweenDriver too — both sides express integer-power easings as explicit
+// multiplication (no Math.pow/powi), so the old ~1e-9 ULP gap is closed.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -108,7 +108,7 @@ describe.skipIf(!haveWasm)('G2 spike — animation kernels', () => {
     }
   });
 
-  it('tween_step matches TweenDriver to ~1e-9 (easing ULP caveat)', () => {
+  it('tween_step matches TweenDriver bit-for-bit (explicit-multiply easings)', () => {
     const N = EASINGS.length * 20;
     const { ex, view } = instantiate(1, N);
     const tFrom = view(ex.p_t_from(), N);
@@ -134,7 +134,13 @@ describe.skipIf(!haveWasm)('G2 spike — animation kernels', () => {
       tDelay[i] = delay;
       tEase[i] = easingId;
       tVal[i] = from; // TweenDriver seeds value = from
-      js.push(new TweenDriver(from, to, { duration, delay, easing: EASINGS[easingId] }));
+      js.push(
+        new TweenDriver(from, to, {
+          duration,
+          delay,
+          easing: EASINGS[easingId],
+        }),
+      );
     }
 
     const dtMs = 1000 / 60;
@@ -142,7 +148,9 @@ describe.skipIf(!haveWasm)('G2 spike — animation kernels', () => {
       ex.tween_step(dtMs, N);
       for (let i = 0; i < N; i++) js[i].tick(dtMs);
       for (let i = 0; i < N; i++) {
-        expect(tVal[i]).toBeCloseTo(js[i].value, 9);
+        // Bit-for-bit: both sides now express integer-power easings as explicit
+        // multiplication, so there is no ULP gap left to tolerate.
+        expect(tVal[i]).toBe(js[i].value);
       }
     }
   });

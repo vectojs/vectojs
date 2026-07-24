@@ -5,22 +5,46 @@ export type EasingFn = (t: number) => number;
 const c1 = 1.70158;
 const c3 = c1 + 1;
 
-/** Curated easing set. Add sparingly — every entry must map f(0)=0, f(1)=1. */
+/** Curated easing set. Add sparingly — every entry must map f(0)=0, f(1)=1.
+ *
+ *  Integer powers are written as explicit multiplication (`x * x`, `x * x * x`)
+ *  rather than `Math.pow(x, 2/3)`. `Math.pow` is not specified to be correctly
+ *  rounded and V8/SpiderMonkey/JSC diverge in the last ULP for integer
+ *  exponents, whereas IEEE-754 multiplication is deterministic on every engine.
+ *  This also lets the WASM `ease()` kernel (crates/vectojs-core-rs/src/anim.rs)
+ *  match these outputs **bit-for-bit** — it likewise uses plain multiplication,
+ *  so the batched tween path is not merely close (~1e-9) but exactly equal. */
 export const Easing = {
   linear: (t: number): number => t,
   easeInQuad: (t: number): number => t * t,
   easeOutQuad: (t: number): number => t * (2 - t),
-  easeInOutQuad: (t: number): number => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2),
+  easeInOutQuad: (t: number): number => {
+    if (t < 0.5) return 2 * t * t;
+    const u = -2 * t + 2;
+    return 1 - (u * u) / 2;
+  },
   easeInCubic: (t: number): number => t * t * t,
-  easeOutCubic: (t: number): number => 1 - Math.pow(1 - t, 3),
-  easeInOutCubic: (t: number): number =>
-    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
-  easeOutBack: (t: number): number => 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2),
+  easeOutCubic: (t: number): number => {
+    const u = 1 - t;
+    return 1 - u * u * u;
+  },
+  easeInOutCubic: (t: number): number => {
+    if (t < 0.5) return 4 * t * t * t;
+    const u = -2 * t + 2;
+    return 1 - (u * u * u) / 2;
+  },
+  easeOutBack: (t: number): number => {
+    const u = t - 1;
+    return 1 + c3 * (u * u * u) + c1 * (u * u);
+  },
   easeInOutBack: (t: number): number => {
     const c2 = c1 * 1.525;
-    return t < 0.5
-      ? (Math.pow(2 * t, 2) * ((c2 + 1) * 2 * t - c2)) / 2
-      : (Math.pow(2 * t - 2, 2) * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
+    if (t < 0.5) {
+      const u = 2 * t;
+      return (u * u * ((c2 + 1) * 2 * t - c2)) / 2;
+    }
+    const u = 2 * t - 2;
+    return (u * u * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
   },
 } satisfies Record<string, EasingFn>;
 
