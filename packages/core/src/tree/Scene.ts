@@ -2415,34 +2415,42 @@ export class Scene {
 
   private syncContentProjection(node: Entity): void {
     if (!this.contentProjectionEnabled || !this.a11yRoot) return;
-    const projection = node.getContentProjection();
     let el = this.contentElements.get(node.id);
 
-    if (!projection || !projection.text) {
+    const releaseProjectionEl = (): void => {
       if (el) {
         this.clearContentGridState(node.id, el);
         el.remove();
         this.contentElements.delete(node.id);
         this.a11yNeedsReorder = true;
       }
-      return;
-    }
+    };
 
-    // Virtualize: only materialize projections near the viewport. Without this,
-    // a document taller than the screen creates a DOM element (plus a `<span>`
-    // per visual line) for EVERY block — measured 14.8k elements for a 346KB
-    // Markdown doc — which dominates heap and forces the browser to reflow all
-    // of them whenever the view scrolls. Far-off-screen projections are freed
-    // here and re-materialized when they scroll back within the margin.
+    // Virtualize FIRST, before computing the projection. Only materialize
+    // projections near the viewport. Without this, a document taller than the
+    // screen creates a DOM element (plus a `<span>` per visual line) for EVERY
+    // block — measured 14.8k elements for a 346KB Markdown doc — which dominates
+    // heap and forces the browser to reflow all of them whenever the view
+    // scrolls. Far-off-screen projections are freed here and re-materialized
+    // when they scroll back within the margin.
+    //
+    // The gate is hoisted ABOVE getContentProjection() on purpose: that call is
+    // O(glyphs-in-block) and, run unconditionally for every block every synced
+    // frame, made a streaming/long document cost O(total document glyphs) per
+    // frame — the dominant driver of the streaming FPS decay (CTX-0024). The
+    // gate needs only node/worldTf/margin, not the projection, so off-viewport
+    // blocks now cost O(1). (carryctx CTX-0024)
     const worldTf = node.getWorldTransform();
     const margin = this.contentProjectionMargin ?? this.height;
     if (Number.isFinite(margin) && !this.projectionBoxVisible(node, worldTf, margin)) {
-      if (el) {
-        this.clearContentGridState(node.id, el);
-        el.remove();
-        this.contentElements.delete(node.id);
-        this.a11yNeedsReorder = true;
-      }
+      releaseProjectionEl();
+      return;
+    }
+
+    const projection = node.getContentProjection();
+
+    if (!projection || !projection.text) {
+      releaseProjectionEl();
       return;
     }
 
