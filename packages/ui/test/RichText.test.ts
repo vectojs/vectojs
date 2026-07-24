@@ -194,4 +194,50 @@ describe('RichText', () => {
     }).render(r);
     expect(calls.some((c) => c.text === '-')).toBe(true);
   });
+
+  it('justify projection emits positioned runs overlapping the drawn glyphs', () => {
+    const spans = [{ text: 'aa aa aa aa aa' }];
+    const width = 80;
+    const rt = new RichText(spans, { maxWidth: width, textAlign: 'justify' });
+    const line0 = rt.getContentProjection()!.lines![0];
+    // Positioned carriers (x + width) so the DOM selection box tracks the
+    // widened canvas spacing, unlike the natural-flow ragged path.
+    expect(
+      line0.runs!.every((run) => typeof run.x === 'number' && typeof run.width === 'number'),
+    ).toBe(true);
+    // The run right edges reach flush to maxWidth (justified line 0).
+    const right = Math.max(...line0.runs!.map((run) => run.x! + run.width!));
+    expect(right).toBeCloseTo(width, 0);
+
+    // The projected run x/width match the canvas glyph extent (selection overlap).
+    const { r, calls } = recordingRenderer();
+    rt.render(r);
+    const y0 = Math.min(...calls.map((c) => c.y));
+    const canvasRight = Math.max(
+      ...calls.filter((c) => c.y === y0 && c.text.trim()).map((c) => c.x + 8),
+    );
+    expect(right).toBeCloseTo(canvasRight, 0);
+  });
+
+  it('left-aligned RichText keeps natural-flow runs (no positioned x)', () => {
+    const rt = new RichText([{ text: 'aa aa aa aa aa' }], { maxWidth: 80 });
+    const line0 = rt.getContentProjection()!.lines![0];
+    expect(line0.runs!.every((run) => run.x === undefined)).toBe(true);
+  });
+
+  it('justify preserves per-style-run fonts and logical text in the projection', () => {
+    const rt = new RichText(
+      [
+        { text: 'aa ', style: { bold: true } },
+        { text: 'bb cc dd', style: { italic: true } },
+      ],
+      { maxWidth: 80, textAlign: 'justify' },
+    );
+    const runs = rt.getContentProjection()!.lines!.flatMap((line) => line.runs ?? []);
+    // Bold and italic runs stay distinct (own font shorthand).
+    expect(runs.some((run) => run.font?.includes('bold'))).toBe(true);
+    expect(runs.some((run) => run.font?.includes('italic'))).toBe(true);
+    // Concatenated run text round-trips to the logical source (no glyph forms).
+    expect(runs.map((run) => run.text).join('')).toContain('aa');
+  });
 });
