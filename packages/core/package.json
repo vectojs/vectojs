@@ -46,7 +46,13 @@
       "types": "./dist/text/index.d.ts",
       "import": "./dist/text.mjs",
       "require": "./dist/text.js"
-    }
+    },
+    "./wasm": {
+      "types": "./dist/wasm/asset.d.ts",
+      "import": "./dist/wasm/asset.mjs",
+      "require": "./dist/wasm/asset.js"
+    },
+    "./vectojs_core.wasm": "./dist/wasm/vectojs_core.wasm"
   },
   "files": [
     "dist",

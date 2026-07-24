@@ -9,7 +9,7 @@ name: Publish Package
 on:
   push:
     tags:
-      - '@vectojs/*@*'
+      - "@vectojs/*@*"
 
 jobs:
   publish:
@@ -70,12 +70,27 @@ jobs:
         if: steps.parse.outputs.package == 'video-exporter'
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
 
+      # @vectojs/core ships a prebuilt WASM accelerator. It must exist BEFORE
+      # this package's tests (its differential JS-vs-WASM suite skips itself
+      # when the binary is absent) and BEFORE the build (tsup copies it into
+      # dist/wasm/ so `@vectojs/core/wasm`'s coreWasmUrl resolves to a real
+      # file in the tarball). rust-toolchain.toml pins the channel + target.
+      - name: Provision Rust toolchain for the WASM core
+        if: steps.parse.outputs.package == 'core'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - name: Build WASM core
+        if: steps.parse.outputs.package == 'core'
+        run: crates/vectojs-core-rs/build.sh
+
       - name: Run package tests
         env:
           PKG: ${{ steps.parse.outputs.package }}
           # GitHub's Ubuntu runner disables unprivileged Chromium user
           # namespaces, so opt into the exporter's documented CI escape hatch.
-          VECTO_CHROMIUM_NO_SANDBOX: '1'
+          VECTO_CHROMIUM_NO_SANDBOX: "1"
         run: cd "packages/$PKG" && bunx vitest run
 
       - name: Lint
