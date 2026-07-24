@@ -279,7 +279,9 @@ export class MSDFTextEntity extends Entity {
   }
 
   public destroy(): void {
-    LayoutWorkerManager.getInstance().cancelLayout(this.id);
+    // Static guard: never resurrect the worker singleton (or throw in SSR)
+    // just to cancel — if no manager exists, nothing is queued for this entity.
+    LayoutWorkerManager.cancelLayoutForEntity(this.id);
     super.destroy();
   }
 }

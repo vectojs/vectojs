@@ -117,7 +117,9 @@ function runSyncFallback(entry: {
 
 if (typeof Worker !== 'undefined') {
   try {
-    const blob = new Blob([WORKER_SOURCE_STRING], { type: 'application/javascript' });
+    const blob = new Blob([WORKER_SOURCE_STRING], {
+      type: 'application/javascript',
+    });
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
       const { id, matchLen, tail, error } = e.data;
@@ -485,7 +487,10 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
       let j = i;
       while (j < line.length && /[a-zA-Z0-9_]/.test(line[j])) j++;
       const word = line.slice(i, j);
-      segments.push({ text: word, color: keywords.has(word) ? KEYWORD_COLOR : theme.codeColor });
+      segments.push({
+        text: word,
+        color: keywords.has(word) ? KEYWORD_COLOR : theme.codeColor,
+      });
       i = j;
       continue;
     }
@@ -684,7 +689,10 @@ function collectSpans(
         if (t.tokens) {
           collectSpans(t.tokens, { ...inherited, bold: true }, theme, out);
         } else {
-          out.push({ text: decodeEntities(t.text), style: { ...inherited, bold: true } });
+          out.push({
+            text: decodeEntities(t.text),
+            style: { ...inherited, bold: true },
+          });
         }
         break;
       }
@@ -693,13 +701,19 @@ function collectSpans(
         if (t.tokens) {
           collectSpans(t.tokens, { ...inherited, italic: true }, theme, out);
         } else {
-          out.push({ text: decodeEntities(t.text), style: { ...inherited, italic: true } });
+          out.push({
+            text: decodeEntities(t.text),
+            style: { ...inherited, italic: true },
+          });
         }
         break;
       }
       case 'codespan': {
         const t = token as Tokens.Codespan;
-        out.push({ text: decodeEntities(t.text), style: { ...inherited, color: theme.codeColor } });
+        out.push({
+          text: decodeEntities(t.text),
+          style: { ...inherited, color: theme.codeColor },
+        });
         break;
       }
       case 'br': {
@@ -720,13 +734,20 @@ function collectSpans(
       }
       case 'inlineMath': {
         const t = token as any;
-        out.push({ text: decodeEntities(t.raw), style: { ...inherited, color: '#fcd34d' } }); // yellow/gold for inline math
+        out.push({
+          text: decodeEntities(t.raw),
+          style: { ...inherited, color: '#fcd34d' },
+        }); // yellow/gold for inline math
         break;
       }
       case 'link': {
         const t = token as Tokens.Link;
         // Recurse into link children (they may contain bold/italic/code)
-        const linkStyle: TextStyle = { ...inherited, href: t.href, color: '#38bdf8' };
+        const linkStyle: TextStyle = {
+          ...inherited,
+          href: t.href,
+          color: '#38bdf8',
+        };
         if (t.tokens && t.tokens.length > 0) {
           collectSpans(t.tokens, linkStyle, theme, out);
         } else {
@@ -838,6 +859,11 @@ export class Markdown extends UIComponent {
   // with the latest accumulated text once it resolves.
   private appendInFlight = false;
   private appendPending = false;
+  // Worker request ids dispatched by *this* instance that haven't resolved yet.
+  // The module-level `workerCallbacks` map holds a closure capturing `this`, so
+  // destroying a Markdown mid-stream would pin the whole entity (and its subtree)
+  // until the worker replied. `destroy()` drops these so the instance is GC-able.
+  private pendingWorkerIds = new Set<number>();
 
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
@@ -871,20 +897,38 @@ export class Markdown extends UIComponent {
   /** Replace all markdown content (full rebuild). */
   public setContent(markdown: string): this {
     this.rawMarkdown = markdown;
-    // Remove all children from the content stack
+    // Destroy (not just detach) all children so their subtrees' resources —
+    // MSDF worker slots, GPU buffers, portal observers — are released instead
+    // of stranded. destroy() detaches from `content` as it goes.
     while (this.content.children.length > 0) {
-      this.content.remove(this.content.children[this.content.children.length - 1]);
+      this.content.children[this.content.children.length - 1].destroy();
     }
     this.tokens = [];
     this.renderMarkdown(markdown);
     return this;
   }
 
+  /**
+   * Tear down this Markdown block: drop any in-flight worker callbacks (each
+   * pins `this` via its closure, so a mid-stream destroy would otherwise keep
+   * the whole subtree alive until the worker replied), then recurse into the
+   * content subtree via `super.destroy()` so every block's resources are freed.
+   */
+  public override destroy(): void {
+    for (const id of this.pendingWorkerIds) workerCallbacks.delete(id);
+    this.pendingWorkerIds.clear();
+    this.appendInFlight = false;
+    this.appendPending = false;
+    super.destroy();
+  }
+
   /** Enable or disable native selection for existing and future Markdown text. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
     const apply = (entity: Entity): void => {
-      const candidate = entity as Entity & { setSelectable?: (value: boolean) => unknown };
+      const candidate = entity as Entity & {
+        setSelectable?: (value: boolean) => unknown;
+      };
       candidate.setSelectable?.(selectable);
       for (const child of entity.children) apply(child);
     };
@@ -923,8 +967,10 @@ export class Markdown extends UIComponent {
     // coalescing rather than tracking `this.tokens` live).
     const oldTokensSnapshot = this.tokens;
     const oldRaws = oldTokensSnapshot.map((t) => t.raw);
+    this.pendingWorkerIds.add(id);
     workerCallbacks.set(id, {
       cb: (matchLen, tail) => {
+        this.pendingWorkerIds.delete(id);
         this.appendInFlight = false;
         const newTokens = [...oldTokensSnapshot.slice(0, matchLen), ...tail] as TokensList;
         this.updateTokens(newTokens);
@@ -997,12 +1043,14 @@ export class Markdown extends UIComponent {
       }
     }
 
-    // Remove excess old entities (from matchLen onward)
+    // Destroy excess old entities (from matchLen onward). destroy() (not just
+    // remove()) so a discarded block's subtree resources are released, and it
+    // detaches from `content` itself.
     for (let i = 0; i < oldTokens.length; i++) {
       if (i >= matchLen && oldTokens[i].type !== 'space') {
         const idx = oldTokenToChild[i];
         if (idx < oldChildren.length) {
-          this.content.remove(oldChildren[idx]);
+          oldChildren[idx].destroy();
         }
       }
     }
@@ -1070,7 +1118,11 @@ export class Markdown extends UIComponent {
         }
 
         // Split paragraph into a Stack if it contains images
-        const stack = new Stack({ direction: 'vertical', gap: 16, maxWidth: this.maxWidth });
+        const stack = new Stack({
+          direction: 'vertical',
+          gap: 16,
+          maxWidth: this.maxWidth,
+        });
         let currentTokens: Token[] = [];
 
         const flushText = () => {

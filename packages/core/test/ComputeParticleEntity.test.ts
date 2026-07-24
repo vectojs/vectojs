@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ComputeParticleEntity } from '../src/tree/ComputeParticleEntity';
 
 describe('ComputeParticleEntity', () => {
@@ -164,6 +164,49 @@ describe('ComputeParticleEntity', () => {
       entity.particleData[5] = 100;
       entity.particleData[7] = -1.0;
       expect(entity.hasPendingAnimations()).toBe(false);
+    });
+  });
+
+  describe('GPU resource teardown recurses with the subtree (leak fix)', () => {
+    // Fake WebGPU buffer that records its own destroy() call.
+    function fakeBuffer() {
+      return { destroy: vi.fn() };
+    }
+
+    it('destroy() frees this entity AND nested particle descendants GPU buffers', () => {
+      const parent = new ComputeParticleEntity({ maxParticles: 1 });
+      const child = new ComputeParticleEntity({ maxParticles: 1 });
+      const grandchild = new ComputeParticleEntity({ maxParticles: 1 });
+      parent.add(child);
+      child.add(grandchild);
+
+      for (const e of [parent, child, grandchild]) {
+        e.gpuStorageBuffer = fakeBuffer();
+        e.gpuUniformBuffer = fakeBuffer();
+        e.computeBindGroup = {};
+        e.renderBindGroup = {};
+      }
+      const buffers = [
+        parent.gpuStorageBuffer,
+        parent.gpuUniformBuffer,
+        child.gpuStorageBuffer,
+        child.gpuUniformBuffer,
+        grandchild.gpuStorageBuffer,
+        grandchild.gpuUniformBuffer,
+      ];
+
+      // Destroying the root must reach every descendant's destroyGPUResources().
+      parent.destroy();
+
+      for (const b of buffers) expect(b.destroy).toHaveBeenCalledTimes(1);
+      for (const e of [parent, child, grandchild]) {
+        expect(e.gpuStorageBuffer).toBeNull();
+        expect(e.gpuUniformBuffer).toBeNull();
+        expect(e.computeBindGroup).toBeNull();
+        expect(e.renderBindGroup).toBeNull();
+      }
+      expect(parent.children.length).toBe(0);
+      expect(grandchild.parent).toBeNull();
     });
   });
 });

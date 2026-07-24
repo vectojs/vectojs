@@ -59,4 +59,68 @@ describe('DOMPortalEntity', () => {
     expect(portal.children).toHaveLength(0);
     expect(child.parent).toBeNull();
   });
+
+  describe('DOM binding lifecycle (leak fix)', () => {
+    it('releaseDOMBindings() disconnects the observer and removes listeners without touching the element', () => {
+      const div = document.createElement('div');
+      const disconnect = vi.fn();
+      const observe = vi.fn();
+      const orig = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        observe = observe;
+        disconnect = disconnect;
+        unobserve = vi.fn();
+      } as any;
+      try {
+        const portal = new DOMPortalEntity(div);
+        expect(observe).toHaveBeenCalledTimes(1);
+        const clickHandler = vi.fn();
+        portal.on('click', clickHandler);
+
+        portal.releaseDOMBindings();
+
+        // Observer disconnected; listeners gone (native event no longer forwards).
+        expect(disconnect).toHaveBeenCalledTimes(1);
+        div.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(clickHandler).not.toHaveBeenCalled();
+        // Idempotent.
+        portal.releaseDOMBindings();
+        expect(disconnect).toHaveBeenCalledTimes(1);
+      } finally {
+        globalThis.ResizeObserver = orig;
+      }
+    });
+
+    it('attachDOMBindings() re-binds after a release (remove -> re-add cycle) and is idempotent', () => {
+      const div = document.createElement('div');
+      const portal = new DOMPortalEntity(div);
+      portal.releaseDOMBindings();
+
+      portal.attachDOMBindings();
+      const clickHandler = vi.fn();
+      portal.on('click', clickHandler);
+      div.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(clickHandler).toHaveBeenCalledTimes(1);
+
+      // Second attach must not double-register listeners.
+      portal.attachDOMBindings();
+      clickHandler.mockClear();
+      div.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(clickHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('destroy() releases bindings and removes the element', () => {
+      const div = document.createElement('div');
+      document.body.appendChild(div);
+      const portal = new DOMPortalEntity(div);
+      const clickHandler = vi.fn();
+      portal.on('click', clickHandler);
+
+      portal.destroy();
+
+      expect(div.parentElement).toBeNull();
+      div.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(clickHandler).not.toHaveBeenCalled();
+    });
+  });
 });
