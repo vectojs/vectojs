@@ -448,6 +448,82 @@ async function clickOrdinarySource(
   }, target);
 }
 
+/**
+ * CTX-0019: at the current DPR/zoom, does the DOM selection box overlap the
+ * canvas glyphs? Selects a literal substring in an entity's projection, unions
+ * the Range client rects, and compares against the canvas extent of the same
+ * substring (from the fillText trace) in the same client space. Returns the
+ * horizontal delta so the caller can assert it stays sub-glyph across scales.
+ */
+async function selectionVsCanvas(
+  page: Page,
+  entityKey: 'text' | 'rich',
+): Promise<{
+  domLeft: number;
+  domRight: number;
+  canvasLeft: number;
+  canvasRight: number;
+}> {
+  return page.evaluate(
+    ({ entityKey }) => {
+      const app = (window as any).__vecto;
+      const entity = app[entityKey];
+      const canvas = app.scene.canvas as HTMLCanvasElement;
+      const canvasBox = canvas.getBoundingClientRect();
+      const logicalW = app.scene.width || canvasBox.width;
+      // Client px per logical px (folds in DPR *and* CSS zoom uniformly).
+      const scale = canvasBox.width / logicalW;
+
+      // Select the WHOLE first projected line. The plain-LTR fast path draws a
+      // whole line per fillText, so there is no per-glyph canvas x — compare the
+      // line's full extent instead, which still exercises the lines-path origin
+      // and width under DPR/zoom.
+      const root = app.scene.getContentElement(entity.id) as HTMLElement;
+      const lineEl = root.children[0] as HTMLElement;
+      const lineText = (lineEl.textContent ?? '').replace(/\n$/, '');
+      const range = document.createRange();
+      range.selectNodeContents(lineEl);
+      let domLeft = Infinity;
+      let domRight = -Infinity;
+      for (const r of range.getClientRects()) {
+        domLeft = Math.min(domLeft, r.left);
+        domRight = Math.max(domRight, r.right);
+      }
+
+      // Canvas extent of that same line from the fillText trace. Trace x is
+      // ENTITY-LOCAL logical px; add the entity's world origin (its scene x) and
+      // the canvas box origin, scaled, to reach the same client space as the DOM
+      // rect. The line's own left offset within the entity is already in the
+      // trace x, so use the entity origin, not the projection line's left.
+      const origin = app.scene.getContentElement(entity.id) as HTMLElement;
+      const originLeft = origin.getBoundingClientRect().left;
+      const lineLocalLeft = Number.parseFloat(lineEl.style.left || '0px') || 0;
+      const trace = ((window as any).__vectoFillTrace ?? []) as Array<{
+        text: string;
+        x: number;
+        width: number;
+      }>;
+      let cl = Infinity;
+      let cr = -Infinity;
+      for (const entry of trace) {
+        if (entry.text.trim() !== lineText.trim()) continue;
+        cl = Math.min(cl, entry.x);
+        cr = Math.max(cr, entry.x + entry.width);
+      }
+      // The projection line box sits at originLeft (which already includes the
+      // entity world x). Canvas trace x for a line equals the line's local left,
+      // so client = originLeft + (traceX - lineLocalLeft) * scale.
+      return {
+        domLeft,
+        domRight,
+        canvasLeft: originLeft + (cl - lineLocalLeft) * scale,
+        canvasRight: originLeft + (cr - lineLocalLeft) * scale,
+      };
+    },
+    { entityKey },
+  );
+}
+
 async function dragStandaloneTableCell(page: Page): Promise<{
   text: string;
   hitContentId: string | null;
@@ -993,6 +1069,10 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     const mirroredRichLate = await clickOrdinarySource(page, 'mirroredRich', 't');
     const flowProjectionEarly = await clickOrdinarySource(page, 'flowProjection', 'α');
     const flowProjectionLate = await clickOrdinarySource(page, 'flowProjection', 'Ω');
+    // CTX-0019: DOM selection box vs canvas glyphs for the plain-LTR Text line
+    // path, at whatever DPR/zoom this browserCase runs — the projection-vs-canvas
+    // subpixel-drift check that fractional scale is most likely to break.
+    const textSelVsCanvas = await selectionVsCanvas(page, 'text', 'gamma');
     const doubleClickWord = await clickGridSource(page, 'code', 'f', 0.5, 2);
     const tripleClickLine = await clickGridSource(page, 'transformedCode', 'لا', 0.5, 3);
     await clickGridSource(page, 'code', 'o', 0.1);
@@ -1004,6 +1084,34 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       assert.ok(
         Math.abs(values.actual - values.expected) <= 1,
         `${browserCase.name} ${name} baseline expected ${values.expected}, got ${values.actual}`,
+      );
+    }
+    // CTX-0019: the selection box must overlap the drawn glyphs at this DPR/zoom.
+    // Both rects are in client px; the tolerance is a few client px to absorb
+    // browser text-measure vs canvas-advance rounding, which is what fractional
+    // DPR/zoom amplifies. Left edges especially must line up (start-of-selection).
+    {
+      const sc = textSelVsCanvas;
+      // Left edge (selection start) must line up tightly — this is the origin
+      // the whole lines-path geometry hangs off, and what fractional DPR/zoom
+      // would shift. The right edge accumulates the whole line's kerned-vs-
+      // advance width delta, so allow a small relative slack there.
+      assert.ok(
+        Math.abs(sc.domLeft - sc.canvasLeft) <= 2,
+        `${browserCase.name} Text selection left drifts from canvas ${JSON.stringify(sc)}`,
+      );
+      // The width delta grows under fractional zoom (browser kerned line vs
+      // canvas advance sum) — a measurement artifact, not a selection break: the
+      // left origin above stays exact, so the selection START tracks the glyphs
+      // at every scale. The divergence is engine-specific: ~5% on Chrome, but
+      // larger on Firefox/Gecko under zoom (its kerned line measure diverges more
+      // from the per-glyph advance sum — the same reason its RTL width needed a
+      // looser bound). Allow 12% on Firefox, 8% on Chrome.
+      const widthPct = browserCase.browser === 'firefox' ? 0.12 : 0.08;
+      const rightTol = Math.max(4, (sc.canvasRight - sc.canvasLeft) * widthPct);
+      assert.ok(
+        Math.abs(sc.domRight - sc.canvasRight) <= rightTol,
+        `${browserCase.name} Text selection right drifts from canvas ${JSON.stringify(sc)}`,
       );
     }
     assert.match(result.textarea.font, /16px/);
