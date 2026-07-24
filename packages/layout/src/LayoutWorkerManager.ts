@@ -14,7 +14,9 @@ export class LayoutWorkerManager {
   }
 
   private createWorker(): Worker {
-    const workerBlob = new Blob([WORKER_SOURCE_STRING], { type: 'application/javascript' });
+    const workerBlob = new Blob([WORKER_SOURCE_STRING], {
+      type: 'application/javascript',
+    });
     const workerURL = URL.createObjectURL(workerBlob);
     let worker: Worker;
     try {
@@ -81,6 +83,7 @@ export class LayoutWorkerManager {
       fontData?: any;
       lineHeight?: number;
       letterSpacing?: number;
+      textAlign?: 'left' | 'justify';
       callback: (res: LayoutWorkerResponse) => void;
     },
   ): void {
@@ -105,6 +108,7 @@ export class LayoutWorkerManager {
         fontSize: options.fontSize,
         lineHeight: options.lineHeight,
         letterSpacing: options.letterSpacing,
+        textAlign: options.textAlign,
       };
 
       if (!this.registeredFonts.has(options.fontId) && options.fontData) {

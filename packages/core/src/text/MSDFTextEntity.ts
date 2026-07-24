@@ -14,6 +14,12 @@ export interface MSDFTextEntityOptions {
   maxWidth?: number;
   /** Layout height limit in logical pixels. Defaults to 1000. */
   maxHeight?: number;
+  /**
+   * Horizontal alignment. `'justify'` stretches every wrapped line flush to
+   * {@link maxWidth} (the paragraph-final and newline-ended lines stay ragged);
+   * `'left'` (default) leaves them ragged.
+   */
+  textAlign?: 'left' | 'justify';
 }
 
 export class MSDFTextEntity extends Entity {
@@ -26,6 +32,14 @@ export class MSDFTextEntity extends Entity {
   private lineHeight?: number;
   private maxWidth: number;
   private maxHeight: number;
+  private textAlign: 'left' | 'justify';
+  // Optional hyphenator. Runs on the MAIN thread (a function can't be
+  // structure-cloned into the layout worker), turning each word into parts
+  // joined by soft hyphens (U+00AD); the worker then treats those as break
+  // opportunities. `text` keeps the original string for a11y/content
+  // projection; `layoutText` is the soft-hyphen-annotated string sent to layout.
+  private hyphenator: ((word: string) => string[]) | null = null;
+  private layoutText: string = '';
 
   private text: string = '';
   private lastRenderedSeqId: number = 0;
@@ -52,6 +66,7 @@ export class MSDFTextEntity extends Entity {
     this.lineHeight = options.lineHeight;
     this.maxWidth = options.maxWidth ?? 1000;
     this.maxHeight = options.maxHeight ?? 1000;
+    this.textAlign = options.textAlign ?? 'left';
     this.setText(text);
   }
 
@@ -62,14 +77,61 @@ export class MSDFTextEntity extends Entity {
     this.queueLayout();
   }
 
-  public setText(text: string): void {
-    if (this.text === text && this.layoutResult) return;
-    this.text = text;
+  /**
+   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
+   * {@link setMaxWidth}'s width; the last line stays ragged) and re-run layout.
+   */
+  public setTextAlign(align: 'left' | 'justify'): void {
+    if (this.textAlign === align) return;
+    this.textAlign = align;
     this.queueLayout();
   }
 
+  /**
+   * Plug a hyphenator (word → parts). Break opportunities are inserted as soft
+   * hyphens (U+00AD) into the string sent to layout, so a word that doesn't fit
+   * can break with a visible hyphen. Soft hyphens already present in the text
+   * work without one. Pass `null` to disable. The original text is preserved
+   * for accessibility — only the layout string carries the hyphens.
+   */
+  public setHyphenator(fn: ((word: string) => string[]) | null): void {
+    this.hyphenator = fn;
+    this.rebuildLayoutText();
+    this.queueLayout();
+  }
+
+  public setText(text: string): void {
+    if (this.text === text && this.layoutResult) return;
+    this.text = text;
+    this.rebuildLayoutText();
+    this.queueLayout();
+  }
+
+  /**
+   * Recompute {@link layoutText} from {@link text}: with a hyphenator active,
+   * split each whitespace-delimited word and rejoin its parts with U+00AD so
+   * the worker sees the break opportunities. Without one, the layout string is
+   * the text unchanged.
+   */
+  private rebuildLayoutText(): void {
+    if (!this.hyphenator) {
+      this.layoutText = this.text;
+      return;
+    }
+    const SHY = '\u00ad';
+    // Split on runs of whitespace, keeping the separators so the reassembled
+    // string is byte-identical to the original apart from inserted soft hyphens.
+    this.layoutText = this.text.replace(/[^\s]+/g, (word) => {
+      // Skip words that already contain a soft hyphen (author-controlled) or
+      // are too short to be worth breaking.
+      if (word.length <= 3 || word.includes(SHY)) return word;
+      const parts = this.hyphenator!(word);
+      return parts.length > 1 ? parts.join(SHY) : word;
+    });
+  }
+
   private queueLayout(): void {
-    LayoutWorkerManager.getInstance().queueLayout(this.id, this.text, {
+    LayoutWorkerManager.getInstance().queueLayout(this.id, this.layoutText, {
       fontId: this.font.id,
       fontSize: this.fontSize,
       maxWidth: this.maxWidth,
@@ -77,6 +139,7 @@ export class MSDFTextEntity extends Entity {
       fontData: this.font.data,
       letterSpacing: this.letterSpacing,
       lineHeight: this.lineHeight,
+      textAlign: this.textAlign,
       callback: (res) => {
         if (res.seqId < this.lastRenderedSeqId) return; // ignore stale responses
         this.lastRenderedSeqId = res.seqId;

@@ -21,17 +21,29 @@ beforeEach(() => {
 
 // ascender 0.8 / descender -0.2 → line height = fontSize at lineHeight undefined.
 const fontData = {
-  atlas: { type: 'msdf', distanceRange: 4, size: 32, width: 256, height: 256, yOrigin: 'bottom' },
+  atlas: {
+    type: 'msdf',
+    distanceRange: 4,
+    size: 32,
+    width: 256,
+    height: 256,
+    yOrigin: 'bottom',
+  },
   metrics: { emSize: 1, lineHeight: 1, ascender: 0.8, descender: -0.2 },
   glyphs: [
     { unicode: 0x61, advance: 0.5 }, // 'a' → 5px at fontSize 10
     { unicode: 0x20, advance: 0.25 }, // ' ' → 2.5px
     { unicode: 0x4e2d, advance: 1 }, // '中' → 10px
+    { unicode: 0x2d, advance: 0.5 }, // '-' → 5px
   ],
 };
 
 let seq = 0;
-function layout(text: string, maxWidth: number): LayoutWorkerResponse {
+function layout(
+  text: string,
+  maxWidth: number,
+  textAlign?: 'left' | 'justify',
+): LayoutWorkerResponse {
   const request: LayoutWorkerRequest = {
     id: 'w',
     seqId: ++seq,
@@ -41,7 +53,9 @@ function layout(text: string, maxWidth: number): LayoutWorkerResponse {
     maxWidth,
     maxHeight: 1000,
     fontSize: 10,
+    textAlign,
   };
+  responses = [];
   handler({ data: request, origin: '' });
   expect(responses.length).toBe(1);
   return responses[0];
@@ -106,4 +120,90 @@ test('breaks CJK runs per glyph (no space boundaries)', () => {
   expect(lineOf(res, 1)).toBe(0);
   expect(lineOf(res, 2)).toBe(1);
   expect(res.xCoords[2]).toBe(0);
+});
+
+test('justify: stretches a wrapped line flush to maxWidth', () => {
+  // 'aa aa aa' @25: line 0 = 'aa aa ' (indices 0-5), 'aa' wraps to line 1.
+  // Left-aligned, line-0 content 'aa aa' ends at 22.5; justify adds 2.5 slack
+  // into the single inter-word gap so the last content glyph ends flush at 25.
+  const left = layout('aa aa aa', 25, 'left');
+  expect(left.xCoords[4]).toBeCloseTo(17.5); // second word not stretched
+  expect(left.xCoords[4] + 5).toBeCloseTo(22.5);
+
+  const res = layout('aa aa aa', 25, 'justify');
+  expect(lineOf(res, 4)).toBe(0); // still on line 0
+  expect(res.xCoords[4]).toBeCloseTo(20); // shifted right by the 2.5 slack
+  expect(res.xCoords[4] + 5).toBeCloseTo(25); // content flush to maxWidth
+  expect(res.width).toBeCloseTo(25);
+});
+
+test('justify: leaves the paragraph-final line ragged', () => {
+  const res = layout('aa aa aa', 25, 'justify');
+  // Line 1 ('aa', the final line) is never stretched.
+  expect(lineOf(res, 6)).toBe(1);
+  expect(res.xCoords[6]).toBe(0);
+  expect(res.xCoords[7]).toBeCloseTo(5);
+});
+
+test('justify: leaves a newline-ended line ragged', () => {
+  // Line 0 'aa' is closed by an explicit newline (hard break), so even with a
+  // full line of slack it must not be justified.
+  const res = layout('aa\naa aa aa', 25, 'justify');
+  expect(lineOf(res, 0)).toBe(0);
+  expect(res.xCoords[0]).toBe(0);
+  expect(res.xCoords[1]).toBeCloseTo(5); // unchanged, not stretched to 25
+});
+
+test('justify: distributes between glyphs on a space-less CJK line', () => {
+  // '中中' fills to 20 on line 0, '中' wraps to line 1. maxWidth 25 → 5 slack.
+  // No spaces: slack spreads between glyphs (extra = 5/1 on the 2-glyph line).
+  const res = layout('中中中', 25, 'justify');
+  expect(lineOf(res, 0)).toBe(0);
+  expect(lineOf(res, 1)).toBe(0);
+  expect(res.xCoords[0]).toBe(0); // first glyph pinned
+  expect(res.xCoords[1]).toBeCloseTo(15); // 10 + 5 slack → ends flush at 25
+  expect(res.xCoords[1] + 10).toBeCloseTo(25);
+});
+
+const SHY = '\u00ad';
+
+test('soft hyphen: breaks a word mid-way and emits a visible hyphen', () => {
+  // 'aaaa\u00ADaaaa' @30 (a=5, -=5). SHY after the 4th 'a' at x=20. The word
+  // overflows at the 7th 'a'; the recorded break (hyphen ends at 25 ≤ 30) fires:
+  // line 0 = 'aaaa-' (hyphen appended last), line 1 = the tail.
+  const res = layout(`aaaa${SHY}aaaa`, 30);
+  const chars = Array.from(res.codePoints).map((c) => String.fromCodePoint(c));
+  // 8 'a' (SHY emits nothing) + 1 inserted hyphen = 9 glyphs.
+  expect(chars.length).toBe(9);
+  expect(chars.filter((c) => c === '-').length).toBe(1);
+
+  // The break fires while placing the 7th 'a': 6 'a' are already placed (idx
+  // 0-5), then the hyphen is appended — so it lands at index 6, not the end.
+  const hIdx = chars.lastIndexOf('-');
+  expect(hIdx).toBe(6);
+  expect(lineOf(res, hIdx)).toBe(0);
+  expect(res.xCoords[hIdx]).toBeCloseTo(20); // hyphen sits at the break x
+
+  // First four 'a' stay on line 0; the tail (from the 5th 'a') is on line 1.
+  expect(lineOf(res, 3)).toBe(0);
+  expect(lineOf(res, 4)).toBe(1);
+  expect(res.xCoords[4]).toBe(0); // tail restarts at the new line's origin
+  expect(res.height).toBe(20); // two lines
+});
+
+test('soft hyphen: no visible hyphen when the word fits (invisible break)', () => {
+  // Same string @100: nothing wraps, so the SHY renders nothing at all.
+  const res = layout(`aaaa${SHY}aaaa`, 100);
+  const chars = Array.from(res.codePoints).map((c) => String.fromCodePoint(c));
+  expect(chars.length).toBe(8); // no hyphen inserted
+  expect(chars).not.toContain('-');
+  expect(res.width).toBeCloseTo(40); // 8 * 5
+});
+
+test("soft hyphen: falls back to whole-word move when the hyphen can't fit", () => {
+  // SHY sits at x=5 (after 1 'a'); a hyphen there ends at 10. At maxWidth 8 the
+  // break can't fit (10 > 8), so it must NOT hyphenate — no '-' emitted.
+  const res = layout(`a${SHY}aaa`, 8);
+  const chars = Array.from(res.codePoints).map((c) => String.fromCodePoint(c));
+  expect(chars).not.toContain('-');
 });
