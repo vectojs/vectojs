@@ -25,9 +25,10 @@ const config: KnipConfig = {
     },
   },
   // playwright is used from the global install by the benchmark/comparison scripts
-  // (not a dep); readlink/which/vite are binaries invoked by project scripts.
-  // oxfmt is a CLI formatter invoked directly (never imported), like playwright.
-  ignoreDependencies: ['playwright', 'oxfmt'],
+  // (not a dep). oxfmt is NOT listed: knip traces it through the `format` /
+  // `format:check` root scripts, so ignoring it is redundant and knip flags the
+  // stale entry ("Remove from ignoreDependencies").
+  ignoreDependencies: ['playwright'],
   ignoreBinaries: ['readlink', 'which', 'vite'],
 };
 
