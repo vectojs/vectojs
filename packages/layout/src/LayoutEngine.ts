@@ -348,7 +348,9 @@ export class LayoutEngine {
     const locale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
 
     this.wordSegmenter = new Intl.Segmenter(locale, { granularity: 'word' });
-    this.charSegmenter = new Intl.Segmenter(locale, { granularity: 'grapheme' });
+    this.charSegmenter = new Intl.Segmenter(locale, {
+      granularity: 'grapheme',
+    });
   }
 
   private getWordSegments(
@@ -861,7 +863,11 @@ export class LayoutEngine {
     styleAt: Array<TextStyle | undefined>,
     baseFontSize: number,
     fontAtlas: GlyphAtlas,
-  ): { words: PreparedWord[]; wordSrcEnds: number[]; wordFallbacks: boolean[] } {
+  ): {
+    words: PreparedWord[];
+    wordSrcEnds: number[];
+    wordFallbacks: boolean[];
+  } {
     const words: PreparedWord[] = [];
     const wordSrcEnds: number[] = [];
     const wordFallbacks: boolean[] = [];
@@ -962,6 +968,34 @@ export class LayoutEngine {
     const commitLine = (justifyTo?: number) => {
       if (currentLineNodes.length === 0) return;
 
+      // RTL paragraphs are packed left (currentX starts at the segment's x0),
+      // then reordered within runs — but the line as a whole must sit flush
+      // RIGHT. Compute a whole-line shift so the last-placed glyph ends at the
+      // wrap edge. Skipped when: justify already flushes to the edge; a finite
+      // wrap width is absent (unbounded 1e9 sentinel → nothing to align to); or
+      // exclusions split the line into gap-separated runs (right-aligning across
+      // arbitrary exclusion bands is a separate, harder case — left for a
+      // follow-up so this stays a focused, correct fix for the common path).
+      let lineShift = 0;
+      if (
+        paragraphBaseLevel % 2 === 1 &&
+        justifyTo === undefined &&
+        !hasEx &&
+        this.maxWidth < 1e9
+      ) {
+        let lineMinX = Infinity;
+        let lineMaxRight = -Infinity;
+        for (const node of currentLineNodes) {
+          if (node.x < lineMinX) lineMinX = node.x;
+          if (node.x + node.width > lineMaxRight) lineMaxRight = node.x + node.width;
+        }
+        // Trailing whitespace was reset to base level by L1 and sits at the
+        // line's logical end; for RTL that's the left, so it doesn't extend the
+        // visual right edge. Align the content's right edge to maxWidth.
+        const shift = this.maxWidth - lineMaxRight;
+        if (shift > 0) lineShift = shift;
+      }
+
       // 1. Group contiguous visual runs to preserve gaps (e.g. exclusion masks, indentations)
       const runs: any[][] = [];
       let currentRun: any[] = [];
@@ -988,8 +1022,9 @@ export class LayoutEngine {
         // Visual reordering per UAX #9
         BidiResolver.reorderVisual(run, paragraphBaseLevel);
 
-        // Re-assign visual coordinates LTR inside the run
-        let x = runStartX;
+        // Re-assign visual coordinates LTR inside the run, shifted flush-right
+        // for an RTL paragraph (lineShift is 0 for LTR / justify / unbounded).
+        let x = runStartX + lineShift;
         for (const node of run) {
           node.x = x;
           node.isRTL = node.level % 2 === 1;
