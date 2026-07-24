@@ -997,26 +997,38 @@ export class Scene {
    * ticks on the normal JS per-entity path, unmodified.
    *
    * Re-measured on the INTEGRATED path (benchmarks/anim-wasm-scene, real
-   * Chrome/Firefox — see vectojs-docs evidence.md for the full table): the
+   * Chrome 150 / Firefox 153, 2026-07-24 — correctness verified 0 mismatches
+   * across all three kinds before any of these numbers were trusted): the
    * isolated kernel spike's "<100 drivers, wins everywhere" verdict did NOT
-   * survive integration. On Chrome, the batch path is a real 1.4–2.9× win but
-   * only in roughly the 128–4096 concurrent-driver band, and a LOSS below
-   * ~64. On Firefox it is a net loss at every driver count measured, up to
-   * 16384 — not an allocation artifact (confirmed after removing all
+   * survive integration, and neither did the first integrated pass's single
+   * gate-count verdict once broken out by driver kind. On Chrome, spring and
+   * mixed drivers are a real ~1.4–2.3× win from n=128 up through the tested
+   * ceiling of 16384, but pure-tween drivers are a LOSS at n=128 (0.71×,
+   * i.e. ~40% slower than the JS path) and only turn net-positive around
+   * n≈256 (1.52×). A single scalar gate can't be tight for spring/mixed
+   * without occasionally opening early on a tween-heavy scene and making it
+   * slower — 256 is chosen to keep the gate net-positive across all three
+   * kinds rather than optimal for any one of them; a kind-aware gate (see
+   * `_tickBatchedDrivers`'s per-kind arrays, which already separate spring
+   * from tween) would recover the 128–255 spring/mixed win without the
+   * tween regression, but that's a larger change than this measurement pass
+   * covers. On Firefox it is a net loss at every driver count measured, up
+   * to 16384 — not an allocation artifact (confirmed after removing all
    * per-frame allocation from the gather/scatter path); SpiderMonkey's
    * wasm-boundary/property-dispatch cost for this shape of call appears to
    * structurally exceed the saving, at least at the scales tested here.
    *
-   * 128 is set as a Chrome-oriented default so an app that opts in (this
+   * 256 is set as a Chrome-oriented default so an app that opts in (this
    * path is never engaged without an explicit {@link enableWasmAnimBatching}
-   * call) sees the gate open only where it reliably helps on Chromium.
-   * Unlike G1 (safe to default on everywhere) and G3 (opt-in, but a reliable
-   * win once its own gate condition holds), G2 has no threshold that is safe
-   * on every engine — raise or lower this per your own target browser mix,
-   * or leave WASM animation batching disabled entirely on a Firefox-heavy
-   * audience.
+   * call) sees the gate open only where it reliably helps on Chromium,
+   * regardless of whether the scene's active drivers are spring, tween, or
+   * a mix of both. Unlike G1 (safe to default on everywhere) and G3 (opt-in,
+   * but a reliable win once its own gate condition holds), G2 has no
+   * threshold that is safe on every engine — raise or lower this per your
+   * own target browser mix and driver-kind distribution, or leave WASM
+   * animation batching disabled entirely on a Firefox-heavy audience.
    */
-  public animDriverGateCount = 128;
+  public animDriverGateCount = 256;
 
   /** Which backend advances active property drivers on the current gate
    *  decision. Reflects only whether a backend is installed — the per-frame
@@ -2120,12 +2132,18 @@ export class Scene {
           el.addEventListener('select', forward);
 
           el.addEventListener('compositionstart', () => {
-            composition = { start: input.selectionStart ?? input.value.length, length: 0 };
+            composition = {
+              start: input.selectionStart ?? input.value.length,
+              length: 0,
+            };
             forward();
           });
           el.addEventListener('compositionupdate', (e) => {
             const data = (e as CompositionEvent).data ?? '';
-            composition = { start: composition?.start ?? 0, length: data.length };
+            composition = {
+              start: composition?.start ?? 0,
+              length: data.length,
+            };
             forward();
           });
           el.addEventListener('compositionend', () => {
@@ -2783,7 +2801,12 @@ export class Scene {
       const source = document.createTextNode(sourceText);
       carrier.appendChild(source);
       probe.appendChild(carrier);
-      const measurement = { targets: [target], targetWidth, sourceLength, source };
+      const measurement = {
+        targets: [target],
+        targetWidth,
+        sourceLength,
+        source,
+      };
       measurements.push(measurement);
       measurementsByKey.set(measurementKey, measurement);
     }
