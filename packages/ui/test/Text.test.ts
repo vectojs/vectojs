@@ -152,3 +152,47 @@ describe('Text alignment & hyphenation', () => {
     }
   });
 });
+
+describe('Text bidi (RTL) selection projection', () => {
+  // Hebrew Shin+Lamed (RTL, no shaping). No DOM here → engine 0.5em fallback,
+  // but RTL reorder + right-align are engine-driven and deterministic.
+  const SHIN = '\u05E9';
+  const LAMED = '\u05DC';
+
+  it('projects the bidi line as a single logical string at the visual origin', () => {
+    // maxWidth 80; two RTL glyphs (8px each at 16px font) right-align, so the
+    // line's visual origin is shifted right (not 0). The projection keeps ONE
+    // natural-flow line (browser does bidi → correct caret mapping) anchored at
+    // that origin so its selection box overlaps the right-aligned glyphs.
+    const t = new Text(SHIN + LAMED, { maxWidth: 80, font: '16px sans-serif' });
+    const line0 = t.getContentProjection()!.lines![0];
+    // No per-glyph carriers (they would break logical caret hit-mapping).
+    expect(line0.runs).toBeUndefined();
+    // Text stays logical source order for copy / AT.
+    expect(line0.text).toBe(SHIN + LAMED);
+    // Anchored at the visual origin: 2×8px content right-aligned in 80 → x≈64.
+    expect(line0.x).toBeCloseTo(64, 0);
+  });
+
+  it('LTR text is projected at x=0 (natural flow, no origin shift)', () => {
+    const t = new Text('ab', { maxWidth: 80 });
+    const line0 = t.getContentProjection()!.lines![0];
+    expect(line0.runs).toBeUndefined();
+    expect(line0.x).toBe(0);
+  });
+
+  it('projects Arabic as LOGICAL source chars, not shaped presentation forms', () => {
+    // Arabic "كتب" shapes to contextual forms (U+FExx) on canvas, but the
+    // projection line text must expose the original base letters for copy / AT.
+    const src = '\u0643\u062A\u0628'; // ك ت ب
+    const t = new Text(src, { maxWidth: 200, font: '18px sans-serif' });
+    const line0 = t.getContentProjection()!.lines![0];
+    expect(line0.runs).toBeUndefined();
+    for (const ch of line0.text) {
+      const cp = ch.codePointAt(0)!;
+      expect(cp).toBeGreaterThanOrEqual(0x0600);
+      expect(cp).toBeLessThanOrEqual(0x06ff);
+    }
+    expect(line0.text).toBe(src);
+  });
+});
