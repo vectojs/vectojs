@@ -1759,7 +1759,9 @@ export class Scene {
   }
 
   private destroyEntitySubtree(entity: Entity): void {
-    while (entity.children.length > 0) this.destroyEntitySubtree(entity.children.at(-1)!);
+    // `Entity.destroy()` now recurses leaf-first over the whole subtree, so a
+    // single call tears down every descendant. Kept as a named method for the
+    // Scene teardown call sites and future scene-specific pre-destroy hooks.
     entity.destroy();
   }
 

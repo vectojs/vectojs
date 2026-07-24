@@ -122,6 +122,128 @@ describe('Entity Component System', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  describe('destroy() recurses into the subtree', () => {
+    // A subclass that records its own teardown, standing in for the real
+    // subclasses that free GPU buffers / workers / observers in destroy().
+    class ResourceEntity extends TestEntity {
+      public destroyed = false;
+      override destroy(): void {
+        this.destroyed = true;
+        super.destroy();
+      }
+    }
+
+    it('tears down every descendant (leaf-first), not just the root', () => {
+      const root = new ResourceEntity('root');
+      const child = new ResourceEntity('child');
+      const grandchild = new ResourceEntity('grandchild');
+      root.add(child);
+      child.add(grandchild);
+
+      root.destroy();
+
+      expect(root.destroyed).toBe(true);
+      expect(child.destroyed).toBe(true);
+      expect(grandchild.destroyed).toBe(true);
+      // Whole subtree detached.
+      expect(root.children.length).toBe(0);
+      expect(child.children.length).toBe(0);
+      expect(child.parent).toBeNull();
+      expect(grandchild.parent).toBeNull();
+    });
+
+    it('destroys children before the parent releases its own state (leaf-first order)', () => {
+      const order: string[] = [];
+      class OrderedEntity extends TestEntity {
+        constructor(private label: string) {
+          super();
+        }
+        override destroy(): void {
+          order.push(this.label);
+          super.destroy();
+        }
+      }
+      const root = new OrderedEntity('root');
+      const child = new OrderedEntity('child');
+      const grandchild = new OrderedEntity('grandchild');
+      root.add(child);
+      child.add(grandchild);
+
+      root.destroy();
+
+      // Each parent's own destroy body runs, then it recurses — so the deepest
+      // descendant finishes teardown before the root detaches from its parent.
+      expect(order).toEqual(['root', 'child', 'grandchild']);
+    });
+
+    it('base teardown + recursion run once even when destroy() is called repeatedly', () => {
+      // The base guard short-circuits the *recursion and base teardown* on any
+      // repeat call, so descendants are never walked twice. Subclasses free
+      // their own resources idempotently (they null their handles); this
+      // ResourceEntity models that by flipping a boolean.
+      const root = new ResourceEntity('root');
+      const child = new ResourceEntity('child');
+      const grandchild = new ResourceEntity('grandchild');
+      root.add(child);
+      child.add(grandchild);
+
+      root.destroy();
+      root.destroy(); // no-op: guard already tripped
+      child.destroy(); // no-op: reached + destroyed via the first subtree walk
+      grandchild.destroy(); // guard short-circuits the base body
+
+      expect(root.destroyed).toBe(true);
+      expect(child.destroyed).toBe(true);
+      expect(grandchild.destroyed).toBe(true);
+      expect(grandchild.parent).toBeNull();
+      expect(root.children.length).toBe(0);
+    });
+
+    it('re-entrant destroy from within a subclass teardown does not double-recurse', () => {
+      // Models the ContextMenu pattern: a subclass explicitly destroys a node
+      // that is *also* one of its children, then calls super.destroy() which
+      // recurses the children. The guard makes the recursive re-hit a no-op, so
+      // the shared node's base teardown runs exactly once.
+      class Panel extends TestEntity {
+        readonly backdrop = new TestEntity('backdrop');
+        constructor() {
+          super();
+          this.add(this.backdrop);
+        }
+        override destroy(): void {
+          this.backdrop.destroy(); // explicit teardown (backdrop is also a child)
+          super.destroy(); // recurses children -> reaches backdrop again
+        }
+      }
+      const grandchild = new TestEntity('leaf');
+      const panel = new Panel();
+      panel.backdrop.add(grandchild);
+      const walkSpy = vi.spyOn(grandchild, 'destroy');
+
+      expect(() => panel.destroy()).not.toThrow();
+
+      // The leaf's base teardown ran exactly once despite the backdrop being
+      // destroyed both explicitly and via recursion.
+      expect(walkSpy).toHaveBeenCalledTimes(1);
+      expect(grandchild.parent).toBeNull();
+    });
+
+    it('destroying a mid-tree node detaches only that subtree, leaving siblings intact', () => {
+      const root = new TestEntity('root');
+      const branchA = new TestEntity('a');
+      const branchB = new TestEntity('b');
+      const leafA = new TestEntity('leafA');
+      root.add(branchA, branchB);
+      branchA.add(leafA);
+
+      branchA.destroy();
+
+      expect(root.children).toEqual([branchB]);
+      expect(branchA.parent).toBeNull();
+      expect(leafA.parent).toBeNull();
+    });
+  });
+
   it('animate() queue and step-by-step update interpolation', () => {
     const entity = new TestEntity();
     entity.x = 100;
