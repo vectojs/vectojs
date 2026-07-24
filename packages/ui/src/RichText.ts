@@ -328,6 +328,45 @@ export class RichText extends UIComponent {
   }
 
   /**
+   * Positioned per-style-run carriers for a justified line. justify widens the
+   * inter-word gaps on the canvas, so natural-flow DOM runs would drift; give
+   * each run the visual `x` (and `width` spanning to the next run, gap included)
+   * taken from the laid-out glyphs, split at font-style boundaries so mixed
+   * bold/italic/size runs keep their own font. Run text is the logical SOURCE
+   * substring (not `node.char`) so copy / AT stay correct even for shaped glyphs.
+   */
+  private positionedRuns(
+    nodes: LayoutResult['nodes'],
+  ): Array<{ text: string; font: string; x: number; width: number }> {
+    const source = this.fullText();
+    // Visual order. One carrier PER GLYPH: justify widens the gaps between words
+    // (and the engine can even reorder a trailing space around a wrap boundary),
+    // so only a per-glyph carrier positioned at each glyph's own visual x keeps
+    // the DOM selection box on the drawn glyphs. Each carrier's text is the
+    // glyph's LOGICAL source substring (not node.char) so copy / AT stay correct
+    // for shaped scripts; carriers are emitted in visual order but the browser
+    // reads their text nodes in DOM order, which for LTR justify is logical too.
+    const glyphs = nodes.slice().sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
+    const runs: Array<{
+      text: string;
+      font: string;
+      x: number;
+      width: number;
+    }> = [];
+    for (const g of glyphs) {
+      const s = g.sourceIndex ?? 0;
+      const text = source.slice(s, s + (g.sourceLength ?? 0)) || g.char;
+      runs.push({
+        text,
+        font: this.nodeFont(g.style, g.height),
+        x: g.x,
+        width: g.width,
+      });
+    }
+    return runs;
+  }
+
+  /**
    * Group the laid-out glyphs into the same visual lines the canvas draws.
    * Each line keeps its real local origin and run fonts, so the semantic DOM
    * never has to re-flow mixed-size markdown differently from the canvas.
@@ -358,7 +397,12 @@ export class RichText extends UIComponent {
       const nextStart = nextNodes
         ? Math.min(...nextNodes.map((node) => node.sourceIndex ?? sourceEnd))
         : source.length;
-      const runs = this.logicalRuns(sourceStart, sourceEnd);
+      // Justified lines need positioned runs so the DOM selection box tracks
+      // the widened canvas spacing; ragged (left) lines keep cheap natural flow.
+      const runs =
+        this.engine.textAlign === 'justify'
+          ? this.positionedRuns(nodes)
+          : this.logicalRuns(sourceStart, sourceEnd);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
       return {
