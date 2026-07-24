@@ -1072,7 +1072,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     // CTX-0019: DOM selection box vs canvas glyphs for the plain-LTR Text line
     // path, at whatever DPR/zoom this browserCase runs — the projection-vs-canvas
     // subpixel-drift check that fractional scale is most likely to break.
-    const textSelVsCanvas = await selectionVsCanvas(page, 'text', 'gamma');
+    const textSelVsCanvas = await selectionVsCanvas(page, 'text');
     const doubleClickWord = await clickGridSource(page, 'code', 'f', 0.5, 2);
     const tripleClickLine = await clickGridSource(page, 'transformedCode', 'لا', 0.5, 3);
     await clickGridSource(page, 'code', 'o', 0.1);
