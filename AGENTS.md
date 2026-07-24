@@ -10,9 +10,11 @@ This is a Bun monorepo. The codebase is modular and split into separate packages
 
 ```text
 vectojs/
+├── .carryctx/            # CarryCtx project config + rules/workflows/personas presets
 ├── .changeset/           # Changeset configs for package releases
 ├── .github/              # GitHub Actions CI/CD workflows
-├── .husky/               # Git hook handlers (Husky)
+├── crates/
+│   └── vectojs-core-rs/  # Rust wasm32 kernels for @vectojs/core (invisible perf backend; JS is the permanent fallback)
 ├── packages/
 │   ├── core/             # Scene/Entity runtime, renderers (Canvas/SVG/WebGL/WebGPU), a11y projection
 │   ├── text/             # Standalone text-shaping primitives (BiDi, Arabic, typography, MSDF, content grid)
@@ -59,10 +61,11 @@ machine and CI runner uses the same locked version.
 - **Local dev layer**: `biome` (config `biome.json`) provides fast editor format + lint feedback. It is **advisory only** — it is not a commit or CI gate, because biome and oxfmt/oxlint intentionally disagree on a few trivia (e.g. empty `for(;;)` spacing) and two competing authorities over the same files is a footgun. `oxfmt`/`oxlint` always win.
 - **Markdown**: `markdownlint-cli2` (config `.markdownlint-cli2.jsonc`).
 - **GitHub Actions**: `actionlint` (Go binary; no npm package — CI runs the pinned `docker://rhysd/actionlint` image, local is optional).
-- **Git hooks**: `lefthook` (`lefthook.yml`) replaces Husky + lint-staged + the Python `pre-commit`. `bun install` runs `lefthook install` via the `prepare` script.
+- **Git hooks**: `lefthook` (`lefthook.yml`) replaces Husky + lint-staged + the Python `pre-commit`. `bun install` runs `lefthook install` via the `prepare` script. There is no `.husky/` directory in this repo.
 - **Commit messages**: `commitlint` (conventional commits) on `commit-msg`.
 - **Compiler**: TypeScript **7.x** everywhere; verify types with the package `build` (`tsc -p tsconfig.build.json`).
 - **Unit testing**: Vitest via `bun run test`.
+- **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`. Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). Never build with a bare `cargo build --target wasm32-unknown-unknown` — always use `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
 
 ### Build & Verification Workflow
 
@@ -93,3 +96,4 @@ commit time.
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.
+6. **Task management via CarryCtx**: `.carryctx/` holds the project config plus `rules/`, `workflows/`, and `personas/` presets. Check `.carryctx/rules/formatting-and-linting.md` and `.carryctx/rules/wasm-crate-build.md` for domain-specific constraints before starting matching work, `.carryctx/workflows/publish-package.md` before cutting a release, and `.carryctx/personas/code-reviewer.md` when asked to review a PR. Use `carryctx progress todo/done/block/risk/note` and `carryctx checkpoint` to track multi-step work.
