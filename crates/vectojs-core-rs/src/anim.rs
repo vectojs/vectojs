@@ -9,10 +9,10 @@
 //!
 //! Scalar on purpose. It is the fair "batched, no per-driver JS dispatch"
 //! comparison and keeps the spring **bit-identical** to `@vectojs/math`
-//! `SpringPhysics` (pure arithmetic, same op order). The tween is only
-//! close-to-identical: its cubic/back easings use `Math.pow(_, 3)` on the JS
-//! side, which Rust's `powi`/`powf` do not reproduce to the last ULP — a real
-//! parity limit worth recording before committing to a tween WASM path.
+//! `SpringPhysics` (pure arithmetic, same op order). The tween is now
+//! bit-identical too: `easing.ts` and `ease()` here both express integer
+//! powers as explicit multiplication (no `Math.pow`/`powi`, neither of which is
+//! correctly rounded), so the previous ~1e-12 easing gap is closed.
 //!
 //! Separate SoA + `static mut` from the transform `Store`; nothing here touches
 //! that path. Same raw C-ABI convention (leak arrays, export pointers).
@@ -174,9 +174,13 @@ const C3: f64 = C1 + 1.0;
 /// Named easings, by id, matching packages/animation/src/easing.ts order:
 /// 0 linear, 1 easeInQuad, 2 easeOutQuad, 3 easeInOutQuad, 4 easeInCubic,
 /// 5 easeOutCubic, 6 easeInOutCubic, 7 easeOutBack, 8 easeInOutBack.
-/// NOTE: cubic/back use integer powers that the JS side writes as `Math.pow`;
-/// Rust cannot reproduce V8's `pow` to the ULP, so results match to ~1e-12, not
-/// bit-for-bit (recorded as a spike finding).
+///
+/// Integer powers are written as explicit multiplication (`u * u`, `u * u * u`)
+/// exactly as `easing.ts` now does — NOT `powi`/`powf`. `powi` is not
+/// guaranteed to equal a chain of multiplications, and neither it nor V8's
+/// `Math.pow` is correctly rounded, so the old `powi`-vs-`Math.pow` pairing only
+/// matched to ~1e-12. With both sides doing plain IEEE-754 multiplies in the
+/// same order, the batched tween path now matches `TweenDriver` **bit-for-bit**.
 #[inline]
 fn ease(id: i32, t: f64) -> f64 {
     match id {
@@ -187,25 +191,35 @@ fn ease(id: i32, t: f64) -> f64 {
             if t < 0.5 {
                 2.0 * t * t
             } else {
-                1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+                let u = -2.0 * t + 2.0;
+                1.0 - (u * u) / 2.0
             }
         }
         4 => t * t * t,
-        5 => 1.0 - (1.0 - t).powi(3),
+        5 => {
+            let u = 1.0 - t;
+            1.0 - u * u * u
+        }
         6 => {
             if t < 0.5 {
                 4.0 * t * t * t
             } else {
-                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                let u = -2.0 * t + 2.0;
+                1.0 - (u * u * u) / 2.0
             }
         }
-        7 => 1.0 + C3 * (t - 1.0).powi(3) + C1 * (t - 1.0).powi(2),
+        7 => {
+            let u = t - 1.0;
+            1.0 + C3 * (u * u * u) + C1 * (u * u)
+        }
         8 => {
             let c2 = C1 * 1.525;
             if t < 0.5 {
-                ((2.0 * t).powi(2) * ((c2 + 1.0) * 2.0 * t - c2)) / 2.0
+                let u = 2.0 * t;
+                (u * u * ((c2 + 1.0) * 2.0 * t - c2)) / 2.0
             } else {
-                ((2.0 * t - 2.0).powi(2) * ((c2 + 1.0) * (t * 2.0 - 2.0) + c2) + 2.0) / 2.0
+                let u = 2.0 * t - 2.0;
+                (u * u * ((c2 + 1.0) * (t * 2.0 - 2.0) + c2) + 2.0) / 2.0
             }
         }
         _ => t,
@@ -213,7 +227,8 @@ fn ease(id: i32, t: f64) -> f64 {
 }
 
 /// Advance `count` tweens by `dt` ms, writing `t_val`. Matches `TweenDriver.tick`
-/// (advance elapsed, clamp progress, ease) except for the easing ULP caveat.
+/// (advance elapsed, clamp progress, ease) bit-for-bit — see `ease()` on why the
+/// easing is now exact rather than ~1e-12 close.
 #[unsafe(no_mangle)]
 pub extern "C" fn tween_step(dt: f64, count: usize) {
     unsafe {
