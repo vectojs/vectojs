@@ -190,29 +190,20 @@ export class Text extends UIComponent {
    * highlights the correct (possibly visually-discontiguous) rectangles, which
    * is exactly correct RTL selection behavior.
    */
-  private bidiRuns(lineIndex: number): ContentProjectionRun[] | undefined {
+  /**
+   * Visual left origin (min glyph x) of a bidi line. The engine right-aligns
+   * RTL lines, so their glyphs don't start at x=0; projecting the logical line
+   * string at this origin (with the browser doing its own bidi via `dir=auto`)
+   * lets the DOM selection rectangles overlap the drawn glyphs, while the browser
+   * keeps correct logical caret hit-mapping — which per-glyph carriers broke.
+   */
+  private bidiLineOriginX(lineIndex: number): number {
     const lineQuantum = this.fontSize * 1.5;
-    const glyphs = this.glyphNodes
-      .filter((n) => Math.round(n.y / lineQuantum) === lineIndex)
-      .slice()
-      // Logical order for correct copy/AT; visual x is carried per run.
-      .sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
-    if (glyphs.length === 0) return undefined;
-    return glyphs.map((n) => ({
-      // Carry the LOGICAL SOURCE substring, not `n.char`: for shaped scripts
-      // (Arabic) `n.char` is the contextual presentation form (U+FExx), so
-      // copy / screen-reader / find-in-page would get shaped codepoints instead
-      // of normal base letters. sourceIndex/sourceLength map the glyph back to
-      // the original text. (Hebrew is unshaped so both happen to match — which
-      // is why an all-Hebrew test wouldn't catch this.)
-      text:
-        n.sourceLength && n.sourceLength > 0
-          ? this.text.slice(n.sourceIndex ?? 0, (n.sourceIndex ?? 0) + n.sourceLength)
-          : n.char,
-      x: n.x,
-      width: n.width,
-      font: this.font,
-    }));
+    let minX = Infinity;
+    for (const n of this.glyphNodes) {
+      if (Math.round(n.y / lineQuantum) === lineIndex && n.x < minX) minX = n.x;
+    }
+    return minX === Infinity ? 0 : minX;
   }
 
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
@@ -222,20 +213,21 @@ export class Text extends UIComponent {
     const lines = this.lines.map((visualText, index) => {
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
-      // Bidi takes precedence: RTL/mixed needs per-glyph positioned carriers
-      // (glyphs are reordered + right-aligned on canvas). Otherwise justify uses
-      // per-word carriers, and plain LTR uses a single natural-flow string.
-      const runs = this.hasBidi
-        ? this.bidiRuns(index)
-        : justified
-          ? this.justifiedRuns(index)
-          : undefined;
+      // Justify uses per-word positioned carriers (widened gaps). Bidi/RTL does
+      // NOT use carriers: per-glyph carriers overlap selection rects but break
+      // logical caret hit-mapping (the browser can't resolve a click inside a
+      // 1-char box back to the logical offset). Instead keep a single
+      // natural-flow line string — the browser does its own bidi (correct caret
+      // mapping) — but anchor it at the line's VISUAL origin so the right-aligned
+      // RTL glyphs and the DOM selection box line up.
+      const runs = this.hasBidi ? undefined : justified ? this.justifiedRuns(index) : undefined;
+      const lineX = this.hasBidi ? this.bidiLineOriginX(index) : 0;
       return {
         // Canvas keeps its visual glyph order; the semantic layer keeps logical
         // source order so native copy and RTL text remain correct.
         text: this.text.slice(range.start, range.end) || visualText,
         separatorAfter: this.text.slice(range.end, Math.max(range.end, nextStart)),
-        x: 0,
+        x: lineX,
         y: index * this.lineHeight,
         baseline: this.lineHeight * 0.8,
         font: this.font,

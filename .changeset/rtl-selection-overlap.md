@@ -1,6 +1,6 @@
 ---
-"@vectojs/core": minor
-"@vectojs/ui": minor
+'@vectojs/core': minor
+'@vectojs/ui': minor
 ---
 
-RTL / bidi text selection now overlaps the drawn glyphs. `Text` detects RTL (bidi) layout and emits per-glyph positioned content-projection runs in **logical** source order (so copy, find-in-page, and screen readers stay correct) while each carrier records its **visual** x — and, critically, the run text is the logical source substring, not the shaped presentation form (Arabic glyphs are U+FExx on canvas but must copy as base letters). Scene now positions carrier runs **absolutely** at their visual x within the line and forces `dir="ltr"` + `unicode-bidi: isolate` on positioned lines, so the browser does not re-bidi-reorder them. Verified on real Chrome 150 + Firefox 153: DOM selection left edges match the canvas glyph x exactly (residual < one glyph advance at range boundaries). Left-aligned LTR text is unchanged (natural single-string flow).
+RTL / bidi text selection now overlaps the drawn glyphs. The engine right-aligns and visually reorders RTL lines, but the DOM content projection previously anchored every line at x=0, so the native selection box drifted off the glyphs (measured 300px+ on real Chrome). `Text` now anchors a bidi line's projection at its **visual origin** (the line's min glyph x) while keeping it a single natural-flow string in **logical** source order — so the browser's own bidi gives correct caret hit-mapping AND the selection rectangles overlap the canvas glyphs. RTL canvas text also renders glyph-by-glyph so it can actually right-align. Verified on real Chrome 150 + Firefox 153 across DPR 1/1.5, 90% zoom, and font-substitution cases. Left-aligned LTR text is unchanged.
