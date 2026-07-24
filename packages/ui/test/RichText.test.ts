@@ -50,7 +50,9 @@ describe('RichText', () => {
 
   it('renders a larger run at its own size', () => {
     const { r, calls } = recordingRenderer();
-    new RichText([{ text: 'H', style: { fontSize: 40 } }], { font: '16px sans-serif' }).render(r);
+    new RichText([{ text: 'H', style: { fontSize: 40 } }], {
+      font: '16px sans-serif',
+    }).render(r);
     expect(calls.find((c) => c.text === 'H')?.font).toContain('40px');
   });
 
@@ -80,7 +82,9 @@ describe('RichText', () => {
   it('wakes an on-demand scene after streaming styled spans', () => {
     const rt = new RichText([{ text: 'first' }]);
     const markDirty = vi.fn();
-    (rt as unknown as { _scene: { markDirty: () => void } })._scene = { markDirty };
+    (rt as unknown as { _scene: { markDirty: () => void } })._scene = {
+      markDirty,
+    };
     rt.appendSpans([{ text: ' second', style: { bold: true } }]);
     expect(markDirty).toHaveBeenCalledOnce();
   });
@@ -141,5 +145,53 @@ describe('RichText', () => {
     const proj = rt.getContentProjection()!;
     expect(proj.text).toBe('The quick fox'); // rendered text, no markup noise
     expect(proj.font).toBe(rt.font);
+  });
+
+  // No DOM in this env, so the engine uses its portable 0.5em fallback: every
+  // glyph is fontSize*0.5 = 8px wide at the default 16px font. That makes the
+  // justify geometry deterministic without a real measurer.
+  it('justify stretches a wrapped line flush to maxWidth', () => {
+    const spans = [{ text: 'aa aa aa aa aa' }];
+    const width = 80;
+    const left = new RichText(spans, { maxWidth: width, textAlign: 'left' });
+    const just = new RichText(spans, { maxWidth: width, textAlign: 'justify' });
+
+    // Right edge (max x + glyph width) of the first visual line.
+    const firstLineRight = (rt: RichText): number => {
+      const { r, calls } = recordingRenderer();
+      rt.render(r);
+      const y0 = Math.min(...calls.map((c) => c.y));
+      const line0 = calls.filter((c) => c.y === y0 && c.text.trim());
+      return Math.max(...line0.map((c) => c.x + 8));
+    };
+
+    const leftRight = firstLineRight(left);
+    const justRight = firstLineRight(just);
+    expect(leftRight).toBeLessThan(width); // ragged: ends short of the edge
+    expect(justRight).toBeCloseTo(width, 0); // justified: flush to maxWidth
+    expect(justRight).toBeGreaterThan(leftRight);
+  });
+
+  it('justify leaves the paragraph-final line ragged', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([{ text: 'aa aa aa aa aa' }], {
+      maxWidth: 80,
+      textAlign: 'justify',
+    }).render(r);
+    const yMax = Math.max(...calls.map((c) => c.y));
+    const lastLine = calls.filter((c) => c.y === yMax && c.text.trim());
+    const lastRight = Math.max(...lastLine.map((c) => c.x + 8));
+    expect(lastRight).toBeLessThan(80); // final line is not stretched
+  });
+
+  it('hyphenate breaks an overflowing word with a visible hyphen', () => {
+    const { r, calls } = recordingRenderer();
+    // Split the long word after 3 chars; at 8px/glyph and maxWidth 48 the tail
+    // overflows and the break fires, drawing a '-'.
+    new RichText([{ text: 'hyphenation' }], {
+      maxWidth: 48,
+      hyphenate: (w) => (w.length > 3 ? [w.slice(0, 3), w.slice(3)] : [w]),
+    }).render(r);
+    expect(calls.some((c) => c.text === '-')).toBe(true);
   });
 });

@@ -31,6 +31,21 @@ export interface RichTextOptions {
   exclusions?: ExclusionRect[];
   /** Allow browser-native drag selection and copy. Default `true`. */
   selectable?: boolean;
+  /**
+   * Horizontal alignment. `'justify'` stretches every wrapped line flush to
+   * {@link maxWidth} (the paragraph-final and newline-ended lines stay ragged);
+   * `'left'` (default) leaves them ragged. Needs a {@link maxWidth} to have an
+   * effect. Free here — `RichText` already draws each glyph at its own `node.x`,
+   * which the engine's justify pass repositions.
+   */
+  textAlign?: 'left' | 'justify';
+  /**
+   * Optional hyphenator: given a word, return its break parts (e.g.
+   * `['hyphen', 'ation']`). A word that doesn't fit breaks at the chosen point
+   * with a visible `-`. Soft hyphens (U+00AD) already present in a run's text
+   * work without one.
+   */
+  hyphenate?: (word: string) => string[];
 }
 
 /**
@@ -51,7 +66,12 @@ class LinkHotspot extends UIComponent {
     });
   }
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: sanitizeUrl(this.href), label: this.href, target: '_blank' };
+    return {
+      tag: 'a',
+      href: sanitizeUrl(this.href),
+      label: this.href,
+      target: '_blank',
+    };
   }
 
   public render(): void {
@@ -144,6 +164,8 @@ export class RichText extends UIComponent {
     this.exclusions = opts.exclusions;
     this.baseFontSize = fontSizePx(this.font);
     this.engine = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, baseMeasurer(this.font));
+    this.engine.textAlign = opts.textAlign ?? 'left';
+    if (opts.hyphenate) this.engine.hyphenate = opts.hyphenate;
     this.interactive = false;
     this.result = this.layout();
   }
@@ -160,6 +182,17 @@ export class RichText extends UIComponent {
   public setMaxWidth(maxWidth: number): this {
     this.maxWidth = maxWidth;
     this.engine.maxWidth = maxWidth;
+    this.result = this.layout();
+    this.scene?.markDirty();
+    return this;
+  }
+
+  /**
+   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
+   * {@link setMaxWidth}'s width; the last line stays ragged) and re-lay out.
+   */
+  public setTextAlign(align: 'left' | 'justify'): this {
+    this.engine.textAlign = align;
     this.result = this.layout();
     this.scene?.markDirty();
     return this;
@@ -210,7 +243,13 @@ export class RichText extends UIComponent {
     width: number;
     height: number;
   }> {
-    const out: Array<{ href: string; x: number; y: number; width: number; height: number }> = [];
+    const out: Array<{
+      href: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }> = [];
     const nodes = this.result.nodes;
     let i = 0;
     while (i < nodes.length) {
