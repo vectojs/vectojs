@@ -318,7 +318,12 @@ describe('Scene', () => {
       }
       render() {}
       getA11yAttributes() {
-        return { tag: 'a' as const, role: 'link', label: 'Docs', href: 'https://example.com' };
+        return {
+          tag: 'a' as const,
+          role: 'link',
+          label: 'Docs',
+          href: 'https://example.com',
+        };
       }
     }
     const link = new LinkLike('lnk');
@@ -347,7 +352,11 @@ describe('Scene', () => {
       }
       render() {}
       getA11yAttributes() {
-        return { tag: 'img' as const, src: 'https://example.com/logo.png', alt: 'Logo' };
+        return {
+          tag: 'img' as const,
+          src: 'https://example.com/logo.png',
+          alt: 'Logo',
+        };
       }
     }
     const img = new ImgLike('img');
@@ -376,7 +385,12 @@ describe('Scene', () => {
       }
       render() {}
       getA11yAttributes() {
-        return { tag: 'input' as const, inputType: 'checkbox', label: 'Agree', checked };
+        return {
+          tag: 'input' as const,
+          inputType: 'checkbox',
+          label: 'Agree',
+          checked,
+        };
       }
     }
     const c = new CheckLike('chk');
@@ -573,7 +587,11 @@ describe('Scene', () => {
       }
       render() {}
       getA11yAttributes() {
-        return { role: 'region', label: 'Canvas workspace', tabIndex: this.semanticTabIndex };
+        return {
+          role: 'region',
+          label: 'Canvas workspace',
+          tabIndex: this.semanticTabIndex,
+        };
       }
     }
     const region = new FocusableRegion('focusable-region');
@@ -602,7 +620,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     public renders = 0;
     constructor(
       id: string,
-      private bounds: { x: number; y: number; width: number; height: number } | null,
+      private bounds: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      } | null,
     ) {
       super(id);
     }
@@ -635,14 +658,18 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   it('culls a node whose world bounds are off-viewport', () => {
     const scene = makeScene();
-    const onScreen = new SpyEntity('on', { x: 0, y: 0, width: 50, height: 50 }).setPosition(
-      10,
-      10,
-    ) as SpyEntity;
-    const offScreen = new SpyEntity('off', { x: 0, y: 0, width: 50, height: 50 }).setPosition(
-      5000,
-      5000,
-    ) as SpyEntity;
+    const onScreen = new SpyEntity('on', {
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 50,
+    }).setPosition(10, 10) as SpyEntity;
+    const offScreen = new SpyEntity('off', {
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 50,
+    }).setPosition(5000, 5000) as SpyEntity;
     scene.add(onScreen);
     scene.add(offScreen);
 
@@ -686,7 +713,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     // (400 → 800 → 1600). The renderer records the logical size in the
     // canvas's inline style; subsequent Scenes must prefer it.
     const prevDPR = window.devicePixelRatio;
-    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    Object.defineProperty(window, 'devicePixelRatio', {
+      value: 2,
+      configurable: true,
+    });
     try {
       const parentDiv = document.createElement('div');
       const canvas = document.createElement('canvas');
@@ -704,13 +734,19 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect(canvas.width).toBe(800); // NOT 1600
       second.destroy();
     } finally {
-      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+      Object.defineProperty(window, 'devicePixelRatio', {
+        value: prevDPR,
+        configurable: true,
+      });
     }
   });
 
   it('maxDPR caps the canvas backing store at construction (findings.md, 2026-07-16)', () => {
     const prevDPR = window.devicePixelRatio;
-    Object.defineProperty(window, 'devicePixelRatio', { value: 3, configurable: true });
+    Object.defineProperty(window, 'devicePixelRatio', {
+      value: 3,
+      configurable: true,
+    });
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -721,7 +757,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect(canvas.height).toBe(600);
       scene.destroy();
     } finally {
-      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+      Object.defineProperty(window, 'devicePixelRatio', {
+        value: prevDPR,
+        configurable: true,
+      });
     }
   });
 
@@ -740,7 +779,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     canvas.width = 400;
     canvas.height = 300;
     const scene = new Scene(canvas, { disableWindowResize: true, maxDPR: 2 });
-    const renderer = (scene as any).renderer as { maxDPR?: number; resize: () => void };
+    const renderer = (scene as any).renderer as {
+      maxDPR?: number;
+      resize: () => void;
+    };
     expect(renderer.maxDPR).toBe(2);
     renderer.resize = vi.fn(); // isolate: don't exercise CanvasRenderer's own resize math here
     // Change maxDPR AFTER construction so the assertion below can only pass
@@ -756,7 +798,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   it('maxDPR undefined (default) leaves DPR handling uncapped, matching prior versions', () => {
     const prevDPR = window.devicePixelRatio;
-    Object.defineProperty(window, 'devicePixelRatio', { value: 3, configurable: true });
+    Object.defineProperty(window, 'devicePixelRatio', {
+      value: 3,
+      configurable: true,
+    });
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -765,13 +810,19 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect(canvas.width).toBe(1200); // 400 × 3, real DPR, uncapped
       scene.destroy();
     } finally {
-      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+      Object.defineProperty(window, 'devicePixelRatio', {
+        value: prevDPR,
+        configurable: true,
+      });
     }
   });
 
   it('clientToScene mapping is DPR-independent for an embedded scene', () => {
     const prevDPR = window.devicePixelRatio;
-    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    Object.defineProperty(window, 'devicePixelRatio', {
+      value: 2,
+      configurable: true,
+    });
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 400;
@@ -792,7 +843,10 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       expect(scene.clientToScene(250, 170)).toEqual({ x: 200, y: 150 });
       scene.destroy();
     } finally {
-      Object.defineProperty(window, 'devicePixelRatio', { value: prevDPR, configurable: true });
+      Object.defineProperty(window, 'devicePixelRatio', {
+        value: prevDPR,
+        configurable: true,
+      });
     }
   });
 
@@ -832,9 +886,17 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     const scene = makeScene();
     const submit = vi.fn();
     const pass = { end: vi.fn() };
-    const encoder = { beginRenderPass: vi.fn(() => pass), finish: vi.fn(() => 'cmd') };
-    (scene as any).device = { createCommandEncoder: () => encoder, queue: { submit } };
-    (scene as any).gpuContext = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+    const encoder = {
+      beginRenderPass: vi.fn(() => pass),
+      finish: vi.fn(() => 'cmd'),
+    };
+    (scene as any).device = {
+      createCommandEncoder: () => encoder,
+      queue: { submit },
+    };
+    (scene as any).gpuContext = {
+      getCurrentTexture: () => ({ createView: () => ({}) }),
+    };
     (scene as any).gpuHasContent = true; // particles were presented last frame
 
     tick(scene); // no ComputeParticleEntity in the tree anymore
@@ -1402,6 +1464,51 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
+    it('does NOT compute getContentProjection() for off-viewport blocks (CTX-0024 perf gate)', () => {
+      // The visibility gate is hoisted above getContentProjection() so a
+      // long/streaming document does not pay O(glyphs) per off-screen block
+      // every synced frame. An off-viewport block must be gated out WITHOUT
+      // its (expensive) projection ever being computed.
+      const scene = makeDomScene({ contentProjectionMargin: 100 });
+      const near = new ContentEntity('near');
+      near.setPosition(10, 10);
+      const far = new ContentEntity('far');
+      far.setPosition(0, 100000); // far below the viewport + margin
+      scene.add(near);
+      scene.add(far);
+
+      const nearSpy = vi.spyOn(near, 'getContentProjection');
+      const farSpy = vi.spyOn(far, 'getContentProjection');
+      tick(scene);
+
+      // On-viewport block computes its projection and materializes.
+      expect(nearSpy).toHaveBeenCalled();
+      expect(contentEl(scene, 'near')).toBeDefined();
+      // Off-viewport block is gated out with zero projection cost.
+      expect(farSpy).not.toHaveBeenCalled();
+      expect(contentEl(scene, 'far')).toBeUndefined();
+      scene.destroy();
+    });
+
+    it('frees an already-materialized projection when it scrolls off-viewport, without recomputing', () => {
+      const scene = makeDomScene({ contentProjectionMargin: 100 });
+      const e = new ContentEntity('scroller');
+      e.setPosition(10, 10);
+      scene.add(e);
+      tick(scene);
+      expect(contentEl(scene, 'scroller')).toBeDefined();
+
+      // Move it far off-screen and re-sync.
+      e.setPosition(0, 100000);
+      scene.markDirty();
+      const spy = vi.spyOn(e, 'getContentProjection');
+      tick(scene);
+
+      expect(contentEl(scene, 'scroller')).toBeUndefined(); // freed
+      expect(spy).not.toHaveBeenCalled(); // gated before the projection call
+      scene.destroy();
+    });
+
     it('hides projections fully outside a clipChildren ancestor', () => {
       const scene = makeDomScene();
       const clip = new SpyEntity('clip', null);
@@ -1487,7 +1594,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
   it('clipChildren wraps the child render pass in a clip rect', () => {
     const scene = makeScene();
     mockCtx.clip.mockClear();
-    const parent = new SpyEntity('clip-p', { x: 0, y: 0, width: 100, height: 80 }) as SpyEntity;
+    const parent = new SpyEntity('clip-p', {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 80,
+    }) as SpyEntity;
     parent.clipChildren = true;
     parent.width = 100;
     parent.height = 80;
@@ -1576,7 +1688,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   it('forwards wheel events from the shadow node to the entity', () => {
     const scene = makeScene();
-    const e = new SpyEntity('wheel-e', { x: 0, y: 0, width: 100, height: 100 }) as SpyEntity;
+    const e = new SpyEntity('wheel-e', {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 100,
+    }) as SpyEntity;
     e.interactive = true;
     e.width = 100;
     e.height = 100;
@@ -1595,7 +1712,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
   });
 
   function mountInteractive(scene: Scene, id: string): HTMLElement {
-    const e = new SpyEntity(id, { x: 0, y: 0, width: 80, height: 80 }) as SpyEntity;
+    const e = new SpyEntity(id, {
+      x: 0,
+      y: 0,
+      width: 80,
+      height: 80,
+    }) as SpyEntity;
     e.interactive = true;
     e.width = 80;
     e.height = 80;
@@ -1627,7 +1749,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   it('releases pointer capture and routes pointercancel to the projected entity', () => {
     const scene = makeScene();
-    const entity = new SpyEntity('cancel', { x: 0, y: 0, width: 80, height: 80 }) as SpyEntity;
+    const entity = new SpyEntity('cancel', {
+      x: 0,
+      y: 0,
+      width: 80,
+      height: 80,
+    }) as SpyEntity;
     entity.interactive = true;
     entity.width = 80;
     entity.height = 80;
@@ -1653,7 +1780,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   it('syncs the a11y shadow layer every frame by default', () => {
     const scene = makeScene();
-    const e = new SpyEntity('s', { x: 0, y: 0, width: 50, height: 50 }) as SpyEntity;
+    const e = new SpyEntity('s', {
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 50,
+    }) as SpyEntity;
     e.interactive = true;
     e.width = 50;
     e.height = 50;
@@ -1671,7 +1803,12 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
   it('throttles the a11y shadow sync to a11ySyncInterval', () => {
     const scene = makeScene();
     scene.a11ySyncInterval = 100;
-    const e = new SpyEntity('s2', { x: 0, y: 0, width: 50, height: 50 }) as SpyEntity;
+    const e = new SpyEntity('s2', {
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 50,
+    }) as SpyEntity;
     e.interactive = true;
     e.width = 50;
     e.height = 50;
@@ -1706,7 +1843,12 @@ describe('Scene syncA11y — text input IME / selection / focus forwarding', () 
       if (this.a11yTag === 'textarea') {
         return { tag: 'textarea' as const, value: 'abc', label: 'Notes' };
       }
-      return { tag: 'input' as const, inputType: 'text', value: 'abc', label: 'Name' };
+      return {
+        tag: 'input' as const,
+        inputType: 'text',
+        value: 'abc',
+        label: 'Name',
+      };
     }
   }
 
@@ -1734,7 +1876,11 @@ describe('Scene syncA11y — text input IME / selection / focus forwarding', () 
     el.setSelectionRange(2, 4);
     el.dispatchEvent(new Event('input'));
 
-    expect(events.at(-1)).toMatchObject({ value: 'hello', selectionStart: 2, selectionEnd: 4 });
+    expect(events.at(-1)).toMatchObject({
+      value: 'hello',
+      selectionStart: 2,
+      selectionEnd: 4,
+    });
   });
 
   it('marks onDemand scenes dirty when form controls forward edits', () => {

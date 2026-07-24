@@ -75,5 +75,8 @@ benchmarks/scene-hit-wasm/page/*.wasm
 benchmarks/anim-wasm-scene/page/index.html
 benchmarks/anim-wasm-scene/page/*.wasm
 
+# content-projection benchmark build artifacts + results (page/ generated)
+benchmarks/content-projection/page/index.html
+
 # Git Worktree
 .worktree/
