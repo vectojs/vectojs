@@ -36,7 +36,9 @@ describe('Text streaming (流式打字机)', () => {
   it('wakes an on-demand scene after a streamed append', () => {
     const t = new Text('first');
     const markDirty = vi.fn();
-    (t as unknown as { _scene: { markDirty: () => void } })._scene = { markDirty };
+    (t as unknown as { _scene: { markDirty: () => void } })._scene = {
+      markDirty,
+    };
     t.append(' second');
     expect(markDirty).toHaveBeenCalledOnce();
   });
@@ -46,5 +48,107 @@ describe('Text streaming (流式打字机)', () => {
     const proj = t.getContentProjection()!;
     expect(proj.text).toBe('Findable ui text');
     expect(proj.font).toBe('18px sans-serif');
+  });
+});
+
+/** Records fillText with coordinates (the glyph-accurate path draws per glyph). */
+function xyRecorder(): {
+  r: IRenderer;
+  calls: Array<{ text: string; x: number; y: number }>;
+} {
+  const calls: Array<{ text: string; x: number; y: number }> = [];
+  const r = new Proxy({} as IRenderer, {
+    get(_t, prop) {
+      if (prop === 'fillText')
+        return (text: string, x: number, y: number) => calls.push({ text, x, y });
+      return () => {};
+    },
+  });
+  return { r, calls };
+}
+
+describe('Text alignment & hyphenation', () => {
+  // No DOM here, so the engine uses its portable 0.5em fallback: each glyph is
+  // fontSize*0.5 = 8px at the default 16px font, making the geometry deterministic.
+  it('left-aligned (default) draws one fillText per line, not per glyph', () => {
+    const { r, calls } = xyRecorder();
+    new Text('aa aa aa aa aa', { maxWidth: 80 }).render(r);
+    // Fast path: each call carries a whole line string, and all start at x=0.
+    expect(calls.every((c) => c.x === 0)).toBe(true);
+    expect(calls.some((c) => c.text.length > 1)).toBe(true);
+  });
+
+  it('justify draws per glyph and stretches a wrapped line flush to maxWidth', () => {
+    const { r, calls } = xyRecorder();
+    new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'justify' }).render(r);
+    // Per-glyph path: every call is a single character.
+    expect(calls.every((c) => c.text.length === 1)).toBe(true);
+    const y0 = Math.min(...calls.map((c) => c.y));
+    const line0 = calls.filter((c) => c.y === y0 && c.text.trim());
+    const right = Math.max(...line0.map((c) => c.x + 8));
+    expect(right).toBeCloseTo(80, 0); // first line justified flush to maxWidth
+  });
+
+  it('justify leaves the last line ragged', () => {
+    const { r, calls } = xyRecorder();
+    new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'justify' }).render(r);
+    const yMax = Math.max(...calls.map((c) => c.y));
+    const lastLine = calls.filter((c) => c.y === yMax && c.text.trim());
+    const right = Math.max(...lastLine.map((c) => c.x + 8));
+    expect(right).toBeLessThan(80);
+  });
+
+  it('hyphenate breaks an overflowing word with a visible hyphen', () => {
+    const { r, calls } = xyRecorder();
+    new Text('hyphenation', {
+      maxWidth: 48,
+      hyphenate: (w) => (w.length > 3 ? [w.slice(0, 3), w.slice(3)] : [w]),
+    }).render(r);
+    expect(calls.some((c) => c.text === '-')).toBe(true);
+  });
+
+  it('content projection still returns the original text on the justify path', () => {
+    const t = new Text('aa aa aa aa aa', {
+      maxWidth: 80,
+      textAlign: 'justify',
+    });
+    expect(t.getContentProjection()!.text).toBe('aa aa aa aa aa');
+  });
+
+  it('justify projection emits positioned per-word runs whose x matches the glyphs', () => {
+    const t = new Text('aa aa aa aa aa', {
+      maxWidth: 80,
+      textAlign: 'justify',
+    });
+    const proj = t.getContentProjection()!;
+    const line0 = proj.lines![0];
+    // Positioned runs carry x/width so the DOM selection box overlaps the
+    // widened canvas spacing (the selection-drift fix).
+    expect(line0.runs && line0.runs.length).toBeGreaterThan(1);
+    expect(line0.runs!.every((r) => typeof r.x === 'number' && typeof r.width === 'number')).toBe(
+      true,
+    );
+    // Runs are in visual order, left to right, and the last word reaches near
+    // maxWidth (justified flush) — the same geometry the canvas renders.
+    const xs = line0.runs!.map((r) => r.x!);
+    expect(xs).toEqual([...xs].sort((a, b) => a - b));
+    const last = line0.runs!.at(-1)!;
+    expect(last.x! + last.width!).toBeCloseTo(80, 0);
+
+    // The paragraph-final line is NOT stretched: its first word sits at the
+    // left origin and it does NOT reach maxWidth (ragged), even though it still
+    // carries positioned runs (their x is just the natural, un-widened layout).
+    const lastLine = proj.lines!.at(-1)!;
+    const lastRuns = lastLine.runs!;
+    expect(lastRuns[0].x).toBeCloseTo(0, 0);
+    const end = lastRuns.at(-1)!;
+    expect(end.x! + end.width!).toBeLessThan(80);
+  });
+
+  it('left-aligned projection has no positioned runs (natural flow)', () => {
+    const t = new Text('aa aa aa aa aa', { maxWidth: 80 });
+    for (const line of t.getContentProjection()!.lines!) {
+      expect(line.runs).toBeUndefined();
+    }
   });
 });

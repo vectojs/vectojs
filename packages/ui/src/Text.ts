@@ -8,7 +8,7 @@ import {
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { fontSizePx } from './measure';
-import type { ContentProjection } from '@vectojs/core';
+import type { ContentProjection, ContentProjectionRun } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
 export interface TextOptions {
@@ -24,6 +24,20 @@ export interface TextOptions {
   preserveLeadingSpaces?: boolean;
   /** Allow browser-native drag selection and copy. Default `true`. */
   selectable?: boolean;
+  /**
+   * Horizontal alignment. `'justify'` stretches every wrapped line flush to
+   * {@link maxWidth} (paragraph-final and newline-ended lines stay ragged);
+   * `'left'` (default) leaves them ragged. Needs {@link maxWidth} to take
+   * effect. When justify (or {@link hyphenate}) is active the component draws
+   * glyph-by-glyph; left-aligned text keeps the fast one-`fillText`-per-line path.
+   */
+  textAlign?: 'left' | 'justify';
+  /**
+   * Optional hyphenator: given a word, return its break parts (e.g.
+   * `['hyphen', 'ation']`). A word that doesn't fit breaks at the chosen point
+   * with a visible `-`. Soft hyphens (U+00AD) in the text work without one.
+   */
+  hyphenate?: (word: string) => string[];
 }
 
 /**
@@ -72,6 +86,11 @@ export class Text extends UIComponent {
   private fontSize: number;
   private lines: string[] = [];
   private lineSourceRanges: Array<{ start: number; end: number }> = [];
+  /** Per-glyph nodes from the last layout, kept only when a glyph-accurate
+   *  render path is active (justify or hyphenate) — left-aligned text draws one
+   *  `fillText` per line and never touches this. */
+  private glyphNodes: LayoutNode[] = [];
+  private perGlyph = false;
 
   constructor(text: string, opts: TextOptions = {}) {
     super();
@@ -86,6 +105,13 @@ export class Text extends UIComponent {
     if (opts.preserveLeadingSpaces) {
       this.engine.preserveLeadingSpaces = true;
     }
+    this.engine.textAlign = opts.textAlign ?? 'left';
+    if (opts.hyphenate) this.engine.hyphenate = opts.hyphenate;
+    // Justify moves glyphs within a line and hyphenate inserts a '-' not in the
+    // source string, so a single fillText(line) can't reproduce either; switch
+    // to the glyph-accurate render path when either is on. Left-aligned text
+    // keeps the fast one-fillText-per-line default.
+    this.perGlyph = this.engine.textAlign === 'justify' || !!opts.hyphenate;
     this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
     // Not interactive: static text's semantic presence is its content
     // projection. An interactive a11y div would sit ABOVE the selectable
@@ -101,9 +127,58 @@ export class Text extends UIComponent {
    * @param text - The new text content.
    * @returns `this` for chaining.
    */
+  /**
+   * Positioned per-word runs for a justified line, so the DOM selection box
+   * overlaps the widened canvas spacing instead of drifting. Each run's `x` is
+   * its first glyph's canvas x and its `width` spans to the next word (gap
+   * included), so the inter-word space is selectable and the highlight covers
+   * the widened gap exactly. Only used on the justify path — left-aligned text
+   * keeps the cheaper single-string line.
+   */
+  private justifiedRuns(lineIndex: number): ContentProjectionRun[] | undefined {
+    const lineQuantum = this.fontSize * 1.5;
+    const glyphs = this.glyphNodes
+      .filter((n) => Math.round(n.y / lineQuantum) === lineIndex)
+      .sort((a, b) => a.x - b.x);
+    if (glyphs.length === 0) return undefined;
+    const runs: ContentProjectionRun[] = [];
+    let wordStart = -1;
+    const flush = (endExclusive: number, nextX: number | undefined) => {
+      if (wordStart < 0) return;
+      const first = glyphs[wordStart];
+      const text = glyphs
+        .slice(wordStart, endExclusive)
+        .map((n) => n.char)
+        .join('');
+      // Width spans to the next word's x (gap included) or the word's own end.
+      const last = glyphs[endExclusive - 1];
+      const ownEnd = last.x + last.width;
+      runs.push({
+        text,
+        x: first.x,
+        width: (nextX ?? ownEnd) - first.x,
+        font: this.font,
+      });
+      wordStart = -1;
+    };
+    for (let i = 0; i < glyphs.length; i++) {
+      const isSpace = glyphs[i].char.trim() === '';
+      if (isSpace) {
+        // Close the current word; the space is folded into the word's trailing
+        // width (above), not its own carrier, so copy keeps a single space.
+        flush(i, glyphs[i + 1]?.x);
+      } else if (wordStart < 0) {
+        wordStart = i;
+      }
+    }
+    flush(glyphs.length, undefined);
+    return runs.length > 0 ? runs : undefined;
+  }
+
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
+    const justified = this.engine.textAlign === 'justify';
     const lines = this.lines.map((visualText, index) => {
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
@@ -117,6 +192,10 @@ export class Text extends UIComponent {
         baseline: this.lineHeight * 0.8,
         font: this.font,
         lineHeight: this.lineHeight,
+        // Justified lines carry positioned per-word runs so selection overlaps
+        // the widened spacing. The paragraph-final line isn't justified, so it
+        // has no runs and stays a natural single string.
+        runs: justified ? this.justifiedRuns(index) : undefined,
       };
     });
     return {
@@ -172,9 +251,25 @@ export class Text extends UIComponent {
     return this;
   }
 
+  /**
+   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
+   * {@link setMaxWidth}'s width; the last line stays ragged) and re-lay out.
+   * Switching to `'justify'` engages the glyph-accurate render path.
+   */
+  public setTextAlign(align: 'left' | 'justify'): this {
+    this.engine.textAlign = align;
+    if (align === 'justify') this.perGlyph = true;
+    this.applyLayout();
+    this.scene?.markDirty();
+    return this;
+  }
+
   /** Hot pass: place the cached prepared text and regroup glyphs into lines. */
   private applyLayout(): void {
     const result = this.engine.layoutPrepared(this.prepared);
+    // Retain glyph nodes only for the glyph-accurate render path; left-aligned
+    // text draws per line and never reads these.
+    this.glyphNodes = this.perGlyph ? result.nodes : [];
     const lineQuantum = this.fontSize * 1.5; // the engine's internal line advance
     const byLine = new Map<number, string>();
     const nodesByLine = new Map<number, LayoutNode[]>();
@@ -224,6 +319,20 @@ export class Text extends UIComponent {
   }
 
   public render(r: IRenderer): void {
+    // Glyph-accurate path (justify / hyphenate): each glyph carries its own x
+    // (justify widens gaps; hyphenate inserts a '-'), so draw them individually.
+    // node.y is in the engine's line-quantum units — remap to the component's
+    // lineHeight so vertical rhythm matches the fast path.
+    if (this.perGlyph) {
+      const lineQuantum = this.fontSize * 1.5;
+      for (const node of this.glyphNodes) {
+        if (!node.char.trim()) continue;
+        const line = Math.round(node.y / lineQuantum);
+        r.fillText(node.char, node.x, (line + 0.8) * this.lineHeight, this.font, this.color);
+      }
+      return;
+    }
+    // Fast default: one fillText per visual line.
     for (let i = 0; i < this.lines.length; i++) {
       if (this.lines[i])
         r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
