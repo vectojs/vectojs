@@ -89,6 +89,66 @@ test('MSDFTextEntity passes a configurable wrap width to the layout worker', () 
   queueLayout.mockRestore();
 });
 
+test('MSDFTextEntity threads textAlign to the layout worker', () => {
+  const font = new MSDFFont(fontJson);
+  const queueLayout = vi.spyOn(LayoutWorkerManager.getInstance(), 'queueLayout');
+
+  // Default is left.
+  const entity = new MSDFTextEntity('Vecto', {
+    font,
+    texture: {} as TexImageSource,
+  });
+  expect(queueLayout.mock.calls[0][2].textAlign).toBe('left');
+
+  // setTextAlign re-queues with the new alignment.
+  entity.setTextAlign('justify');
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+  expect(queueLayout.mock.calls[1][2].textAlign).toBe('justify');
+
+  // Same alignment is a no-op.
+  entity.setTextAlign('justify');
+  expect(queueLayout).toHaveBeenCalledTimes(2);
+
+  // The constructor option is honored up-front.
+  queueLayout.mockClear();
+  new MSDFTextEntity('x', {
+    font,
+    texture: {} as TexImageSource,
+    textAlign: 'justify',
+  });
+  expect(queueLayout.mock.calls[0][2].textAlign).toBe('justify');
+  queueLayout.mockRestore();
+});
+
+test('MSDFTextEntity setHyphenator injects soft hyphens into the layout string only', () => {
+  const font = new MSDFFont(fontJson);
+  const queueLayout = vi.spyOn(LayoutWorkerManager.getInstance(), 'queueLayout');
+  const SHY = '\u00ad';
+
+  const entity = new MSDFTextEntity('hyphenation test', {
+    font,
+    texture: {} as TexImageSource,
+  });
+  // No hyphenator: the layout string is the text unchanged.
+  expect(queueLayout.mock.calls[0][1]).toBe('hyphenation test');
+
+  // Split every long word after its 3rd char, e.g. 'hyphenation' → 'hyp','henation'.
+  entity.setHyphenator((word) => (word.length > 3 ? [word.slice(0, 3), word.slice(3)] : [word]));
+  const sentText = queueLayout.mock.calls[1][1];
+  // Long words gain a soft hyphen; the short word 'test' (>3) also splits.
+  expect(sentText).toContain(SHY);
+  expect(sentText).toBe(`hyp${SHY}henation tes${SHY}t`);
+
+  // The original text (a11y / content projection) is NOT mutated.
+  expect(entity.getContentProjection()?.text).toBe('hyphenation test');
+
+  // Disabling restores the plain layout string.
+  entity.setHyphenator(null);
+  const restored = queueLayout.mock.calls[queueLayout.mock.calls.length - 1][1];
+  expect(restored).toBe('hyphenation test');
+  queueLayout.mockRestore();
+});
+
 test('MSDFTextEntity WebGL rendering under rotation', () => {
   const font = new MSDFFont(fontJson);
   const mockTexture = {} as TexImageSource;
@@ -136,7 +196,11 @@ test('MSDFTextEntity WebGL rendering under rotation', () => {
 test('MSDFTextEntity WebGL path multiplies ancestor opacity into glyph alpha', () => {
   const font = new MSDFFont(fontJson);
   const mockTexture = {} as TexImageSource;
-  const entity = new MSDFTextEntity('A', { font, texture: mockTexture, fontSize: 24 });
+  const entity = new MSDFTextEntity('A', {
+    font,
+    texture: mockTexture,
+    fontSize: 24,
+  });
   entity['layoutResult'] = {
     width: 100,
     height: 24,
