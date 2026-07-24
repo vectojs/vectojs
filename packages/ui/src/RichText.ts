@@ -147,6 +147,16 @@ export class RichText extends UIComponent {
   private baseFontSize: number;
   private baseStyle?: TextStyle;
   private result: LayoutResult;
+  /** Memoized visual line groups, keyed on the `result` identity that produced
+   *  them. `render()` runs every frame and both it and the content projection
+   *  call `visualLineGroups()`; rebuilding the groups (an O(glyphs) walk with a
+   *  `Math.max(...map())` per line) each time showed up as steady-state cost on
+   *  60fps chat transcripts. `layout()` swaps in a fresh `result` object, so a
+   *  reference check is a sufficient and cheap invalidation signal. */
+  private _lineGroupsCache: {
+    result: LayoutResult;
+    groups: ReturnType<RichText['buildVisualLineGroups']>;
+  } | null = null;
   private onLinkClick?: (href: string) => void;
   /** One transparent `<a>` hotspot child per link run (kept in sync with layout). */
   private hotspots: LinkHotspot[] = [];
@@ -371,7 +381,16 @@ export class RichText extends UIComponent {
    * Each line keeps its real local origin and run fonts, so the semantic DOM
    * never has to re-flow mixed-size markdown differently from the canvas.
    */
-  private visualLineGroups(): Array<{
+  /** Memoized on `result` identity — see `_lineGroupsCache`. */
+  private visualLineGroups(): ReturnType<RichText['buildVisualLineGroups']> {
+    const cache = this._lineGroupsCache;
+    if (cache && cache.result === this.result) return cache.groups;
+    const groups = this.buildVisualLineGroups();
+    this._lineGroupsCache = { result: this.result, groups };
+    return groups;
+  }
+
+  private buildVisualLineGroups(): Array<{
     nodes: LayoutResult['nodes'];
     projection: NonNullable<ContentProjection['lines']>[number];
   }> {
