@@ -4,6 +4,7 @@ import { Scene, Entity } from '@vectojs/core';
 import {
   Overlay,
   VirtualList,
+  RowHeights,
   TreeView,
   PanelGroup,
   Panel,
@@ -75,7 +76,12 @@ describe('UI 0.1.1 Components', () => {
       target.y = 200;
       scene.add(target);
 
-      const overlay = new Overlay({ width: 100, height: 80, placement: 'bottom', offset: 10 });
+      const overlay = new Overlay({
+        width: 100,
+        height: 80,
+        placement: 'bottom',
+        offset: 10,
+      });
       overlay.showAt(target);
 
       // bottom placement: x = target.x + target.width/2 - overlay.width/2 = 200 + 25 - 50 = 175
@@ -99,7 +105,12 @@ describe('UI 0.1.1 Components', () => {
       parent.add(target);
       scene.add(parent);
 
-      const overlay = new Overlay({ width: 100, height: 80, placement: 'bottom', offset: 10 });
+      const overlay = new Overlay({
+        width: 100,
+        height: 80,
+        placement: 'bottom',
+        offset: 10,
+      });
       overlay.showAt(target);
 
       expect(overlay.x).toBe(120);
@@ -149,6 +160,99 @@ describe('UI 0.1.1 Components', () => {
 
       expect(renderItem).not.toHaveBeenCalled();
       expect(list.children.length).toBe(0);
+    });
+
+    it('scrolls a long list to an index in the middle using O(log n) row math', () => {
+      const items = Array.from({ length: 10000 }, (_, i) => `Item ${i}`);
+      const rendered = new Set<number>();
+      const list = new VirtualList({
+        items,
+        renderItem: (_item, idx) => {
+          rendered.add(idx);
+          const ent = new Entity();
+          ent.height = 20;
+          return ent;
+        },
+        estimatedRowHeight: 20,
+        width: 200,
+        height: 100,
+        overscan: 2,
+      });
+      list.scrollToIndex(5000);
+      // Drive the scroll integrator to settle at the target.
+      for (let i = 0; i < 200; i++) list.update(16, i * 16);
+
+      // Only a viewport-worth (+overscan) of rows is materialized, and it is
+      // the window around index 5000 — not the whole 10k list.
+      expect(list.children.length).toBeLessThanOrEqual(10);
+      const mounted = [...rendered].filter((i) => i >= 4990 && i <= 5010);
+      expect(mounted.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('RowHeights (Fenwick prefix-sum)', () => {
+    it('answers total/prefix/indexAt over uniform estimates', () => {
+      const rh = new RowHeights(10, 20);
+      expect(rh.total()).toBe(200);
+      expect(rh.prefix(0)).toBe(0);
+      expect(rh.prefix(3)).toBe(60);
+      expect(rh.prefix(10)).toBe(200);
+      expect(rh.indexAt(0)).toBe(0);
+      expect(rh.indexAt(19)).toBe(0);
+      expect(rh.indexAt(20)).toBe(1); // exactly on the boundary → next row
+      expect(rh.indexAt(55)).toBe(2);
+      expect(rh.indexAt(100000)).toBe(9); // clamped to last row
+    });
+
+    it('applies measured-height deltas and keeps prefix/total consistent', () => {
+      const rh = new RowHeights(5, 20);
+      rh.set(0, 50); // row 0 taller than estimate
+      rh.set(2, 10); // row 2 shorter
+      expect(rh.heightOf(0)).toBe(50);
+      expect(rh.heightOf(2)).toBe(10);
+      expect(rh.total()).toBe(50 + 20 + 10 + 20 + 20);
+      expect(rh.prefix(1)).toBe(50);
+      expect(rh.prefix(3)).toBe(50 + 20 + 10);
+      // indexAt reflects the variable heights.
+      expect(rh.indexAt(49)).toBe(0);
+      expect(rh.indexAt(50)).toBe(1);
+      expect(rh.indexAt(69)).toBe(1);
+      expect(rh.indexAt(70)).toBe(2);
+    });
+
+    it('matches a brute-force scan for a random height profile', () => {
+      const n = 200;
+      const rh = new RowHeights(n, 15);
+      const heights = Array.from({ length: n }, () => 15);
+      // Apply some random measured heights.
+      let seed = 42;
+      const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0), seed / 0x100000000);
+      for (let k = 0; k < 80; k++) {
+        const i = Math.floor(rand() * n);
+        const h = 5 + Math.floor(rand() * 40);
+        heights[i] = h;
+        rh.set(i, h);
+      }
+      const bruteTotal = heights.reduce((a, b) => a + b, 0);
+      expect(rh.total()).toBe(bruteTotal);
+      for (const probe of [0, 1, 50, 123, n]) {
+        let sum = 0;
+        for (let i = 0; i < probe; i++) sum += heights[i];
+        expect(rh.prefix(probe)).toBe(sum);
+      }
+      // indexAt at several offsets equals the brute-force containing row.
+      for (const y of [0, 30, 500, 1200, bruteTotal - 1]) {
+        let acc = 0;
+        let expected = n - 1;
+        for (let i = 0; i < n; i++) {
+          if (acc + heights[i] > y) {
+            expected = i;
+            break;
+          }
+          acc += heights[i];
+        }
+        expect(rh.indexAt(y)).toBe(Math.min(expected, n - 1));
+      }
     });
   });
 
@@ -243,7 +347,11 @@ describe('UI 0.1.1 Components', () => {
 
   describe('ResizablePanel', () => {
     it('distributes sizes correctly and resizes on handle drag', () => {
-      const group = new PanelGroup({ direction: 'horizontal', width: 400, height: 200 });
+      const group = new PanelGroup({
+        direction: 'horizontal',
+        width: 400,
+        height: 200,
+      });
       const p1 = new Panel({ minSize: 50, defaultSize: 0.25 }); // expected 100px minus half drag handles?
       const p2 = new Panel({ minSize: 100 });
       group.addPanel(p1);
@@ -256,7 +364,11 @@ describe('UI 0.1.1 Components', () => {
     });
 
     it('keeps panel sizes inside the group after container resize', () => {
-      const group = new PanelGroup({ direction: 'horizontal', width: 540, height: 220 });
+      const group = new PanelGroup({
+        direction: 'horizontal',
+        width: 540,
+        height: 220,
+      });
       const p1 = new Panel({ minSize: 130, defaultSize: 0.36 });
       const p2 = new Panel({ minSize: 180 });
       group.addPanel(p1).addPanel(p2);
@@ -270,7 +382,11 @@ describe('UI 0.1.1 Components', () => {
     });
 
     it('tracks the cursor 1:1 in scene space as the handle moves under it', () => {
-      const group = new PanelGroup({ direction: 'horizontal', width: 400, height: 200 });
+      const group = new PanelGroup({
+        direction: 'horizontal',
+        width: 400,
+        height: 200,
+      });
       const p1 = new Panel({ minSize: 50, defaultSize: 0.25 });
       const p2 = new Panel({ minSize: 50 });
       group.addPanel(p1).addPanel(p2);
@@ -288,7 +404,11 @@ describe('UI 0.1.1 Components', () => {
     });
 
     it('does not abort a drag when the pointer briefly leaves the thin handle', () => {
-      const group = new PanelGroup({ direction: 'horizontal', width: 400, height: 200 });
+      const group = new PanelGroup({
+        direction: 'horizontal',
+        width: 400,
+        height: 200,
+      });
       const p1 = new Panel({ minSize: 50, defaultSize: 0.25 });
       const p2 = new Panel({ minSize: 50 });
       group.addPanel(p1).addPanel(p2);
@@ -506,7 +626,11 @@ describe('UI 0.1.1 Components', () => {
         width: 1600,
         height: 200,
         tabWidth: 150,
-        tabs: ['a', 'b', 'c'].map((id) => ({ id, label: id, content: new Entity(id) })),
+        tabs: ['a', 'b', 'c'].map((id) => ({
+          id,
+          label: id,
+          content: new Entity(id),
+        })),
         value: 'a',
       });
       expect((tabs as unknown as { _tabW(): number })._tabW()).toBe(150);

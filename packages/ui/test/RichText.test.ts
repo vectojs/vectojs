@@ -240,4 +240,46 @@ describe('RichText', () => {
     // Concatenated run text round-trips to the logical source (no glyph forms).
     expect(runs.map((run) => run.text).join('')).toContain('aa');
   });
+
+  describe('visual-line-group memoization', () => {
+    it('reuses the same projected lines across calls when layout is unchanged', () => {
+      const rt = new RichText([{ text: 'hello world foo bar' }], {
+        maxWidth: 120,
+      });
+      const a = rt.getContentProjection()!.lines!;
+      const b = rt.getContentProjection()!.lines!;
+      // The memo caches the built visual-line groups: projectedLines() re-maps a
+      // fresh outer array, but each line's projection object is the SAME
+      // reference across calls — proving the O(glyphs) group build did not rerun.
+      expect(a.length).toBe(b.length);
+      for (let i = 0; i < a.length; i++) expect(b[i]).toBe(a[i]);
+      // A render pass (which also calls visualLineGroups) does not invalidate it.
+      const { r } = recordingRenderer();
+      rt.render(r);
+      const c = rt.getContentProjection()!.lines!;
+      for (let i = 0; i < a.length; i++) expect(c[i]).toBe(a[i]);
+    });
+
+    it('rebuilds after a layout-changing mutation', () => {
+      const rt = new RichText([{ text: 'hello world' }], { maxWidth: 120 });
+      const before = rt.getContentProjection()!.lines!;
+      rt.setSpans([{ text: 'completely different text here' }]);
+      const after = rt.getContentProjection()!.lines!;
+      // New layout → fresh groups (different reference, and different content).
+      expect(after).not.toBe(before);
+      expect(after.map((l) => l.text).join('')).toContain('different');
+    });
+
+    it('rebuilds after setMaxWidth changes wrapping', () => {
+      const rt = new RichText([{ text: 'aa bb cc dd ee ff gg hh' }], {
+        maxWidth: 200,
+      });
+      const wide = rt.getContentProjection()!.lines!;
+      rt.setMaxWidth(40);
+      const narrow = rt.getContentProjection()!.lines!;
+      expect(narrow).not.toBe(wide);
+      // Narrower width wraps into more visual lines.
+      expect(narrow.length).toBeGreaterThan(wide.length);
+    });
+  });
 });
