@@ -72,6 +72,17 @@ export class LayoutWorkerManager {
     return LayoutWorkerManager.instance;
   }
 
+  /**
+   * Release any queued/in-flight layout work for a single entity **without
+   * resurrecting the singleton**. Called from `MSDFTextEntity.destroy()`: using
+   * {@link getInstance} there would spawn a Worker purely to cancel (and throw
+   * in SSR, where `Worker` is undefined). If no manager exists nothing is
+   * queued, so this is a no-op.
+   */
+  public static cancelLayoutForEntity(entityId: string): void {
+    LayoutWorkerManager.instance?.cancelLayout(entityId);
+  }
+
   public queueLayout(
     entityId: string,
     text: string,

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Tokens } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
 import { RichText, Text } from '@vectojs/ui';
@@ -417,6 +417,46 @@ Plain paragraph at the end.
         ['Row 1-1', 'Row 1-2'],
         ['Row 2-1', 'Row 2-2'],
       ]);
+    });
+  });
+
+  describe('destroy / child teardown (leak fix)', () => {
+    it('destroy() tears down the whole content subtree', () => {
+      const md = new Markdown('# Heading\n\nA paragraph with **bold**.\n\n- a\n- b');
+      const blocks = [...md.content.children];
+      expect(blocks.length).toBeGreaterThan(0);
+
+      md.destroy();
+
+      // Every block detached from content, and content detached from md.
+      expect(md.content.children.length).toBe(0);
+      for (const b of blocks) expect(b.parent).toBeNull();
+    });
+
+    it('setContent() destroys old blocks (not just detaches them)', () => {
+      const md = new Markdown('First paragraph.');
+      const oldBlock = md.content.children[0];
+      const spy = vi.spyOn(oldBlock, 'destroy');
+
+      md.setContent('Completely different.');
+
+      expect(spy).toHaveBeenCalled();
+      expect(oldBlock.parent).toBeNull();
+      // New content rendered.
+      expect(md.content.children.length).toBeGreaterThan(0);
+      expect(md.content.children[0]).not.toBe(oldBlock);
+    });
+
+    it('appendMarkdown() (sync path) destroys blocks it discards on reconcile', () => {
+      // jsdom has no Worker, so appendMarkdown reconciles synchronously.
+      const md = new Markdown('para one\n\npara two');
+      const before = [...md.content.children];
+      expect(before.length).toBe(2);
+
+      // Rewriting to a single block should discard (destroy) the extra block.
+      md.setContent('just one block now');
+
+      for (const b of before) expect(b.parent).toBeNull();
     });
   });
 });

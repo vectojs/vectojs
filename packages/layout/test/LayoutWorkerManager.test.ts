@@ -150,3 +150,32 @@ test('destroy clears singleton ownership so getInstance returns a live manager',
   expect(MockWorker.instances).toHaveLength(2);
   expect(MockWorker.instances[1].terminated).toBe(false);
 });
+
+test('cancelLayoutForEntity does NOT resurrect the singleton when none exists', () => {
+  // No manager instantiated yet in this test (beforeEach cleared instances,
+  // afterEach destroyed the prior one) — cancelling for a destroyed MSDF
+  // entity must stay a no-op, not spawn a Worker (would throw in SSR).
+  expect(MockWorker.instances).toHaveLength(0);
+
+  LayoutWorkerManager.cancelLayoutForEntity('entity-that-never-queued');
+
+  expect(MockWorker.instances).toHaveLength(0);
+});
+
+test('cancelLayoutForEntity delegates to the live singleton when one exists', async () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const cb = vi.fn();
+  manager.queueLayout('e1', 'hello', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 100,
+    maxHeight: 100,
+    callback: cb,
+  });
+  // Cancel before the (setTimeout-scheduled) worker response would arrive.
+  LayoutWorkerManager.cancelLayoutForEntity('e1');
+  await new Promise((r) => setTimeout(r, 5));
+  expect(cb).not.toHaveBeenCalled();
+  // Did not spawn an extra worker.
+  expect(MockWorker.instances).toHaveLength(1);
+});

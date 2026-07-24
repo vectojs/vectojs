@@ -1680,6 +1680,11 @@ export class Scene {
 
   private removeA11yRecursively(node: Entity) {
     if (node.isDOMPortal) {
+      // Release the portal's ResizeObserver + DOM listeners, not just its
+      // element — otherwise a `scene.remove()` (which routes here) leaves the
+      // observer connected, keeping the detached element alive and firing.
+      // The next projection frame re-attaches them if the portal is re-added.
+      (node as DOMPortalEntity).releaseDOMBindings();
       (node as any).domElement.remove();
       this.portalEntities.delete(node.id);
       this.activePortalsThisFrame.delete(node.id);
@@ -3091,6 +3096,10 @@ export class Scene {
       this.portalRoot.appendChild(portal.domElement);
     }
 
+    // Re-bind observer/listeners if a prior scene.remove() released them
+    // (idempotent — a no-op while already bound, so it's cheap per frame).
+    portal.attachDOMBindings();
+
     if (!portal.domElement.hasAttribute('data-vecto-id')) {
       portal.domElement.setAttribute('data-vecto-id', portal.id);
     }
@@ -3139,6 +3148,10 @@ export class Scene {
             portal.domElement.parentElement === this.portalRoot &&
             (!portal.scene || portal.scene === this)
           ) {
+            // Portal no longer projected (culled/hidden): release its observer
+            // + listeners so an off-screen portal doesn't keep them live. The
+            // projection re-attaches them (attachDOMBindings) if it reappears.
+            portal.releaseDOMBindings();
             portal.domElement.remove();
           }
           this.portalEntities.delete(oldId);
