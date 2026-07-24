@@ -152,3 +152,51 @@ describe('Text alignment & hyphenation', () => {
     }
   });
 });
+
+describe('Text bidi (RTL) selection projection', () => {
+  // Hebrew Shin+Lamed (RTL, no shaping). No DOM here → engine 0.5em fallback,
+  // but RTL reorder + right-align are engine-driven and deterministic.
+  const SHIN = '\u05E9';
+  const LAMED = '\u05DC';
+
+  it('emits per-glyph positioned runs in LOGICAL order with VISUAL x', () => {
+    // maxWidth 80; two RTL glyphs (8px each at 16px font) right-align to the edge.
+    const t = new Text(SHIN + LAMED, { maxWidth: 80, font: '16px sans-serif' });
+    const proj = t.getContentProjection()!;
+    const runs = proj.lines![0].runs!;
+    expect(runs.length).toBe(2);
+    // Logical order: Shin (source 0) first, Lamed (source 1) second — so copy
+    // and screen-reader order stay correct.
+    expect(runs[0].text).toBe(SHIN);
+    expect(runs[1].text).toBe(LAMED);
+    // Every run carries an explicit visual x + width (positioned carrier).
+    expect(runs.every((r) => typeof r.x === 'number' && typeof r.width === 'number')).toBe(true);
+    // Visual order is REVERSED: Shin (logical first) sits to the RIGHT of Lamed.
+    expect(runs[0].x!).toBeGreaterThan(runs[1].x!);
+    // Right-aligned: the rightmost glyph (Shin) ends flush at maxWidth.
+    expect(runs[0].x! + runs[0].width!).toBeCloseTo(80, 0);
+  });
+
+  it('LTR text keeps natural flow (no positioned runs)', () => {
+    const t = new Text('ab', { maxWidth: 80 });
+    expect(t.getContentProjection()!.lines![0].runs).toBeUndefined();
+  });
+
+  it('Arabic runs carry LOGICAL source chars, not shaped presentation forms', () => {
+    // Arabic "كتب" — the engine shapes to contextual forms (U+FExx) on canvas,
+    // but the projection must expose the original base letters for copy / AT.
+    const src = '\u0643\u062A\u0628'; // ك ت ب
+    const t = new Text(src, { maxWidth: 200, font: '18px sans-serif' });
+    const runs = t.getContentProjection()!.lines![0].runs!;
+    const joined = runs.map((r) => r.text).join('');
+    // Every projected char is a base Arabic letter (U+0600–06FF), never a
+    // presentation form (U+FB50–FEFF) — the bug the RTL screenshot probe caught.
+    for (const ch of joined) {
+      const cp = ch.codePointAt(0)!;
+      expect(cp).toBeGreaterThanOrEqual(0x0600);
+      expect(cp).toBeLessThanOrEqual(0x06ff);
+    }
+    // Runs are in logical order, so the concatenation round-trips to the source.
+    expect(joined).toBe(src);
+  });
+});

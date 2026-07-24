@@ -91,6 +91,10 @@ export class Text extends UIComponent {
    *  `fillText` per line and never touches this. */
   private glyphNodes: LayoutNode[] = [];
   private perGlyph = false;
+  /** True when the last layout produced any RTL glyph (bidi content). Engages
+   *  the glyph-accurate render + positioned-carrier projection so selection
+   *  overlaps the reordered / right-aligned canvas glyphs. */
+  private hasBidi = false;
 
   constructor(text: string, opts: TextOptions = {}) {
     super();
@@ -175,6 +179,42 @@ export class Text extends UIComponent {
     return runs.length > 0 ? runs : undefined;
   }
 
+  /**
+   * Positioned per-glyph runs for a bidi (RTL / mixed) line. Emitted in LOGICAL
+   * order (sorted by source index) so DOM copy and screen-reader order stay
+   * correct, but each carrier is positioned at its VISUAL x. Because every
+   * carrier's `width` equals its glyph advance, the browser's inline-flow cursor
+   * tracks the running `logicalX` in Scene, so `left = x - logicalX` lands each
+   * glyph at its absolute visual x regardless of the (non-visual) DOM order —
+   * the same technique the code-grid path uses. A selected logical range then
+   * highlights the correct (possibly visually-discontiguous) rectangles, which
+   * is exactly correct RTL selection behavior.
+   */
+  private bidiRuns(lineIndex: number): ContentProjectionRun[] | undefined {
+    const lineQuantum = this.fontSize * 1.5;
+    const glyphs = this.glyphNodes
+      .filter((n) => Math.round(n.y / lineQuantum) === lineIndex)
+      .slice()
+      // Logical order for correct copy/AT; visual x is carried per run.
+      .sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
+    if (glyphs.length === 0) return undefined;
+    return glyphs.map((n) => ({
+      // Carry the LOGICAL SOURCE substring, not `n.char`: for shaped scripts
+      // (Arabic) `n.char` is the contextual presentation form (U+FExx), so
+      // copy / screen-reader / find-in-page would get shaped codepoints instead
+      // of normal base letters. sourceIndex/sourceLength map the glyph back to
+      // the original text. (Hebrew is unshaped so both happen to match — which
+      // is why an all-Hebrew test wouldn't catch this.)
+      text:
+        n.sourceLength && n.sourceLength > 0
+          ? this.text.slice(n.sourceIndex ?? 0, (n.sourceIndex ?? 0) + n.sourceLength)
+          : n.char,
+      x: n.x,
+      width: n.width,
+      font: this.font,
+    }));
+  }
+
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
@@ -182,6 +222,14 @@ export class Text extends UIComponent {
     const lines = this.lines.map((visualText, index) => {
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
+      // Bidi takes precedence: RTL/mixed needs per-glyph positioned carriers
+      // (glyphs are reordered + right-aligned on canvas). Otherwise justify uses
+      // per-word carriers, and plain LTR uses a single natural-flow string.
+      const runs = this.hasBidi
+        ? this.bidiRuns(index)
+        : justified
+          ? this.justifiedRuns(index)
+          : undefined;
       return {
         // Canvas keeps its visual glyph order; the semantic layer keeps logical
         // source order so native copy and RTL text remain correct.
@@ -192,10 +240,7 @@ export class Text extends UIComponent {
         baseline: this.lineHeight * 0.8,
         font: this.font,
         lineHeight: this.lineHeight,
-        // Justified lines carry positioned per-word runs so selection overlaps
-        // the widened spacing. The paragraph-final line isn't justified, so it
-        // has no runs and stays a natural single string.
-        runs: justified ? this.justifiedRuns(index) : undefined,
+        runs,
       };
     });
     return {
@@ -267,9 +312,16 @@ export class Text extends UIComponent {
   /** Hot pass: place the cached prepared text and regroup glyphs into lines. */
   private applyLayout(): void {
     const result = this.engine.layoutPrepared(this.prepared);
-    // Retain glyph nodes only for the glyph-accurate render path; left-aligned
-    // text draws per line and never reads these.
-    this.glyphNodes = this.perGlyph ? result.nodes : [];
+    // Bidi (RTL / mixed) needs the glyph-accurate path too: the engine reorders
+    // glyphs to visual order and right-aligns RTL lines, so a single logical
+    // line string handed to the browser would re-bidi differently and the
+    // selection box would not overlap the drawn glyphs. Detect any RTL glyph and
+    // engage the positioned-carrier projection, same as justify/hyphenate.
+    this.hasBidi = result.nodes.some((n) => (n as LayoutNode).isRTL === true);
+    const glyphAccurate = this.perGlyph || this.hasBidi;
+    // Retain glyph nodes for the glyph-accurate render/projection path; plain
+    // left-aligned LTR text draws per line and never reads these.
+    this.glyphNodes = glyphAccurate ? result.nodes : [];
     const lineQuantum = this.fontSize * 1.5; // the engine's internal line advance
     const byLine = new Map<number, string>();
     const nodesByLine = new Map<number, LayoutNode[]>();
@@ -323,7 +375,7 @@ export class Text extends UIComponent {
     // (justify widens gaps; hyphenate inserts a '-'), so draw them individually.
     // node.y is in the engine's line-quantum units — remap to the component's
     // lineHeight so vertical rhythm matches the fast path.
-    if (this.perGlyph) {
+    if (this.perGlyph || this.hasBidi) {
       const lineQuantum = this.fontSize * 1.5;
       for (const node of this.glyphNodes) {
         if (!node.char.trim()) continue;

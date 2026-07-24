@@ -2489,8 +2489,15 @@ export class Scene {
           const lineElement = document.createElement('span');
           const lineFont = line.font ?? projection.font ?? '';
           const lineHeight = line.lineHeight ?? projection.lineHeight ?? 16;
+          const hasPositionedRuns = !!line.runs && line.runs.some((run) => run.x !== undefined);
           lineElement.style.position = 'absolute';
-          lineElement.dir = 'auto';
+          // Positioned carriers already encode visual order via each run's x
+          // (the engine did the bidi reorder). Force LTR flow so the browser
+          // lays them out in DOM order and does NOT re-bidi them — otherwise an
+          // RTL line re-reverses the carriers and the running left = x - logicalX
+          // accounting breaks. Natural-flow lines keep auto so the browser bidis
+          // the plain text.
+          lineElement.dir = hasPositionedRuns ? 'ltr' : 'auto';
           lineElement.style.left = `${line.x}px`;
           lineElement.style.top = `${line.y + line.baseline - cssLineBoxBaseline(lineFont, lineHeight)}px`;
           lineElement.style.whiteSpace = 'pre';
@@ -2501,13 +2508,17 @@ export class Scene {
           lineElement.style.lineHeight = `${lineHeight}px`;
           const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
           if (line.runs && line.runs.length > 0) {
-            // Positioned runs (justify / non-natural spacing): each run carries
-            // its own absolute x, so place it as an inline-block carrier at
-            // `left = run.x - line.x` (relative to the line origin) sized to the
-            // canvas advance. This makes the DOM selection box overlap the drawn
-            // glyphs — the same technique the grid path uses for code cells.
+            // Positioned runs (justify / RTL / non-natural spacing): each run
+            // carries its own absolute canvas x. Place each as an ABSOLUTELY
+            // positioned carrier at `left = run.x - line.x` inside the line
+            // (itself absolutely positioned, so it is the containing block).
+            // Absolute (not flow-relative) positioning is what lets the DOM
+            // order stay LOGICAL — correct for copy / screen readers / RTL —
+            // while every box still lands at its VISUAL x, so the selection
+            // rectangles overlap the drawn glyphs regardless of order. (A
+            // flow-relative `left = x - runningX` only works when runs are in
+            // visual order, which RTL logical-order runs are not.)
             const positioned = line.runs.some((run) => run.x !== undefined);
-            let logicalX = line.x;
             for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
               const run = line.runs[runIndex];
               const runElement = document.createElement('span');
@@ -2521,17 +2532,17 @@ export class Scene {
               // the visual line's shared baseline for every mixed-size run.
               runElement.style.lineHeight = `${lineHeight}px`;
               if (positioned && run.x !== undefined) {
-                runElement.style.position = 'relative';
-                runElement.style.display = 'inline-block';
-                runElement.style.left = `${run.x - logicalX}px`;
-                if (run.width !== undefined) {
-                  runElement.style.width = `${run.width}px`;
-                  logicalX = run.x + run.width;
-                } else {
-                  logicalX = run.x;
-                }
+                runElement.style.position = 'absolute';
+                runElement.style.left = `${run.x - line.x}px`;
+                runElement.style.top = '0';
+                if (run.width !== undefined) runElement.style.width = `${run.width}px`;
                 runElement.style.whiteSpace = 'pre';
                 runElement.style.verticalAlign = 'top';
+                // Isolate each carrier's own bidi so a single RTL/base char in
+                // the box isn't mirrored relative to its neighbors — the
+                // carrier's x already places it in visual order.
+                runElement.style.unicodeBidi = 'isolate';
+                runElement.dir = 'ltr';
               }
               lineElement.appendChild(runElement);
             }
