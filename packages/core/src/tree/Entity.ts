@@ -473,6 +473,7 @@ export abstract class Entity {
   // allocation per entity in the constructor is pure waste at scale.
   private _drivers: Map<AnimatableProp, PropertyDriver> | null = null;
   private _mounted = false;
+  private _destroyed = false;
 
   // Frame this entity's active drivers were last advanced by Scene's batched
   // WASM animation pass (see Scene._tickBatchedDrivers), or -1 if never. When
@@ -1012,10 +1013,32 @@ export abstract class Entity {
   }
 
   /**
-   * Tear down this entity: clear all animations, event listeners, and detach
-   * from parent. Call before discarding an entity to prevent memory leaks.
+   * Tear down this entity **and its entire subtree**: recursively destroy every
+   * descendant (leaf-first), clear all animations, event listeners, and property
+   * drivers, then detach from the parent. Call before discarding an entity to
+   * prevent memory leaks.
+   *
+   * Recursing here is what frees a subtree's GPU buffers, layout workers, and DOM
+   * observers when an app does `entity.destroy()` or `scene.remove(subtree)` on a
+   * route change — without it, only the root's own state was released and every
+   * descendant (and its subclass resources) was stranded. Subclasses that own
+   * external resources override `destroy()`, free their resource, then call
+   * `super.destroy()`; because children don't depend on a parent's resource, the
+   * order (parent resource first, then descendants) is safe.
+   *
+   * Idempotent and re-entrancy safe: a second call is a no-op, and because each
+   * child is detached as it is destroyed, destroying a subtree never double-frees.
    */
   public destroy(): void {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    // Leaf-first: tear down descendants before releasing our own state. Destroy
+    // from the end so each child's self-detach (`parent.remove(this)`) mutates
+    // the tail of the array we're not iterating past — no snapshot needed and no
+    // index skew.
+    while (this.children.length > 0) {
+      this.children.at(-1)!.destroy();
+    }
     this.animations = null;
     // Settle in-flight property drivers so promises returned by
     // animateTo/springTo resolve instead of hanging forever.
