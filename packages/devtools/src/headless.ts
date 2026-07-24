@@ -29,3 +29,9 @@ export {
   type AuditKind,
   type AuditOptions,
 } from './audit';
+export {
+  auditSceneSelection,
+  auditEntitySelection,
+  type SelectionAuditFinding,
+  type SelectionAuditOptions,
+} from './selectionAudit';
