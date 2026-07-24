@@ -84,3 +84,59 @@ jobs:
         run: cd packages/core && bun run test:e2e
       - name: DevTools event trace e2e
         run: cd packages/devtools && bun run test:e2e
+
+  wasm:
+    name: WASM core (build + differential tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # rustup reads crates/vectojs-core-rs/rust-toolchain.toml and provisions
+      # the stable channel, the wasm32-unknown-unknown target, and clippy +
+      # rustfmt with zero manual `rustup target add`. Pin the action to a
+      # release tag so a compromised upstream default can't run on CI.
+      - name: Provision Rust toolchain from rust-toolchain.toml
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Belt-and-suspenders: rust-toolchain.toml already declares these, but
+          # naming them here means the target/components are present even if the
+          # action ever stops honouring the file.
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - name: Cache cargo registry + wasm build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/vectojs-core-rs/target
+          key: wasm-cargo-${{ runner.os }}-${{ hashFiles('crates/vectojs-core-rs/Cargo.lock') }}
+          restore-keys: wasm-cargo-${{ runner.os }}-
+      - name: Rust format check
+        run: cargo fmt --manifest-path crates/vectojs-core-rs/Cargo.toml --check
+      # clippy runs against the real wasm target and with the same RUSTFLAGS the
+      # build uses, so lint sees exactly the cfg/target-feature the shipped
+      # artifact is compiled with. --deny-warnings mirrors the oxlint gate.
+      - name: Rust clippy (wasm32)
+        env:
+          RUSTFLAGS: "-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld"
+        run: >-
+          cargo clippy --manifest-path crates/vectojs-core-rs/Cargo.toml
+          --release --target wasm32-unknown-unknown -- -D warnings
+      # The one sanctioned build path (see the script's header): env RUSTFLAGS
+      # REPLACES config rustflags, so a global ~/.cargo/config.toml can't leak
+      # host CPU flags / mold into the wasm link. Emits
+      # packages/core/src/wasm/vectojs_core.wasm (gitignored).
+      - name: Build WASM core
+        run: crates/vectojs-core-rs/build.sh
+      - name: Install dependencies
+        run: bun install
+      # With the .wasm now present, the 10 core WASM test files that otherwise
+      # `describe.skipIf(!haveWasm)` themselves out actually run — this is what
+      # turns "the crate still compiles" into "the crate still produces a binary
+      # that is bit-for-bit correct against the JS fallback". Without this job
+      # those differential tests silently pass by being skipped.
+      - name: Run core WASM differential tests
+        run: cd packages/core && bunx vitest run test/wasm
