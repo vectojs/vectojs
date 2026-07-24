@@ -2501,6 +2501,13 @@ export class Scene {
           lineElement.style.lineHeight = `${lineHeight}px`;
           const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
           if (line.runs && line.runs.length > 0) {
+            // Positioned runs (justify / non-natural spacing): each run carries
+            // its own absolute x, so place it as an inline-block carrier at
+            // `left = run.x - line.x` (relative to the line origin) sized to the
+            // canvas advance. This makes the DOM selection box overlap the drawn
+            // glyphs — the same technique the grid path uses for code cells.
+            const positioned = line.runs.some((run) => run.x !== undefined);
+            let logicalX = line.x;
             for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
               const run = line.runs[runIndex];
               const runElement = document.createElement('span');
@@ -2513,6 +2520,19 @@ export class Scene {
               // A run-level font shorthand also resets line-height. Preserve
               // the visual line's shared baseline for every mixed-size run.
               runElement.style.lineHeight = `${lineHeight}px`;
+              if (positioned && run.x !== undefined) {
+                runElement.style.position = 'relative';
+                runElement.style.display = 'inline-block';
+                runElement.style.left = `${run.x - logicalX}px`;
+                if (run.width !== undefined) {
+                  runElement.style.width = `${run.width}px`;
+                  logicalX = run.x + run.width;
+                } else {
+                  logicalX = run.x;
+                }
+                runElement.style.whiteSpace = 'pre';
+                runElement.style.verticalAlign = 'top';
+              }
               lineElement.appendChild(runElement);
             }
           } else {

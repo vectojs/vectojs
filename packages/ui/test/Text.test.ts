@@ -114,4 +114,41 @@ describe('Text alignment & hyphenation', () => {
     });
     expect(t.getContentProjection()!.text).toBe('aa aa aa aa aa');
   });
+
+  it('justify projection emits positioned per-word runs whose x matches the glyphs', () => {
+    const t = new Text('aa aa aa aa aa', {
+      maxWidth: 80,
+      textAlign: 'justify',
+    });
+    const proj = t.getContentProjection()!;
+    const line0 = proj.lines![0];
+    // Positioned runs carry x/width so the DOM selection box overlaps the
+    // widened canvas spacing (the selection-drift fix).
+    expect(line0.runs && line0.runs.length).toBeGreaterThan(1);
+    expect(line0.runs!.every((r) => typeof r.x === 'number' && typeof r.width === 'number')).toBe(
+      true,
+    );
+    // Runs are in visual order, left to right, and the last word reaches near
+    // maxWidth (justified flush) — the same geometry the canvas renders.
+    const xs = line0.runs!.map((r) => r.x!);
+    expect(xs).toEqual([...xs].sort((a, b) => a - b));
+    const last = line0.runs!.at(-1)!;
+    expect(last.x! + last.width!).toBeCloseTo(80, 0);
+
+    // The paragraph-final line is NOT stretched: its first word sits at the
+    // left origin and it does NOT reach maxWidth (ragged), even though it still
+    // carries positioned runs (their x is just the natural, un-widened layout).
+    const lastLine = proj.lines!.at(-1)!;
+    const lastRuns = lastLine.runs!;
+    expect(lastRuns[0].x).toBeCloseTo(0, 0);
+    const end = lastRuns.at(-1)!;
+    expect(end.x! + end.width!).toBeLessThan(80);
+  });
+
+  it('left-aligned projection has no positioned runs (natural flow)', () => {
+    const t = new Text('aa aa aa aa aa', { maxWidth: 80 });
+    for (const line of t.getContentProjection()!.lines!) {
+      expect(line.runs).toBeUndefined();
+    }
+  });
 });

@@ -89,6 +89,21 @@ export interface ContentProjectionRun {
   text: string;
   /** CSS font shorthand matching the canvas run. */
   font?: string;
+  /**
+   * Absolute local x of this run within the entity. Set it (with {@link width})
+   * for justified or otherwise non-naturally-spaced text: the Scene then places
+   * each run as a positioned carrier (`inline-block` + relative `left`) at the
+   * exact canvas x, so the DOM selection box overlaps the drawn glyphs instead
+   * of drifting under the browser's own inter-word spacing. When omitted, runs
+   * flow naturally (the default for left-aligned text).
+   */
+  x?: number;
+  /**
+   * Advance (width in px) the canvas used for this run, including any widened
+   * trailing gap for justify. Used only alongside {@link x} to size the
+   * positioned carrier so the next run starts flush at its own `x`.
+   */
+  width?: number;
 }
 
 export interface ContentProjectionLine {
@@ -343,7 +358,12 @@ export class VectoJSEvent<N = unknown> {
   private get resolvedScenePoint(): Point | undefined {
     if (this.explicitScenePoint) return this.explicitScenePoint;
     const native = this.nativeEvent as
-      | { clientX?: number; clientY?: number; vectoSceneX?: number; vectoSceneY?: number }
+      | {
+          clientX?: number;
+          clientY?: number;
+          vectoSceneX?: number;
+          vectoSceneY?: number;
+        }
       | undefined;
     if (native?.vectoSceneX !== undefined && native.vectoSceneY !== undefined) {
       return { x: native.vectoSceneX, y: native.vectoSceneY };
@@ -1139,7 +1159,14 @@ export abstract class Entity {
     if (this._worldFrame >= 0) {
       const s = this.scene;
       if (s && this._worldFrame === s.currentFrame) {
-        return { a: this._wa, b: this._wb, c: this._wc, d: this._wd, e: this._we, f: this._wf };
+        return {
+          a: this._wa,
+          b: this._wb,
+          c: this._wc,
+          d: this._wd,
+          e: this._we,
+          f: this._wf,
+        };
       }
     }
 
@@ -1267,7 +1294,12 @@ export abstract class Entity {
    * does not provide a render-specific box.
    */
   public getWorldBounds(): Bounds {
-    const bounds = this.getBounds() ?? { x: 0, y: 0, width: this.width, height: this.height };
+    const bounds = this.getBounds() ?? {
+      x: 0,
+      y: 0,
+      width: this.width,
+      height: this.height,
+    };
     const { a, b, c, d, e, f } = this.getWorldTransform();
     let minX = Infinity;
     let minY = Infinity;

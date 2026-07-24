@@ -8,7 +8,7 @@ import {
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { fontSizePx } from './measure';
-import type { ContentProjection } from '@vectojs/core';
+import type { ContentProjection, ContentProjectionRun } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
 export interface TextOptions {
@@ -127,9 +127,58 @@ export class Text extends UIComponent {
    * @param text - The new text content.
    * @returns `this` for chaining.
    */
+  /**
+   * Positioned per-word runs for a justified line, so the DOM selection box
+   * overlaps the widened canvas spacing instead of drifting. Each run's `x` is
+   * its first glyph's canvas x and its `width` spans to the next word (gap
+   * included), so the inter-word space is selectable and the highlight covers
+   * the widened gap exactly. Only used on the justify path — left-aligned text
+   * keeps the cheaper single-string line.
+   */
+  private justifiedRuns(lineIndex: number): ContentProjectionRun[] | undefined {
+    const lineQuantum = this.fontSize * 1.5;
+    const glyphs = this.glyphNodes
+      .filter((n) => Math.round(n.y / lineQuantum) === lineIndex)
+      .sort((a, b) => a.x - b.x);
+    if (glyphs.length === 0) return undefined;
+    const runs: ContentProjectionRun[] = [];
+    let wordStart = -1;
+    const flush = (endExclusive: number, nextX: number | undefined) => {
+      if (wordStart < 0) return;
+      const first = glyphs[wordStart];
+      const text = glyphs
+        .slice(wordStart, endExclusive)
+        .map((n) => n.char)
+        .join('');
+      // Width spans to the next word's x (gap included) or the word's own end.
+      const last = glyphs[endExclusive - 1];
+      const ownEnd = last.x + last.width;
+      runs.push({
+        text,
+        x: first.x,
+        width: (nextX ?? ownEnd) - first.x,
+        font: this.font,
+      });
+      wordStart = -1;
+    };
+    for (let i = 0; i < glyphs.length; i++) {
+      const isSpace = glyphs[i].char.trim() === '';
+      if (isSpace) {
+        // Close the current word; the space is folded into the word's trailing
+        // width (above), not its own carrier, so copy keeps a single space.
+        flush(i, glyphs[i + 1]?.x);
+      } else if (wordStart < 0) {
+        wordStart = i;
+      }
+    }
+    flush(glyphs.length, undefined);
+    return runs.length > 0 ? runs : undefined;
+  }
+
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
+    const justified = this.engine.textAlign === 'justify';
     const lines = this.lines.map((visualText, index) => {
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
@@ -143,6 +192,10 @@ export class Text extends UIComponent {
         baseline: this.lineHeight * 0.8,
         font: this.font,
         lineHeight: this.lineHeight,
+        // Justified lines carry positioned per-word runs so selection overlaps
+        // the widened spacing. The paragraph-final line isn't justified, so it
+        // has no runs and stays a natural single string.
+        runs: justified ? this.justifiedRuns(index) : undefined,
       };
     });
     return {
