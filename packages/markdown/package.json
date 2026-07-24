@@ -42,7 +42,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "marked": "^18.0.6",
+    "marked": "^18.0.7",
     "mathjax-full": "^3.2.2"
   },
   "peerDependencies": {
@@ -53,7 +53,7 @@
     "@vectojs/core": "workspace:*",
     "@vectojs/ui": "workspace:*",
     "esbuild": "^0.28.1",
-    "prettier": "^3.9.5",
+    "prettier": "^3.9.6",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10"
   }
