@@ -126,7 +126,11 @@ export class ThreeRenderer implements IRenderer {
     this.camera = new THREE.OrthographicCamera(0, this.width, 0, this.height, 0.1, 1000);
     this.camera.position.z = 1;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+    });
     this.renderer.setSize(this.width, this.height);
     this.renderer.setPixelRatio(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
 
@@ -400,6 +404,18 @@ export class ThreeRenderer implements IRenderer {
       texture.minFilter = THREE.LinearFilter;
       texture.userData.vectoCached = true;
       this.imageTextureCache.set(source, texture);
+      // Bound the cache: dispose + evict the least-recently-used entries past
+      // the cap so a long-running scene doesn't leak GPU textures. Insertion
+      // order is LRU because a cache HIT re-inserts (below).
+      while (this.imageTextureCache.size > Math.max(1, this.imageTextureCacheLimit)) {
+        const oldest = this.imageTextureCache.keys().next().value as CanvasImageSource;
+        this.imageTextureCache.get(oldest)!.dispose();
+        this.imageTextureCache.delete(oldest);
+      }
+    } else {
+      // Cache hit: re-insert so this source becomes most-recently-used.
+      this.imageTextureCache.delete(source);
+      this.imageTextureCache.set(source, texture);
     }
 
     const material = new THREE.MeshBasicMaterial({
@@ -485,8 +501,12 @@ export class ThreeRenderer implements IRenderer {
         const geometry = new THREE.ShapeGeometry(shape);
         const material = new THREE.ShaderMaterial({
           uniforms: {
-            u_grad_start: { value: new THREE.Vector2(u_grad_start.x, u_grad_start.y) },
-            u_grad_end: { value: new THREE.Vector2(u_grad_end.x, u_grad_end.y) },
+            u_grad_start: {
+              value: new THREE.Vector2(u_grad_start.x, u_grad_start.y),
+            },
+            u_grad_end: {
+              value: new THREE.Vector2(u_grad_end.x, u_grad_end.y),
+            },
             u_grad_colors: { value: finalColors },
             u_grad_stops: { value: finalStops },
             u_global_alpha: { value: this.globalAlpha },
@@ -610,9 +630,20 @@ export class ThreeRenderer implements IRenderer {
    */
   private textTextureCache = new Map<
     string,
-    { texture: THREE.CanvasTexture; width: number; height: number; fontSize: number }
+    {
+      texture: THREE.CanvasTexture;
+      width: number;
+      height: number;
+      fontSize: number;
+    }
   >();
   private textTextureCacheLimit = 256;
+  /** Cap on {@link imageTextureCache} entries. A long-running scene that draws
+   *  many distinct images (or transient per-frame canvases) would otherwise
+   *  accumulate GPU textures without bound; past this many the least-recently-
+   *  used entry is disposed and evicted (Map insertion order = LRU here, since
+   *  a cache hit re-inserts the entry). */
+  private imageTextureCacheLimit = 256;
 
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     if (typeof document === 'undefined') return;
