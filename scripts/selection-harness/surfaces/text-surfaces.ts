@@ -38,6 +38,25 @@ scene.add(
     font: '20px sans-serif',
   }).setPosition(20, 260),
 );
+// Mixed RTL + Latin digits: the digits flow LTR inside the RTL line, so a
+// logical selection that straddles them maps to visually-disjoint rectangles —
+// the case BidiResolver.logicalToVisualRuns models. Line-extent drift is still
+// audited (the whole box must track its glyphs after the bidi-js reorder).
+scene.add(
+  new Text('الإصدار 42 من VectoJS', {
+    maxWidth: 260,
+    lineHeight: 30,
+    font: '20px sans-serif',
+  }).setPosition(340, 260),
+);
+// Pure Hebrew RTL line.
+scene.add(
+  new Text('שלום עולם VectoJS', {
+    maxWidth: 260,
+    lineHeight: 30,
+    font: '20px sans-serif',
+  }).setPosition(340, 320),
+);
 scene.start();
 
 setTimeout(() => void reportSelectionAudit(scene), 500);
