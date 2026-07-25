@@ -668,6 +668,13 @@ export class Scene {
   public overlayRoot: Entity;
   private renderer: IRenderer;
   private isRunning: boolean = false;
+  /** Whether the canvas is at least partially in the viewport. When it scrolls
+   *  fully off-screen the rAF loop pauses (stops rescheduling) instead of
+   *  burning frames on a scene nobody can see; an IntersectionObserver resumes
+   *  it on re-entry. Defaults true (and stays true where IntersectionObserver
+   *  is unavailable, e.g. SSR/jsdom, so behavior is unchanged there). */
+  private _canvasOnScreen = true;
+  private _canvasObserver: IntersectionObserver | null = null;
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
 
@@ -2205,6 +2212,7 @@ export class Scene {
 
     this.isRunning = true;
     this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
+    this.watchCanvasVisibility();
     this.scheduleFrame();
 
     const isTextFocused =
@@ -2225,6 +2233,34 @@ export class Scene {
   }
 
   /**
+   * Observe whether the canvas is on-screen so the rAF loop can pause when it
+   * scrolls fully out of view (a dashboard tab, a chart below the fold) and
+   * resume when it returns — instead of running the full update/render every
+   * frame for a scene nobody can see. No-op (stays "on screen") where
+   * `IntersectionObserver` is unavailable, so SSR/jsdom behavior is unchanged.
+   */
+  private watchCanvasVisibility(): void {
+    if (this._canvasObserver || typeof IntersectionObserver === 'undefined') return;
+    if (!this.canvas || typeof this.canvas.getBoundingClientRect !== 'function') return;
+    this._canvasObserver = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (!entry) return;
+      const nowOnScreen = entry.isIntersecting;
+      const wasOffScreen = !this._canvasOnScreen;
+      this._canvasOnScreen = nowOnScreen;
+      // Re-entering the viewport while running: the loop paused itself (stopped
+      // rescheduling), so kick it back off. Reset lastTime so the first frame
+      // back doesn't integrate the whole off-screen gap (the dt clamp also caps
+      // it, but this keeps telemetry honest).
+      if (nowOnScreen && wasOffScreen && this.isRunning) {
+        this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
+        this.scheduleFrame();
+      }
+    });
+    this._canvasObserver.observe(this.canvas);
+  }
+
+  /**
    * Halt the render loop after the current frame completes.
    *
    * Call {@link start} again to resume rendering.
@@ -2235,6 +2271,12 @@ export class Scene {
       clearInterval(this.caretBlinkTimer);
       this.caretBlinkTimer = null;
     }
+    if (this._canvasObserver) {
+      this._canvasObserver.disconnect();
+      this._canvasObserver = null;
+    }
+    // Assume visible again on next start(); the observer re-establishes truth.
+    this._canvasOnScreen = true;
   }
 
   /**
@@ -3548,6 +3590,13 @@ export class Scene {
 
   private loop(time: number): void {
     if (!this.isRunning) return;
+
+    // Canvas scrolled fully off-screen: pause the loop entirely (do no work and
+    // stop rescheduling) rather than burn a full update/render every frame on a
+    // scene nobody can see. The IntersectionObserver resumes it on re-entry.
+    // markDirty() while hidden is harmless — the dirty flag persists and the
+    // resume frame consumes it.
+    if (!this._canvasOnScreen) return;
 
     let cap = this.effectiveMaxFPS();
 
