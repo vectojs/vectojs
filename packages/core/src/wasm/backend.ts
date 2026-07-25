@@ -31,6 +31,15 @@ interface CoreExports {
   p_we(): number;
   p_wf(): number;
   p_wo(): number;
+  compute_aabbs(count: number): void;
+  p_bx(): number;
+  p_by(): number;
+  p_bw(): number;
+  p_bh(): number;
+  p_aminx(): number;
+  p_aminy(): number;
+  p_amaxx(): number;
+  p_amaxy(): number;
   p_run_parent(): number;
   p_run_start(): number;
   p_run_len(): number;
@@ -69,6 +78,14 @@ export class WasmTransformBackend {
   private vwe!: Float64Array;
   private vwf!: Float64Array;
   private vwo!: Float64Array;
+  private vbx!: Float64Array;
+  private vby!: Float64Array;
+  private vbw!: Float64Array;
+  private vbh!: Float64Array;
+  private vaminx!: Float64Array;
+  private vaminy!: Float64Array;
+  private vamaxx!: Float64Array;
+  private vamaxy!: Float64Array;
   private vrp!: Int32Array;
   private vrs!: Int32Array;
   private vrl!: Int32Array;
@@ -183,6 +200,61 @@ export class WasmTransformBackend {
     };
   }
 
+  /**
+   * Compute world-space AABBs for `store` in WASM (G1+), writing back into its
+   * `aminx/aminy/amaxx/amaxy` arrays. Uploads the local bounds, runs the AABB
+   * pass, reads results back. Result is bit-identical to `computeAabbsJS(store)`.
+   * `compose` (or `runKernel`) must have populated the world matrices first —
+   * this pass reads them. For the resident (no-copy) integration, write bounds
+   * via {@link boundsView} and read via {@link aabbView} + call
+   * {@link runAabbs} instead.
+   */
+  computeAabbs(store: TransformStore): void {
+    this.ensure(store.count, store.runCount);
+    const n = store.count;
+    this.vbx.set(store.bx.subarray(0, n));
+    this.vby.set(store.by.subarray(0, n));
+    this.vbw.set(store.bw.subarray(0, n));
+    this.vbh.set(store.bh.subarray(0, n));
+    this.ex.compute_aabbs(n);
+    store.aminx.set(this.vaminx.subarray(0, n));
+    store.aminy.set(this.vaminy.subarray(0, n));
+    store.amaxx.set(this.vamaxx.subarray(0, n));
+    store.amaxy.set(this.vamaxy.subarray(0, n));
+  }
+
+  /** Run the AABB pass only, over `count` entities already resident in wasm
+   *  memory (bounds written via {@link boundsView}, world matrices already
+   *  composed). No upload/readback — the per-frame resident path. */
+  runAabbs(count: number): void {
+    this.ex.compute_aabbs(count);
+  }
+
+  /** Resident wasm local-bounds input views (`bx,by,bw,bh`) for the AABB pass. */
+  boundsView(): {
+    bx: Float64Array;
+    by: Float64Array;
+    bw: Float64Array;
+    bh: Float64Array;
+  } {
+    return { bx: this.vbx, by: this.vby, bw: this.vbw, bh: this.vbh };
+  }
+
+  /** Resident wasm world-AABB output views (`aminx,aminy,amaxx,amaxy`). */
+  aabbView(): {
+    aminx: Float64Array;
+    aminy: Float64Array;
+    amaxx: Float64Array;
+    amaxy: Float64Array;
+  } {
+    return {
+      aminx: this.vaminx,
+      aminy: this.vaminy,
+      amaxx: this.vamaxx,
+      amaxy: this.vamaxy,
+    };
+  }
+
   private ensure(count: number, runCount: number): void {
     if (count + PAD <= this.cap && runCount <= this.runCap) return;
     this.cap = count + PAD;
@@ -213,6 +285,14 @@ export class WasmTransformBackend {
     this.vwe = f64(this.ex.p_we());
     this.vwf = f64(this.ex.p_wf());
     this.vwo = f64(this.ex.p_wo());
+    this.vbx = f64(this.ex.p_bx());
+    this.vby = f64(this.ex.p_by());
+    this.vbw = f64(this.ex.p_bw());
+    this.vbh = f64(this.ex.p_bh());
+    this.vaminx = f64(this.ex.p_aminx());
+    this.vaminy = f64(this.ex.p_aminy());
+    this.vamaxx = f64(this.ex.p_amaxx());
+    this.vamaxy = f64(this.ex.p_amaxy());
     this.vrp = i32(this.ex.p_run_parent());
     this.vrs = i32(this.ex.p_run_start());
     this.vrl = i32(this.ex.p_run_len());

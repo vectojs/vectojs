@@ -11,7 +11,13 @@
 //               integration — accessors write inputs in place, the renderer
 //               reads world matrices from the view; no per-frame batch copy).
 // The resident number is the fair comparison for what Phase 1 will actually pay.
-import { buildStore, composeJS, type InputNode, type TransformStore } from '@core/soa';
+import {
+  buildStore,
+  composeJS,
+  computeAabbsJS,
+  type InputNode,
+  type TransformStore,
+} from '@core/soa';
 import { instantiateAsync, type WasmTransformBackend } from '@core/backend';
 
 type Topo = 'flat' | 'chain' | 'bushy' | 'mixed';
@@ -43,6 +49,8 @@ function randomTree(count: number, topo: Topo, rand: () => number): InputNode[] 
       scaleY: 0.25 + rand() * 3,
       rotation: (rand() - 0.5) * Math.PI * 4,
       opacity: rand(),
+      bw: rand() * 300,
+      bh: rand() * 200,
     });
   }
   return nodes;
@@ -113,10 +121,38 @@ function cell(
       })
     : NaN;
 
+  // G1+ world-AABB pass: JS 4-corner transform vs the resident WASM kernel
+  // (world matrices + bounds already in wasm memory). Compose once so the world
+  // matrices the AABB pass reads are populated for both sides.
+  composeJS(jsStore);
+  computeAabbsJS(jsStore);
+  if (backend) {
+    backend.runKernel('simd');
+    // prime resident bounds so runAabbs reads real boxes
+    const bV = backend.boundsView();
+    for (let i = 0; i < wasmStore.count; i++) {
+      bV.bx[i] = wasmStore.bx[i];
+      bV.by[i] = wasmStore.by[i];
+      bV.bw[i] = wasmStore.bw[i];
+      bV.bh[i] = wasmStore.bh[i];
+    }
+    for (let i = 0; i < 20; i++) backend.runAabbs(wasmStore.count);
+  }
+  const jsAabbMs = minMs(() => {
+    for (let i = 0; i < ITERS; i++) computeAabbsJS(jsStore);
+  });
+  const wasmAabbMs = backend
+    ? minMs(() => {
+        for (let i = 0; i < ITERS; i++) backend.runAabbs(wasmStore.count);
+      })
+    : NaN;
+
   const per = (ms: number) => (ms / ITERS / n) * 1e6; // ns/entity/frame
   const js = per(jsMs);
   const copy = per(copyMs);
   const resident = per(residentMs);
+  const jsAabb = per(jsAabbMs);
+  const wasmAabb = per(wasmAabbMs);
   return {
     n,
     topo,
@@ -126,6 +162,9 @@ function cell(
     residentNsPerEntity: round(resident, 2),
     copySpeedup: round(js / copy),
     residentSpeedup: round(js / resident),
+    jsAabbNsPerEntity: round(jsAabb, 2),
+    wasmAabbNsPerEntity: round(wasmAabb, 2),
+    aabbSpeedup: round(jsAabb / wasmAabb),
   };
 }
 
