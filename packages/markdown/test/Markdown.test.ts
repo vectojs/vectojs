@@ -461,6 +461,67 @@ Plain paragraph at the end.
         ['Row 2-1', 'Row 2-2'],
       ]);
     });
+
+    describe('incremental reconcile equals a full rebuild (token→child prefix cache)', () => {
+      // `updateTokens` maps a token index to its child-entity slot through a
+      // CACHED prefix sum (rebuilt only for the changed suffix). A stale entry
+      // would silently destroy or reuse the wrong child, so these stream a
+      // document in chunks and require the result to match a from-scratch
+      // render of the same final text.
+      const shapeOf = (md: Markdown) => md.content.children.map((c) => c.constructor.name);
+
+      function expectStreamMatchesRebuild(chunks: string[]): void {
+        const streamed = new Markdown(chunks[0]);
+        for (const chunk of chunks.slice(1)) streamed.appendMarkdown(chunk);
+        const full = new Markdown(chunks.join(''));
+
+        expect(shapeOf(streamed)).toEqual(shapeOf(full));
+        expect((streamed as any).tokens.map((t: any) => t.raw)).toEqual(
+          (full as any).tokens.map((t: any) => t.raw),
+        );
+        // The cached prefix sum must be exactly what a fresh render computed.
+        expect((streamed as any).tokenChildPrefix).toEqual((full as any).tokenChildPrefix);
+      }
+
+      it('matches when blocks of mixed types are appended', () => {
+        expectStreamMatchesRebuild([
+          '# Title',
+          '\n\nFirst paragraph.',
+          '\n\n- a\n- b',
+          '\n\n```js\nconst x = 1;\n```',
+          '\n\n> quote',
+          '\n\n---',
+          '\n\nLast paragraph.',
+        ]);
+      });
+
+      it('matches when the trailing paragraph grows across many chunks', () => {
+        const chunks = ['# T\n\nStart'];
+        for (let i = 0; i < 20; i++) chunks.push(` word${i}`);
+        expectStreamMatchesRebuild(chunks);
+      });
+
+      it('matches when non-entity tokens (blank lines / html comments) are interleaved', () => {
+        expectStreamMatchesRebuild([
+          'Intro',
+          '\n\n<!-- a comment -->',
+          '\n\nAfter comment.',
+          '\n\n<!-- another -->',
+          '\n\nEnd.',
+        ]);
+      });
+
+      it('keeps the prefix cache correct across a setContent reset', () => {
+        const md = new Markdown('# One\n\nalpha');
+        md.appendMarkdown('\n\nbeta');
+        md.setContent('# Two\n\ngamma');
+        md.appendMarkdown('\n\ndelta');
+
+        const full = new Markdown('# Two\n\ngamma\n\ndelta');
+        expect(shapeOf(md)).toEqual(shapeOf(full));
+        expect((md as any).tokenChildPrefix).toEqual((full as any).tokenChildPrefix);
+      });
+    });
   });
 
   describe('destroy / child teardown (leak fix)', () => {

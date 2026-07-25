@@ -41,7 +41,7 @@ describe('Markdown worker error fallback', () => {
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toContain('streamed paragraph');
   });
 
-  it('sends oldRaws and reconstructs full tokens from a (matchLen, tail) delta response', async () => {
+  it('omits oldRaws (worker caches them) and reconstructs full tokens from a (matchLen, tail) delta', async () => {
     vi.resetModules();
     vi.stubGlobal('Worker', MockWorker);
     URL.createObjectURL = (() => 'blob:mock') as never;
@@ -58,7 +58,11 @@ describe('Markdown worker error fallback', () => {
 
     const fullText = initialText + '\n\nSecond paragraph.';
     const oldRaws = marked.lexer(initialText).map((t) => t.raw);
-    expect(worker.posted[0].oldRaws).toEqual(oldRaws);
+    // The prior raws are NOT re-sent: the worker keeps them, keyed by this
+    // instance + its token version (that's what makes a stream O(N) not O(N²)).
+    expect(worker.posted[0].oldRaws).toBeUndefined();
+    expect(typeof worker.posted[0].instance).toBe('string');
+    expect(typeof worker.posted[0].baseVersion).toBe('number');
 
     // Mirror exactly what MarkdownWorker.ts computes, to simulate a real
     // worker response rather than hand-crafting fake tokens.
@@ -77,6 +81,65 @@ describe('Markdown worker error fallback', () => {
     // entity reused (matchLen covered it, so it was never removed/re-added).
     expect(md.content.children.length).toBeGreaterThan(initialChildCount);
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe(fullText);
+  });
+
+  it('re-sends oldRaws once when the worker reports its cached raws are stale', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const initialText = '# Title\n\nFirst paragraph.';
+    const md = new Markdown(initialText);
+
+    md.appendMarkdown('\n\nSecond paragraph.');
+    const worker = MockWorker.instances.at(-1)!;
+    expect(worker.posted.length).toBe(1);
+    expect(worker.posted[0].oldRaws).toBeUndefined();
+
+    // Worker: "I can't trust my cache for this instance/version."
+    worker.onmessage!({ data: { id: worker.posted[0].id, needRaws: true } });
+
+    // Exactly one retry, now carrying the raws, for the same text.
+    expect(worker.posted.length).toBe(2);
+    expect(worker.posted[1].oldRaws).toEqual(marked.lexer(initialText).map((t) => t.raw));
+    expect(worker.posted[1].text).toBe(worker.posted[0].text);
+
+    // The retry still reconstructs correctly.
+    const fullTokens = marked.lexer(worker.posted[1].text!);
+    const oldRaws = worker.posted[1].oldRaws!;
+    let matchLen = 0;
+    for (; matchLen < Math.min(oldRaws.length, fullTokens.length); matchLen++) {
+      if (oldRaws[matchLen] !== fullTokens[matchLen].raw) break;
+    }
+    worker.onmessage!({
+      data: {
+        id: worker.posted[1].id,
+        matchLen,
+        tail: fullTokens.slice(matchLen),
+      },
+    });
+    expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe(worker.posted[1].text);
+  });
+
+  it('tells the worker to drop its cached raws when the block is destroyed', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# Title');
+    md.appendMarkdown('\n\nmore');
+    const worker = MockWorker.instances.at(-1)!;
+    const instance = worker.posted[0].instance;
+
+    md.destroy();
+
+    const disposeMsg = worker.posted.find((p) => (p as { dispose?: boolean }).dispose === true);
+    expect(disposeMsg).toBeDefined();
+    expect((disposeMsg as { instance?: string }).instance).toBe(instance);
   });
 
   it('coalesces appends made while a request is in flight into a single follow-up dispatch', async () => {
@@ -98,14 +161,20 @@ describe('Markdown worker error fallback', () => {
     md.appendMarkdown('!');
     expect(worker.posted.length).toBe(1);
 
-    const oldRaws1 = worker.posted[0].oldRaws!;
+    // The raws are no longer echoed in the request (the worker caches them), so
+    // derive the prior list the same way the worker's cache would hold it.
+    const oldRaws1 = marked.lexer('Hello').map((t) => t.raw);
     const tokens1 = marked.lexer('Hello world');
     let matchLen1 = 0;
     for (; matchLen1 < Math.min(oldRaws1.length, tokens1.length); matchLen1++) {
       if (oldRaws1[matchLen1] !== tokens1[matchLen1].raw) break;
     }
     worker.onmessage!({
-      data: { id: worker.posted[0].id, matchLen: matchLen1, tail: tokens1.slice(matchLen1) },
+      data: {
+        id: worker.posted[0].id,
+        matchLen: matchLen1,
+        tail: tokens1.slice(matchLen1),
+      },
     });
 
     // Resolving the in-flight request must trigger exactly one follow-up
@@ -113,14 +182,19 @@ describe('Markdown worker error fallback', () => {
     expect(worker.posted.length).toBe(2);
     expect(worker.posted[1].text).toBe('Hello world!');
 
-    const oldRaws2 = worker.posted[1].oldRaws!;
+    // Again derived locally, not echoed back in the request.
+    const oldRaws2 = marked.lexer('Hello world').map((t) => t.raw);
     const tokens2 = marked.lexer('Hello world!');
     let matchLen2 = 0;
     for (; matchLen2 < Math.min(oldRaws2.length, tokens2.length); matchLen2++) {
       if (oldRaws2[matchLen2] !== tokens2[matchLen2].raw) break;
     }
     worker.onmessage!({
-      data: { id: worker.posted[1].id, matchLen: matchLen2, tail: tokens2.slice(matchLen2) },
+      data: {
+        id: worker.posted[1].id,
+        matchLen: matchLen2,
+        tail: tokens2.slice(matchLen2),
+      },
     });
 
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe('Hello world!');
