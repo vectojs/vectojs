@@ -742,6 +742,13 @@ export class Scene {
   private frameHadAnimation = true;
   private frameHadInteractive = true;
   private resizeHandler: () => void;
+  /** Active `(resolution: Ndppx)` media query watching for a runtime DPR change
+   *  (window moved between monitors, browser zoom) so the canvas backing store
+   *  can be re-scaled — otherwise it stays rasterized at the old DPR and blurs.
+   *  A resolution media query only fires when leaving its exact value, so the
+   *  handler re-arms a fresh query for the new DPR each time. */
+  private dprMediaQuery: MediaQueryList | null = null;
+  private dprChangeHandler: (() => void) | null = null;
   private focusedA11yElement: HTMLElement | null = null;
   /** Persistent tabindex=-1 element in a11yRoot. When the focused a11y mirror is
    *  pruned (virtualization/streaming/removal) while it holds focus, we move
@@ -1626,6 +1633,33 @@ export class Scene {
     this.setupEvents();
   }
 
+  /**
+   * Arm a `(resolution: Ndppx)` media query for the current devicePixelRatio and
+   * re-apply the canvas scale when it changes. Such a query only fires when the
+   * DPR leaves its exact value, so on each change the old query is detached and
+   * a fresh one is armed for the new DPR. Re-runs `resize(width, height)` (which
+   * re-scales the backing store via the renderer) so text/vectors stay crisp
+   * after a monitor move or zoom. No-op without `matchMedia`.
+   */
+  private watchDevicePixelRatio(): void {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    // Tear down any previously-armed query first.
+    if (this.dprMediaQuery && this.dprChangeHandler) {
+      this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    const handler = () => {
+      // Re-scale the backing store for the new DPR, then re-arm for the next
+      // change (the fired query is now stale for the new ratio).
+      this.resize(this.width, this.height);
+      this.watchDevicePixelRatio();
+    };
+    query.addEventListener?.('change', handler);
+    this.dprMediaQuery = query;
+    this.dprChangeHandler = handler;
+  }
+
   private endContentSelectionDrag(): void {
     this.blankRegionSelectionDrag = false;
     this.contentSelectionAnchor = null;
@@ -1893,6 +1927,11 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
+    if (this.dprMediaQuery && this.dprChangeHandler) {
+      this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
+      this.dprMediaQuery = null;
+      this.dprChangeHandler = null;
+    }
     if (typeof window !== 'undefined' && this.contentSelectionEndListener) {
       window.removeEventListener('mouseup', this.contentSelectionEndListener);
       window.removeEventListener('blur', this.contentSelectionEndListener);
@@ -1953,6 +1992,12 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
     }
+    // Watch for a runtime DPR change (window dragged to a monitor with a
+    // different pixel density, or browser zoom) so the canvas backing store is
+    // re-scaled. `resize` alone does not fire for a DPR-only change, and an
+    // embedded (disableWindowResize) scene blurs just the same, so this runs
+    // regardless of that flag.
+    this.watchDevicePixelRatio();
     if (
       typeof window !== 'undefined' &&
       this.canvas &&
