@@ -647,15 +647,33 @@ export class LayoutEngine {
         fullText.startsWith(cache.text) &&
         styleRangeEquals(styleAt, cache.styleAt, cache.text.length)
       ) {
-        // Keep every cached word except the last: the prefix's final word can
-        // extend into the appended text ("wor" + "d" → "word"), so it is
-        // re-segmented from its own start along with the new suffix. Mutate the
-        // private cache arrays in place — pop the last word, push the freshly
-        // shaped tail — so the per-chunk cost is O(appended), not O(word-count).
-        const keep = cache.words.length - 1;
-        const reshapeFrom = keep > 0 ? cache.wordSrcEnds[keep - 1] : 0;
+        // Re-segment the whole trailing SAME-CATEGORY (whitespace vs
+        // non-whitespace) run, not just the last cached word. Intl.Segmenter can
+        // merge or re-split an entire adjacent non-whitespace run once more text
+        // arrives — streamed char-by-char, "3"+"."+"1" one-shot segments as
+        // "3.1" and "a "+" " as "a  " — so freezing all-but-the-last word leaves
+        // spurious mid-number/URL/abbrev boundaries that a one-shot shape never
+        // produces. A whitespace↔non-whitespace transition, by contrast, is a
+        // hard boundary the appended suffix can never dissolve, so reshaping from
+        // the start of the trailing run yields exactly the one-shot segmentation.
+        // (Cost is O(trailing-run + appended); a long no-whitespace run streamed
+        // one char at a time degrades toward O(n²) — an accepted trade for
+        // correctness, same caveat the streaming cache already carries.)
+        const end = cache.text.length;
+        const lastIsWs = end > 0 && /\s/.test(cache.text[end - 1]!);
+        let reshapeFrom = end;
+        while (reshapeFrom > 0 && /\s/.test(cache.text[reshapeFrom - 1]!) === lastIsWs) {
+          reshapeFrom--;
+        }
+        // Keep every cached word ending at or before the reshape boundary.
+        let keep = 0;
+        while (keep < cache.wordSrcEnds.length && cache.wordSrcEnds[keep] <= reshapeFrom) {
+          keep++;
+        }
         const tail = this.shapeSimpleRun(fullText, reshapeFrom, styleAt, baseFontSize, fontAtlas);
-        if (cache.wordFallbacks[keep]) cache.fallbackCount--;
+        for (let i = keep; i < cache.wordFallbacks.length; i++) {
+          if (cache.wordFallbacks[i]) cache.fallbackCount--;
+        }
         cache.words.length = keep;
         cache.wordSrcEnds.length = keep;
         cache.wordFallbacks.length = keep;

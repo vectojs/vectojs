@@ -16,10 +16,16 @@ marked.use({
       name: 'inlineMath',
       level: 'inline',
       start(src) {
-        return src.match(/\$/)?.index;
+        return src.match(/(?<![\\$])\$(?![$\s])/)?.index;
       },
       tokenizer(src) {
-        const match = /^\$([^$]+)\$/.exec(src);
+        // Guard against currency: "$5 to $10" must NOT become one math span.
+        // Require, à la pandoc: the opening `$` is not `$$` and is immediately
+        // followed by a non-space, non-digit; the content has no literal `$`
+        // (only escaped `\$`) and no newline; the closing `$` is preceded by a
+        // non-space and not followed by a digit. So "$x+1$" is math, but "$5",
+        // "$5 to $10", "$$", and "cost $9 each" are not.
+        const match = /^\$(?![$\s\d])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
         if (match) {
           return {
             type: 'inlineMath',
@@ -997,7 +1003,7 @@ export class Markdown extends UIComponent {
     const oldTokenToChild: number[] = [];
     for (let i = 0; i < oldTokens.length; i++) {
       oldTokenToChild.push(childIdx);
-      if (oldTokens[i].type !== 'space') childIdx++;
+      if (this.producesEntity(oldTokens[i])) childIdx++;
     }
 
     // Compare tokens by raw source
@@ -1047,7 +1053,7 @@ export class Markdown extends UIComponent {
     // remove()) so a discarded block's subtree resources are released, and it
     // detaches from `content` itself.
     for (let i = 0; i < oldTokens.length; i++) {
-      if (i >= matchLen && oldTokens[i].type !== 'space') {
+      if (i >= matchLen && this.producesEntity(oldTokens[i])) {
         const idx = oldTokenToChild[i];
         if (idx < oldChildren.length) {
           oldChildren[idx].destroy();
@@ -1075,6 +1081,38 @@ export class Markdown extends UIComponent {
     this.scene?.markDirty();
     if (this.onLayoutUpdated) {
       this.onLayoutUpdated();
+    }
+  }
+
+  /**
+   * Whether {@link renderToken} produces a child entity for this token (vs
+   * `null`). `updateTokens` maps token indices to child-entity indices, and the
+   * reconcile/removal loops must skip EXACTLY the tokens that render nothing —
+   * not just `space`. A `space`, a non-SVG raw `html` block (an HTML comment,
+   * a bare `<div>`), or a fallback token without `text` all render null; before
+   * this, only `space` was skipped, so a null-rendering `html`/`def` token
+   * before the growing tail shifted every subsequent entity index by one and
+   * the wrong entity was updated or destroyed. Kept in lockstep with
+   * `renderToken`'s null returns.
+   */
+  protected producesEntity(token: Token): boolean {
+    switch (token.type) {
+      case 'space':
+        return false;
+      case 'html': {
+        const text = (token as Tokens.HTML).text.toLowerCase();
+        return text.includes('<svg') && text.includes('</svg>');
+      }
+      case 'heading':
+      case 'paragraph':
+      case 'code':
+      case 'blockquote':
+      case 'list':
+      case 'table':
+      case 'hr':
+        return true;
+      default:
+        return 'text' in token;
     }
   }
 
