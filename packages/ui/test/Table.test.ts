@@ -85,4 +85,68 @@ describe('Table', () => {
     // Should draw row line / column line / outer border
     expect(strokeSpy).toHaveBeenCalled();
   });
+
+  describe('virtualization (viewportHeight)', () => {
+    function makeTable(rowCount: number) {
+      return new Table({
+        headers: ['A', 'B'],
+        rows: Array.from({ length: rowCount }, (_, i) => [`a${i}`, `b${i}`]),
+        width: 300,
+        rowHeight: 30,
+        viewportHeight: 300, // header 30 + body 270 ≈ 9 rows
+      });
+    }
+    // The clipped body sub-container holds the mounted body cells.
+    const bodyClip = (t: Table) => (t as any).bodyClip as { children: unknown[] };
+    const mounted = (t: Table) => (t as any).mountedRows as Set<number>;
+
+    it('mounts only a viewport-worth of body rows, not all 10000', () => {
+      const t = makeTable(10000);
+      // header 30 + 270/30 = 9 visible rows + overscan(2 each side) ≈ ≤ 13 rows.
+      expect(mounted(t).size).toBeLessThanOrEqual(13);
+      expect(mounted(t).size).toBeGreaterThan(0);
+      // Body clip holds only those rows' cells (2 cols each), far below 20000.
+      expect(bodyClip(t).children.length).toBe(mounted(t).size * 2);
+      // The table's own height is the fixed viewport, not the full content.
+      expect(t.height).toBe(300);
+    });
+
+    it('mounts rows around the scrolled position after a wheel scroll', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const t = makeTable(10000);
+      scene.add(t);
+      const before = new Set(mounted(t));
+      expect(before.has(0)).toBe(true);
+
+      // Scroll ~200 rows down and settle the integrator.
+      t.emit('wheel', { deltaY: 200 * 30, preventDefault() {} });
+      for (let i = 0; i < 300; i++) t.update(16, i * 16);
+
+      const after = mounted(t);
+      expect(after.has(0)).toBe(false); // row 0 unmounted
+      expect([...after].some((i) => i >= 190 && i <= 210)).toBe(true); // ~200 mounted
+    });
+
+    it('classic (no viewportHeight) still mounts every cell and grows to fit', () => {
+      const t = new Table({
+        headers: ['A', 'B'],
+        rows: Array.from({ length: 50 }, (_, i) => [`a${i}`, `b${i}`]),
+        width: 300,
+        rowHeight: 30,
+      });
+      expect((t as any).bodyClip).toBeNull();
+      // 50 rows × 2 cols body cells + 2 header cells all direct children.
+      expect(t.children.length).toBe(50 * 2 + 2);
+      // Grows to fit all rows (variable heights ≥ rowHeight), not a fixed
+      // viewport — so much taller than any single viewport would be.
+      expect(t.height).toBeGreaterThanOrEqual(51 * 30);
+    });
+
+    it('reports pending animation while the scroll integrator is settling', () => {
+      const t = makeTable(1000);
+      t.emit('wheel', { deltaY: 500, preventDefault() {} });
+      expect(t.hasPendingAnimations()).toBe(true);
+    });
+  });
 });

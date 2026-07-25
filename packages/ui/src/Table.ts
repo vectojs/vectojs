@@ -27,6 +27,15 @@ export interface TableOptions {
   font?: string;
   /** Allow browser-native drag selection and copy in cell text. Default `true`. */
   selectable?: boolean;
+  /**
+   * Enable virtualization: fix the table's height to this many pixels, pin the
+   * header, and scroll the body — mounting (and projecting a11y for) only the
+   * body rows within the viewport plus a small overscan. Body rows are laid out
+   * at the fixed `rowHeight` in this mode (so scroll↔row-index is O(1)). Omit
+   * for the classic behavior: the table grows to fit all rows, every cell stays
+   * mounted, and rows keep their measured variable heights.
+   */
+  viewportHeight?: number;
 }
 
 /**
@@ -54,6 +63,23 @@ export class Table extends UIComponent {
   private readonly headerCells: Entity[];
   private readonly bodyCells: Entity[][];
 
+  // ── Virtualization (opt-in via `viewportHeight`) ────────────────────────────
+  /** Fixed viewport height when virtualized; `0` = classic grow-to-fit mode. */
+  private readonly viewportHeight: number;
+  private get virtualized(): boolean {
+    return this.viewportHeight > 0;
+  }
+  /** Clipped, scrolled sub-container that owns the body cells while virtualized
+   *  (the header stays pinned as a direct Table child). Only created in that
+   *  mode; a single Table-level clip couldn't pin the header AND scroll the body. */
+  private bodyClip: Entity | null = null;
+  private _scrollY = 0;
+  private _targetY = 0;
+  private _velY = 0;
+  /** Body rows currently mounted into `bodyClip`, keyed by row index. */
+  private readonly mountedRows = new Set<number>();
+  private readonly overscan = 2;
+
   constructor(opts: TableOptions) {
     super();
     if (opts.headers.length === 0) throw new RangeError('Table requires at least one column.');
@@ -69,6 +95,7 @@ export class Table extends UIComponent {
     this.font = opts.font ?? '14px sans-serif';
     this.selectable = opts.selectable ?? true;
     this.width = opts.width ?? 600;
+    this.viewportHeight = opts.viewportHeight ?? 0;
     this.colWidths = this.normalizeColumnWidths(opts.colWidths);
 
     const seen = new Set<Entity>();
@@ -79,10 +106,125 @@ export class Table extends UIComponent {
       ),
     );
     for (const cell of this.headerCells) this.add(cell);
-    for (const row of this.bodyCells) for (const cell of row) this.add(cell);
+
+    if (this.virtualized) {
+      // Body cells live in a clipped, scrolled sub-container; only the visible
+      // window is mounted (reconcileVirtualRows), pruning off-viewport cell
+      // projection + a11y. The header stays a pinned direct child above it.
+      const clip = new (class TableBodyClip extends Entity {
+        isPointInside(): boolean {
+          return false;
+        }
+        render(): void {}
+      })(`${this.id}-bodyclip`);
+      clip.clipChildren = true;
+      this.bodyClip = clip;
+      this.add(clip);
+      this.bindScroll();
+    } else {
+      // Classic grow-to-fit: every cell mounted directly on the table.
+      for (const row of this.bodyCells) for (const cell of row) this.add(cell);
+    }
 
     this.interactive = true;
     this.layout();
+  }
+
+  private bindScroll(): void {
+    this.on('wheel', (e: WheelEvent) => {
+      e.preventDefault();
+      this._targetY += e.deltaY;
+      this.clampScroll();
+      this.scene?.markDirty();
+    });
+  }
+
+  private clampScroll(): void {
+    const bodyTotal = this.bodyCells.length * this.baseRowHeight;
+    const bodyViewport = this.viewportHeight - this.headerHeight;
+    const max = Math.max(0, bodyTotal - bodyViewport);
+    this._targetY = Math.max(0, Math.min(this._targetY, max));
+  }
+
+  /**
+   * Scroll integrator (mirrors Tree / VirtualList) + per-frame row reconcile so
+   * a wheel-driven scroll mounts/unmounts body rows as they cross the viewport.
+   */
+  public override update(dt: number, time: number): void {
+    super.update(dt, time);
+    if (!this.virtualized) return;
+    const diff = this._targetY - this._scrollY;
+    this._velY += diff * 0.12;
+    this._velY *= 0.82;
+    if (Math.abs(this._velY) > 0.05 || Math.abs(diff) > 0.05) {
+      this._scrollY += this._velY;
+      this.reconcileVirtualRows();
+      this.scene?.markDirty();
+    } else if (this._scrollY !== this._targetY) {
+      this._scrollY = this._targetY;
+      this._velY = 0;
+      this.reconcileVirtualRows();
+    }
+  }
+
+  /** Keep the hand-rolled scroll integrator visible to the Scene idle throttle. */
+  public override hasPendingAnimations(): boolean {
+    return (
+      super.hasPendingAnimations() ||
+      (this.virtualized &&
+        (Math.abs(this._targetY - this._scrollY) > 0.05 || Math.abs(this._velY) > 0.05))
+    );
+  }
+
+  /**
+   * Mount exactly the body rows in the scrolled viewport (± overscan) into the
+   * clipped body container and unmount the rest — so a 100k-row table only ever
+   * has a viewport-worth of cell entities (and their a11y/content projections)
+   * live. Fixed `baseRowHeight` makes the visible range O(1) to compute.
+   */
+  private reconcileVirtualRows(): void {
+    const clip = this.bodyClip;
+    if (!clip) return;
+    const rh = this.baseRowHeight;
+    const bodyViewport = Math.max(0, this.viewportHeight - this.headerHeight);
+    const first = Math.max(0, Math.floor(this._scrollY / rh) - this.overscan);
+    const last = Math.min(
+      this.bodyCells.length - 1,
+      Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
+    );
+
+    // Unmount rows that scrolled out of the window.
+    for (const rowIndex of this.mountedRows) {
+      if (rowIndex < first || rowIndex > last) {
+        for (const cell of this.bodyCells[rowIndex]) {
+          this.scene?.detachA11y?.(cell);
+          clip.remove(cell);
+        }
+        this.mountedRows.delete(rowIndex);
+      }
+    }
+    // Mount + position rows now in the window (positions are viewport-relative:
+    // the clip sits at y=headerHeight, so a row's local y subtracts scrollY).
+    for (let rowIndex = first; rowIndex <= last; rowIndex++) {
+      const row = this.bodyCells[rowIndex];
+      const rowTop = rowIndex * rh - this._scrollY;
+      const mounting = !this.mountedRows.has(rowIndex);
+      let x = 0;
+      for (let column = 0; column < row.length; column++) {
+        const cell = row[column];
+        if (mounting) {
+          // Lazily sync text + fit width the first time this row enters the
+          // window, so layout() stays O(viewport) rather than O(rows).
+          this.syncStringCell(cell, this.rows[rowIndex]?.[column]);
+          this.fitCell(cell, column);
+          clip.add(cell);
+        }
+        cell.setPosition(x + 12, rowTop + (rh - cell.height) / 2);
+        x += this.colWidths[column];
+      }
+      this.mountedRows.add(rowIndex);
+    }
+    this.scene?.markDirty();
   }
 
   private normalizeColumnWidths(widths: number[] | undefined): number[] {
@@ -148,6 +290,33 @@ export class Table extends UIComponent {
       this.headerHeight = Math.max(this.headerHeight, cell.height + 16);
     }
 
+    let x = 0;
+    for (let column = 0; column < this.headerCells.length; column++) {
+      const cell = this.headerCells[column];
+      cell.setPosition(x + 12, (this.headerHeight - cell.height) / 2);
+      x += this.colWidths[column];
+    }
+
+    if (this.virtualized) {
+      // Fixed body row height (uniform) so scroll↔row-index is O(1); the body
+      // is a clipped viewport and cell positions/width-fits are applied per
+      // VISIBLE row by reconcileVirtualRows(). Crucially we do NOT walk every
+      // row here — that would make layout() O(rows) and defeat virtualization;
+      // off-viewport cells are synced/fitted lazily when they mount.
+      this.rowHeights = this.bodyCells.map(() => this.baseRowHeight);
+      this.height = this.viewportHeight;
+      // Body clip sits just below the pinned header, spanning the rest.
+      const clip = this.bodyClip!;
+      clip.setPosition(0, this.headerHeight);
+      clip.width = this.width;
+      clip.height = Math.max(0, this.viewportHeight - this.headerHeight);
+      this.clampScroll();
+      this._scrollY = this._targetY;
+      this.reconcileVirtualRows();
+      this.scene?.markDirty();
+      return this;
+    }
+
     this.rowHeights = this.bodyCells.map((row, rowIndex) => {
       let height = this.baseRowHeight;
       for (let column = 0; column < row.length; column++) {
@@ -158,13 +327,6 @@ export class Table extends UIComponent {
       }
       return height;
     });
-
-    let x = 0;
-    for (let column = 0; column < this.headerCells.length; column++) {
-      const cell = this.headerCells[column];
-      cell.setPosition(x + 12, (this.headerHeight - cell.height) / 2);
-      x += this.colWidths[column];
-    }
 
     let y = this.headerHeight;
     for (let rowIndex = 0; rowIndex < this.bodyCells.length; rowIndex++) {
@@ -226,13 +388,32 @@ export class Table extends UIComponent {
       x += this.colWidths[column];
     }
 
-    let y = this.headerHeight;
-    for (const rowHeight of this.rowHeights) {
-      r.beginPath();
-      r.moveTo(0, y);
-      r.lineTo(this.width, y);
-      r.stroke(this.borderColor, 1);
-      y += rowHeight;
+    if (this.virtualized) {
+      // Draw only the row separators crossing the viewport (O(visible rows)),
+      // at viewport-relative y, instead of walking every row down past the clip.
+      const rh = this.baseRowHeight;
+      const first = Math.max(0, Math.floor(this._scrollY / rh));
+      const last = Math.min(
+        this.bodyCells.length,
+        Math.ceil((this._scrollY + (this.height - this.headerHeight)) / rh),
+      );
+      for (let i = first; i <= last; i++) {
+        const y = this.headerHeight + i * rh - this._scrollY;
+        if (y <= this.headerHeight || y >= this.height) continue;
+        r.beginPath();
+        r.moveTo(0, y);
+        r.lineTo(this.width, y);
+        r.stroke(this.borderColor, 1);
+      }
+    } else {
+      let y = this.headerHeight;
+      for (const rowHeight of this.rowHeights) {
+        r.beginPath();
+        r.moveTo(0, y);
+        r.lineTo(this.width, y);
+        r.stroke(this.borderColor, 1);
+        y += rowHeight;
+      }
     }
 
     r.beginPath();
