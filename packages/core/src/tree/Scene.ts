@@ -186,6 +186,15 @@ export interface SceneOptions {
    * height (`undefined` → resolved to `Scene.height` at sync time).
    */
   contentProjectionMargin?: number;
+  /**
+   * Reading direction used to order the accessibility/automation shadow tree so
+   * keyboard **tab order** and screen-reader traversal follow the *visual*
+   * reading order (top-to-bottom, then inline) rather than scene-graph
+   * insertion order — two entities added in any order but drawn left/right of
+   * each other should Tab left→right (`'ltr'`, default) or right→left
+   * (`'rtl'`). Also settable later via {@link Scene.readingDirection}.
+   */
+  readingDirection?: 'ltr' | 'rtl';
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -668,6 +677,13 @@ export class Scene {
   public overlayRoot: Entity;
   private renderer: IRenderer;
   private isRunning: boolean = false;
+  /** Whether the canvas is at least partially in the viewport. When it scrolls
+   *  fully off-screen the rAF loop pauses (stops rescheduling) instead of
+   *  burning frames on a scene nobody can see; an IntersectionObserver resumes
+   *  it on re-entry. Defaults true (and stays true where IntersectionObserver
+   *  is unavailable, e.g. SSR/jsdom, so behavior is unchanged there). */
+  private _canvasOnScreen = true;
+  private _canvasObserver: IntersectionObserver | null = null;
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
 
@@ -705,6 +721,22 @@ export class Scene {
   public maxFPS: number = 60;
   /** Whether the OS prefers-reduced-motion setting auto-caps the loop. */
   public respectReducedMotion: boolean = true;
+  /**
+   * Reading direction for accessibility tab/traversal order (`'ltr'` default,
+   * `'rtl'`). Controls the inline sort within a visual row in
+   * {@link enforceA11yDomOrder}. Set at runtime to re-flow tab order on the
+   * next sync (also trips a reorder).
+   */
+  public get readingDirection(): 'ltr' | 'rtl' {
+    return this._readingDirection;
+  }
+  public set readingDirection(dir: 'ltr' | 'rtl') {
+    if (dir !== this._readingDirection) {
+      this._readingDirection = dir;
+      this.a11yNeedsReorder = true;
+    }
+  }
+  private _readingDirection: 'ltr' | 'rtl' = 'ltr';
   /** Cached media-query list; `.matches` is read live each frame. */
   private reducedMotionQuery: MediaQueryList | null = null;
   /** Cached `(forced-colors: active)` query (Windows High Contrast etc.). A
@@ -1401,6 +1433,9 @@ export class Scene {
   private mouseY: number = -9999;
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
   private pointerLeaveListener: (() => void) | null = null;
+  /** Element the pointer listeners are bound to (parent container if present,
+   *  else the canvas). Stored so `destroy()` detaches from the same element. */
+  private pointerEventTarget: HTMLElement | null = null;
   private hasWarnedZeroSize: boolean = false;
   private fontLoadHandler: (() => void) | null = null;
 
@@ -1519,6 +1554,7 @@ export class Scene {
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
+    this.readingDirection = options.readingDirection ?? 'ltr';
     this._devActive = Scene._devModeDetected();
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -2109,15 +2145,16 @@ export class Scene {
     }
     if (
       typeof window !== 'undefined' &&
-      this.canvas &&
-      typeof this.canvas.removeEventListener === 'function'
+      this.pointerEventTarget &&
+      typeof this.pointerEventTarget.removeEventListener === 'function'
     ) {
       if (this.pointerMoveListener) {
-        this.canvas.removeEventListener('pointermove', this.pointerMoveListener);
+        this.pointerEventTarget.removeEventListener('pointermove', this.pointerMoveListener);
       }
       if (this.pointerLeaveListener) {
-        this.canvas.removeEventListener('pointerleave', this.pointerLeaveListener);
+        this.pointerEventTarget.removeEventListener('pointerleave', this.pointerLeaveListener);
       }
+      this.pointerEventTarget = null;
     }
     this.a11yRoot?.remove();
     this.focusSentinel = null;
@@ -2212,8 +2249,18 @@ export class Scene {
         this.mouseX = -9999;
         this.mouseY = -9999;
       };
-      this.canvas.addEventListener('pointermove', this.pointerMoveListener);
-      this.canvas.addEventListener('pointerleave', this.pointerLeaveListener);
+      // Bind to the parent container, not the canvas: content-projection and
+      // a11y mirror elements sit *above* the canvas with `pointer-events:auto`,
+      // so a pointermove over projected text fires on that element and never
+      // reaches a canvas-bound listener — freezing `mouseX/mouseY` (and any
+      // pointer-driven particle repulsion) while the cursor is over text. The
+      // parent wraps the canvas and both overlay roots, so moves over any layer
+      // bubble up here, and `pointerleave` on the parent fires only when the
+      // pointer truly exits the whole region (crossing between canvas and an
+      // overlay child does not). Falls back to the canvas when it has no parent.
+      this.pointerEventTarget = (this.canvas.parentElement as HTMLElement | null) ?? this.canvas;
+      this.pointerEventTarget.addEventListener('pointermove', this.pointerMoveListener);
+      this.pointerEventTarget.addEventListener('pointerleave', this.pointerLeaveListener);
     }
   }
 
@@ -2235,6 +2282,7 @@ export class Scene {
 
     this.isRunning = true;
     this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
+    this.watchCanvasVisibility();
     this.scheduleFrame();
 
     const isTextFocused =
@@ -2255,6 +2303,34 @@ export class Scene {
   }
 
   /**
+   * Observe whether the canvas is on-screen so the rAF loop can pause when it
+   * scrolls fully out of view (a dashboard tab, a chart below the fold) and
+   * resume when it returns — instead of running the full update/render every
+   * frame for a scene nobody can see. No-op (stays "on screen") where
+   * `IntersectionObserver` is unavailable, so SSR/jsdom behavior is unchanged.
+   */
+  private watchCanvasVisibility(): void {
+    if (this._canvasObserver || typeof IntersectionObserver === 'undefined') return;
+    if (!this.canvas || typeof this.canvas.getBoundingClientRect !== 'function') return;
+    this._canvasObserver = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      if (!entry) return;
+      const nowOnScreen = entry.isIntersecting;
+      const wasOffScreen = !this._canvasOnScreen;
+      this._canvasOnScreen = nowOnScreen;
+      // Re-entering the viewport while running: the loop paused itself (stopped
+      // rescheduling), so kick it back off. Reset lastTime so the first frame
+      // back doesn't integrate the whole off-screen gap (the dt clamp also caps
+      // it, but this keeps telemetry honest).
+      if (nowOnScreen && wasOffScreen && this.isRunning) {
+        this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
+        this.scheduleFrame();
+      }
+    });
+    this._canvasObserver.observe(this.canvas);
+  }
+
+  /**
    * Halt the render loop after the current frame completes.
    *
    * Call {@link start} again to resume rendering.
@@ -2265,6 +2341,12 @@ export class Scene {
       clearInterval(this.caretBlinkTimer);
       this.caretBlinkTimer = null;
     }
+    if (this._canvasObserver) {
+      this._canvasObserver.disconnect();
+      this._canvasObserver = null;
+    }
+    // Assume visible again on next start(); the observer re-establishes truth.
+    this._canvasOnScreen = true;
   }
 
   /**
@@ -3371,6 +3453,15 @@ export class Scene {
     // Only reorder if the hierarchy flag is set
     if (!this.a11yNeedsReorder) return;
 
+    // Tab / screen-reader order must follow the *visual* reading order, not the
+    // scene-graph insertion order in which we just collected the elements. Two
+    // buttons added in any order but drawn side by side should Tab left→right
+    // (or right→left under RTL). Sort the non-overlay elements by their synced
+    // world position (top → row, then inline). Full-viewport overlays keep
+    // insertion order (they cover everything, so their relative order is what
+    // the author declared).
+    this.sortNormalElementsVisually();
+
     const fullLen = this.fullViewportElements.length;
     const normalLen = this.normalElements.length;
     const totalLen = fullLen + normalLen;
@@ -3386,6 +3477,59 @@ export class Scene {
     }
 
     this.a11yNeedsReorder = false;
+  }
+
+  /**
+   * Reorder `normalElements` (in place) into visual reading order using the
+   * world positions `syncA11y` already wrote to each element's inline style
+   * (`top`/`left`/`height`). Elements are grouped into rows top-to-bottom (an
+   * element belongs to the current row while its top is above the row's
+   * running bottom edge), then sorted within a row by `left` — ascending for
+   * `'ltr'`, descending for `'rtl'`. The sort is stable, so entities at the
+   * same position keep their scene-graph (collection) order as a tiebreak.
+   */
+  private sortNormalElementsVisually(): void {
+    const els = this.normalElements;
+    if (els.length < 2) return;
+
+    const rtl = this._readingDirection === 'rtl';
+    const topOf = (el: HTMLElement) => Number.parseFloat(el.style.top) || 0;
+    const leftOf = (el: HTMLElement) => Number.parseFloat(el.style.left) || 0;
+    // A zero-height mirror (rare) still needs a row band so same-top siblings
+    // group together; clamp to a small minimum.
+    const heightOf = (el: HTMLElement) => Math.max(Number.parseFloat(el.style.height) || 0, 4);
+
+    // Decorate with the original index so the sort is stable across engines.
+    const order = els.map((el, i) => ({
+      el,
+      i,
+      top: topOf(el),
+      left: leftOf(el),
+    }));
+    order.sort((p, q) => p.top - q.top || p.i - q.i);
+
+    // Bucket into visual rows by vertical overlap, then sort each row inline.
+    const sorted: HTMLElement[] = [];
+    let rowStart = 0;
+    let rowBottom = order.length ? order[0].top + heightOf(order[0].el) : 0;
+    const flushRow = (end: number) => {
+      const row = order.slice(rowStart, end);
+      row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
+      for (const r of row) sorted.push(r.el);
+    };
+    for (let k = 1; k < order.length; k++) {
+      if (order[k].top < rowBottom) {
+        // Same row — extend the band to the tallest element seen so far.
+        rowBottom = Math.max(rowBottom, order[k].top + heightOf(order[k].el));
+      } else {
+        flushRow(k);
+        rowStart = k;
+        rowBottom = order[k].top + heightOf(order[k].el);
+      }
+    }
+    flushRow(order.length);
+
+    for (let i = 0; i < sorted.length; i++) els[i] = sorted[i];
   }
 
   /** Keep DOM/WebGL overlay layers aligned with the canvas's CSS box. */
@@ -3578,6 +3722,13 @@ export class Scene {
 
   private loop(time: number): void {
     if (!this.isRunning) return;
+
+    // Canvas scrolled fully off-screen: pause the loop entirely (do no work and
+    // stop rescheduling) rather than burn a full update/render every frame on a
+    // scene nobody can see. The IntersectionObserver resumes it on re-entry.
+    // markDirty() while hidden is harmless — the dirty flag persists and the
+    // resume frame consumes it.
+    if (!this._canvasOnScreen) return;
 
     let cap = this.effectiveMaxFPS();
 
