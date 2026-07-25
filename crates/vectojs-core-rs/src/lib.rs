@@ -38,6 +38,12 @@ mod anim;
 // SoA + static state, a measurement module independent of the transform path.
 mod hit;
 
+// G4 spike — particle CPU simulation (spring/mouse/explosion/integrate/bounce/
+// life). Own f32 SoA + static state; a separate f32 differential oracle from the
+// f64 transform core (the particle buffer is a Float32Array). Independent of the
+// transform path.
+mod particle;
+
 // f32 SIMD evaluation — bench-only f32x4 compose kernel with its own isolated
 // store. Never a production backend (f32 is not bit-comparable to the JS
 // reference); exists solely to measure f32x4 vs the shipped f64x2. wasm32-only.

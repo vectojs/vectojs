@@ -81,5 +81,9 @@ benchmarks/content-projection/page/index.html
 # ui-perf benchmark build artifacts + results (page/ generated)
 benchmarks/ui-perf/page/index.html
 
+# particle-wasm benchmark build artifacts + results (page/ generated)
+benchmarks/particle-wasm/page/index.html
+benchmarks/particle-wasm/page/*.wasm
+
 # Git Worktree
 .worktree/
