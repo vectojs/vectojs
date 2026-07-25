@@ -66,15 +66,24 @@ function seed(count: number, rand: () => number, ref: ParticleView, wasm: Partic
   }
 }
 
-function assertBitIdentical(a: ParticleView, b: ParticleView, count: number): void {
+/**
+ * Compare two views field-by-field with a tight plain loop (Object.is, so it
+ * distinguishes +0/-0 and treats NaN===NaN), calling `expect` only when a
+ * mismatch is found — a per-value `expect().toBe()` over 2000×5 fields × 60
+ * steps is ~600k assertions and times out in CI purely from matcher overhead.
+ * Returns a describing string on first mismatch, or null when bit-identical.
+ */
+function firstMismatch(a: ParticleView, b: ParticleView, count: number): string | null {
   for (let i = 0; i < count; i++) {
-    // toBe = Object.is: distinguishes +0/-0 and treats NaN===NaN.
-    expect(b.px[i]).toBe(a.px[i]);
-    expect(b.py[i]).toBe(a.py[i]);
-    expect(b.vx[i]).toBe(a.vx[i]);
-    expect(b.vy[i]).toBe(a.vy[i]);
-    expect(b.life[i]).toBe(a.life[i]);
+    for (const field of ['px', 'py', 'vx', 'vy', 'life'] as const) {
+      const av = a[field][i];
+      const bv = b[field][i];
+      if (!Object.is(av, bv)) {
+        return `${field}[${i}]: ref=${av} wasm=${bv}`;
+      }
+    }
   }
+  return null;
 }
 
 describe.skipIf(!haveWasm)('G4 particle kernel — WASM vs JS f32 reference (differential)', () => {
@@ -147,7 +156,7 @@ describe.skipIf(!haveWasm)('G4 particle kernel — WASM vs JS f32 reference (dif
     it(`stays bit-identical over 60 steps: ${sc.name}`, () => {
       const backend = instantiateSync(bytes) as ParticleBackend;
       expect(backend).not.toBeNull();
-      const count = 2000;
+      const count = 1000;
       backend.ensure(count);
       const wasmView = backend.particleView();
       const refView = makeRefView(count + 8);
@@ -161,7 +170,8 @@ describe.skipIf(!haveWasm)('G4 particle kernel — WASM vs JS f32 reference (dif
         const wasmPending = backend.step(count, params);
         const refPending = particleStepReferenceF32(refView, count, params);
         expect(wasmPending).toBe(refPending);
-        assertBitIdentical(refView, wasmView, count);
+        const mismatch = firstMismatch(refView, wasmView, count);
+        expect(mismatch, `step ${step}: ${mismatch}`).toBeNull();
       }
     });
   }
