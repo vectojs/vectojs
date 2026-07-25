@@ -2,6 +2,42 @@ import { Entity, A11yAttributes, IRenderer } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
 
+/**
+ * A transparent, focusable hotspot over one tab in the bar. The {@link Tabs}
+ * component paints the tab on canvas; this projects a real `role="tab"` with
+ * `aria-selected` and a roving tabindex so a screen reader / keyboard user can
+ * operate the tablist (WCAG 4.1.2 / 2.1.1).
+ */
+class TabHotspot extends UIComponent {
+  constructor(
+    public tabId: string,
+    private group: Tabs,
+    private label: string,
+  ) {
+    super();
+    this.interactive = true;
+    this.on('click', () => this.group.selectTab(this.tabId, true));
+    this.on('keydown', (e: KeyboardEvent) => this.group.handleTabKey(e, this.tabId));
+  }
+  public setLabel(label: string): void {
+    this.label = label;
+  }
+  public getA11yAttributes(): A11yAttributes {
+    const selected = this.group.value === this.tabId;
+    return {
+      role: 'tab',
+      label: this.label,
+      selected,
+      // Roving tabindex: only the active tab is in the page tab order; arrows
+      // move within the tablist.
+      tabIndex: selected ? 0 : -1,
+    };
+  }
+  public render(): void {
+    /* invisible — Tabs paints the bar */
+  }
+}
+
 export interface TabItem {
   id: string;
   label: string;
@@ -75,6 +111,8 @@ export class Tabs extends UIComponent {
   private _hoverClose: boolean = false;
   private _scrollX: number = 0;
   private readonly _closeBox = 14; // px hit region for the × glyph
+  /** One `role="tab"` hotspot per tab, kept in sync with the bar layout. */
+  private _hotspots: TabHotspot[] = [];
 
   constructor(opts: TabsOptions) {
     super();
@@ -152,8 +190,67 @@ export class Tabs extends UIComponent {
       this._ensureActiveVisible();
       this._updateContentVisibility();
       opts.onChange?.(this.value);
+      this._syncTabHotspots();
       this.scene?.markDirty();
     });
+
+    this._syncTabHotspots();
+  }
+
+  /** Select a tab by id (from a hotspot click or keyboard), routing through the
+   *  same `change` path as a pointer selection. */
+  public selectTab(id: string, focusIt = false): void {
+    if (id !== this.value) this.emit('change', { value: id });
+    if (focusIt) this._focusTabHotspot(id);
+  }
+
+  /** Arrow-key navigation within the tablist (WCAG tab pattern): Left/Up → prev,
+   *  Right/Down → next (wrapping); Home/End → first/last. Follows the automatic-
+   *  activation model (moving selects). */
+  public handleTabKey(e: KeyboardEvent, fromId: string): void {
+    const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const n = this.tabs.length;
+    if (n === 0) return;
+    const startIdx = this.tabs.findIndex((t) => t.id === fromId);
+    if (startIdx === -1) return;
+    let targetIdx: number;
+    if (e.key === 'Home') targetIdx = 0;
+    else if (e.key === 'End') targetIdx = n - 1;
+    else {
+      const forward = e.key === 'ArrowRight' || e.key === 'ArrowDown';
+      targetIdx = (startIdx + (forward ? 1 : -1) + n) % n;
+    }
+    this.selectTab(this.tabs[targetIdx].id, true);
+  }
+
+  private _focusTabHotspot(id: string): void {
+    this._hotspots.find((h) => h.tabId === id)?.focus();
+  }
+
+  /** Create/position one transparent `role="tab"` hotspot per tab over its slot
+   *  in the bar, matching `_tabIdxAt`'s geometry (`i*w - scrollX`, width `w`). */
+  private _syncTabHotspots(): void {
+    if (this._hotspots.length !== this.tabs.length) {
+      for (const h of this._hotspots) {
+        this.scene?.detachA11y?.(h);
+        this.remove(h);
+      }
+      this._hotspots = this.tabs.map((t) => new TabHotspot(t.id, this, t.label));
+      for (const h of this._hotspots) this.add(h);
+    }
+    const w = this._tabW();
+    const barH = this._barHeight();
+    for (let i = 0; i < this.tabs.length; i++) {
+      const h = this._hotspots[i];
+      h.setLabel(this.tabs[i].label);
+      h.x = i * w - this._scrollX;
+      h.y = 0;
+      h.width = w;
+      h.height = barH;
+    }
+    this.scene?.markDirty();
   }
 
   /**
