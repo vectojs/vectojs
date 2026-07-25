@@ -316,4 +316,63 @@ describe('A11y Root and Agent Contract', () => {
       expect(el.hasAttribute('aria-live')).toBe(false);
     });
   });
+
+  describe('tab order follows visual reading order, not scene-graph order', () => {
+    const idsInOrder = () =>
+      Array.from(
+        ((scene as any).a11yRoot as HTMLElement).querySelectorAll<HTMLElement>('[data-vecto-id]'),
+      ).map((el) => el.getAttribute('data-vecto-id'));
+
+    it('orders siblings top-to-bottom then left-to-right regardless of add order', () => {
+      // Added out of visual order: bottom-right first, then top-right, top-left.
+      const br = new TestInteractiveEntity('bottom-right');
+      br.x = 200;
+      br.y = 200;
+      const tr = new TestInteractiveEntity('top-right');
+      tr.x = 200;
+      tr.y = 0;
+      const tl = new TestInteractiveEntity('top-left');
+      tl.x = 0;
+      tl.y = 0;
+      scene.add(br);
+      scene.add(tr);
+      scene.add(tl);
+
+      tick();
+
+      // Reading order (LTR): (0,0) → (200,0) → (200,200).
+      expect(idsInOrder()).toEqual(['top-left', 'top-right', 'bottom-right']);
+    });
+
+    it('reverses the inline order within a row under readingDirection="rtl"', () => {
+      scene.readingDirection = 'rtl';
+      const left = new TestInteractiveEntity('left');
+      left.x = 0;
+      left.y = 0;
+      const right = new TestInteractiveEntity('right');
+      right.x = 300;
+      right.y = 0;
+      scene.add(left);
+      scene.add(right);
+
+      tick();
+
+      // Same row → RTL tabs right-to-left.
+      expect(idsInOrder()).toEqual(['right', 'left']);
+    });
+
+    it('keeps scene-graph order as a stable tiebreak at the same position', () => {
+      const a = new TestInteractiveEntity('a');
+      const b = new TestInteractiveEntity('b');
+      const c = new TestInteractiveEntity('c');
+      // All at (0,0): no visual signal to sort by → preserve add order.
+      scene.add(a);
+      scene.add(b);
+      scene.add(c);
+
+      tick();
+
+      expect(idsInOrder()).toEqual(['a', 'b', 'c']);
+    });
+  });
 });
