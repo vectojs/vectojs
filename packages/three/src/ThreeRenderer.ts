@@ -135,6 +135,69 @@ export class ThreeRenderer implements IRenderer {
     this.renderer.setPixelRatio(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
 
     this.matrix = new THREE.Matrix4().identity();
+
+    // GPU context-loss recovery + runtime DPR tracking. Both mirror the
+    // Canvas2D/WebGL point-layer paths in @vectojs/core so a Three-backed scene
+    // survives a GPU reset and a monitor/zoom DPR change instead of going
+    // permanently blank or blurry. Guarded for SSR / OffscreenCanvas.
+    this.canvas = canvas;
+    const el = canvas as unknown as {
+      addEventListener?: (...a: any[]) => void;
+    };
+    if (typeof el.addEventListener === 'function') {
+      this.contextLostListener = (event: Event) => {
+        // Without preventDefault the browser never fires `contextrestored`.
+        event.preventDefault();
+        this.contextLost = true;
+      };
+      this.contextRestoredListener = () => {
+        this.contextLost = false;
+        // Three's WebGLRenderer rebuilds its GL state lazily on the next render;
+        // re-apply DPR (a restore can land on a different display) and force a
+        // present so the freshly-restored, cleared framebuffer is repainted.
+        this.renderer.setPixelRatio(
+          typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+        );
+        this.renderer.setSize(this.width, this.height);
+        this.frameDirty = true;
+        if (!this.disposed) this.present();
+      };
+      canvas.addEventListener('webglcontextlost', this.contextLostListener as EventListener);
+      canvas.addEventListener(
+        'webglcontextrestored',
+        this.contextRestoredListener as EventListener,
+      );
+    }
+
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      this.watchDevicePixelRatio();
+    }
+  }
+
+  /**
+   * Re-apply the device pixel ratio when it changes at runtime (window dragged
+   * between displays of different density, or browser zoom). A `resolution`
+   * media query is the only event that fires for a DPR-only change; it is
+   * one-shot, so the handler re-arms a fresh query each time. Mirrors
+   * `Scene.watchDevicePixelRatio` in @vectojs/core.
+   */
+  private watchDevicePixelRatio(): void {
+    const dpr = window.devicePixelRatio || 1;
+    this.dprMediaQuery?.removeEventListener?.('change', this.dprChangeHandler as EventListener);
+    this.dprMediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    this.dprChangeHandler = () => {
+      this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+      this.renderer.setSize(this.width, this.height);
+      this.frameDirty = true;
+      if (!this.disposed) this.present();
+      this.watchDevicePixelRatio();
+    };
+    this.dprMediaQuery.addEventListener?.('change', this.dprChangeHandler as EventListener);
+  }
+
+  /** True while the GL context is lost; Scene/consumers can skip work. */
+  public isContextLost(): boolean {
+    return this.contextLost;
   }
 
   public resize(width: number, height: number): void {
@@ -730,6 +793,12 @@ export class ThreeRenderer implements IRenderer {
 
   private frameDirty = false;
   private presentScheduled = false;
+  private canvas: HTMLCanvasElement | null = null;
+  private contextLost = false;
+  private contextLostListener: ((e: Event) => void) | null = null;
+  private contextRestoredListener: (() => void) | null = null;
+  private dprMediaQuery: MediaQueryList | null = null;
+  private dprChangeHandler: (() => void) | null = null;
 
   /**
    * The Scene calls flush() around every non-batched node (it commits the
@@ -753,6 +822,8 @@ export class ThreeRenderer implements IRenderer {
   /** Render the accumulated frame once. Called by Scene at the end of each render pass. */
   present(): void {
     if (this.disposed) return;
+    // Drawing against a lost GL context throws / no-ops; wait for restore.
+    if (this.contextLost) return;
     this.frameDirty = false;
     this.renderer.render(this.scene, this.camera);
   }
@@ -785,6 +856,27 @@ export class ThreeRenderer implements IRenderer {
     this.alphaStack.length = 0;
     this.scissorStack.length = 0;
     this.renderer.setScissorTest(false);
+    // Detach the context-loss + DPR listeners so a disposed renderer can't be
+    // resurrected by a late event and leak its GL context.
+    if (this.canvas) {
+      if (this.contextLostListener) {
+        this.canvas.removeEventListener(
+          'webglcontextlost',
+          this.contextLostListener as EventListener,
+        );
+      }
+      if (this.contextRestoredListener) {
+        this.canvas.removeEventListener(
+          'webglcontextrestored',
+          this.contextRestoredListener as EventListener,
+        );
+      }
+    }
+    this.contextLostListener = null;
+    this.contextRestoredListener = null;
+    this.dprMediaQuery?.removeEventListener?.('change', this.dprChangeHandler as EventListener);
+    this.dprMediaQuery = null;
+    this.dprChangeHandler = null;
     // The WebGLRenderer holds the actual GL context — release it.
     this.renderer.dispose();
   }

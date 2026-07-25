@@ -401,4 +401,84 @@ describe('ThreeRenderer', () => {
     expect(materialDispose).toHaveBeenCalledOnce();
     expect(renderer.renderer.dispose).toHaveBeenCalledOnce();
   });
+
+  describe('GPU context-loss recovery', () => {
+    it('preventDefaults webglcontextlost and reports the lost state', () => {
+      const event = new Event('webglcontextlost', { cancelable: true });
+      canvas.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(renderer.isContextLost()).toBe(true);
+    });
+
+    it('skips present() while the context is lost, resumes after restore', () => {
+      const render = renderer.renderer.render as ReturnType<typeof vi.fn>;
+
+      canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+      render.mockClear();
+      renderer.present();
+      expect(render).not.toHaveBeenCalled();
+
+      canvas.dispatchEvent(new Event('webglcontextrestored'));
+      expect(renderer.isContextLost()).toBe(false);
+      // Restore forces a present, and further presents work again.
+      render.mockClear();
+      renderer.present();
+      expect(render).toHaveBeenCalled();
+    });
+
+    it('re-applies pixel ratio + size on context restore', () => {
+      const setPixelRatio = renderer.renderer.setPixelRatio as ReturnType<typeof vi.fn>;
+      setPixelRatio.mockClear();
+
+      canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+      canvas.dispatchEvent(new Event('webglcontextrestored'));
+
+      expect(setPixelRatio).toHaveBeenCalled();
+    });
+
+    it('detaches context listeners on dispose (no resurrection)', () => {
+      renderer.dispose();
+      const event = new Event('webglcontextlost', { cancelable: true });
+      canvas.dispatchEvent(event);
+      // Listener removed → default not prevented, state untouched.
+      expect(event.defaultPrevented).toBe(false);
+      expect(renderer.isContextLost()).toBe(false);
+    });
+  });
+
+  describe('runtime devicePixelRatio change', () => {
+    it('arms a resolution query and re-applies pixel ratio when DPR changes', () => {
+      // jsdom has no matchMedia; install a controllable one, then build a fresh
+      // renderer so its constructor arms the DPR watcher.
+      const originalMatchMedia = (window as any).matchMedia;
+      const lists: Array<{ handler: () => void }> = [];
+      (window as any).matchMedia = (media: string) => ({
+        media,
+        matches: false,
+        addEventListener: (_t: string, h: () => void) => lists.push({ handler: h }),
+        removeEventListener: (_t: string, h: () => void) => {
+          const i = lists.findIndex((l) => l.handler === h);
+          if (i >= 0) lists.splice(i, 1);
+        },
+      });
+      try {
+        const dprCanvas = document.createElement('canvas');
+        const dprRenderer = new ThreeRenderer(dprCanvas);
+        expect((dprRenderer as any).dprMediaQuery).toBeTruthy();
+
+        const setPixelRatio = dprRenderer.renderer.setPixelRatio as ReturnType<typeof vi.fn>;
+        (window as any).devicePixelRatio = 2;
+        setPixelRatio.mockClear();
+        // Fire the armed change handler (a real DPR change).
+        for (const l of lists.slice()) l.handler();
+
+        expect(setPixelRatio).toHaveBeenCalledWith(2);
+        dprRenderer.dispose();
+      } finally {
+        (window as any).matchMedia = originalMatchMedia;
+        (window as any).devicePixelRatio = 1;
+      }
+    });
+  });
 });
