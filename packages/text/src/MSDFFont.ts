@@ -117,6 +117,34 @@ function kernKey(a: number, b: number): number {
 }
 
 /**
+ * Whether `code` is a nonspacing combining mark (Unicode general category Mn) —
+ * a diacritic that must stack over its base glyph and advance the pen by ZERO.
+ * MSDF layout has no GPOS mark attachment, so the best it can do is not advance
+ * (the mark then paints at the base glyph's origin instead of beside it); some
+ * atlases nonetheless report a nonzero advance for these, which would render
+ * `é` (e + U+0301) as two side-by-side glyphs.
+ *
+ * Kept as an explicit range list rather than a `\p{Mn}` regex so it stays cheap
+ * in the per-glyph loop, and mirrors the combining ranges `@vectojs/layout`'s
+ * `isComplexScript` already recognizes (this package is a leaf — it must not
+ * depend on layout).
+ */
+function isNonspacingMark(code: number): boolean {
+  return (
+    (code >= 0x0300 && code <= 0x036f) || // combining diacritical marks
+    (code >= 0x0483 && code <= 0x0489) || // combining Cyrillic
+    (code >= 0x0591 && code <= 0x05bd) || // Hebrew points
+    (code >= 0x0610 && code <= 0x061a) || // Arabic marks
+    (code >= 0x064b && code <= 0x065f) || // Arabic vowel marks
+    (code >= 0x0e31 && code <= 0x0e3a) || // Thai vowels/tones
+    (code >= 0x1ab0 && code <= 0x1aff) || // combining diacritical marks extended
+    (code >= 0x1dc0 && code <= 0x1dff) || // combining diacritical marks supplement
+    (code >= 0x20d0 && code <= 0x20f0) || // combining marks for symbols
+    (code >= 0xfe20 && code <= 0xfe2f) // combining half marks
+  );
+}
+
+/**
  * A loaded MSDF font. Construct from parsed {@link MSDFFontData}, or use
  * {@link MSDFFont.parse} to read the JSON string straight from `msdf-atlas-gen`.
  */
@@ -126,12 +154,19 @@ export class MSDFFont {
   readonly data: MSDFFontData;
   private readonly byCode = new Map<number, MSDFGlyphDef>();
   private readonly kern = new Map<number, number>();
+  /**
+   * Advance (em) used for a codepoint the atlas has no glyph for, so missing
+   * glyphs leave a gap instead of collapsing the rest of the line. Prefers the
+   * font's own space advance, then `.notdef`, then a 0.5em default.
+   */
+  private readonly missingAdvance: number;
 
   constructor(data: MSDFFontData) {
     this.id = `font-${MSDFFont.idCounter++}`;
     this.data = data;
     for (const g of data.glyphs) this.byCode.set(g.unicode, g);
     for (const k of data.kerning ?? []) this.kern.set(kernKey(k.unicode1, k.unicode2), k.advance);
+    this.missingAdvance = this.byCode.get(0x20)?.advance ?? this.byCode.get(0)?.advance ?? 0.5;
   }
 
   /** Parse the `msdf-atlas-gen` JSON (string or already-parsed object). */
@@ -185,8 +220,16 @@ export class MSDFFont {
       const code = char.codePointAt(0)!;
       const def = this.byCode.get(code);
       if (!def) {
+        // No glyph in the atlas (e.g. CJK in a Latin-only font). Skipping the
+        // advance entirely would pull every following glyph left and under-report
+        // `width`, silently corrupting the layout; advance by a sensible
+        // substitute instead so the rest of the line stays in place. A
+        // nonspacing mark still advances zero — it never occupies width.
+        if (!isNonspacingMark(code)) {
+          penX += this.missingAdvance * fontSizePx + letterSpacing;
+        }
         prevCode = -1;
-        continue; // no glyph: don't advance (unknown width)
+        continue;
       }
       if (prevCode >= 0) {
         const k = this.kern.get(kernKey(prevCode, code));
@@ -211,7 +254,12 @@ export class MSDFFont {
           v1,
         });
       }
-      penX += def.advance * fontSizePx + letterSpacing;
+      // A nonspacing mark must not move the pen (it stacks on the base glyph),
+      // even if the atlas reports an advance for it — otherwise `é` (e + U+0301)
+      // lays out as two glyphs side by side. Its quad is still emitted above.
+      if (!isNonspacingMark(code)) {
+        penX += def.advance * fontSizePx + letterSpacing;
+      }
       prevCode = code;
     }
 

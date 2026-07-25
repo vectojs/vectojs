@@ -8,7 +8,14 @@ import { MSDFFont, type MSDFFontData } from '../src/MSDFFont';
  * ÷ 100 reads straight off as a UV.
  */
 const FONT: MSDFFontData = {
-  atlas: { type: 'msdf', distanceRange: 4, size: 32, width: 100, height: 100, yOrigin: 'bottom' },
+  atlas: {
+    type: 'msdf',
+    distanceRange: 4,
+    size: 32,
+    width: 100,
+    height: 100,
+    yOrigin: 'bottom',
+  },
   metrics: { emSize: 1, lineHeight: 1.25, ascender: 0.8, descender: -0.2 },
   glyphs: [
     {
@@ -88,16 +95,64 @@ describe('MSDFFont', () => {
     expect(width).toBeCloseTo(60); // widest line (line 0 advance)
   });
 
-  it('skips characters with no glyph in the font', () => {
+  it('emits no quad for a missing glyph but still reserves its advance', () => {
     const font = new MSDFFont(FONT);
     const { glyphs, width } = font.layout('AZ', 100); // 'Z' not in font
+    // No quad can be drawn for 'Z' (nothing in the atlas)…
     expect(glyphs).toHaveLength(1);
-    expect(width).toBeCloseTo(60); // only A advanced
+    // …but the pen must still move, or every following glyph shifts left and
+    // `width` under-reports. Falls back to the font's space advance (0.25em).
+    expect(width).toBeCloseTo(85); // A (0.6) + missing (0.25) = 0.85em
+  });
+
+  it('keeps following glyphs in place across a missing glyph', () => {
+    const font = new MSDFFont(FONT);
+    const withMissing = font.layout('AZB', 100).glyphs;
+    // 'A' then 'B' are drawn; 'B' sits after A's advance + the missing advance
+    // (no kerning: the missing glyph breaks the A→B pair).
+    expect(withMissing.map((g) => g.char)).toEqual(['A', 'B']);
+    expect(withMissing[1].x).toBeCloseTo(0.6 * 100 + 0.25 * 100 + 0.1 * 100);
+  });
+
+  it('gives a nonspacing combining mark zero advance so it stacks on its base', () => {
+    // U+0301 COMBINING ACUTE ACCENT, present in the atlas but (as some atlases
+    // do) reporting a full advance — it must not move the pen.
+    const withMark: MSDFFontData = {
+      ...FONT,
+      glyphs: [
+        ...FONT.glyphs,
+        {
+          unicode: 0x0301,
+          advance: 0.4,
+          planeBounds: { left: 0.1, bottom: 0.5, right: 0.3, top: 0.8 },
+          atlasBounds: { left: 10, bottom: 50, right: 30, top: 80 },
+        },
+      ],
+    };
+    const font = new MSDFFont(withMark);
+    const { glyphs, width } = font.layout('A\u0301B', 100);
+    // All three quads exist (the mark is drawn)…
+    expect(glyphs.map((g) => g.char)).toEqual(['A', '\u0301', 'B']);
+    // …but the mark advanced 0, so 'B' sits right after 'A' (kerning applies,
+    // since the mark does not reset the kern pair's left side in the atlas —
+    // width is A(0.6) + B(0.5) with no contribution from the mark.
+    expect(width).toBeCloseTo(0.6 * 100 + 0.5 * 100);
+  });
+
+  it('reserves no advance for a missing nonspacing mark', () => {
+    const font = new MSDFFont(FONT); // U+0301 absent here
+    // A missing combining mark is still zero-width — it must NOT take the
+    // missing-glyph fallback advance.
+    expect(font.layout('A\u0301', 100).width).toBeCloseTo(60);
   });
 
   it('honors a custom origin and letter spacing', () => {
     const font = new MSDFFont(FONT);
-    const { glyphs } = font.layout('AB', 100, { x: 5, y: 0, letterSpacing: 10 });
+    const { glyphs } = font.layout('AB', 100, {
+      x: 5,
+      y: 0,
+      letterSpacing: 10,
+    });
     expect(glyphs[0].x).toBeCloseTo(5); // first glyph at origin x
     // pen after A = 5 + 0.6*100 + kern(−5) + letterSpacing(10) = 5 + 60 − 5 + 10 = 70
     expect(glyphs[1].x).toBeCloseTo(70 + 10); // B.left = pen + 0.1*100

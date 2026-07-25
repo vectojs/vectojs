@@ -216,6 +216,36 @@ export function computeLineSegments(
  * combining, Indic/SE-Asian, or emoji-sequence-forming (ZWJ, variation
  * selectors, skin-tone modifiers) falls through to the correct full shaper.
  */
+/**
+ * Split `text` into paragraphs on any line ending (`\r\n`, `\n`, or a lone
+ * `\r`), reporting for each how many characters of the ORIGINAL string it
+ * consumed (its own length plus its separator's).
+ *
+ * Splitting on `'\n'` alone leaves a CRLF's `\r` at the end of the paragraph,
+ * where it gets shaped and laid out as a real glyph — a visible tofu box in most
+ * fonts, which also inflates the line width and shifts selection. Line endings
+ * must never reach the glyph loop. But source offsets (`sourceIndex`, and the
+ * per-character style lookup on the rich path) index the ORIGINAL text, so the
+ * separator's true length has to be carried through instead of assumed to be 1.
+ */
+function splitParagraphs(text: string): Array<{ text: string; consumed: number }> {
+  const out: Array<{ text: string; consumed: number }> = [];
+  const re = /\r\n|[\r\n]/g;
+  let start = 0;
+  let m: RegExpExecArray | null = re.exec(text);
+  while (m !== null) {
+    out.push({
+      text: text.slice(start, m.index),
+      consumed: m.index - start + m[0].length,
+    });
+    start = re.lastIndex;
+    m = re.exec(text);
+  }
+  // Trailing segment (nothing after it to consume).
+  out.push({ text: text.slice(start), consumed: text.length - start });
+  return out;
+}
+
 export function isComplexScript(text: string): boolean {
   for (const ch of text) {
     const c = ch.codePointAt(0)!;
@@ -465,10 +495,12 @@ export class LayoutEngine {
     let offset = 0;
     let fallbackToCanvas = false;
 
-    for (const paragraph of text.split('\n')) {
+    // Any line ending (CRLF / LF / lone CR) ends a paragraph and is excluded from
+    // the text handed to the shaper; `consumed` keeps source offsets exact.
+    for (const { text: paragraph, consumed } of splitParagraphs(text)) {
       if (paragraph.length === 0) {
         paragraphs.push({ words: [], isEmpty: true });
-        offset += 1;
+        offset += consumed;
         continue;
       }
 
@@ -477,7 +509,7 @@ export class LayoutEngine {
       if (cached) {
         paragraphs.push(cached);
         if (cached.fallbackToCanvas) fallbackToCanvas = true;
-        offset += paragraph.length + 1;
+        offset += consumed;
         continue;
       }
 
@@ -568,7 +600,7 @@ export class LayoutEngine {
       if (this.paragraphCache.size > 1000) this.paragraphCache.clear();
       this.paragraphCache.set(key, prepared);
       paragraphs.push(prepared);
-      offset += paragraph.length + 1;
+      offset += consumed;
     }
 
     return {
@@ -651,7 +683,14 @@ export class LayoutEngine {
     // words and shape only the appended suffix. Only single-paragraph,
     // context-free text qualifies (see isComplexScript) — anything else falls
     // through to the correct full shaper below, unchanged.
-    if (fullText.length > 0 && fullText.indexOf('\n') === -1 && !isComplexScript(fullText)) {
+    if (
+      fullText.length > 0 &&
+      fullText.indexOf('\n') === -1 &&
+      // A lone '\r' (classic-Mac ending) is a line break too, and must not be
+      // shaped as a glyph — let the paragraph path below handle it.
+      fullText.indexOf('\r') === -1 &&
+      !isComplexScript(fullText)
+    ) {
       const cache = this.streamShapeCache;
       // ── Streaming hot path: strict extension of the cached paragraph ──
       // No memo key is built here (that alone is O(length) string work per
@@ -767,10 +806,13 @@ export class LayoutEngine {
     let offset = 0;
     let fallbackToCanvas = false;
 
-    for (const paragraph of fullText.split('\n')) {
+    // Line endings (CRLF / LF / lone CR) never reach the shaper; `consumed` keeps
+    // `offset` aligned to the ORIGINAL text, which both `sourceIndex` and the
+    // per-character style lookup below index into.
+    for (const { text: paragraph, consumed } of splitParagraphs(fullText)) {
       if (paragraph.length === 0) {
         paragraphs.push({ words: [], isEmpty: true });
-        offset += 1; // the consumed '\n'
+        offset += consumed;
         continue;
       }
 
@@ -779,7 +821,7 @@ export class LayoutEngine {
       if (cached) {
         paragraphs.push(cached);
         if (cached.fallbackToCanvas) fallbackToCanvas = true;
-        offset += paragraph.length + 1;
+        offset += consumed;
         continue;
       }
 
@@ -873,7 +915,7 @@ export class LayoutEngine {
       if (this.richParagraphCache.size > 1000) this.richParagraphCache.clear();
       this.richParagraphCache.set(key, prepared);
       paragraphs.push(prepared);
-      offset += paragraph.length + 1; // + the consumed '\n'
+      offset += consumed; // paragraph + the '\r' (if any) + the consumed '\n'
     }
 
     return {
@@ -1074,13 +1116,31 @@ export class LayoutEngine {
         if (justifyTo !== undefined && runs.length === 1) {
           let lastContent = run.length - 1;
           while (lastContent >= 0 && run[lastContent].char.trim() === '') lastContent--;
-          if (lastContent > 0) {
+          // Leading whitespace in VISUAL order. For an RTL line the logical
+          // trailing space is reset to the base level by L1 and lands here, at
+          // the visual left; leaving it in place would push the content a
+          // space-width right of the wrap edge's mirror (the line would start at
+          // x = x0 + spaceWidth instead of x0). Collapse it so justified content
+          // spans the full measure, exactly as the non-justified RTL path does
+          // via its whole-line flush-right shift.
+          let firstContent = 0;
+          while (firstContent < run.length && run[firstContent].char.trim() === '') {
+            firstContent++;
+          }
+          if (firstContent > 0 && firstContent <= lastContent) {
+            const collapse = run[firstContent].x - runStartX;
+            if (collapse > 0) {
+              for (let k = 0; k < firstContent; k++) run[k].width = 0;
+              for (let k = 0; k <= lastContent; k++) run[k].x -= collapse;
+            }
+          }
+          if (lastContent > firstContent) {
             const contentEnd = run[lastContent].x + run[lastContent].width;
             const slack = justifyTo - contentEnd;
             // Guard against grotesque stretching on very short lines.
             if (slack > 0 && slack <= (justifyTo - runStartX) * 0.5) {
               const spaceIdx: number[] = [];
-              for (let k = 1; k < lastContent; k++) {
+              for (let k = firstContent + 1; k < lastContent; k++) {
                 if (run[k].char.trim() === '') spaceIdx.push(k);
               }
               if (spaceIdx.length > 0) {
@@ -1088,7 +1148,7 @@ export class LayoutEngine {
                 const extra = slack / spaceIdx.length;
                 let shift = 0;
                 let nextSpace = 0;
-                for (let k = 0; k <= lastContent; k++) {
+                for (let k = firstContent; k <= lastContent; k++) {
                   run[k].x += shift;
                   if (nextSpace < spaceIdx.length && k === spaceIdx[nextSpace]) {
                     run[k].width += extra;
@@ -1098,8 +1158,11 @@ export class LayoutEngine {
                 }
               } else {
                 // Space-less (CJK) line: distribute between every glyph.
-                const extra = slack / lastContent;
-                for (let k = 1; k <= lastContent; k++) run[k].x += extra * k;
+                const span = lastContent - firstContent;
+                const extra = slack / span;
+                for (let k = firstContent + 1; k <= lastContent; k++) {
+                  run[k].x += extra * (k - firstContent);
+                }
               }
               if (justifyTo > maxLineWidth) maxLineWidth = justifyTo;
             }
