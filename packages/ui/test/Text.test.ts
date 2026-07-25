@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { IRenderer } from '@vectojs/core';
+import { BidiResolver } from '@vectojs/text';
 import { Text } from '../src/Text';
 
 /** Records every fillText call (Text draws one call per visual line). */
@@ -194,5 +195,52 @@ describe('Text bidi (RTL) selection projection', () => {
       expect(cp).toBeLessThanOrEqual(0x06ff);
     }
     expect(line0.text).toBe(src);
+  });
+
+  // The projection keeps a single logical string (browser does its own bidi for
+  // caret mapping); BidiResolver.logicalToVisualRuns is the engine-authoritative
+  // source→visual mapping that lets a caller compute exact selection rectangles
+  // for a logical sub-range without depending on the browser's reorder agreeing.
+  describe('source↔visual mapping for sub-range selection rectangles', () => {
+    const ALEF = '\u05D0';
+    const BET = '\u05D1';
+    const GIMEL = '\u05D2';
+
+    it('maps a logical sub-range of an RTL line to its mirrored visual columns', () => {
+      // "אבג" (RTL): visual order is reversed → col0=ג(2) col1=ב(1) col2=א(0).
+      const src = ALEF + BET + GIMEL;
+      // Select the first two LOGICAL chars (אב); visually they occupy the two
+      // RIGHTMOST columns [1,3).
+      expect(BidiResolver.logicalToVisualRuns(src, 0, 2)).toEqual([
+        { visualStart: 1, visualEnd: 3 },
+      ]);
+    });
+
+    it('splits into disjoint visual rects when the range leaves a visual gap', () => {
+      // Arabic "مرحبا 42" — the Latin digits "42" flow LTR (visual columns 0,1)
+      // inside the RTL line. Selecting the whole line EXCEPT the final digit
+      // excludes logical char 7, which sits at visual column 1 — visually
+      // between the two digits — so the selection becomes discontiguous and must
+      // paint two rectangles.
+      const src = '\u0645\u0631\u062D\u0628\u0627 42';
+      const runs = BidiResolver.logicalToVisualRuns(src, 0, src.length - 1);
+      expect(runs.length).toBeGreaterThan(1);
+      // The runs cover exactly the visual columns holding those logical indices.
+      const idx = BidiResolver.reorderIndices(src);
+      const want = idx
+        .map((l, v) => ({ l, v }))
+        .filter(({ l }) => l >= 0 && l < src.length - 1)
+        .map(({ v }) => v)
+        .sort((a, b) => a - b);
+      const got: number[] = [];
+      for (const r of runs) for (let v = r.visualStart; v < r.visualEnd; v++) got.push(v);
+      expect(got.sort((a, b) => a - b)).toEqual(want);
+    });
+
+    it('is a plain contiguous run for an LTR line (no mirroring)', () => {
+      expect(BidiResolver.logicalToVisualRuns('hello', 1, 4)).toEqual([
+        { visualStart: 1, visualEnd: 4 },
+      ]);
+    });
   });
 });
