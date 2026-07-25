@@ -152,5 +152,32 @@ describe('Table', () => {
       t.emit('wheel', { deltaY: 500, preventDefault() {} });
       expect(t.hasPendingAnimations()).toBe(true);
     });
+
+    it('scrolls the body on a touch/pointer drag (drag up scrolls down)', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const t = makeTable(400);
+      scene.add(t);
+      expect(new Set(mounted(t)).has(0)).toBe(true);
+
+      // Finger presses, then drags UP 300px → content scrolls down.
+      t.emit('pointerdown', { localY: 350 });
+      t.emit('pointermove', { localY: 50 });
+      t.emit('pointerup', { localY: 50 });
+      for (let i = 0; i < 300; i++) t.update(16, i * 16);
+
+      expect((t as any)._targetY).toBeGreaterThan(0);
+      const after = mounted(t);
+      expect(after.has(0)).toBe(false);
+    });
+
+    it('ignores pointermove drag after pointerup (drag released)', () => {
+      const t = makeTable(400);
+      t.emit('pointerdown', { localY: 300 });
+      t.emit('pointerup', { localY: 300 });
+      const parked = (t as any)._targetY;
+      t.emit('pointermove', { localY: 0 }); // no active drag → ignored
+      expect((t as any)._targetY).toBe(parked);
+    });
   });
 });

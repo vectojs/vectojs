@@ -279,14 +279,17 @@ describe('UI 0.1.1 Components', () => {
         onSelect,
       });
 
-      // Simulate clicking on the first item (Root A) to expand it
-      // tree pointerdown checks localY / rowHeight
+      // Simulate tapping the first item (Root A) to expand it. A tap is a
+      // pointerdown+pointerup at the same spot (toggle fires on pointerup so a
+      // touch drag-scroll doesn't accidentally toggle).
       tree.emit('pointerdown', { localY: 10 });
+      tree.emit('pointerup', { localY: 10 });
       // Tree resolves node 1 is clicked. It has children, so it expands.
 
-      // Simulate clicking on Root B (Lazy) which is index 1 before expansion,
+      // Simulate tapping Root B (Lazy) which is index 1 before expansion,
       // but after expansion index 1 is Child A1, and Root B is index 2.
       tree.emit('pointerdown', { localY: 2 * 28 + 10 }); // index 2 (Root B)
+      tree.emit('pointerup', { localY: 2 * 28 + 10 });
 
       // Give the lazy loading microtask a chance to complete
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -311,9 +314,11 @@ describe('UI 0.1.1 Components', () => {
       ];
       const tree = new TreeView({ nodes, width: 200, height: 400 });
 
-      // Expand both lazy nodes before either resolves.
+      // Expand both lazy nodes before either resolves (tap = down+up).
       tree.emit('pointerdown', { localY: 10 }); // row 0: A
+      tree.emit('pointerup', { localY: 10 });
       tree.emit('pointerdown', { localY: 28 + 10 }); // row 1: B
+      tree.emit('pointerup', { localY: 28 + 10 });
       await Promise.resolve(); // let both `_toggle` calls reach their `await`
 
       const rowsAfterBothPending = (tree as any)._rows as Array<{
@@ -342,6 +347,61 @@ describe('UI 0.1.1 Components', () => {
         loading: boolean;
       }>;
       expect(rowsAfterBResolves.find((r) => r.node.id === 'b')?.loading).toBe(false);
+    });
+
+    it('drag-scrolls on touch and does not toggle the row it started on', () => {
+      const onSelect = vi.fn();
+      // 50 flat rows, tall enough to overflow the 400px viewport.
+      const nodes = Array.from({ length: 50 }, (_, i) => ({
+        id: `n${i}`,
+        label: `Node ${i}`,
+      }));
+      const tree = new TreeView({
+        nodes,
+        width: 200,
+        height: 400,
+        rowHeight: 28,
+        onSelect,
+      });
+      const expandedBefore = (tree as any)._rows.length;
+
+      // Press on row 0 and drag UP 200px → scrolls down, no toggle.
+      tree.emit('pointerdown', { localY: 10 });
+      tree.emit('pointermove', { localY: 120 });
+      tree.emit('pointermove', { localY: 10 - 200 + 120 }); // net −200 from down
+      tree.emit('pointerup', { localY: 10 - 200 + 120 });
+      for (let i = 0; i < 300; i++) tree.update(16, i * 16);
+
+      expect((tree as any)._targetY).toBeGreaterThan(0); // scrolled
+      // Flat nodes have no children, so a toggle wouldn't change row count, but
+      // onSelect must NOT fire for a drag.
+      expect(onSelect).not.toHaveBeenCalled();
+      expect((tree as any)._rows.length).toBe(expandedBefore);
+    });
+
+    it('treats a tap (down+up, no movement) as a toggle, not a scroll', () => {
+      const nodes = [
+        {
+          id: 'root',
+          label: 'Root',
+          children: [{ id: 'child', label: 'Child' }],
+        },
+      ];
+      const tree = new TreeView({
+        nodes,
+        width: 200,
+        height: 400,
+        rowHeight: 28,
+      });
+      expect((tree as any)._rows.length).toBe(1); // collapsed
+
+      // Tap row 0 → expands (toggle fires on pointerup).
+      tree.emit('pointerdown', { localY: 10 });
+      tree.emit('pointerup', { localY: 10 });
+
+      expect((tree as any)._rows.length).toBe(2); // Root + Child
+      // Scroll target untouched by a tap.
+      expect((tree as any)._targetY).toBe(0);
     });
   });
 
