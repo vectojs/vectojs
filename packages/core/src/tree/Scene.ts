@@ -2319,6 +2319,32 @@ export class Scene {
       this.syncOptionalAttribute(el, 'aria-activedescendant', attrs.activedescendant);
       this.syncOptionalAttribute(el, 'aria-valuemin', attrs.valuemin);
       this.syncOptionalAttribute(el, 'aria-valuemax', attrs.valuemax);
+      // Live regions (streamed chat / toast / async validation) + label/describe
+      // relationships and field validation state. WCAG 4.1.3 / 3.3.
+      this.syncOptionalAttribute(el, 'aria-live', attrs.live);
+      this.syncOptionalAttribute(
+        el,
+        'aria-atomic',
+        attrs.atomic === undefined ? undefined : String(attrs.atomic),
+      );
+      this.syncOptionalAttribute(el, 'aria-relevant', attrs.relevant);
+      this.syncOptionalAttribute(el, 'aria-labelledby', attrs.labelledby);
+      this.syncOptionalAttribute(el, 'aria-describedby', attrs.describedby);
+      this.syncOptionalAttribute(
+        el,
+        'aria-required',
+        attrs.required === undefined ? undefined : String(attrs.required),
+      );
+      this.syncOptionalAttribute(
+        el,
+        'aria-invalid',
+        attrs.invalid === undefined ? undefined : String(attrs.invalid),
+      );
+      this.syncOptionalAttribute(
+        el,
+        'aria-level',
+        attrs.level === undefined ? undefined : String(attrs.level),
+      );
 
       if (attrs.value !== undefined) {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {

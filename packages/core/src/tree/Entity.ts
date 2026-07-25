@@ -229,6 +229,27 @@ export interface A11yAttributes {
   activedescendant?: string;
   valuemin?: string;
   valuemax?: string;
+  /**
+   * ARIA live-region politeness (`aria-live`). Set on the container whose text
+   * changes as content streams in (chat message, toast, async validation
+   * summary) so a screen reader announces updates without moving focus.
+   * `'polite'` waits for a pause; `'assertive'` interrupts. WCAG 4.1.3.
+   */
+  live?: 'off' | 'polite' | 'assertive';
+  /** `aria-atomic`: announce the whole region on change, not just the diff. */
+  atomic?: boolean;
+  /** `aria-relevant`: which mutation types to announce (e.g. `'additions text'`). */
+  relevant?: string;
+  /** `aria-labelledby`: id(s) of the element(s) that label this one. */
+  labelledby?: string;
+  /** `aria-describedby`: id(s) of the element(s) that describe this one. */
+  describedby?: string;
+  /** `aria-required`: the field must be filled before submit. */
+  required?: boolean;
+  /** `aria-invalid`: the field's current value fails validation. */
+  invalid?: boolean;
+  /** `aria-level`: hierarchical level (headings, tree items, etc.). */
+  level?: number;
   /** Explicit native editor typography; ignored for non-input elements. */
   textInputStyle?: TextInputStyle;
 }
