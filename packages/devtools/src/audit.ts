@@ -1,4 +1,7 @@
 import type { Bounds, Entity, Scene } from '@vectojs/core';
+// SpatialHashGrid lives in @vectojs/math but is re-exported by @vectojs/core, so
+// the overlap broad-phase needs no extra dependency.
+import { SpatialHashGrid } from '@vectojs/core';
 import { entityPath, textPreviewOf } from './inspect';
 
 export type AuditKind = 'text-overflow' | 'clip-overflow' | 'overlap' | 'viewport-overflow';
@@ -49,7 +52,12 @@ const DEFAULT_SCROLLABLE = ['ScrollView', 'VirtualList', 'TreeView', 'Tree'];
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 function roundBounds(b: Bounds): Bounds {
-  return { x: round2(b.x), y: round2(b.y), width: round2(b.width), height: round2(b.height) };
+  return {
+    x: round2(b.x),
+    y: round2(b.y),
+    width: round2(b.width),
+    height: round2(b.height),
+  };
 }
 
 /**
@@ -74,7 +82,12 @@ function worldBox(entity: Entity): Bounds {
   ];
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
-  return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(...xs) - minX,
+    height: Math.max(...ys) - minY,
+  };
 }
 
 function escapes(
@@ -163,18 +176,57 @@ export function auditTree(
     over.top > tolerance ||
     over.bottom > tolerance;
 
-  // overlap: pairwise among sized, visible siblings — parent-child
-  // containment is normal, cross-branch stacking belongs to the overlay.
+  // overlap: among sized, visible siblings — parent-child containment is normal,
+  // cross-branch stacking belongs to the overlay.
+  //
+  // Broad-phased through a SpatialHashGrid instead of the all-pairs double loop
+  // this used to run: a container with k sized children cost O(k²) intersection
+  // tests AND O(k²) `worldBox()` calls (the inner loop recomputed b's box for
+  // every a). A 500-row list or a large table made the audit quadratic in the
+  // thing you most want to audit. Each box is now computed once, and only
+  // candidates sharing a grid cell are compared — the same broad-phase the
+  // engine already uses for hit testing.
   const checkSiblingOverlaps = (kids: Entity[]): void => {
-    for (let i = 0; i < kids.length; i++) {
-      const a = kids[i];
-      if (a.opacity <= 0 || a.width <= 0 || a.height <= 0 || opts.ignore?.(a)) continue;
-      const boxA = worldBox(a);
-      for (let j = i + 1; j < kids.length; j++) {
-        const b = kids[j];
-        if (b.opacity <= 0 || b.width <= 0 || b.height <= 0 || opts.ignore?.(b)) continue;
+    // Collect the eligible siblings and their boxes once.
+    const nodes: Entity[] = [];
+    const boxes: Bounds[] = [];
+    for (const kid of kids) {
+      if (kid.opacity <= 0 || kid.width <= 0 || kid.height <= 0 || opts.ignore?.(kid)) continue;
+      nodes.push(kid);
+      boxes.push(worldBox(kid));
+    }
+    if (nodes.length < 2) return;
+
+    // Cell size ≈ the median box extent, so a typical box touches only a few
+    // cells (too small ⇒ many cells per box; too large ⇒ back to all-pairs).
+    const extents = boxes.map((b) => Math.max(b.width, b.height)).sort((p, q) => p - q);
+    const cellSize = Math.max(1, extents[extents.length >> 1]!);
+
+    const grid = new SpatialHashGrid(cellSize);
+    // Grid ids are strings; entity ids may repeat across the tree, so key by the
+    // local array index and map back.
+    for (let i = 0; i < nodes.length; i++) {
+      const b = boxes[i]!;
+      grid.insert(String(i), b.x, b.y, b.width, b.height);
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i]!;
+      const boxA = boxes[i]!;
+      // Each unordered pair is reported once (j > i). Sorted so findings come out
+      // in the same order as the previous all-pairs walk — a Set's iteration
+      // order is insertion-dependent, and callers/snapshots read this list.
+      const partners: number[] = [];
+      for (const key of grid.query(boxA.x, boxA.y, boxA.width, boxA.height)) {
+        const j = Number(key);
+        if (j > i) partners.push(j);
+      }
+      partners.sort((p, q) => p - q);
+      for (const j of partners) {
+        const b = nodes[j]!;
         if (opts.ignoreOverlap?.(a, b)) continue;
-        const inter = intersect(boxA, worldBox(b));
+        const boxB = boxes[j]!;
+        const inter = intersect(boxA, boxB);
         if (inter && inter.width > tolerance && inter.height > tolerance) {
           findings.push({
             kind: 'overlap',
@@ -183,7 +235,7 @@ export function auditTree(
             worldBounds: roundBounds(boxA),
             otherId: b.id,
             otherPath: entityPath(b),
-            otherBounds: roundBounds(worldBox(b)),
+            otherBounds: roundBounds(boxB),
             intersection: roundBounds(inter),
             message: `${a.constructor.name} overlaps sibling ${b.constructor.name} by ${round2(inter.width)}×${round2(inter.height)}px`,
           });
@@ -263,7 +315,12 @@ export function auditTree(
  * findings — an empty array is the "audit clean" signal for CI gates.
  */
 export function auditScene(scene: Scene, opts: AuditOptions = {}): AuditFinding[] {
-  const sceneBounds: Bounds = { x: 0, y: 0, width: scene.width, height: scene.height };
+  const sceneBounds: Bounds = {
+    x: 0,
+    y: 0,
+    width: scene.width,
+    height: scene.height,
+  };
   const findings = auditTree(scene.rootEntity, sceneBounds, opts);
   if (opts.includeOverlay) {
     findings.push(...auditTree(scene.overlayRootEntity, sceneBounds, opts));
