@@ -87,13 +87,25 @@ export class Button extends UIComponent {
   }
 
   public render(r: IRenderer): void {
+    // Under a forced-colors mode (Windows High Contrast) the canvas is exempt
+    // from the browser's color remapping, so draw with CSS system colors: a
+    // `ButtonFace` fill, `ButtonText` label + border, and a `Highlight` focus
+    // ring. Otherwise use the themed palette.
+    const forced = this.scene?.forcedColors ?? false;
+    const bg = forced ? 'ButtonFace' : this.hovered ? this.hoverBg : this.bg;
+    const border = forced ? 'ButtonText' : null;
+    const focusColor = forced ? 'Highlight' : '#00f0ff';
+    const textColor = forced ? 'ButtonText' : this.color;
+
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, this.radius);
-    r.fill(this.hovered ? this.hoverBg : this.bg);
+    r.fill(bg);
     if (this.focused) {
-      r.stroke('#00f0ff', 2);
+      r.stroke(focusColor, 2);
+    } else if (border) {
+      r.stroke(border, 1);
     }
     const textX = (this.width - this.textWidth) / 2;
-    r.fillText(this.label, textX, this.height * 0.66, this.font, this.color);
+    r.fillText(this.label, textX, this.height * 0.66, this.font, textColor);
   }
 }

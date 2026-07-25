@@ -739,10 +739,28 @@ export class Scene {
   private _readingDirection: 'ltr' | 'rtl' = 'ltr';
   /** Cached media-query list; `.matches` is read live each frame. */
   private reducedMotionQuery: MediaQueryList | null = null;
+  /** Cached `(forced-colors: active)` query (Windows High Contrast etc.). A
+   *  canvas gets NO automatic forced-colors treatment from the browser (it's
+   *  opaque pixels), so components must read {@link forcedColors} and repaint
+   *  with system colors themselves; a change listener repaints idle scenes. */
+  private forcedColorsQuery: MediaQueryList | null = null;
+  private forcedColorsChangeHandler: (() => void) | null = null;
 
   /** True when the OS asks for reduced motion and we respect it. Read by the animation drivers. */
   public get prefersReducedMotion(): boolean {
     return this.respectReducedMotion && !!this.reducedMotionQuery?.matches;
+  }
+
+  /**
+   * True when the OS is in a forced-colors mode (Windows High Contrast, and the
+   * `forced-colors: active` media feature generally). Canvas pixels are exempt
+   * from the browser's forced-colors remapping, so accessible components should
+   * read this and draw with CSS system colors (`CanvasText`, `Canvas`,
+   * `Highlight`, …) instead of their themed palette. Re-rendered automatically
+   * when the setting toggles.
+   */
+  public get forcedColors(): boolean {
+    return !!this.forcedColorsQuery?.matches;
   }
 
   /**
@@ -1542,6 +1560,13 @@ export class Scene {
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')
         : null;
+    // Forced-colors (High Contrast): repaint when it toggles so components can
+    // swap to system colors. Read live via the `forcedColors` getter otherwise.
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      this.forcedColorsQuery = window.matchMedia('(forced-colors: active)');
+      this.forcedColorsChangeHandler = () => this.markDirty();
+      this.forcedColorsQuery.addEventListener?.('change', this.forcedColorsChangeHandler);
+    }
     this.root = new (class RootEntity extends Entity {
       isPointInside() {
         return false;
@@ -2114,6 +2139,11 @@ export class Scene {
       this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
       this.dprMediaQuery = null;
       this.dprChangeHandler = null;
+    }
+    if (this.forcedColorsQuery && this.forcedColorsChangeHandler) {
+      this.forcedColorsQuery.removeEventListener?.('change', this.forcedColorsChangeHandler);
+      this.forcedColorsQuery = null;
+      this.forcedColorsChangeHandler = null;
     }
     if (typeof window !== 'undefined' && this.contentSelectionEndListener) {
       window.removeEventListener('mouseup', this.contentSelectionEndListener);
