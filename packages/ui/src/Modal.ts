@@ -2,14 +2,18 @@ import { UIComponent } from './UIComponent';
 import { Card } from './Card';
 import { Text } from './Text';
 import { Button } from './Button';
-import { type IRenderer, VectoJSEvent } from '@vectojs/core';
+import { type A11yAttributes, type IRenderer, VectoJSEvent } from '@vectojs/core';
 
 export class Modal extends UIComponent {
   private card: Card;
   private backdropColor: string;
+  /** Element focused before the modal opened, restored on close. */
+  private _restoreFocusEl: HTMLElement | null = null;
 
   constructor(title: string, props: any = {}) {
     super();
+    // The backdrop is the full-viewport focus-catching dialog surface.
+    this.a11yFullViewport = true;
     this.width = props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 800);
     this.height = props.height ?? (typeof window !== 'undefined' ? window.innerHeight : 600);
     this.interactive = true;
@@ -60,16 +64,39 @@ export class Modal extends UIComponent {
     // Block underlying events
     this.on('click', (e: VectoJSEvent) => e.stopPropagation());
     this.on('pointerdown', (e: VectoJSEvent) => e.stopPropagation());
+    // Esc closes the dialog (WAI-ARIA dialog pattern). The keydown reaches the
+    // modal's shadow element once it holds focus (set in onMounted).
+    this.on('keydown', (e: VectoJSEvent<KeyboardEvent>) => {
+      if (e.nativeEvent?.key === 'Escape') {
+        e.stopPropagation();
+        void this.close();
+      }
+    });
+  }
+
+  /** Expose the modal shell as a real dialog so screen readers announce it and
+   *  trap their reading context. `a11yFullViewport` makes the backdrop the
+   *  focus-catching surface. */
+  public override getA11yAttributes(): A11yAttributes {
+    return { role: 'dialog', ariaModal: 'true', tabIndex: -1 };
   }
 
   protected override onMounted(): void {
+    // Remember what had focus so we can restore it on close (WAI-ARIA dialog).
+    this._restoreFocusEl =
+      typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
     void this.card.springTo({ scaleX: 1, scaleY: 1 }, { stiffness: 180, damping: 14 });
+    // Move focus into the dialog so Esc/keyboard work and SR context enters it.
+    this.focus();
   }
 
-  /** Animate the card out, then remove the modal from its overlay layer. */
+  /** Animate the card out, then remove the modal from its overlay layer and
+   *  restore focus to whatever held it before the modal opened. */
   public async close(): Promise<void> {
     await this.card.springTo({ scaleX: 0, scaleY: 0 }, { stiffness: 220, damping: 20 });
     this.scene?.hideOverlay(this);
+    this._restoreFocusEl?.focus?.();
+    this._restoreFocusEl = null;
   }
 
   public render(r: IRenderer): void {

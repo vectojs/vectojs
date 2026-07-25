@@ -66,6 +66,19 @@ export class Button extends UIComponent {
       this.hovered = false;
       this.scene?.markDirty();
     });
+    // Drive the focus ring from real DOM focus/blur on the shadow <button>
+    // (Scene emits these when the a11y element focuses/blurs). Without this the
+    // ring in render() never appears — keyboard users get no focus indicator.
+    this.on('focus', () => {
+      if (this.focused) return;
+      this.focused = true;
+      this.scene?.markDirty();
+    });
+    this.on('blur', () => {
+      if (!this.focused) return;
+      this.focused = false;
+      this.scene?.markDirty();
+    });
     if (opts.onClick) this.on('click', opts.onClick);
   }
 

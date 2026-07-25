@@ -2574,6 +2574,7 @@ export class Scene {
         attrs.atomic === undefined ? undefined : String(attrs.atomic),
       );
       this.syncOptionalAttribute(el, 'aria-relevant', attrs.relevant);
+      this.syncOptionalAttribute(el, 'aria-modal', attrs.ariaModal);
       this.syncOptionalAttribute(el, 'aria-labelledby', attrs.labelledby);
       this.syncOptionalAttribute(el, 'aria-describedby', attrs.describedby);
       this.syncOptionalAttribute(

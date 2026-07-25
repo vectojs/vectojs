@@ -250,6 +250,9 @@ export interface A11yAttributes {
   invalid?: boolean;
   /** `aria-level`: hierarchical level (headings, tree items, etc.). */
   level?: number;
+  /** `aria-modal`: marks a `role="dialog"` as modal so assistive tech confines
+   *  reading to it. Set on a modal dialog's shell. */
+  ariaModal?: 'true' | 'false';
   /** Explicit native editor typography; ignored for non-input elements. */
   textInputStyle?: TextInputStyle;
 }
