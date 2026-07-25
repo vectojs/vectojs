@@ -91,5 +91,8 @@ benchmarks/stack-wrap/page/index.html
 # table-virtual benchmark build artifacts + results (page/ generated)
 benchmarks/table-virtual/page/index.html
 
+# a11y-order benchmark build artifacts + results (page/ generated)
+benchmarks/a11y-order/page/index.html
+
 # Git Worktree
 .worktree/
