@@ -870,10 +870,31 @@ export class Scene {
   private _structureVersion = 0;
   private _storeStructureVersion = -1;
 
+  // Cached list of ComputeParticleEntity instances in the tree, keyed by the
+  // structure version it was gathered at. Rebuilt only on a topology change.
+  private _computeEntities: ComputeParticleEntity[] = [];
+  private _computeEntitiesVersion = -1;
+
   /** Invalidate the resident WASM store layout; the next wasm-mode frame rebuilds
    *  it. Called by `Entity.add`/`remove` (topology changes only). */
   public markStructureChanged(): void {
     this._structureVersion++;
+  }
+
+  /** The tree's ComputeParticleEntity instances, cached per structure version so
+   *  a compute-free scene doesn't re-walk the whole tree every frame. */
+  private _computeEntitiesFor(version: number): ComputeParticleEntity[] {
+    if (this._computeEntitiesVersion === version) return this._computeEntities;
+    const list: ComputeParticleEntity[] = [];
+    const collect = (node: Entity) => {
+      if (node instanceof ComputeParticleEntity) list.push(node);
+      for (const child of node.children) collect(child);
+    };
+    collect(this.root);
+    for (const overlay of this.overlayRoot.children) collect(overlay);
+    this._computeEntities = list;
+    this._computeEntitiesVersion = version;
+    return list;
   }
 
   /** Which backend composes world matrices for the main render walk. */
@@ -3897,20 +3918,12 @@ export class Scene {
       this._tickBatchedDrivers(dt);
     }
 
-    // Collect all ComputeParticleEntity instances in the tree
-    const computeEntities: ComputeParticleEntity[] = [];
-    const collectComputeEntities = (node: Entity) => {
-      if (node instanceof ComputeParticleEntity) {
-        computeEntities.push(node);
-      }
-      for (const child of node.children) {
-        collectComputeEntities(child);
-      }
-    };
-    collectComputeEntities(this.root);
-    for (const overlay of this.overlayRoot.children) {
-      collectComputeEntities(overlay);
-    }
+    // Collect all ComputeParticleEntity instances in the tree. Membership only
+    // changes when the tree topology does, so the list is cached and rebuilt
+    // solely on a `_structureVersion` bump (add/remove/reparent) — otherwise a
+    // scene with zero compute entities (the overwhelmingly common case) walked
+    // the whole tree every frame just to build an empty array.
+    const computeEntities = this._computeEntitiesFor(this._structureVersion);
 
     if (computeEntities.length > 0) {
       // Particle simulation (WebGPU compute pass / CPU fallback) mutates
