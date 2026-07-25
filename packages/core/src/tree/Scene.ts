@@ -1126,6 +1126,41 @@ export class Scene {
   }
 
   /**
+   * Drop `entity` and its whole subtree from the batched-driver candidate set.
+   * Called by {@link remove}/{@link hideOverlay} on detach: without this a
+   * removed-but-still-animating entity stays pinned in the Set (a leak) and its
+   * drivers keep ticking every frame even though it is off-tree. If it is later
+   * re-added, {@link registerActiveDriverSubtree} re-registers any node that
+   * still has live drivers, so the motion resumes.
+   */
+  private unregisterActiveDriverSubtree(entity: Entity): void {
+    if (this._activeDriverEntities.size === 0) return;
+    const stack: Entity[] = [entity];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      this._activeDriverEntities.delete(node);
+      for (const child of node.children) stack.push(child);
+    }
+  }
+
+  /**
+   * Re-register every node in `entity`'s subtree that still has live property
+   * drivers. Called by {@link add}/{@link showOverlay} so re-attaching a subtree
+   * that was removed mid-animation resumes its batched drivers (they were
+   * dropped from the candidate set on removal, but the driver state still lives
+   * on each entity).
+   */
+  private registerActiveDriverSubtree(entity: Entity): void {
+    const stack: Entity[] = [entity];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      const entries = node._driverEntries();
+      if (entries && entries.size > 0) this._activeDriverEntities.add(node);
+      for (const child of node.children) stack.push(child);
+    }
+  }
+
+  /**
    * Advance every registered entity's active drivers for this frame, batching
    * whichever are batchable (`SpringDriver`; `TweenDriver` with a named
    * easing) through one WASM call each when the driver-count gate is open, and
@@ -1862,6 +1897,7 @@ export class Scene {
    */
   public add(entity: Entity): this {
     this.root.add(entity);
+    this.registerActiveDriverSubtree(entity);
     return this;
   }
 
@@ -1950,6 +1986,7 @@ export class Scene {
   public remove(entity: Entity): this {
     this.root.remove(entity);
     this.removeA11yRecursively(entity);
+    this.unregisterActiveDriverSubtree(entity);
     return this;
   }
 
@@ -1973,6 +2010,7 @@ export class Scene {
    */
   public showOverlay(overlay: Entity): void {
     this.overlayRoot.add(overlay);
+    this.registerActiveDriverSubtree(overlay);
     this.markDirty();
   }
 
@@ -1982,6 +2020,7 @@ export class Scene {
   public hideOverlay(overlay: Entity): void {
     this.overlayRoot.remove(overlay);
     this.removeA11yRecursively(overlay);
+    this.unregisterActiveDriverSubtree(overlay);
     this.markDirty();
   }
 
