@@ -5,7 +5,7 @@
 // path (real Scene + entity + render loop + AoS<->SoA transpose), not the
 // isolated kernel (covered by particle-kernel.test.ts) — per the G3 lesson, an
 // isolated kernel's correctness says nothing about the wiring around it.
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Scene, ComputeParticleEntity } from '../../src/index';
