@@ -337,6 +337,29 @@ describe('ThreeRenderer', () => {
       renderer.dispose();
       expect(mapDispose).toHaveBeenCalledOnce();
     });
+
+    it('evicts least-recently-used image textures past the cache limit', () => {
+      (renderer as any).imageTextureCacheLimit = 2;
+      const a = document.createElement('canvas');
+      const b = document.createElement('canvas');
+      const c = document.createElement('canvas');
+      const d = document.createElement('canvas');
+
+      renderer.drawImage(a, 0, 0, 8, 8);
+      const aMap = (renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      const aDispose = vi.spyOn(aMap.map!, 'dispose');
+
+      renderer.drawImage(b, 0, 0, 8, 8);
+      renderer.drawImage(a, 0, 0, 8, 8); // touch 'a' → most-recently-used
+      renderer.drawImage(c, 0, 0, 8, 8); // over cap → evicts 'b', not 'a'
+
+      expect(aDispose).not.toHaveBeenCalled();
+      expect((renderer as any).imageTextureCache.size).toBe(2);
+
+      renderer.drawImage(d, 0, 0, 8, 8); // evicts 'a' (now the oldest)
+      expect(aDispose).toHaveBeenCalledOnce();
+      expect((renderer as any).imageTextureCache.has(a)).toBe(false);
+    });
   });
 
   it('disposes active objects and renderer exactly once', () => {
