@@ -88,17 +88,7 @@ export class BidiResolver {
 
     const str = nodes.map((n) => n.char).join('');
     const levels = Uint8Array.from(nodes, (n) => n.level & 0x7f);
-    // bidi-js reorders against paragraph-shaped embedding data; synthesize it
-    // from the run's own resolved levels + the paragraph base so L1 resets to
-    // the correct direction. String indices are UTF-16 code units; the layout
-    // pipeline emits one node per code point, but every char here is BMP
-    // (control/format chars aside), so index==node position holds.
-    const embed = {
-      levels,
-      paragraphs: [{ start: 0, end: len - 1, level: baseLevel }],
-    };
-    const segments = bidi.getReorderSegments(str, embed, 0, len - 1);
-    for (const [segStart, segEnd] of segments) {
+    for (const [segStart, segEnd] of BidiResolver.reorderSegments(str, levels, baseLevel)) {
       let left = segStart;
       let right = segEnd;
       while (left < right) {
@@ -109,5 +99,35 @@ export class BidiResolver {
         right--;
       }
     }
+  }
+
+  /**
+   * The UAX #9 L2 reversal segments for one visual line: each `[start, end]` is
+   * an inclusive index range (over the run's own positions) that must be
+   * reversed to turn logical order into visual order. Exposed separately from
+   * {@link reorderVisual} so a caller holding parallel typed arrays (the zero-GC
+   * layout buffer) can apply the same permutation in place without allocating a
+   * node object per glyph.
+   *
+   * `levels` are the per-position resolved embedding levels; `baseLevel` is the
+   * paragraph base (0 = LTR, 1 = RTL). String indices are UTF-16 code units and
+   * the layout pipeline emits one entry per code point — every char here is BMP
+   * (control/format aside), so index == position holds.
+   */
+  public static reorderSegments(
+    str: string,
+    levels: Uint8Array,
+    baseLevel: number,
+  ): Array<[number, number]> {
+    const len = str.length;
+    if (len === 0) return [];
+    // bidi-js reorders against paragraph-shaped embedding data; synthesize it
+    // from the run's own resolved levels + the paragraph base so L1 resets to
+    // the correct direction.
+    const embed = {
+      levels,
+      paragraphs: [{ start: 0, end: len - 1, level: baseLevel }],
+    };
+    return bidi.getReorderSegments(str, embed, 0, len - 1);
   }
 }
