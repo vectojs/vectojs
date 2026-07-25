@@ -1,0 +1,5 @@
+---
+"@vectojs/core": patch
+---
+
+Preserve a text selection across a streaming content-projection rebuild. `Scene.syncContentProjection` replaces a content element's DOM (`replaceChildren`) whenever its projection signature changes — every appended chunk while a message streams — which previously wiped any selection the user had made, even in the unchanged prefix ("can't select text in a message still receiving tokens"). The rebuild now snapshots the selection's anchor/focus as linear character offsets within the element (via `projectionAbsoluteOffset`) and re-resolves them against the new DOM afterward (`projectionCaretAt`), so a selection in text that survives the rebuild is restored in place. It only fires when the element owns the selection and no drag is active, and it clears (rather than mis-restores) when the selected range ran into text that the update removed. The virtualization case — where the element itself is freed — remains out of scope (the browser genuinely drops the selection with the node).
