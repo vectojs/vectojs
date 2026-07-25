@@ -288,7 +288,16 @@ describe('Scene WebGPU Orchestration & lost Recovery Integration', () => {
       scene = new Scene(canvas, { disableWindowResize: true });
       const entity = new ComputeParticleEntity({ maxParticles: 1 });
       scene.add(entity);
-      canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 300, clientY: 200 }));
+      // Real pointermove events bubble; the scene now tracks the pointer on the
+      // canvas's parent container (so moves over overlay/projection children
+      // still update the position), so the event must bubble to reach it.
+      canvas.dispatchEvent(
+        new MouseEvent('pointermove', {
+          clientX: 300,
+          clientY: 200,
+          bubbles: true,
+        }),
+      );
 
       scene.render(scene.getRenderer(), 16, 0);
       await new Promise(process.nextTick);

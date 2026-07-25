@@ -1390,6 +1390,9 @@ export class Scene {
   private mouseY: number = -9999;
   private pointerMoveListener: ((e: PointerEvent) => void) | null = null;
   private pointerLeaveListener: (() => void) | null = null;
+  /** Element the pointer listeners are bound to (parent container if present,
+   *  else the canvas). Stored so `destroy()` detaches from the same element. */
+  private pointerEventTarget: HTMLElement | null = null;
   private hasWarnedZeroSize: boolean = false;
   private fontLoadHandler: (() => void) | null = null;
 
@@ -2086,15 +2089,16 @@ export class Scene {
     }
     if (
       typeof window !== 'undefined' &&
-      this.canvas &&
-      typeof this.canvas.removeEventListener === 'function'
+      this.pointerEventTarget &&
+      typeof this.pointerEventTarget.removeEventListener === 'function'
     ) {
       if (this.pointerMoveListener) {
-        this.canvas.removeEventListener('pointermove', this.pointerMoveListener);
+        this.pointerEventTarget.removeEventListener('pointermove', this.pointerMoveListener);
       }
       if (this.pointerLeaveListener) {
-        this.canvas.removeEventListener('pointerleave', this.pointerLeaveListener);
+        this.pointerEventTarget.removeEventListener('pointerleave', this.pointerLeaveListener);
       }
+      this.pointerEventTarget = null;
     }
     this.a11yRoot?.remove();
     this.focusSentinel = null;
@@ -2189,8 +2193,18 @@ export class Scene {
         this.mouseX = -9999;
         this.mouseY = -9999;
       };
-      this.canvas.addEventListener('pointermove', this.pointerMoveListener);
-      this.canvas.addEventListener('pointerleave', this.pointerLeaveListener);
+      // Bind to the parent container, not the canvas: content-projection and
+      // a11y mirror elements sit *above* the canvas with `pointer-events:auto`,
+      // so a pointermove over projected text fires on that element and never
+      // reaches a canvas-bound listener — freezing `mouseX/mouseY` (and any
+      // pointer-driven particle repulsion) while the cursor is over text. The
+      // parent wraps the canvas and both overlay roots, so moves over any layer
+      // bubble up here, and `pointerleave` on the parent fires only when the
+      // pointer truly exits the whole region (crossing between canvas and an
+      // overlay child does not). Falls back to the canvas when it has no parent.
+      this.pointerEventTarget = (this.canvas.parentElement as HTMLElement | null) ?? this.canvas;
+      this.pointerEventTarget.addEventListener('pointermove', this.pointerMoveListener);
+      this.pointerEventTarget.addEventListener('pointerleave', this.pointerLeaveListener);
     }
   }
 
