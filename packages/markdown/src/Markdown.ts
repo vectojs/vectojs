@@ -1,4 +1,5 @@
 import {
+  BidiResolver,
   Entity,
   IRenderer,
   prepareContentGrid,
@@ -1294,23 +1295,38 @@ export class Markdown extends UIComponent {
         const listStack = new Stack({ direction: 'vertical', gap: 6 });
         for (let i = 0; i < listToken.items.length; i++) {
           const item = listToken.items[i];
-          const bullet = listToken.ordered ? `${Number(listToken.start ?? 1) + i}. ` : '• ';
-          // Build spans: bullet prefix + inline-formatted item content
-          const itemSpans: StyledSpan[] = [{ text: bullet }];
+          const num = Number(listToken.start ?? 1) + i;
+          // Build the inline content spans first; the marker is placed after, on
+          // the side that matches the item's reading direction.
+          const contentSpans: StyledSpan[] = [];
           if (item.tokens && item.tokens.length > 0) {
             // List item tokens are block-level; dig into paragraph children
             for (const inner of item.tokens) {
               if (inner.type === 'text' && 'tokens' in inner && (inner as any).tokens?.length) {
-                collectSpans((inner as any).tokens, {}, t, itemSpans);
+                collectSpans((inner as any).tokens, {}, t, contentSpans);
               } else if ('tokens' in inner && (inner as any).tokens?.length) {
-                collectSpans((inner as any).tokens, {}, t, itemSpans);
+                collectSpans((inner as any).tokens, {}, t, contentSpans);
               } else if ('text' in inner) {
-                itemSpans.push({ text: decodeEntities((inner as any).text) });
+                contentSpans.push({
+                  text: decodeEntities((inner as any).text),
+                });
               }
             }
           } else {
-            itemSpans.push({ text: decodeEntities(item.text) });
+            contentSpans.push({ text: decodeEntities(item.text) });
           }
+
+          // Place the marker on the reading-start side. An RTL item must show
+          // its marker at the visual RIGHT; a leading neutral bullet would
+          // bidi-reorder to the visual LEFT. Appending the marker as a TRAILING
+          // span fixes it: `" •"` reorders to visual `"• …"`, and `" .N"` to
+          // `"N. …"` — both flush-right in reading order. LTR keeps the marker
+          // leading as before.
+          const itemIsRtl =
+            BidiResolver.getBaseLevel(contentSpans.map((s) => s.text).join('')) % 2 === 1;
+          const itemSpans: StyledSpan[] = itemIsRtl
+            ? [...contentSpans, { text: listToken.ordered ? ` .${num}` : ' \u2022' }]
+            : [{ text: listToken.ordered ? `${num}. ` : '• ' }, ...contentSpans];
           const itemRt = new RichText(itemSpans, {
             font: bodyFont,
             color: t.textColor,
