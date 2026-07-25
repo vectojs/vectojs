@@ -13,7 +13,22 @@ export class LayoutWorkerManager {
     this.worker = this.createWorker();
   }
 
-  private createWorker(): Worker {
+  /**
+   * Create the layout worker, or return `null` in an environment without the
+   * Worker/Blob/URL APIs (SSR, non-DOM). Mirrors the Markdown worker's
+   * `typeof Worker` guard so constructing an `MSDFTextEntity` server-side does
+   * not throw — layout simply stays pending until the entity is used in a real
+   * browser (`queueLayout` no-ops while `worker` is null).
+   */
+  private createWorker(): Worker | null {
+    if (
+      typeof Worker === 'undefined' ||
+      typeof Blob === 'undefined' ||
+      typeof URL === 'undefined' ||
+      typeof URL.createObjectURL !== 'function'
+    ) {
+      return null;
+    }
     const workerBlob = new Blob([WORKER_SOURCE_STRING], {
       type: 'application/javascript',
     });
@@ -41,7 +56,7 @@ export class LayoutWorkerManager {
     return worker;
   }
 
-  private ensureWorker(): Worker {
+  private ensureWorker(): Worker | null {
     if (!this.worker) this.worker = this.createWorker();
     return this.worker;
   }
@@ -128,11 +143,18 @@ export class LayoutWorkerManager {
       }
 
       this.pendingCallbacks.set(`${entityId}-${nextSeqId}`, options.callback);
+      const worker = this.ensureWorker();
+      if (!worker) {
+        // SSR / no-Worker environment: nothing to post to. Drop the pending
+        // callback so it isn't retained; layout resolves when the entity is
+        // used in a real browser (a fresh queueLayout creates the worker then).
+        this.pendingCallbacks.delete(`${entityId}-${nextSeqId}`);
+        return;
+      }
       try {
-        this.ensureWorker().postMessage(request);
+        worker.postMessage(request);
       } catch {
-        const worker = this.worker;
-        if (worker) this.handleWorkerFailure(worker);
+        if (this.worker) this.handleWorkerFailure(this.worker);
       }
     };
 

@@ -179,3 +179,29 @@ test('cancelLayoutForEntity delegates to the live singleton when one exists', as
   // Did not spawn an extra worker.
   expect(MockWorker.instances).toHaveLength(1);
 });
+
+test('SSR-safe: no Worker → getInstance + queueLayout do not throw and no-op', () => {
+  const savedWorker = globalThis.Worker;
+  // Simulate a server / non-DOM environment.
+  (globalThis as any).Worker = undefined;
+  try {
+    let manager!: LayoutWorkerManager;
+    expect(() => {
+      manager = activeManager = LayoutWorkerManager.getInstance();
+    }).not.toThrow();
+    const cb = vi.fn();
+    expect(() => {
+      manager.queueLayout('ssr', 'hi', {
+        fontId: 'f',
+        fontSize: 16,
+        maxWidth: 100,
+        maxHeight: 100,
+        callback: cb,
+      });
+    }).not.toThrow();
+    // No worker was created and the pending callback wasn't retained.
+    expect(MockWorker.instances).toHaveLength(0);
+  } finally {
+    globalThis.Worker = savedWorker;
+  }
+});
