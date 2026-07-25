@@ -580,6 +580,74 @@ async function dragStandaloneTableCell(page: Page): Promise<{
   };
 }
 
+/**
+ * Verify the per-child a11y hotspots added for `TreeView` and `ContextMenu`
+ * (#191) in a REAL browser. Two things only a real browser can settle:
+ *
+ *  1. the hotspots are actually projected with their roles + a single roving
+ *     tab stop (jsdom can confirm the attributes, not that the browser accepts
+ *     the resulting tree);
+ *  2. they do **not** steal the pointer. They carry `pointerEvents: 'none'`
+ *     precisely so the component underneath keeps its own mouse handling —
+ *     `elementFromPoint` over a row must therefore NOT land on the hotspot.
+ *     This is the same class of regression CI caught for Table cells.
+ */
+async function probeChildRoleHotspots(page: Page): Promise<{
+  treeitemRoles: number;
+  treeitemTabStops: number;
+  menuitemRoles: number;
+  menuitemTabStops: number;
+  menuitemHaspopup: number;
+  treeHotspotOwnsPointer: boolean;
+  menuHotspotOwnsPointer: boolean;
+}> {
+  const result = await page.evaluate(() => {
+    const app = (window as any).__vecto;
+    // Open the menu only for the duration of this probe: while shown it installs
+    // a full-scene interactive backdrop (outside-click catcher) that would
+    // intercept every other pointer drag in this fixture.
+    app.contextMenu.showAtPoint(880, 860);
+    app.scene.render((app.scene as any).renderer, 16, 16);
+    (app.scene as any).syncA11y((app.scene as any).root);
+
+    const root = app.scene.a11yRoot as HTMLElement;
+    const all = (sel: string) => Array.from(root.querySelectorAll<HTMLElement>(sel));
+
+    const treeitems = all('[role="treeitem"]');
+    const menuitems = all('[role="menuitem"]');
+    const tabStops = (els: HTMLElement[]) => els.filter((e) => e.tabIndex === 0).length;
+
+    /** Does elementFromPoint over the element's centre land on the hotspot? */
+    const ownsPointer = (el: HTMLElement | undefined): boolean => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit === el;
+    };
+
+    return {
+      treeitemRoles: treeitems.length,
+      treeitemTabStops: tabStops(treeitems),
+      menuitemRoles: menuitems.length,
+      menuitemTabStops: tabStops(menuitems),
+      menuitemHaspopup: menuitems.filter((e) => e.getAttribute('aria-haspopup') === 'menu').length,
+      treeHotspotOwnsPointer: ownsPointer(treeitems[0]),
+      menuHotspotOwnsPointer: ownsPointer(menuitems[0]),
+    };
+  });
+
+  // Close it again and let the projection settle, so the backdrop is gone before
+  // any later drag runs.
+  await page.evaluate(() => {
+    const app = (window as any).__vecto;
+    app.contextMenu.hide();
+    app.scene.render((app.scene as any).renderer, 16, 16);
+    (app.scene as any).syncA11y((app.scene as any).root);
+  });
+  return result;
+}
+
 async function dragMarkdownProjection(
   page: Page,
   projectedText: string,
@@ -1053,6 +1121,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     );
     const forwardBlankDrag = await dragAcrossCodeBlankRegions(page, false);
     const reverseBlankDrag = await dragAcrossCodeBlankRegions(page, true);
+    const childRoleHotspots = await probeChildRoleHotspots(page);
     const tableCellDrag = await dragStandaloneTableCell(page);
     const markdownListDrag = await dragMarkdownProjection(page, '• Item A');
     const markdownTableDrag = await dragMarkdownProjection(page, 'Alpha');
@@ -1204,6 +1273,46 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       tableCellDrag.text,
       'Alpha',
       `${browserCase.name} standalone Table cell supports native pointer selection ${JSON.stringify(tableCellDrag)}`,
+    );
+
+    // Per-child a11y hotspots (#191) in a real browser. Previously jsdom-only.
+    const hs = JSON.stringify(childRoleHotspots);
+    assert.ok(
+      childRoleHotspots.treeitemRoles === 2,
+      // Fixture tree: 'Root node' (collapsed, so its child is not a row) + 'Leaf node'.
+      `${browserCase.name} TreeView projects one role=treeitem per visible row ${hs}`,
+    );
+    assert.equal(
+      childRoleHotspots.treeitemTabStops,
+      1,
+      `${browserCase.name} TreeView exposes exactly one roving tab stop ${hs}`,
+    );
+    assert.equal(
+      childRoleHotspots.menuitemRoles,
+      3,
+      `${browserCase.name} ContextMenu projects one role=menuitem per non-separator item ${hs}`,
+    );
+    assert.equal(
+      childRoleHotspots.menuitemTabStops,
+      1,
+      `${browserCase.name} ContextMenu exposes exactly one roving tab stop ${hs}`,
+    );
+    assert.equal(
+      childRoleHotspots.menuitemHaspopup,
+      1,
+      `${browserCase.name} ContextMenu marks its submenu parent aria-haspopup ${hs}`,
+    );
+    // The hotspots must stay pointer-transparent, or they'd eat the mouse from
+    // the component that owns tap-to-toggle / drag-to-scroll underneath.
+    assert.equal(
+      childRoleHotspots.treeHotspotOwnsPointer,
+      false,
+      `${browserCase.name} treeitem hotspot does not capture the pointer ${hs}`,
+    );
+    assert.equal(
+      childRoleHotspots.menuHotspotOwnsPointer,
+      false,
+      `${browserCase.name} menuitem hotspot does not capture the pointer ${hs}`,
     );
     for (const [kind, drag, expectedText] of [
       ['list', markdownListDrag, '• Item A'],

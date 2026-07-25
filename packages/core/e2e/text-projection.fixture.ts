@@ -4,6 +4,8 @@ import { RichText } from '../../ui/src/RichText';
 import { Table } from '../../ui/src/Table';
 import { Text } from '../../ui/src/Text';
 import { TextArea } from '../../ui/src/TextArea';
+import { TreeView } from '../../ui/src/Tree';
+import { ContextMenu } from '../../ui/src/ContextMenu';
 
 const theme = {
   textColor: '#e2e8f0',
@@ -118,6 +120,34 @@ const table = new Table({
   width: 400,
   selectable: true,
 }).setPosition(600, 740);
+
+// TreeView + ContextMenu carry the per-child a11y hotspots added in #191
+// (role=treeitem / role=menuitem, roving tabindex, pointerEvents:'none' so the
+// component keeps its own mouse handling). Those were only ever verified in
+// jsdom — these exist so a real browser can confirm the hotspots are projected
+// AND that they don't steal the pointer from the component underneath.
+const tree = new TreeView({
+  nodes: [
+    {
+      id: 'root',
+      label: 'Root node',
+      children: [{ id: 'child', label: 'Child node' }],
+    },
+    { id: 'leaf', label: 'Leaf node' },
+  ],
+  width: 240,
+  height: 120,
+  rowHeight: 28,
+}).setPosition(600, 860);
+
+const contextMenu = new ContextMenu({
+  items: [
+    { label: 'Cut' },
+    { label: 'Copy' },
+    { separator: true },
+    { label: 'More', children: [{ label: 'Nested' }] },
+  ],
+});
 scene.add(text);
 scene.add(code);
 scene.add(transformedCode);
@@ -131,6 +161,13 @@ scene.add(ligature);
 scene.add(area);
 scene.add(markdown);
 scene.add(table);
+scene.add(tree);
+// The menu lives on the overlay root and projects only while shown. It is NOT
+// shown here: showing it installs a full-scene invisible backdrop (interactive,
+// sized to the whole scene) to catch the outside click, which would intercept
+// every pointer drag in this fixture and break the unrelated selection cases.
+// The e2e opens it on demand and closes it again.
+scene.overlayRoot.add(contextMenu);
 scene.start();
 
 function lineBaseline(root: HTMLElement, lineIndex: number): number {
@@ -158,6 +195,8 @@ function lineBaseline(root: HTMLElement, lineIndex: number): number {
   area,
   markdown,
   table,
+  tree,
+  contextMenu,
   lineBaseline,
 };
 (window as unknown as { __ready: boolean }).__ready = true;

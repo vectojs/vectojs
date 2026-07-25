@@ -133,4 +133,6 @@ Bun.serve({
   },
 });
 
-console.log('sweep server on http://127.0.0.1:8178');
+// Log the port actually bound (PORT env), not a hardcoded literal — a
+// mismatched log has misled more than one debugging session.
+console.log(`sweep server on http://127.0.0.1:${process.env.PORT ?? 8178}`);
