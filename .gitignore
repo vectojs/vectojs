@@ -96,3 +96,6 @@ benchmarks/a11y-order/page/index.html
 
 # Git Worktree
 .worktree/
+
+# graph-layout benchmark build artifacts + results (page/ generated)
+benchmarks/graph-layout/page/index.html
