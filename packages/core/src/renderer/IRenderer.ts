@@ -212,4 +212,19 @@ export interface IRenderer {
    * successful teardown must be a silent no-op, not throw.
    */
   dispose?(): void;
+
+  /**
+   * Whether the renderer's drawing context is currently lost (e.g. a Canvas2D
+   * `contextlost` before its `contextrestored`, or a WebGL context loss). While
+   * true the renderer's draw calls are no-ops and the owner should skip its
+   * render pass. Optional — a renderer that can't lose its context omits it.
+   */
+  isContextLost?(): boolean;
+
+  /**
+   * Register a callback invoked after a lost context is restored and
+   * re-initialized, so the owner can repaint (a restored canvas comes back
+   * cleared). Optional, paired with {@link isContextLost}.
+   */
+  onContextRestored?(cb: () => void): void;
 }

@@ -1595,6 +1595,13 @@ export class Scene {
         this.maxDPR,
       );
     }
+    // Repaint after a lost drawing context is restored (the canvas comes back
+    // cleared). markDirty covers onDemand; the direct render covers a paused/
+    // idle loop so the scene doesn't stay blank until the next interaction.
+    this.renderer.onContextRestored?.(() => {
+      this.markDirty();
+      if (this.renderer.isContextLost?.() !== true) this.render(this.renderer);
+    });
 
     // Setup Agent / Automation Semantic Layer (only where there's a DOM).
     if (typeof document !== 'undefined') {
@@ -3860,6 +3867,12 @@ export class Scene {
    * @param time - Current absolute time in milliseconds (default 0).
    */
   public render(renderer: IRenderer, dt = 0, time = 0): void {
+    // Renderer's drawing context is lost (e.g. Canvas2D contextlost): every draw
+    // call is a no-op until it's restored, so skip the whole pass rather than
+    // walk the tree for nothing. The renderer's contextrestored handler triggers
+    // a repaint (see enableContextLossRepaint).
+    if (renderer.isContextLost?.()) return;
+
     const isMainRenderer = renderer === this.renderer;
     if (isMainRenderer && this.a11yRoot && this.canvas.parentElement) {
       const parentStyle = this.canvas.parentElement.style;
