@@ -48,6 +48,19 @@ describe('RichText', () => {
     expect(calls.find((c) => c.text === 'y')?.font).toContain('italic');
   });
 
+  it('draws a run in its own fontFamily (inline monospace code) while others keep the base family', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([{ text: 'p' }, { text: 'c', style: { fontFamily: 'ui-monospace, monospace' } }], {
+      font: '16px Georgia, serif',
+    }).render(r);
+    // The code run's drawn font carries the monospace stack…
+    expect(calls.find((c) => c.text === 'c')?.font).toContain('monospace');
+    // …while the plain prose run keeps the base family and is NOT monospace.
+    const plain = calls.find((c) => c.text === 'p')?.font ?? '';
+    expect(plain).toContain('Georgia');
+    expect(plain).not.toContain('monospace');
+  });
+
   it('renders a larger run at its own size', () => {
     const { r, calls } = recordingRenderer();
     new RichText([{ text: 'H', style: { fontSize: 40 } }], {

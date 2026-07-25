@@ -80,7 +80,13 @@ const graphemeSegmenter =
 
 const MARK = /\p{Mark}/u;
 const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
+// Emoji_Presentation = codepoints that render as a wide emoji by DEFAULT (no
+// selector needed). Many Extended_Pictographic chars are NOT in this set —
+// © ® ™ ☺ ✔ ❤ etc. are text-default (width 1) unless followed by VS16.
+const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const REGIONAL_INDICATOR = /\p{Regional_Indicator}/u;
+const VS16_EMOJI = '\ufe0f'; // forces emoji (wide) presentation
+const VS15_TEXT = '\ufe0e'; // forces text (narrow) presentation
 const BIDI_CONTROL = /\p{Bidi_Control}/u;
 const EAST_ASIAN_WIDE =
   /[ᄀ-ᅟ⌚-⌛⏩-⏬⏰⏳◽-◾⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/u;
@@ -162,11 +168,23 @@ function lowerBound(values: readonly number[], target: number): number {
 }
 
 function isWideCluster(cluster: string): boolean {
-  if (EXTENDED_PICTOGRAPHIC.test(cluster) || REGIONAL_INDICATOR.test(cluster)) return true;
-  if (cluster.includes('\u20e3')) return true;
+  // Flag emoji (regional-indicator flags, keycaps) and CJK first — unaffected
+  // by variation selectors.
+  if (REGIONAL_INDICATOR.test(cluster)) return true;
+  if (cluster.includes('\u20e3')) return true; // keycap (already carries VS16)
   if (EAST_ASIAN_WIDE.test(cluster)) return true;
   const point = cluster.codePointAt(0) ?? 0;
-  return point >= 0x20000 && point <= 0x3fffd;
+  if (point >= 0x20000 && point <= 0x3fffd) return true;
+
+  // Pictographs: wide only when they actually present as emoji. A text-default
+  // pictograph (© ® ™ ☺ ✔ ❤ …) is width 1 unless VS16 forces emoji width;
+  // VS15 forces text (narrow) even for an emoji-default base.
+  if (EXTENDED_PICTOGRAPHIC.test(cluster)) {
+    if (cluster.includes(VS15_TEXT)) return false;
+    if (cluster.includes(VS16_EMOJI)) return true;
+    return EMOJI_PRESENTATION.test(cluster);
+  }
+  return false;
 }
 
 interface SourceLine {
@@ -200,7 +218,12 @@ function sourceLines(source: string): SourceLine[] {
     });
     start = next;
     if (start === source.length) {
-      lines.push({ sourceStart: start, sourceEnd: start, nextSourceStart: start, text: '' });
+      lines.push({
+        sourceStart: start,
+        sourceEnd: start,
+        nextSourceStart: start,
+        text: '',
+      });
       break;
     }
   }
