@@ -743,6 +743,11 @@ export class Scene {
   private frameHadInteractive = true;
   private resizeHandler: () => void;
   private focusedA11yElement: HTMLElement | null = null;
+  /** Persistent tabindex=-1 element in a11yRoot. When the focused a11y mirror is
+   *  pruned (virtualization/streaming/removal) while it holds focus, we move
+   *  focus here instead of letting the browser drop it to <body> — keeping the
+   *  screen-reader virtual cursor inside the scene's a11y region. */
+  private focusSentinel: HTMLElement | null = null;
   private caretBlinkTimer: any = null;
   public a11yNeedsReorder: boolean = true;
   private portalRoot: HTMLDivElement | null = null;
@@ -1441,6 +1446,21 @@ export class Scene {
       // the root temporarily gains pointer-events so the browser can extend
       // the Selection Range beyond any single entity's bounds.
       this.a11yRoot.style.userSelect = 'text';
+
+      // Focus sentinel: a zero-size, programmatically-focusable-only element
+      // that catches focus when the currently-focused mirror is removed, so a
+      // virtualized/streamed-away control doesn't dump focus onto <body> (which
+      // yanks a screen reader out of the app region and back to the page top).
+      this.focusSentinel = document.createElement('div');
+      this.focusSentinel.setAttribute('data-vecto-focus-sentinel', '');
+      this.focusSentinel.tabIndex = -1;
+      this.focusSentinel.style.position = 'absolute';
+      this.focusSentinel.style.width = '0';
+      this.focusSentinel.style.height = '0';
+      this.focusSentinel.style.outline = 'none';
+      this.focusSentinel.style.overflow = 'hidden';
+      this.a11yRoot.appendChild(this.focusSentinel);
+
       this.a11yRoot.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         // Only promote when the mousedown lands on a selectable content div.
@@ -1709,6 +1729,7 @@ export class Scene {
           this.caretBlinkTimer = null;
         }
       }
+      this.preserveFocusOnRemoval(el);
       el.remove();
       this.a11yElements.delete(node.id);
       this.a11yNeedsReorder = true;
@@ -1716,6 +1737,21 @@ export class Scene {
     for (const child of node.children) {
       this.removeA11yRecursively(child);
     }
+  }
+
+  /**
+   * If `el` is about to be removed from the DOM while it holds browser focus,
+   * move focus to the a11y focus sentinel first. Removing the active element
+   * otherwise drops focus to `<body>`, which pulls a screen reader out of the
+   * scene's a11y region and back to the top of the page — the classic
+   * "lost my place on scroll/stream" bug for virtualized/recycled controls.
+   */
+  private preserveFocusOnRemoval(el: HTMLElement): void {
+    if (!this.focusSentinel || typeof document === 'undefined') return;
+    if (document.activeElement !== el) return;
+    // Sentinel lives in a11yRoot; focusing it keeps the active element inside
+    // the app region. preventScroll avoids a jump on refocus.
+    this.focusSentinel.focus({ preventScroll: true });
   }
 
   /**
@@ -1805,6 +1841,7 @@ export class Scene {
       }
     }
     this.a11yRoot?.remove();
+    this.focusSentinel = null;
     this.portalRoot?.remove();
     this.a11yElements.clear();
     for (const el of this.contentElements.values()) el.remove();
@@ -2019,6 +2056,7 @@ export class Scene {
           }
         }
         if (el.parentNode === this.a11yRoot) {
+          this.preserveFocusOnRemoval(el);
           this.a11yRoot.removeChild(el);
         }
         this.a11yElements.delete(node.id);
@@ -2976,6 +3014,7 @@ export class Scene {
           }
         }
         if (el.parentNode === this.a11yRoot) {
+          this.preserveFocusOnRemoval(el);
           this.a11yRoot.removeChild(el);
         }
         this.a11yElements.delete(id);

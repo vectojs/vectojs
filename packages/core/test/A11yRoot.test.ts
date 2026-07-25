@@ -82,12 +82,19 @@ describe('A11y Root and Agent Contract', () => {
     tick();
 
     const a11yRoot = (scene as any).a11yRoot as HTMLDivElement;
-    expect(a11yRoot.children.length).toBe(3);
+    // The a11yRoot also holds a focus sentinel (kept last); assert on the
+    // entity mirrors only (they carry data-vecto-id).
+    const mirrors = () => Array.from(a11yRoot.querySelectorAll<HTMLElement>('[data-vecto-id]'));
+    expect(mirrors().length).toBe(3);
 
     // Strict DFS Preorder: parent -> child1 -> child2
-    expect(a11yRoot.children[0].getAttribute('data-vecto-id')).toBe('parent');
-    expect(a11yRoot.children[1].getAttribute('data-vecto-id')).toBe('child1');
-    expect(a11yRoot.children[2].getAttribute('data-vecto-id')).toBe('child2');
+    expect(mirrors()[0].getAttribute('data-vecto-id')).toBe('parent');
+    expect(mirrors()[1].getAttribute('data-vecto-id')).toBe('child1');
+    expect(mirrors()[2].getAttribute('data-vecto-id')).toBe('child2');
+
+    // Focus sentinel is present and stays after the entity mirrors.
+    expect(a11yRoot.children.length).toBe(4);
+    expect(a11yRoot.lastElementChild?.hasAttribute('data-vecto-focus-sentinel')).toBe(true);
 
     // Swap child order
     parent.remove(child1);
@@ -96,9 +103,9 @@ describe('A11y Root and Agent Contract', () => {
     tick();
 
     // New DFS Preorder: parent -> child2 -> child1
-    expect(a11yRoot.children[0].getAttribute('data-vecto-id')).toBe('parent');
-    expect(a11yRoot.children[1].getAttribute('data-vecto-id')).toBe('child2');
-    expect(a11yRoot.children[2].getAttribute('data-vecto-id')).toBe('child1');
+    expect(mirrors()[0].getAttribute('data-vecto-id')).toBe('parent');
+    expect(mirrors()[1].getAttribute('data-vecto-id')).toBe('child2');
+    expect(mirrors()[2].getAttribute('data-vecto-id')).toBe('child1');
   });
 
   it('recreates element if tag name changes at runtime', () => {
@@ -116,6 +123,45 @@ describe('A11y Root and Agent Contract', () => {
     const updatedElement = a11yRoot.children[0];
     expect(updatedElement.tagName.toLowerCase()).toBe('button');
     expect(updatedElement).not.toBe(initialElement);
+  });
+
+  describe('focus preservation on removal (virtualization/streaming)', () => {
+    it('moves focus to the sentinel (not <body>) when the focused mirror is removed', () => {
+      const ent = new TestInteractiveEntity('focus-victim');
+      scene.add(ent);
+      tick();
+
+      const el = (scene as any).a11yElements.get('focus-victim') as HTMLElement;
+      el.focus();
+      expect(document.activeElement).toBe(el);
+
+      // Remove the focused entity's subtree (what a virtualized row recycle /
+      // streamed-away block does).
+      scene.remove(ent);
+      tick();
+
+      const sentinel = (scene as any).focusSentinel as HTMLElement;
+      // Focus landed on the sentinel, still inside the a11y region — NOT body.
+      expect(document.activeElement).toBe(sentinel);
+      expect(document.activeElement).not.toBe(document.body);
+    });
+
+    it('does not steal focus when the removed element was not focused', () => {
+      const a = new TestInteractiveEntity('keep-focus');
+      const b = new TestInteractiveEntity('remove-me');
+      scene.add(a);
+      scene.add(b);
+      tick();
+
+      const aEl = (scene as any).a11yElements.get('keep-focus') as HTMLElement;
+      aEl.focus();
+      expect(document.activeElement).toBe(aEl);
+
+      // Removing a DIFFERENT, unfocused entity must not disturb focus.
+      scene.remove(b);
+      tick();
+      expect(document.activeElement).toBe(aEl);
+    });
   });
 
   it('guards active typing input from cursor resets', () => {
