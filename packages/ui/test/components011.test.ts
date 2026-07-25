@@ -403,6 +403,88 @@ describe('UI 0.1.1 Components', () => {
       // Scroll target untouched by a tap.
       expect((tree as any)._targetY).toBe(0);
     });
+
+    describe('a11y: role=treeitem + keyboard (E-4b)', () => {
+      const hotspots = (tree: TreeView) =>
+        tree.children.filter((c) => (c as any).getA11yAttributes?.().role === 'treeitem');
+
+      it('projects one role=treeitem hotspot per visible row with level/expanded/selected + roving tabindex', () => {
+        const tree = new TreeView({
+          nodes: [
+            { id: 'a', label: 'A', children: [{ id: 'a1', label: 'A1' }] },
+            { id: 'b', label: 'B' },
+          ],
+          width: 200,
+          height: 400,
+          rowHeight: 28,
+        });
+        tree.update(16, 16); // sync hotspots
+
+        const attrs = hotspots(tree).map((h) => (h as any).getA11yAttributes());
+        // Two top-level rows (A expandable, B leaf).
+        expect(attrs).toHaveLength(2);
+        expect(attrs[0]).toMatchObject({
+          role: 'treeitem',
+          label: 'A',
+          level: 1,
+          expanded: false,
+        });
+        expect(attrs[1]).toMatchObject({
+          role: 'treeitem',
+          label: 'B',
+          level: 1,
+        });
+        // Leaf B has no aria-expanded.
+        expect(attrs[1].expanded).toBeUndefined();
+        // Roving tabindex: exactly one tab stop (the first row by default).
+        expect(attrs.filter((a) => a.tabIndex === 0)).toHaveLength(1);
+        expect(attrs[0].tabIndex).toBe(0);
+      });
+
+      it('ArrowRight expands a collapsed parent, ArrowLeft collapses it', () => {
+        const tree = new TreeView({
+          nodes: [{ id: 'a', label: 'A', children: [{ id: 'a1', label: 'A1' }] }],
+          width: 200,
+          height: 400,
+          rowHeight: 28,
+        });
+        tree.update(16, 16);
+        expect((tree as any)._rows.length).toBe(1);
+
+        tree.handleTreeKey({ key: 'ArrowRight', preventDefault() {} } as any, 'a');
+        expect((tree as any)._rows.length).toBe(2); // A + A1 revealed
+        expect((tree as any)._expanded.has('a')).toBe(true);
+
+        tree.handleTreeKey({ key: 'ArrowLeft', preventDefault() {} } as any, 'a');
+        expect((tree as any)._expanded.has('a')).toBe(false);
+      });
+
+      it('ArrowDown/ArrowUp move the active row; Enter selects a leaf', () => {
+        const onSelect = vi.fn();
+        const tree = new TreeView({
+          nodes: [
+            { id: 'a', label: 'A' },
+            { id: 'b', label: 'B' },
+            { id: 'c', label: 'C' },
+          ],
+          width: 200,
+          height: 400,
+          rowHeight: 28,
+          onSelect,
+        });
+        tree.update(16, 16);
+
+        tree.handleTreeKey({ key: 'ArrowDown', preventDefault() {} } as any, 'a');
+        expect((tree as any)._activeId).toBe('b');
+        tree.handleTreeKey({ key: 'End', preventDefault() {} } as any, 'b');
+        expect((tree as any)._activeId).toBe('c');
+        tree.handleTreeKey({ key: 'ArrowUp', preventDefault() {} } as any, 'c');
+        expect((tree as any)._activeId).toBe('b');
+
+        tree.handleTreeKey({ key: 'Enter', preventDefault() {} } as any, 'b');
+        expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'b' }));
+      });
+    });
   });
 
   describe('ResizablePanel', () => {

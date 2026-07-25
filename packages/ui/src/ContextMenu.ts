@@ -1,8 +1,34 @@
 import { Entity, IRenderer, A11yAttributes, VectoJSEvent, type Scene } from '@vectojs/core';
 import { Overlay } from './Overlay';
+import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
 
 let nextContextMenuId = 1;
+
+/**
+ * A transparent, focusable hotspot over one menu item so the a11y/automation
+ * layer projects a real `role="menuitem"` (with a roving tabindex, `disabled`,
+ * and `aria-haspopup`/`aria-expanded` for submenu parents) that a screen reader
+ * and keyboard user can operate (WCAG 4.1.2 / 2.1.1). The {@link ContextMenu}
+ * paints the row on canvas; this sits above it purely for semantics + focus.
+ */
+class MenuItemHotspot extends UIComponent {
+  constructor(
+    private menu: ContextMenu,
+    public itemIndex: number,
+  ) {
+    super();
+    this.interactive = true;
+    this.on('click', () => this.menu.activateIndex(this.itemIndex));
+    this.on('keydown', (e: KeyboardEvent) => this.menu.handleMenuKey(e, this.itemIndex));
+  }
+  public getA11yAttributes(): A11yAttributes {
+    return this.menu.itemA11y(this.itemIndex);
+  }
+  public render(): void {
+    /* invisible — ContextMenu paints the row */
+  }
+}
 
 export interface ContextMenuItem {
   /** Display label. Use with `separator: false` (default). */
@@ -77,12 +103,21 @@ export class ContextMenu extends Overlay {
    * menu behaves. Without this the menu only ever closed by selecting one of
    * its own (non-disabled) items. */
   private _backdrop: Entity | null = null;
+  /** One `role="menuitem"` hotspot per non-separator item (index into `_items`). */
+  private _hotspots: MenuItemHotspot[] = [];
+  /** Item index that owns the roving tab stop / keyboard focus. */
+  private _activeIdx = -1;
 
   constructor(opts: ContextMenuOptions) {
     const iH = opts.itemHeight ?? 32;
     const sH = opts.separatorHeight ?? 9;
     const totalH = (opts.items ?? []).reduce((acc, it) => acc + (it.separator ? sH : iH), 0);
-    super({ width: opts.width ?? 220, height: totalH + 8, placement: 'auto', offset: 2 });
+    super({
+      width: opts.width ?? 220,
+      height: totalH + 8,
+      placement: 'auto',
+      offset: 2,
+    });
     this.id = `context-menu-${nextContextMenuId++}`;
 
     this._opts = opts;
@@ -120,7 +155,10 @@ export class ContextMenu extends Overlay {
         // first, never reflecting the newly-clicked item's own children.
         if (!this._submenu || this._submenuFor !== item) {
           if (this._submenu) this._submenu.destroy();
-          this._submenu = new ContextMenu({ ...this._opts, items: item.children });
+          this._submenu = new ContextMenu({
+            ...this._opts,
+            items: item.children,
+          });
           this._submenu._parentMenu = this;
           this._submenuFor = item;
           if (this.scene) this.scene.overlayRoot.add(this._submenu);
@@ -178,6 +216,195 @@ export class ContextMenu extends Overlay {
       this._backdrop = backdrop;
     }
     super.showAtPoint(x, y, source);
+    this._syncHotspots();
+  }
+
+  /**
+   * Create/position one `role="menuitem"` hotspot per non-separator item, over
+   * its row. Menus are small (not virtualized), so this rebuilds the pool to
+   * match the item set. Called when the menu is shown.
+   */
+  private _syncHotspots(): void {
+    const itemIdxs = this._items.map((it, i) => (it.separator ? -1 : i)).filter((i) => i >= 0);
+    // Rebuild if the visible item set changed.
+    if (this._hotspots.length !== itemIdxs.length) {
+      for (const h of this._hotspots) {
+        this.scene?.detachA11y?.(h);
+        this.remove(h);
+      }
+      this._hotspots = itemIdxs.map((i) => new MenuItemHotspot(this, i));
+      for (const h of this._hotspots) this.add(h);
+    }
+    for (let k = 0; k < itemIdxs.length; k++) {
+      const i = itemIdxs[k];
+      const h = this._hotspots[k];
+      h.itemIndex = i;
+      h.x = 4;
+      h.y = this._rowTop(i);
+      h.width = this.width - 8;
+      h.height = this._iH;
+    }
+    // Default the roving tab stop to the first enabled item so a keyboard user
+    // lands inside the menu.
+    if (this._activeIdx < 0 || this._items[this._activeIdx]?.disabled) {
+      this._activeIdx = this._firstEnabled();
+    }
+    this.scene?.markDirty();
+  }
+
+  private _firstEnabled(): number {
+    return this._items.findIndex((it) => !it.separator && !it.disabled);
+  }
+
+  /** Whether item `idx` owns the roving tab stop (only one menuitem is a tab
+   *  stop; arrows move within — WCAG menu pattern). */
+  public isMenuTabStop(idx: number): boolean {
+    const anchor = this._activeIdx >= 0 ? this._activeIdx : this._firstEnabled();
+    return idx === anchor;
+  }
+
+  /** A11y attributes for one menu item (called by its hotspot). */
+  public itemA11y(idx: number): A11yAttributes {
+    const item = this._items[idx];
+    const hasSub = !!(item?.children && item.children.length > 0);
+    return {
+      role: 'menuitem',
+      label: item?.label ?? '',
+      disabled: item?.disabled || undefined,
+      haspopup: hasSub ? 'menu' : undefined,
+      expanded: hasSub ? this._submenuFor === item && !!this._submenu : undefined,
+      tabIndex: this.isMenuTabStop(idx) ? 0 : -1,
+      // The ContextMenu owns mouse handling (pointerdown-by-localY selects the
+      // row + opens submenus); this hotspot is for semantics + keyboard focus,
+      // so it opts out of pointer hit-testing so a real click reaches the menu.
+      // Keyboard focus and AT-synthesized `click` still work under this.
+      pointerEvents: 'none',
+    };
+  }
+
+  /** Activate an item by index (pointer click or Enter/Space): open a submenu,
+   *  else fire onClick and close the menu tree. Mirrors the pointerdown path. */
+  public activateIndex(idx: number): void {
+    const item = this._items[idx];
+    if (!item || item.separator || item.disabled) return;
+    this._activeIdx = idx;
+    if (item.children && item.children.length > 0) {
+      this._openSubmenu(idx, item);
+    } else {
+      item.onClick?.();
+      this._rootMenu().hide();
+    }
+  }
+
+  /** Shared submenu open used by both the pointer and keyboard paths. */
+  private _openSubmenu(idx: number, item: ContextMenuItem): void {
+    if (!this._submenu || this._submenuFor !== item) {
+      if (this._submenu) this._submenu.destroy();
+      this._submenu = new ContextMenu({ ...this._opts, items: item.children! });
+      this._submenu._parentMenu = this;
+      this._submenuFor = item;
+      if (this.scene) this.scene.overlayRoot.add(this._submenu);
+    }
+    this._submenu.showAtPoint(this.x + this.width, this.y + this._rowTop(idx));
+    this._submenu._focusFirst();
+  }
+
+  /** Focus the first enabled item — used when a submenu opens via keyboard. */
+  private _focusFirst(): void {
+    const first = this._firstEnabled();
+    if (first < 0) return;
+    this._activeIdx = first;
+    this._hotspots.find((h) => h.itemIndex === first)?.focus();
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Menu keyboard model (WCAG menu pattern): Down/Up move to the next/previous
+   * enabled item (wrapping, skipping separators + disabled); Home/End jump to
+   * the first/last enabled item; Right opens a submenu parent; Left closes a
+   * submenu back to its parent; Enter/Space activate; Escape closes the menu.
+   */
+  public handleMenuKey(e: KeyboardEvent, fromIdx: number): void {
+    const keys = [
+      'ArrowDown',
+      'ArrowUp',
+      'Home',
+      'End',
+      'ArrowRight',
+      'ArrowLeft',
+      'Enter',
+      ' ',
+      'Spacebar',
+      'Escape',
+      'Esc',
+    ];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    switch (e.key) {
+      case 'ArrowDown':
+        this._focusItem(this._nextEnabled(fromIdx, 1));
+        break;
+      case 'ArrowUp':
+        this._focusItem(this._nextEnabled(fromIdx, -1));
+        break;
+      case 'Home':
+        this._focusItem(this._firstEnabled());
+        break;
+      case 'End':
+        this._focusItem(this._lastEnabled());
+        break;
+      case 'ArrowRight': {
+        const item = this._items[fromIdx];
+        if (item?.children && item.children.length > 0) this._openSubmenu(fromIdx, item);
+        break;
+      }
+      case 'ArrowLeft':
+        if (this._parentMenu) {
+          this.hide();
+          this._parentMenu._refocusActive();
+        }
+        break;
+      case 'Enter':
+      case ' ':
+      case 'Spacebar':
+        this.activateIndex(fromIdx);
+        break;
+      case 'Escape':
+      case 'Esc':
+        this._rootMenu().hide();
+        break;
+    }
+  }
+
+  private _lastEnabled(): number {
+    for (let i = this._items.length - 1; i >= 0; i--) {
+      if (!this._items[i].separator && !this._items[i].disabled) return i;
+    }
+    return -1;
+  }
+
+  /** Next enabled, non-separator item index in `dir` (+1/-1), wrapping. */
+  private _nextEnabled(from: number, dir: 1 | -1): number {
+    const n = this._items.length;
+    if (n === 0) return -1;
+    for (let step = 1; step <= n; step++) {
+      const idx = (from + dir * step + n * step) % n;
+      const it = this._items[idx];
+      if (!it.separator && !it.disabled) return idx;
+    }
+    return from;
+  }
+
+  private _focusItem(idx: number): void {
+    if (idx < 0) return;
+    this._activeIdx = idx;
+    this._hotspots.find((h) => h.itemIndex === idx)?.focus();
+    this.scene?.markDirty();
+  }
+
+  private _refocusActive(): void {
+    const idx = this._activeIdx >= 0 ? this._activeIdx : this._firstEnabled();
+    this._focusItem(idx);
   }
 
   public override hide(): void {
@@ -189,6 +416,7 @@ export class ContextMenu extends Overlay {
     if (this._submenu) this._submenu.hide();
     super.hide();
     this.interactive = false;
+    for (const h of this._hotspots) scene?.detachA11y?.(h);
     scene?.detachA11y(this);
   }
 

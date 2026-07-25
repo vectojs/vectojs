@@ -1,5 +1,25 @@
 ---
-"@vectojs/ui": patch
+"@vectojs/ui": minor
 ---
 
-Give `RadioGroup` and `Tabs` real per-child ARIA semantics and keyboard operation (WCAG 4.1.2 / 2.1.1). Both previously exposed only a container role (`radiogroup` / `tablist`) with no child roles and no keyboard support, so a screen reader announced an empty container and keyboard users couldn't operate them. Each now projects one transparent, focusable hotspot per child (reusing the `RichText` link-hotspot pattern): `RadioGroup` emits `role="radio"` with `aria-checked` and a roving `tabindex`; `Tabs` emits `role="tab"` with `aria-selected` and a roving `tabindex`. Keyboard: arrow keys move and activate within the group (RadioGroup skips disabled options and wraps, Space selects the focused one; Tabs supports Left/Right/Up/Down plus Home/End, wrapping), routed through the same `change` path as pointer selection so existing `onChange` handlers are unaffected. Tree, Table, and ContextMenu remain follow-ups.
+Add per-child ARIA roles + keyboard navigation to `TreeView`, `Table`, and
+`ContextMenu` (WCAG 2.1.1 / 4.1.2), completing the composite-widget a11y work
+started for RadioGroup/Tabs in PR #160. Each now projects transparent focusable
+hotspots over its canvas-drawn children so a screen reader and keyboard user can
+operate them:
+
+- **TreeView** — one `role="treeitem"` per visible row (virtualization-aware
+  pool) with `aria-level`, `aria-expanded` (parents), `aria-selected`, and a
+  roving tabindex. Keyboard: Up/Down move, Right expands / steps into children,
+  Left collapses / steps to parent, Home/End, Enter/Space activate; the active
+  row scrolls into view and takes focus.
+- **Table** — a real `grid > row > gridcell/columnheader` structure (pinned
+  header row + one body `role="row"` per visible row, virtualization-aware),
+  each cell a focusable hotspot with a roving tabindex. Keyboard: 2D arrows
+  (clamped), Home/End (row extremes), Ctrl+Home/Ctrl+End (grid corners); the
+  target cell scrolls into view and takes focus.
+- **ContextMenu** — one `role="menuitem"` per non-separator item with
+  `aria-haspopup`/`aria-expanded` for submenu parents, `disabled`, and a roving
+  tabindex. Keyboard: Up/Down (wrapping, skipping separators + disabled),
+  Home/End, Right opens a submenu, Left returns to the parent menu, Enter/Space
+  activate, Escape closes.

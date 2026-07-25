@@ -198,4 +198,93 @@ describe('ContextMenu', () => {
     menu.destroy();
     expect(submenu.parent).toBeNull();
   });
+
+  describe('a11y: role=menuitem + keyboard (E-4b)', () => {
+    const items = (menu: ContextMenu) =>
+      (menu as any).children.filter((c: any) => c.getA11yAttributes?.().role === 'menuitem');
+
+    it('projects one role=menuitem hotspot per non-separator item with haspopup + roving tabindex', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const menu = new ContextMenu({
+        items: [
+          { label: 'Cut' },
+          { label: 'Copy' },
+          { separator: true },
+          { label: 'More', children: [{ label: 'Sub' }] },
+          { label: 'Nope', disabled: true },
+        ],
+      });
+      scene.overlayRoot.add(menu);
+      menu.showAtPoint(10, 10);
+
+      const attrs = items(menu).map((h: any) => h.getA11yAttributes());
+      // 4 non-separator items (separator excluded).
+      expect(attrs).toHaveLength(4);
+      expect(attrs.map((a: any) => a.label)).toEqual(['Cut', 'Copy', 'More', 'Nope']);
+      // Submenu parent advertises aria-haspopup.
+      expect(attrs[2]).toMatchObject({ role: 'menuitem', haspopup: 'menu' });
+      // Disabled item flagged.
+      expect(attrs[3].disabled).toBe(true);
+      // Exactly one roving tab stop, on the first enabled item.
+      expect(attrs.filter((a: any) => a.tabIndex === 0)).toHaveLength(1);
+      expect(attrs[0].tabIndex).toBe(0);
+    });
+
+    it('ArrowDown skips disabled + separators (wrapping); Enter activates', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      let cut = false;
+      const menu = new ContextMenu({
+        items: [
+          { label: 'Cut', onClick: () => (cut = true) },
+          { separator: true },
+          { label: 'Disabled', disabled: true },
+          { label: 'Paste' },
+        ],
+      });
+      scene.overlayRoot.add(menu);
+      menu.showAtPoint(10, 10);
+
+      // From 'Cut' (idx 0), ArrowDown skips separator(1) + disabled(2) → 'Paste'(3).
+      menu.handleMenuKey({ key: 'ArrowDown', preventDefault() {} } as any, 0);
+      expect((menu as any)._activeIdx).toBe(3);
+      // ArrowDown from 3 wraps back to 'Cut'(0).
+      menu.handleMenuKey({ key: 'ArrowDown', preventDefault() {} } as any, 3);
+      expect((menu as any)._activeIdx).toBe(0);
+      // Enter activates the focused leaf and closes the menu.
+      menu.handleMenuKey({ key: 'Enter', preventDefault() {} } as any, 0);
+      expect(cut).toBe(true);
+      expect(menu.visible).toBe(false);
+    });
+
+    it('Escape closes the menu', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const menu = new ContextMenu({
+        items: [{ label: 'Cut' }, { label: 'Copy' }],
+      });
+      scene.overlayRoot.add(menu);
+      menu.showAtPoint(10, 10);
+      expect(menu.visible).toBe(true);
+
+      menu.handleMenuKey({ key: 'Escape', preventDefault() {} } as any, 0);
+      expect(menu.visible).toBe(false);
+    });
+
+    it('ArrowRight opens a submenu parent', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas);
+      const menu = new ContextMenu({
+        items: [{ label: 'More', children: [{ label: 'Sub A' }, { label: 'Sub B' }] }],
+      });
+      scene.overlayRoot.add(menu);
+      menu.showAtPoint(10, 10);
+
+      menu.handleMenuKey({ key: 'ArrowRight', preventDefault() {} } as any, 0);
+      const submenu = (menu as any)._submenu as ContextMenu;
+      expect(submenu).toBeTruthy();
+      expect(submenu.visible).toBe(true);
+    });
+  });
 });

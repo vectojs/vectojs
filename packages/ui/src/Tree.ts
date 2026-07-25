@@ -54,6 +54,65 @@ export interface TreeViewOptions {
  *  (toggles a row) rather than a drag-scroll. */
 const TREE_TAP_SLOP = 6;
 
+/**
+ * A transparent, focusable hotspot over one visible tree row. The {@link TreeView}
+ * paints rows on canvas; this exists so the a11y/automation layer projects a real
+ * `role="treeitem"` (with `aria-level`, `aria-expanded`, `aria-selected` and a
+ * roving tabindex) that a screen reader and keyboard user can operate
+ * (WCAG 4.1.2 / 2.1.1). One hotspot is pooled per on-screen row (the tree is
+ * virtualized), re-bound to whichever node currently occupies that slot.
+ */
+class TreeItemHotspot extends UIComponent {
+  public nodeId = '';
+  private label = '';
+  private level = 1;
+  private expandable = false;
+  private expandedState = false;
+
+  constructor(private tree: TreeView) {
+    super();
+    this.interactive = true;
+    this.on('click', () => this.tree.activateNode(this.nodeId, true));
+    this.on('keydown', (e: KeyboardEvent) => this.tree.handleTreeKey(e, this.nodeId));
+  }
+
+  public bind(
+    nodeId: string,
+    label: string,
+    level: number,
+    expandable: boolean,
+    expanded: boolean,
+  ): void {
+    this.nodeId = nodeId;
+    this.label = label;
+    this.level = level;
+    this.expandable = expandable;
+    this.expandedState = expanded;
+  }
+
+  public getA11yAttributes(): A11yAttributes {
+    return {
+      role: 'treeitem',
+      label: this.label,
+      level: this.level,
+      // aria-expanded only applies to parent items.
+      expanded: this.expandable ? this.expandedState : undefined,
+      selected: this.tree.isSelected(this.nodeId),
+      // Roving tabindex: only the active row is a tab stop; arrows move within.
+      tabIndex: this.tree.isTabStop(this.nodeId) ? 0 : -1,
+      // The TreeView owns mouse handling (tap-to-toggle + drag-to-scroll); this
+      // hotspot exists for semantics + keyboard focus, so it opts out of pointer
+      // hit-testing so a real click/drag reaches the tree. Keyboard focus and
+      // AT-synthesized `click` still work under `pointer-events:none`.
+      pointerEvents: 'none',
+    };
+  }
+
+  public render(): void {
+    /* invisible — TreeView paints the rows */
+  }
+}
+
 export class TreeView extends UIComponent {
   private _roots: TreeNode[];
   private _rows: FlatRow[] = [];
@@ -61,6 +120,10 @@ export class TreeView extends UIComponent {
   private _loaded = new Map<string, TreeNode[]>();
   private _loading = new Set<string>();
   private _selectedId: string | null = null;
+  /** Node id that currently owns the roving tab stop / keyboard focus. */
+  private _activeId: string | null = null;
+  /** Pool of one focusable `role="treeitem"` hotspot per visible row. */
+  private _hotspots: TreeItemHotspot[] = [];
   private _hoverIdx = -1;
   private _scrollY = 0;
   private _targetY = 0;
@@ -225,6 +288,178 @@ export class TreeView extends UIComponent {
       this._scrollY = this._targetY;
       this._velY = 0;
     }
+    this._syncHotspots();
+  }
+
+  /** First/last row index visible in the viewport (± one row of overscan). */
+  private _visibleRange(): [number, number] {
+    const start = Math.max(0, Math.floor(this._scrollY / this._rh) - 1);
+    const end = Math.min(
+      this._rows.length - 1,
+      Math.ceil((this._scrollY + this.height) / this._rh),
+    );
+    return [start, end];
+  }
+
+  /**
+   * Keep one `role="treeitem"` hotspot per visible row, positioned over it. The
+   * tree is virtualized, so the pool is sized to the viewport and each slot is
+   * re-bound to whatever node currently occupies it.
+   */
+  private _syncHotspots(): void {
+    if (this._rows.length === 0) {
+      if (this._hotspots.length) {
+        for (const h of this._hotspots) {
+          this.scene?.detachA11y?.(h);
+          this.remove(h);
+        }
+        this._hotspots = [];
+      }
+      return;
+    }
+    const [start, end] = this._visibleRange();
+    const need = end - start + 1;
+    // Grow / shrink the pool to the visible-row count.
+    while (this._hotspots.length < need) {
+      const h = new TreeItemHotspot(this);
+      this._hotspots.push(h);
+      this.add(h);
+    }
+    while (this._hotspots.length > need) {
+      const h = this._hotspots.pop()!;
+      this.scene?.detachA11y?.(h);
+      this.remove(h);
+    }
+    for (let slot = 0; slot < need; slot++) {
+      const i = start + slot;
+      const row = this._rows[i];
+      const h = this._hotspots[slot];
+      h.bind(row.node.id, row.node.label, row.depth + 1, row.hasChildren, row.expanded);
+      h.x = 0;
+      h.y = i * this._rh - this._scrollY;
+      h.width = this.width;
+      h.height = this._rh;
+    }
+  }
+
+  /** Whether `id` is the roving tab stop: the active node, else the selected
+   *  one, else the first row. */
+  public isTabStop(id: string): boolean {
+    const anchor =
+      (this._activeId && this._rows.some((r) => r.node.id === this._activeId) && this._activeId) ||
+      (this._selectedId &&
+        this._rows.some((r) => r.node.id === this._selectedId) &&
+        this._selectedId) ||
+      this._rows[0]?.node.id;
+    return id === anchor;
+  }
+
+  public isSelected(id: string): boolean {
+    return this._selectedId === id;
+  }
+
+  /** Activate a node (pointer click or Enter/Space): toggles a parent, selects a
+   *  leaf. Mirrors the pointer tap path but also tracks the active row. */
+  public activateNode(id: string, focusIt = false): void {
+    const idx = this._rows.findIndex((r) => r.node.id === id);
+    if (idx === -1) return;
+    this._activeId = id;
+    void this._toggle(idx);
+    if (focusIt) this._focusNode(id);
+  }
+
+  /**
+   * Tree keyboard model (WCAG tree pattern): Down/Up move the active row;
+   * Right expands a collapsed parent then steps into the first child; Left
+   * collapses an expanded parent then steps to the parent row; Home/End jump to
+   * the first/last row; Enter/Space activate (toggle/select). The active row is
+   * scrolled into view and focused as it moves.
+   */
+  public handleTreeKey(e: KeyboardEvent, fromId: string): void {
+    const keys = [
+      'ArrowDown',
+      'ArrowUp',
+      'ArrowRight',
+      'ArrowLeft',
+      'Home',
+      'End',
+      'Enter',
+      ' ',
+      'Spacebar',
+    ];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const idx = this._rows.findIndex((r) => r.node.id === fromId);
+    if (idx === -1) return;
+    const row = this._rows[idx];
+
+    switch (e.key) {
+      case 'ArrowDown':
+        this._focusIndex(idx + 1);
+        break;
+      case 'ArrowUp':
+        this._focusIndex(idx - 1);
+        break;
+      case 'Home':
+        this._focusIndex(0);
+        break;
+      case 'End':
+        this._focusIndex(this._rows.length - 1);
+        break;
+      case 'ArrowRight':
+        if (row.hasChildren && !row.expanded) {
+          this.activateNode(fromId, true); // expand
+        } else if (row.hasChildren && row.expanded) {
+          this._focusIndex(idx + 1); // into first child
+        }
+        break;
+      case 'ArrowLeft':
+        if (row.hasChildren && row.expanded) {
+          this.activateNode(fromId, true); // collapse
+        } else {
+          // Step to the parent row (nearest shallower ancestor above).
+          for (let j = idx - 1; j >= 0; j--) {
+            if (this._rows[j].depth < row.depth) {
+              this._focusIndex(j);
+              break;
+            }
+          }
+        }
+        break;
+      case 'Enter':
+      case ' ':
+      case 'Spacebar':
+        this.activateNode(fromId, true);
+        break;
+    }
+  }
+
+  private _focusIndex(idx: number): void {
+    if (idx < 0 || idx >= this._rows.length) return;
+    const id = this._rows[idx].node.id;
+    this._activeId = id;
+    this._scrollIndexIntoView(idx);
+    this._syncHotspots();
+    this._focusNode(id);
+    this.scene?.markDirty();
+  }
+
+  /** Snap (not spring) the row into the viewport so its hotspot is positioned
+   *  before we move DOM focus to it. */
+  private _scrollIndexIntoView(idx: number): void {
+    const top = idx * this._rh;
+    const bottom = top + this._rh;
+    if (top < this._scrollY) {
+      this._scrollY = this._targetY = top;
+    } else if (bottom > this._scrollY + this.height) {
+      this._scrollY = this._targetY = bottom - this.height;
+    }
+    this._clamp();
+    if (this._scrollY > this._targetY) this._scrollY = this._targetY;
+  }
+
+  private _focusNode(id: string): void {
+    this._hotspots.find((h) => h.nodeId === id)?.focus();
   }
 
   /**
