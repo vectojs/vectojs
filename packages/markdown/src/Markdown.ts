@@ -92,13 +92,23 @@ function renderMathToSVGDataURI(
 
 let markdownWorker: Worker | null = null;
 let workerIdCounter = 0;
+// Distinguishes Markdown instances in the worker's prior-raws cache (one worker
+// is shared by every instance on the page).
+let workerInstanceCounter = 0;
 // `cb` receives (matchLen, tail): the caller's own tokens[0..matchLen) are
 // still valid (unchanged raw source) and only `tail` is new — see the
 // matching comment in MarkdownWorker.ts for why the worker sends a diff
 // instead of the full re-lexed tree on every call.
+// `onNeedRaws` is invoked instead of `cb` when the worker reports that its
+// cached copy of this instance's prior token raws is missing or stale; the
+// requester re-dispatches once with the raws attached.
 const workerCallbacks = new Map<
   number,
-  { cb: (matchLen: number, tail: TokensList) => void; text: string }
+  {
+    cb: (matchLen: number, tail: TokensList) => void;
+    onNeedRaws?: () => void;
+    text: string;
+  }
 >();
 
 /**
@@ -129,12 +139,21 @@ if (typeof Worker !== 'undefined') {
     });
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
-      const { id, matchLen, tail, error } = e.data;
+      const { id, matchLen, tail, error, needRaws } = e.data;
       const entry = workerCallbacks.get(id);
       if (entry) {
         workerCallbacks.delete(id);
-        if (!error) entry.cb(matchLen as number, tail as TokensList);
-        else runSyncFallback(entry);
+        if (needRaws && entry.onNeedRaws) {
+          // The worker can't trust its cached raws — retry with them attached.
+          entry.onNeedRaws();
+        } else if (needRaws) {
+          // No retry path (shouldn't happen); parse locally rather than drop it.
+          runSyncFallback(entry);
+        } else if (!error) {
+          entry.cb(matchLen as number, tail as TokensList);
+        } else {
+          runSyncFallback(entry);
+        }
       }
     };
     markdownWorker.onerror = () => {
@@ -861,7 +880,7 @@ export class Markdown extends UIComponent {
   public selectable: boolean;
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
-  private tokens: Token[];
+  private tokens: Token[] = [];
   // At most one worker lex request in flight at a time. Required for the
   // delta-transfer protocol below to be safe: the request captures a
   // snapshot of `this.tokens` to reconstruct the full array from the
@@ -877,6 +896,45 @@ export class Markdown extends UIComponent {
   // destroying a Markdown mid-stream would pin the whole entity (and its subtree)
   // until the worker replied. `destroy()` drops these so the instance is GC-able.
   private pendingWorkerIds = new Set<number>();
+  // Identity + token-list version for the worker's prior-raws cache. The worker
+  // keeps this instance's last raw list so a streaming append sends only the new
+  // text; `tokenVersion` is bumped on EVERY `this.tokens` mutation so any change
+  // the worker didn't produce (setContent, a sync-fallback parse) invalidates
+  // that cache instead of silently diffing against stale raws.
+  private readonly workerInstanceId = `md-${workerInstanceCounter++}`;
+  private tokenVersion = 0;
+  // `tokenChildPrefix[i]` = how many of `tokens[0..i)` render a child entity, so
+  // `updateTokens` can map a token index to its child slot in O(1). Maintained
+  // incrementally by setTokens() (only the changed suffix is recomputed).
+  private readonly tokenChildPrefix: number[] = [];
+
+  /**
+   * Replace the token list, invalidate the worker's cached raws for it, and
+   * refresh {@link tokenChildPrefix} — the token-index → child-entity-index
+   * prefix sum `updateTokens` needs.
+   *
+   * `validFrom` is the number of leading tokens whose prefix entries are still
+   * correct (the raw-equal prefix), so only the changed suffix is recomputed
+   * instead of rebuilding over every token on every streamed chunk.
+   */
+  private setTokens(tokens: Token[], validFrom = 0): void {
+    this.tokens = tokens;
+    this.tokenVersion++;
+
+    const prefix = this.tokenChildPrefix;
+    const keep = Math.min(validFrom, prefix.length, tokens.length);
+    prefix.length = keep;
+    // Resume the running child count from the kept prefix's last entry.
+    let childIdx = 0;
+    if (keep > 0) {
+      childIdx = prefix[keep - 1];
+      if (this.producesEntity(tokens[keep - 1])) childIdx++;
+    }
+    for (let i = keep; i < tokens.length; i++) {
+      prefix.push(childIdx);
+      if (this.producesEntity(tokens[i])) childIdx++;
+    }
+  }
 
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
@@ -889,13 +947,13 @@ export class Markdown extends UIComponent {
     this.add(this.content);
 
     this.rawMarkdown = markdownText;
-    this.tokens = [];
+    this.setTokens([]);
     this.renderMarkdown(markdownText);
   }
 
   private renderMarkdown(text: string): void {
     const tokens = marked.lexer(text);
-    this.tokens = tokens;
+    this.setTokens(tokens);
     for (const token of tokens) {
       const el = this.renderToken(token);
       if (el) {
@@ -916,7 +974,7 @@ export class Markdown extends UIComponent {
     while (this.content.children.length > 0) {
       this.content.children[this.content.children.length - 1].destroy();
     }
-    this.tokens = [];
+    this.setTokens([]);
     this.renderMarkdown(markdown);
     return this;
   }
@@ -932,6 +990,12 @@ export class Markdown extends UIComponent {
     this.pendingWorkerIds.clear();
     this.appendInFlight = false;
     this.appendPending = false;
+    // Release this instance's prior-raws entry in the (shared) worker, so a page
+    // that creates and drops many blocks doesn't retain their raws forever.
+    markdownWorker?.postMessage({
+      instance: this.workerInstanceId,
+      dispose: true,
+    });
     super.destroy();
   }
 
@@ -970,7 +1034,19 @@ export class Markdown extends UIComponent {
     return this;
   }
 
-  private dispatchAppend(): void {
+  /**
+   * Post one lex request for the accumulated text.
+   *
+   * `sendRaws` forces this request to carry the full prior-token raw list. The
+   * worker normally keeps that list itself (keyed by `workerInstanceId` +
+   * `tokenVersion`), so a streaming append sends only the new text — re-sending
+   * every prior raw each chunk made the transfer O(document) per chunk, i.e.
+   * O(N²) over a stream. It is sent only when the worker says its cache can't
+   * be trusted (`needRaws`), which happens on the first request for this
+   * instance and after any token-list change the worker didn't produce
+   * (`setContent`, a main-thread sync-fallback parse).
+   */
+  private dispatchAppend(sendRaws = false): void {
     if (!markdownWorker) return;
     this.appendInFlight = true;
     const id = workerIdCounter++;
@@ -979,7 +1055,7 @@ export class Markdown extends UIComponent {
     // the field comment on `appendInFlight` for why that requires
     // coalescing rather than tracking `this.tokens` live).
     const oldTokensSnapshot = this.tokens;
-    const oldRaws = oldTokensSnapshot.map((t) => t.raw);
+    const baseVersion = this.tokenVersion;
     this.pendingWorkerIds.add(id);
     workerCallbacks.set(id, {
       cb: (matchLen, tail) => {
@@ -992,9 +1068,23 @@ export class Markdown extends UIComponent {
           this.dispatchAppend();
         }
       },
+      // The worker can't trust its cached raws for this request; retry it once
+      // with them attached. `this.tokens` is untouched (no updateTokens ran), so
+      // the retry's snapshot and version still line up.
+      onNeedRaws: () => {
+        this.pendingWorkerIds.delete(id);
+        this.appendInFlight = false;
+        this.dispatchAppend(true);
+      },
       text: this.rawMarkdown,
     });
-    markdownWorker.postMessage({ id, text: this.rawMarkdown, oldRaws });
+    markdownWorker.postMessage({
+      id,
+      text: this.rawMarkdown,
+      instance: this.workerInstanceId,
+      baseVersion,
+      ...(sendRaws ? { oldRaws: oldTokensSnapshot.map((t) => t.raw) } : {}),
+    });
   }
 
   private updateTokens(newTokens: TokensList): void {
@@ -1004,14 +1094,6 @@ export class Markdown extends UIComponent {
     // Find the matching prefix length (by comparing token raw source)
     let matchLen = 0;
     const minLen = Math.min(oldTokens.length, newTokens.length);
-    // Map from old token index to child entity index (skip 'space' tokens
-    // that produce null entities)
-    let childIdx = 0;
-    const oldTokenToChild: number[] = [];
-    for (let i = 0; i < oldTokens.length; i++) {
-      oldTokenToChild.push(childIdx);
-      if (this.producesEntity(oldTokens[i])) childIdx++;
-    }
 
     // Compare tokens by raw source
     for (let i = 0; i < minLen; i++) {
@@ -1021,6 +1103,17 @@ export class Markdown extends UIComponent {
         break;
       }
     }
+
+    // Old-token-index → child-entity index (tokens that render nothing don't
+    // consume a child slot — see producesEntity). This prefix sum is maintained
+    // incrementally by setTokens(), so it's already valid for `oldTokens` here:
+    // reading it is O(1) instead of the O(total blocks) rebuild this used to do
+    // on every streamed chunk.
+    const oldTokenToChild = this.tokenChildPrefix;
+    // The raw-equal prefix length, captured before the in-place paragraph branch
+    // below mutates `matchLen`. Everything before it is unchanged, so the child
+    // prefix sum stays valid there and only the suffix is recomputed.
+    const rawMatchLen = matchLen;
 
     // Handle the common streaming case: last token changed (paragraph grew)
     // If only the last old token changed and it's the same type, update in-place
@@ -1058,9 +1151,11 @@ export class Markdown extends UIComponent {
 
     // Destroy excess old entities (from matchLen onward). destroy() (not just
     // remove()) so a discarded block's subtree resources are released, and it
-    // detaches from `content` itself.
-    for (let i = 0; i < oldTokens.length; i++) {
-      if (i >= matchLen && this.producesEntity(oldTokens[i])) {
+    // detaches from `content` itself. Starts AT matchLen — the old loop walked
+    // every token from 0 only to skip the matched prefix with an `i >= matchLen`
+    // test, making it O(total blocks) per streamed chunk.
+    for (let i = matchLen; i < oldTokens.length; i++) {
+      if (this.producesEntity(oldTokens[i])) {
         const idx = oldTokenToChild[i];
         if (idx < oldChildren.length) {
           oldChildren[idx].destroy();
@@ -1074,7 +1169,9 @@ export class Markdown extends UIComponent {
       if (el) this.content.add(el);
     }
 
-    this.tokens = newTokens;
+    // The raw-equal prefix is unchanged, so its child-index entries stay valid;
+    // only the suffix prefix-sum is recomputed.
+    this.setTokens(newTokens, rawMatchLen);
     // No explicit layout() here: the common in-place resize above uses
     // resizeLastChild(), and any add()/remove() calls in the loops above
     // already keep `content`'s own width/height correct as they happen (see
