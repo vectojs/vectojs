@@ -1,5 +1,27 @@
 # @vectojs/three
 
+## 0.1.7
+
+### Patch Changes
+
+- cd92499: `ThreeRenderer` now recovers from WebGL **context loss** and tracks **runtime
+  DPR** changes, matching the Canvas2D / WebGL point-layer paths in
+  `@vectojs/core`. A GPU reset previously left a Three-backed scene permanently
+  blank, and a monitor move / browser zoom left it rendering at the stale pixel
+  ratio (blurry or aliased):
+
+  - `webglcontextlost` is `preventDefault`-ed (required for the browser to fire
+    `webglcontextrestored`) and flips an `isContextLost()` flag; `present()`
+    becomes a no-op while lost.
+  - `webglcontextrestored` re-applies pixel ratio + size (a restore can land on a
+    different display) and forces a repaint of the freshly-cleared framebuffer.
+  - A `resolution` media query re-applies `setPixelRatio` on DPR change and
+    re-arms itself (one-shot query), guarded for SSR / OffscreenCanvas.
+  - Both sets of listeners are detached in `dispose()` so a torn-down renderer
+    can't be resurrected by a late event.
+
+- b4ebfa0: Bound `ThreeRenderer`'s image-texture cache. `drawImage` cached one `THREE.Texture` per source keyed by identity, but the cache had no size limit — a long-running scene that draws many distinct images (or transient per-frame canvases that are never `invalidateImage`'d) accumulated GPU textures without bound. The cache now caps at 256 entries (mirroring the existing text-texture cache): a cache hit re-inserts the source as most-recently-used, and once the cap is exceeded the least-recently-used texture is disposed and evicted.
+
 ## 0.1.6
 
 ### Patch Changes

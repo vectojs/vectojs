@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/core",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "publishConfig": {
     "access": "public"
   },
@@ -64,10 +64,10 @@
     "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts"
   },
   "dependencies": {
-    "@vectojs/animation": "^0.1.0",
-    "@vectojs/layout": "^0.1.0",
-    "@vectojs/math": "^0.1.0",
-    "@vectojs/text": "^0.1.0"
+    "@vectojs/animation": "^0.1.1",
+    "@vectojs/layout": "^0.2.0",
+    "@vectojs/math": "^0.1.1",
+    "@vectojs/text": "^0.2.0"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",

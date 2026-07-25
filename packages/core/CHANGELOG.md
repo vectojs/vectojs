@@ -1,5 +1,191 @@
 # @vectojs/core
 
+## 1.16.0
+
+### Minor Changes
+
+- 485eb42: Accessibility tab / screen-reader order now follows the **visual reading
+  order** instead of scene-graph insertion order. `enforceA11yDomOrder` sorts the
+  projected a11y mirrors into rows top-to-bottom and then inline within each row,
+  so two entities added in any order but drawn side by side Tab left→right. A new
+  `readingDirection: 'ltr' | 'rtl'` scene option (and `Scene.readingDirection`
+  setter) reverses the inline order for right-to-left UIs. Entities at the same
+  position keep their insertion order as a stable tiebreak.
+- e82102c: Add forced-colors (Windows High Contrast) awareness. `Scene` now exposes a
+  `forcedColors` getter backed by a `(forced-colors: active)` media query and
+  repaints when it toggles, so components can swap to CSS system colors — canvas
+  pixels are exempt from the browser's forced-colors remapping. `Button` uses it
+  to draw with `ButtonFace`/`ButtonText`/`Highlight` under High Contrast.
+- ebb4bdc: Extend the WASM transform core (G1+) to emit per-node **world-space AABBs**. The transform store now carries optional local render bounds (`bx/by/bw/bh`) and world-AABB outputs (`aminx/aminy/amaxx/amaxy`); a new `compute_aabbs` kernel (plus the `computeAabbsJS` reference + `WasmTransformBackend.computeAabbs` / resident `runAabbs` + `boundsView`/`aabbView`) transforms each node's local box through its already-composed world matrix and reduces the four corners to a min/max AABB. This is what viewport culling currently recomputes per visible node each frame (a 4-corner f64 transform in `Entity.getWorldBounds`), and what G3's hit-grid build wants to read directly from the resident matrices.
+
+  The pass is **bit-identical** to `Entity.getWorldBounds`/`computeAabbsJS` — same corner-selection, same op order, and it matches `Math.min`/`Math.max` NaN/±0 semantics exactly (Rust `js_min`/`js_max` propagate NaN, unlike `f64::min/max`), so even a pathological transform whose scale overflows to Infinity agrees between engines. Verified across flat/chain/bushy/mixed topologies up to 100k nodes.
+
+  Real-hardware benchmark (`benchmarks/core-wasm`, resident WASM vs the JS 4-corner pass): ~2.7–4.2× on Chrome 150 (its JIT leaves the JS loop at ~56–64 ns/entity; WASM is a steady ~15 ns), and roughly at parity on Firefox 153 (~0.9–1.3×, since its JIT already compiles the JS pass to the same ~15 ns). Never a regression; the JS path remains the permanent fallback. Not yet wired into the render walk — that integration is a separate gated step.
+
+- 7b0d7f8: Fix DOM text-selection drift on justified text. `ContentProjectionRun` gains optional `x` / `width`: when set, the Scene lays the run out as a positioned carrier (`inline-block` + relative `left`) at the exact canvas x, the same technique the code-grid path uses. `Text` now emits positioned per-word runs on justified lines, so the native selection highlight overlaps the widened canvas glyphs instead of drifting left under the browser's natural inter-word spacing (verified on real Chrome). Left-aligned text is unchanged (no positioned runs, natural flow).
+- c0bed6a: Add justify alignment and soft-hyphen breaking to the MSDF text path, reaching parity with `TextEntity`.
+
+  - `LayoutWorker` gains a `textAlign: 'left' | 'justify'` request field. `'justify'` stretches every soft-wrapped line flush to `maxWidth` — widening inter-word spaces, or distributing slack between glyphs on a space-less CJK line — while paragraph-final and newline-ended lines stay ragged (matching `LayoutEngine`).
+  - `LayoutWorker` now honors soft hyphens (U+00AD) as break opportunities: when a word overflows, it breaks at the last soft hyphen that still fits and emits a visible `-` glyph, instead of moving the whole word down.
+  - `MSDFTextEntity` gains `setTextAlign('left' | 'justify')` (and a `textAlign` constructor option) plus `setHyphenator(fn | null)`. The hyphenator runs on the main thread (a function can't be structure-cloned into the layout worker), inserting U+00AD into the string sent to layout; the original text is preserved for accessibility / content projection.
+
+- 8749a9a: RTL / bidi text selection now overlaps the drawn glyphs. The engine right-aligns and visually reorders RTL lines, but the DOM content projection previously anchored every line at x=0, so the native selection box drifted off the glyphs (measured 300px+ on real Chrome). `Text` now anchors a bidi line's projection at its **visual origin** (the line's min glyph x) while keeping it a single natural-flow string in **logical** source order — so the browser's own bidi gives correct caret hit-mapping AND the selection rectangles overlap the canvas glyphs. RTL canvas text also renders glyph-by-glyph so it can actually right-align. Verified on real Chrome 150 + Firefox 153 across DPR 1/1.5, 90% zoom, and font-substitution cases. Left-aligned LTR text is unchanged.
+- 9e7f5bd: Ship the prebuilt WebAssembly accelerator in the published package and add a `@vectojs/core/wasm` entry point to load it. Previously the `.wasm` was gitignored and never copied into `dist/` or published, so npm consumers had no binary to pass to `enableWasmTransforms`/`enableWasmAnimBatching`/`enableWasmHitTest` and were silently stuck on the JS path.
+
+  ```ts
+  import { coreWasmUrl } from "@vectojs/core/wasm";
+  await scene.enableWasmTransforms(coreWasmUrl);
+  ```
+
+  `coreWasmUrl` is a `URL` pointing at the co-located `dist/wasm/vectojs_core.wasm` (works in native ESM and CJS, and in bundlers via the standard `new URL(..., import.meta.url)` asset pattern). The raw binary is also reachable at the `@vectojs/core/vectojs_core.wasm` subpath. The WASM remains a pure accelerator: if it can't be fetched or a bundler drops it, every `enableWasm*` call returns `false` and the scene runs the identical-output JS path — nothing here is required for the package to work.
+
+- 711824d: Add an optional WASM particle-simulation backend (G4) for `ComputeParticleEntity`'s CPU fallback. The per-frame particle step (spring-to-origin, mouse repulsion, explosion impulse, velocity integrate + damp + cap, boundary bounce + clamp, life decay) over 10k–100k particles now has a WASM kernel (`crates/vectojs-core-rs/src/particle.rs`) that advances the whole buffer in one call, replacing the per-particle JS `updateCPU` loop on the path that runs exactly when there is no GPU. It also fuses the separate `hasPendingAnimations` full-buffer scan into the step's return flag.
+
+  Opt-in and invisible, matching the transform/hit/anim backends: `scene.enableWasmParticles(coreWasmUrl)` (or `setParticleBackend`) installs it; `scene.particleSimBackend` reports the active path; `updateCPU` (f64) remains the permanent fallback when no backend is installed or the scene runs on WebGPU. The kernel commits to **f32** (matching the `Float32Array` buffer and the WGSL compute shader) and is a _separate_ differential oracle from the f64 transform core: it is bit-identical to a JS f32 reference (`particleStepReferenceF32`, verified over 60 steps across spring/mouse/explosion/clamped scenarios), and differs from `updateCPU`'s f64 by <1 ULP/step — the accepted CPU-vs-GPU-class divergence.
+
+  Real-hardware benchmark (`benchmarks/particle-wasm`, Chrome 150 + Firefox 153), including the per-frame AoS↔SoA transpose in the WASM timing: **~2.1–2.5× on Chrome and ~1.4–2.0× on Firefox** across 1k–100k particles (e.g. 100k: 4.60 ms → 2.18 ms Chrome, 2.59 ms → 1.30 ms Firefox per frame). Baselines in `vectojs-docs/forge/baselines/particle-wasm-*`.
+
+### Patch Changes
+
+- 2ac0bae: Add ARIA live-region and validation-state support to `A11yAttributes`, projected onto each interactive entity's shadow element by `Scene.syncA11y`. Previously there was no `aria-live` anywhere, so streamed chat messages, toasts, and async validation summaries were silent to screen readers (WCAG 4.1.3). `getA11yAttributes()` can now return `live` (`'off'|'polite'|'assertive'`), `atomic`, and `relevant` for live regions, plus `labelledby`, `describedby`, `required`, `invalid`, and `level` for labelling and field-validation state (WCAG 3.3 / 1.3.1). All are dirty-checked and removed when cleared, matching the existing optional-attribute sync.
+- 0cd149c: Three browser-robustness fixes:
+
+  - **WebGPU particle canvas was blurry on HiDPI** — the `gpuCanvas` backing store was sized in logical pixels (`width`/`height`) and then CSS-stretched, so on a 2× display it rendered at half resolution. It now sizes the backing store to logical × effective DPR (clamped to `maxDPR`, matching `CanvasRenderer`) with the CSS box at the logical size, both at creation and on `resize()`.
+  - **Physics jumped on tab refocus** — the render loop fed the full elapsed time into `update(dt)` and property drivers, so a backgrounded tab (rAF paused for seconds) advanced everything by that entire gap on the first frame back (springs explode, tweens snap past their end). `dt` is now clamped to a 100 ms max-frame cap, so a stall advances at most one slow frame; frame-rate telemetry still uses the true elapsed time.
+  - **Embedded (`disableWindowResize`) scenes never resized** — they only listened for `window` `resize`, which never fires when it's the canvas _element_ (not the window) that changes size. Embedded scenes now attach a `ResizeObserver` to the canvas and re-run `resize()` at its new logical size, disconnected on `destroy()`.
+
+- c07a9f7: Cache the per-frame `ComputeParticleEntity` collection. `Scene.render` walked
+  the entire tree every frame to gather compute entities — even for the
+  overwhelmingly common scene that has none, which paid an O(tree) walk per frame
+  just to build an empty array. The list now rebuilds only on a structural change
+  (add/remove/reparent, via the existing `_structureVersion`), so a
+  structurally-stable frame is O(1). Real-HW (`benchmarks/per-frame-walk`, Chrome
+  150 + Firefox 153): the eliminated walk grew to ~0.27ms/frame at 16k nodes on
+  both engines. Behavior is unchanged (the gathered set is identical); verified by
+  a structure-version cache test plus the existing particle/WebGPU suites.
+- e22af44: Recover from Canvas2D context loss (`CanvasRenderer`). A GPU reset or memory-pressure `contextlost` on the 2D canvas would previously leave the scene permanently blank — the renderer kept issuing draw calls against a dead context. It now listens for `contextlost`/`contextrestored`: on loss it calls `preventDefault()` (required, or the browser never fires `contextrestored`) and marks the context lost so `clear()` and the render pass become no-ops; on restore it re-acquires the 2D context, re-applies the DPR transform, drops cached style, and fires an `onContextRestored` callback that `Scene` uses to repaint the (freshly cleared) canvas. `IRenderer` gains optional `isContextLost()` / `onContextRestored()`, and `Scene.render` skips a pass while any renderer reports its context lost. No-op where the canvas has no `addEventListener` (SSR).
+- 4d9d77b: Clip interactive a11y projections by `clipChildren` ancestors and the viewport. `Scene.syncA11y` positioned each interactive entity's transparent shadow element but never gated its visibility, so a `Button` (or any interactive control) scrolled out of a `ScrollView`/`VirtualList` stayed clickable, focusable, and announced to screen readers — and could intercept clicks over whatever was drawn on top of it. The interactive branch now applies the same exact (margin 0) `projectionBoxVisible` test the content-projection branch already used, hiding the mirror with `display:none` when the entity's world box is fully outside its `clipChildren` ancestors or the viewport, and restoring it when it scrolls back in. `a11yFullViewport` overlays are intentionally exempt (they are unbounded by design).
+- 4749105: Hoist the content-projection viewport gate above `getContentProjection()` in `Scene.syncContentProjection` (CTX-0024). Previously the projection was computed **unconditionally** for every block every synced frame and the viewport-virtualization gate ran afterward — since `getContentProjection()` is O(glyphs-in-block), a long or streaming document cost O(total document glyphs) per frame, the dominant driver of the streaming-into-Markdown FPS decay. The gate needs only the node/world-transform/margin, so it now runs first and off-viewport blocks cost O(1) (freed if already materialized, never projected otherwise).
+
+  Measured on real hardware (Chrome 150 + Firefox 153, `benchmarks/content-projection`): the gated per-frame sync stays flat as the document grows while the pre-fix path grows linearly — at 1600 blocks (~384k glyphs) the sync pass drops from 23.95 ms → 0.87 ms on Chrome (27.5×) and 16.54 ms → 0.56 ms on Firefox (29.5×). On-viewport rendering and selection are unchanged.
+
+- 4fc27c7: Stop `scene.remove()` from leaking still-animating entities. An entity spawns a property driver by registering itself in the Scene's batched-driver candidate set, which is only self-pruned when the driver _completes_. Removing an entity mid-animation (a route change on a spinner, a dismissed toast still easing out) never unregistered it, so it stayed pinned in the set — a memory leak — and its drivers kept ticking every frame even though it was off-tree. `scene.remove()` / `hideOverlay()` now unregister the whole removed subtree, and `scene.add()` / `showOverlay()` re-register any node that still has live drivers, so re-attaching a subtree that was removed mid-animation resumes its motion.
+- 778f0c9: Cover the `TreeView` / `ContextMenu` per-child a11y hotspots in the real-browser
+  e2e. Their `role="treeitem"` / `role="menuitem"` projection, roving tabindex, and
+  `aria-haspopup` had only ever been asserted in jsdom, and — more importantly —
+  so had the `pointerEvents: 'none'` contract that keeps them from stealing the
+  mouse from the component underneath (tap-to-toggle, drag-to-scroll). That is the
+  same class of regression CI already caught once for `Table` cells, so it now runs
+  in both Chrome and Firefox against `elementFromPoint`.
+
+  The fixture adds the menu but deliberately leaves it **closed**: showing a
+  `ContextMenu` installs a full-scene interactive backdrop to catch the outside
+  click, which intercepts every pointer drag and broke four unrelated selection
+  assertions. The probe opens it, measures, and closes it again.
+
+  Also fixes each benchmark `serve.ts` logging a hardcoded `http://127.0.0.1:8178`
+  regardless of the `PORT` it actually bound — a mismatch that misleads debugging.
+
+- 69f344f: Fix `Entity.destroy()` to recurse into the whole subtree instead of only tearing down the entity itself. Previously only `Scene.destroy()` walked the tree, so calling `entity.destroy()` — or `scene.remove(subtree)` on an SPA route change — stranded every descendant's GPU buffers, layout workers, and DOM observers (the root cause behind the MSDF worker, compute-particle GPU, DOM-portal observer, and streaming-Markdown leaks). `destroy()` is now the single leaf-first recursion point: it destroys descendants (deepest last-detached), then clears its own animations/drivers/listeners, then detaches from its parent. It is idempotent and re-entrancy safe via an internal guard, so subclasses that free a resource which is also a child (e.g. `ContextMenu`) no longer double-free. `Scene.destroyEntitySubtree` now delegates to `entity.destroy()`.
+- a3cf4d0: `Scene.findEntityAt` (its JS hit-test walk, the permanent fallback) now respects visibility and pointer-input gating that the previous "run `isPointInside` on every node" walk ignored:
+
+  - **Invisible subtrees**: a node (and its whole subtree) with `opacity <= 0` is no longer a hit target — it isn't drawn, so it shouldn't intercept pointer input.
+  - **Clipping**: a descendant that falls outside a `clipChildren` ancestor's world box is no longer hit, even though its own `isPointInside` returns true — matching what's actually visible/clickable on screen.
+  - **Disabled / non-interactive**: a node whose `getA11yAttributes()` reports `disabled: true` or `pointerEvents: 'none'` is skipped as a target (its children are still walked, so a transparent container can hold hittable descendants).
+
+  Top-most-wins ordering is unchanged. (The WASM hit-grid path indexes geometry only; applying the same clip/opacity/disabled gating there is a tracked follow-up — the JS walk is the correctness reference.)
+
+- 7e6f76d: Fix two interaction bugs found by verifying the suspected input/a11y list (three
+  of the listed items turned out to need no change):
+
+  - **Hover was never cleared when an entity was removed mid-hover**
+    (`@vectojs/core`). Hover is driven by the projected shadow element's
+    `mouseenter`/`mouseleave`; detaching that element fires no `mouseleave`, so an
+    entity removed while the pointer was over it kept `hovered = true` forever —
+    visible the moment it is re-added (a pooled virtualized row, a reopened menu) as
+    hover styling with no pointer anywhere near it. Removal now synthesizes the
+    `pointerleave`, including for hovered descendants of a removed subtree, and
+    emits nothing when the entity wasn't hovered or had already left.
+  - **IME composition over a selection painted a stale highlight**
+    (`@vectojs/ui`). Composing over selected text logically replaces that range, but
+    the native `<input>`/`<textarea>` keeps reporting the pre-composition
+    `selectionStart`/`selectionEnd` until commit — so `Input` and `TextArea` drew the
+    old selection behind (and wider than) the composition underline. The selection
+    highlight is now suppressed while a non-empty composition is active.
+  - **`TextArea` never drew a composition underline at all** (`@vectojs/ui`). It
+    tracked `composition` but never used it, leaving a multi-keystroke IME
+    conversion with no in-canvas feedback. It now underlines the composing range,
+    per line so a wrapped composition is marked on every line it covers.
+
+- b377c32: Four interaction / accessibility fixes:
+
+  - **`Button` focus ring never appeared** — `render()` drew a ring when `focused`, but nothing set it. Button now syncs `focused` from the `focus`/`blur` events the Scene emits on its shadow `<button>`, so keyboard users get a visible focus indicator.
+  - **`Link` opened two tabs** — the shadow `<a href target="_blank">` navigates natively on a real DOM click, and that click was also forwarded to the entity's handler which called `window.open` again. Link now skips `window.open` when the click is a genuine DOM click on an `<a>` (native navigation already happened), while still opening for canvas/Three/XR-path clicks where no anchor navigated.
+  - **`Modal` had no dialog semantics** — it now reports `role="dialog"` + `aria-modal="true"` (new `A11yAttributes.ariaModal`, synced by `Scene`), closes on `Escape`, moves focus into the dialog on open, and restores focus to the previously-focused element on close.
+  - **`Overlay.hide()` left it interactive and announced** — setting `opacity = 0` alone kept the overlay hit-testable, focusable, and read by screen readers. `hide()` now also clears `interactive` and prunes the a11y/portal shadow subtree (`detachA11y`); a later `showAt`/`showAtPoint` re-shows it and the per-frame sync re-creates the shadow nodes.
+
+- 97e97bb: Complete the lifecycle-leak teardown on the `destroy()` path (follow-up to the `Entity.destroy()` recursion fix):
+
+  - **MSDF worker slot**: `MSDFTextEntity.destroy()` now cancels its queued layout via a new static `LayoutWorkerManager.cancelLayoutForEntity(id)` that no-ops when no manager exists, instead of `getInstance().cancelLayout()` which resurrected the worker singleton (and threw in SSR, where `Worker` is undefined) purely to cancel.
+  - **DOMPortalEntity observer/listeners on `scene.remove()`**: the `ResizeObserver` and DOM event listeners are now managed by `attachDOMBindings()` / `releaseDOMBindings()`. `scene.remove()` (and off-screen portal reconcile) releases them so a detached portal no longer leaks an observer that keeps its element alive and firing; the projection path re-attaches them idempotently if the portal is re-added, so remove→re-add still works.
+  - **Streaming Markdown**: `setContent()` and `updateTokens()` now `destroy()` discarded blocks (freeing each block's subtree resources) instead of only detaching them, and a new `Markdown.destroy()` drops this instance's in-flight worker callbacks (each pinned the whole entity via its closure) before recursing the content subtree.
+  - **ComputeParticleEntity**: no code change needed — the `Entity.destroy()` recursion already frees nested particle GPU buffers; added a regression test proving a nested particle subtree's buffers are all released.
+
+- cca3235: Two measured per-frame wins from the micro-walk survey (the rest of that list was
+  measured and found not to be hotspots — see below):
+
+  - **`measureText` shaped before checking its own cache** (`@vectojs/ui`). The LRU
+    was keyed on the _shaped_ text, so every cache **hit** still ran
+    `ArabicShaper.shapeArabic()` first — measured at ~60% of the whole hit cost
+    (49.7ms of 83ms per 20k hits), and pure overhead for the ASCII majority where
+    shaping returns the input unchanged yet still allocates an index map. The key is
+    now the raw text and shaping happens only on a miss: **4.14µs → 0.34µs per hit
+    (12×)**. Arabic is still measured in its contextually-shaped form — the change
+    affects only _when_ shaping runs.
+  - **`syncOverlayGeometry` re-wrote every overlay style every frame**
+    (`@vectojs/core`). It assigned ten style properties per overlay layer on every
+    synced frame even when the canvas box, logical size, and CSS↔logical scale were
+    all unchanged — the normal case, since those only move on resize, zoom, or an
+    ancestor scroll. It now memoizes the geometry it last wrote and returns early
+    when nothing moved; the memo is invalidated when a WebGL/WebGPU layer is created
+    lazily, so a brand-new layer is still positioned.
+
+  Measured and **not** changed, to save the next person the investigation: the
+  `scene` getter's parent-chain walk (`Entity.ts`) costs 0.14µs per read at depth 50
+  (28.4ms per 200k reads) — caching it would add reparenting/attach invalidation
+  complexity for no measurable gain.
+
+- de71fed: Pause the render loop when the canvas scrolls fully off-screen. A running `Scene` requested a `requestAnimationFrame` every frame regardless of whether its canvas was visible, so a dashboard tab, a chart below the fold, or any scrolled-away scene kept paying the full per-frame update/render cost for something nobody could see. `Scene` now observes its canvas with an `IntersectionObserver`: while the canvas is off-screen the loop does no work and stops rescheduling, and the observer resumes it (resetting the frame clock) when the canvas re-enters the viewport. `markDirty()` calls made while hidden are preserved and consumed on the resume frame. No-op where `IntersectionObserver` is unavailable (SSR/tests), so that behavior is unchanged; the observer is disconnected on `stop()`/`destroy()`.
+- bed7b65: Fix `scene.mouseX`/`mouseY` (and pointer-driven particle repulsion) freezing
+  when the cursor is over projected text or an interactive a11y mirror. Those
+  overlay elements sit above the canvas with `pointer-events: auto`, so a
+  `pointermove` over them fired on the element and never reached the
+  canvas-bound listener. The pointer listeners are now attached to the canvas's
+  parent container, so moves over any layer keep the tracked position current;
+  `pointerleave` still resets only when the pointer exits the whole region.
+- 9c46a4b: Preserve focus when a focused a11y projection is virtualized, streamed away, or otherwise removed. Removing the DOM element that holds `document.activeElement` drops focus to `<body>`, which yanks a screen reader out of the scene's a11y region back to the top of the page — the classic "lost my place on scroll/stream" bug for `VirtualList`-recycled or streamed controls. `Scene` now keeps a persistent `tabindex=-1` focus sentinel inside `a11yRoot` (kept last in DOM order); when the focused mirror is pruned at any of the three removal sites (`removeA11yRecursively`, the runtime tag-change path, and the `enforceA11yDomOrder` prune) while it is the active element, focus moves to the sentinel first, so it stays within the app region instead of collapsing to the document body.
+- f334b02: Preserve a text selection across a streaming content-projection rebuild. `Scene.syncContentProjection` replaces a content element's DOM (`replaceChildren`) whenever its projection signature changes — every appended chunk while a message streams — which previously wiped any selection the user had made, even in the unchanged prefix ("can't select text in a message still receiving tokens"). The rebuild now snapshots the selection's anchor/focus as linear character offsets within the element (via `projectionAbsoluteOffset`) and re-resolves them against the new DOM afterward (`projectionCaretAt`), so a selection in text that survives the rebuild is restored in place. It only fires when the element owns the selection and no drag is active, and it clears (rather than mis-restores) when the selected range ran into text that the update removed. The virtualization case — where the element itself is freed — remains out of scope (the browser genuinely drops the selection with the node).
+- 0416c56: Raise the default `Scene.animDriverGateCount` from 128 to 256, based on a re-run of the integrated `benchmarks/anim-wasm-scene` sweep on real Chrome 150 and Firefox 153 (0 correctness mismatches across spring/tween/mixed). The previous 128 default was validated only in aggregate; broken out by driver kind, pure-tween scenes are a net LOSS at n=128 on Chrome (0.71×, ~40% slower than the JS tick path) and only turn net-positive around n≈256, while spring/mixed win from n=128 up. 256 keeps the gate net-positive across all three driver kinds rather than opening early on a tween-heavy scene and making it slower. This only affects apps that opt into WASM animation batching via `enableWasmAnimBatching`; the JS tick path (default) is unchanged, and the gate remains a public field you can tune for your own browser/driver mix.
+- e4969a9: Re-render on a runtime `devicePixelRatio` change. The DPR was applied only inside `renderer.resize()`, which fires on a `window` resize — but dragging the window to a monitor with a different pixel density, or a browser zoom that changes DPR without changing the logical size, left the canvas backing store rasterized at the old DPR and visibly blurry. `Scene` now arms a `(resolution: Ndppx)` media query for the current DPR and, on change, re-runs `resize(width, height)` (re-scaling the backing store) and re-arms a fresh query for the new ratio (a resolution query only fires when leaving its exact value). It runs even for embedded (`disableWindowResize`) scenes, since they blur the same way, and is torn down on `destroy()`. No-op where `matchMedia` is unavailable.
+- 29e9cbd: Bring `findEntityAt`'s WASM hit-grid path to parity with the JS walk's clip/opacity/disabled gating (follow-up to the JS-path fix). The WASM path confirmed a grid candidate with `isPointInside` only, so it could still return an invisible (`opacity: 0`) node, a descendant clipped outside a `clipChildren` ancestor, or a `disabled`/`pointerEvents: 'none'` element — diverging from `findHitRecursively`. A shared `isHitEligible(entity, x, y)` gate (walks ancestors for opacity and `clipChildren` containment, plus the pointer-transparency check) now guards both the candidate scan and the boundless-entity pass, so the WASM and JS hit paths return the same entity for every query.
+- 8a0a9c8: Recover the WebGL point layer from a GPU context loss (driver TDR reset, tab backgrounded on mobile, GPU switch). `WebGLPointRenderer` never handled `webglcontextlost`/`webglcontextrestored`, so after a context loss the layer stayed permanently blank — and, critically, without calling `preventDefault()` on the `lost` event the browser never fires `restored` at all. `Scene` now attaches recovery listeners to its WebGL canvas: on `webglcontextlost` it calls `preventDefault()` and drops the (now-dead) renderer so the render loop skips the layer; on `webglcontextrestored` it rebuilds the renderer from scratch via the registered creator, restores DPR/size, and repaints. Listeners are removed on `destroy()`, and a `restored` event that arrives after teardown is inert. (The `@vectojs/three` renderer, which has its own Three.js restore machinery, is a separate follow-up.)
+- Updated dependencies [2bebe0c]
+- Updated dependencies [c5c720a]
+- Updated dependencies [7b7b2b6]
+- Updated dependencies [04a1c6f]
+- Updated dependencies [778f0c9]
+- Updated dependencies [26b9bdf]
+- Updated dependencies [97e97bb]
+- Updated dependencies [c0bed6a]
+- Updated dependencies [eaf9ecc]
+- Updated dependencies [539700d]
+- Updated dependencies [63fc4b7]
+- Updated dependencies [5eae419]
+  - @vectojs/text@0.2.0
+  - @vectojs/layout@0.2.0
+  - @vectojs/animation@0.1.1
+  - @vectojs/math@0.1.1
+
 ## 1.15.0
 
 ### Minor Changes

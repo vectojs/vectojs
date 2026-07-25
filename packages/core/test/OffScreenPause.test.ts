@@ -27,7 +27,8 @@ function installIntersectionObserver() {
   return {
     instances,
     set(onScreen: boolean) {
-      for (const inst of [...instances]) {
+      // Snapshot not needed: the loop body doesn't add/remove observers.
+      for (const inst of instances) {
         inst.cb([{ isIntersecting: onScreen } as IntersectionObserverEntry], inst.io);
       }
     },

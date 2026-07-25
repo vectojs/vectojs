@@ -1,5 +1,132 @@
 # @vectojs/ui
 
+## 2.1.0
+
+### Minor Changes
+
+- e3b745d: Add per-child ARIA roles + keyboard navigation to `TreeView`, `Table`, and
+  `ContextMenu` (WCAG 2.1.1 / 4.1.2), completing the composite-widget a11y work
+  started for RadioGroup/Tabs in PR #160. Each now projects transparent focusable
+  hotspots over its canvas-drawn children so a screen reader and keyboard user can
+  operate them:
+
+  - **TreeView** — one `role="treeitem"` per visible row (virtualization-aware
+    pool) with `aria-level`, `aria-expanded` (parents), `aria-selected`, and a
+    roving tabindex. Keyboard: Up/Down move, Right expands / steps into children,
+    Left collapses / steps to parent, Home/End, Enter/Space activate; the active
+    row scrolls into view and takes focus.
+  - **Table** — a real `grid > row > gridcell/columnheader` structure (pinned
+    header row + one body `role="row"` per visible row, virtualization-aware),
+    each cell a focusable hotspot with a roving tabindex. Keyboard: 2D arrows
+    (clamped), Home/End (row extremes), Ctrl+Home/Ctrl+End (grid corners); the
+    target cell scrolls into view and takes focus.
+  - **ContextMenu** — one `role="menuitem"` per non-separator item with
+    `aria-haspopup`/`aria-expanded` for submenu parents, `disabled`, and a roving
+    tabindex. Keyboard: Up/Down (wrapping, skipping separators + disabled),
+    Home/End, Right opens a submenu, Left returns to the parent menu, Enter/Space
+    activate, Escape closes.
+
+- 7b0d7f8: `RichText` now accepts `textAlign: 'left' | 'justify'` (+ a `setTextAlign()` method) and a `hyphenate` word-splitter. `justify` stretches every wrapped line flush to `maxWidth` (paragraph-final and newline-ended lines stay ragged); `hyphenate` breaks an overflowing word with a visible hyphen (soft hyphens U+00AD in the text work without one). Both pass straight through to the shared `LayoutEngine` — `RichText` already draws each glyph at its own position, so no rendering change was needed.
+- e988a32: RichText justified selection now overlaps the drawn glyphs. On a justified line the engine widens inter-word gaps on the canvas, but the DOM content projection used natural-flow style runs, so the native selection box drifted off the widened words (real-hardware verified). RichText now projects a justified line as per-glyph positioned carriers — each at its own visual x, in logical source order (correct copy / screen-reader order), carrying the logical source substring (not the shaped glyph). Ragged (left-aligned) lines keep the cheaper natural-flow style runs, and per-run bold/italic/size fonts are preserved on both paths.
+- 8749a9a: RTL / bidi text selection now overlaps the drawn glyphs. The engine right-aligns and visually reorders RTL lines, but the DOM content projection previously anchored every line at x=0, so the native selection box drifted off the glyphs (measured 300px+ on real Chrome). `Text` now anchors a bidi line's projection at its **visual origin** (the line's min glyph x) while keeping it a single natural-flow string in **logical** source order — so the browser's own bidi gives correct caret hit-mapping AND the selection rectangles overlap the canvas glyphs. RTL canvas text also renders glyph-by-glyph so it can actually right-align. Verified on real Chrome 150 + Firefox 153 across DPR 1/1.5, 90% zoom, and font-substitution cases. Left-aligned LTR text is unchanged.
+- d4e6baa: Add touch / pointer **drag-to-scroll** to `Table` and `TreeView`, matching
+  `VirtualList` and `ScrollView`. A virtualized `Table` previously only scrolled
+  with a mouse wheel, and `TreeView` toggled a row on `pointerdown` — both were
+  effectively unusable on a touchscreen. Now:
+
+  - `Table` body follows the finger 1:1 (`pointerdown`/`move`/`up`), same sign
+    convention as its wheel scroll.
+  - `TreeView` drag-scrolls and defers the expand/collapse toggle to `pointerup`,
+    firing it only when the pointer moved less than a small tap threshold — so a
+    drag scrolls without accidentally toggling the row it started on, while a tap
+    still toggles as before.
+
+- fe98df9: Add opt-in virtualization to `Table`. Previously every cell was mounted and every row's chrome was drawn each frame, so a large data table's per-frame cost scaled with the total row count (and a 50k-row table meant 200k live cell entities + their content projections). Passing a `viewportHeight` now fixes the table to that height, pins the header, and scrolls the body — mounting (and projecting a11y for) only the body rows within the viewport plus a small overscan, laid out at a fixed `rowHeight` so scroll↔row-index is O(1). Wheel scrolling uses the same inertial integrator as `Tree`/`VirtualList`, and mounted cells stay fully selectable with correct DOM-vs-canvas geometry.
+
+  Omitting `viewportHeight` keeps the classic behavior exactly: the table grows to fit all rows, every cell stays mounted, and rows keep their measured variable heights.
+
+  Real-hardware benchmark (`benchmarks/table-virtual`, Chrome 150 + Firefox 153): the virtualized per-frame layout+sync cost stays flat at ~0.3 ms as the table grows, while the classic path grows linearly — at 5000 rows, 41 ms → 0.28 ms on Chrome (149×) and 49 ms → 0.26 ms on Firefox (190×). Text selection on the scrolled, clipped body audits `clean` on both engines.
+
+- 7b0d7f8: `Text` now accepts `textAlign: 'left' | 'justify'` (+ a `setTextAlign()` method) and a `hyphenate` word-splitter. Left-aligned text keeps the fast one-`fillText`-per-line path; when justify or hyphenate is active, `Text` switches to a glyph-accurate render path (justify widens inter-word gaps flush to `maxWidth`, hyphenate breaks an overflowing word with a visible `-`). The DOM content projection still reports the original text unchanged, so find-in-page, selection, and screen readers are unaffected.
+
+### Patch Changes
+
+- e82102c: Add forced-colors (Windows High Contrast) awareness. `Scene` now exposes a
+  `forcedColors` getter backed by a `(forced-colors: active)` media query and
+  repaints when it toggles, so components can swap to CSS system colors — canvas
+  pixels are exempt from the browser's forced-colors remapping. `Button` uses it
+  to draw with `ButtonFace`/`ButtonText`/`Highlight` under High Contrast.
+- 7e6f76d: Fix two interaction bugs found by verifying the suspected input/a11y list (three
+  of the listed items turned out to need no change):
+
+  - **Hover was never cleared when an entity was removed mid-hover**
+    (`@vectojs/core`). Hover is driven by the projected shadow element's
+    `mouseenter`/`mouseleave`; detaching that element fires no `mouseleave`, so an
+    entity removed while the pointer was over it kept `hovered = true` forever —
+    visible the moment it is re-added (a pooled virtualized row, a reopened menu) as
+    hover styling with no pointer anywhere near it. Removal now synthesizes the
+    `pointerleave`, including for hovered descendants of a removed subtree, and
+    emits nothing when the entity wasn't hovered or had already left.
+  - **IME composition over a selection painted a stale highlight**
+    (`@vectojs/ui`). Composing over selected text logically replaces that range, but
+    the native `<input>`/`<textarea>` keeps reporting the pre-composition
+    `selectionStart`/`selectionEnd` until commit — so `Input` and `TextArea` drew the
+    old selection behind (and wider than) the composition underline. The selection
+    highlight is now suppressed while a non-empty composition is active.
+  - **`TextArea` never drew a composition underline at all** (`@vectojs/ui`). It
+    tracked `composition` but never used it, leaving a multi-keystroke IME
+    conversion with no in-canvas feedback. It now underlines the composing range,
+    per line so a wrapped composition is marked on every line it covers.
+
+- b377c32: Four interaction / accessibility fixes:
+
+  - **`Button` focus ring never appeared** — `render()` drew a ring when `focused`, but nothing set it. Button now syncs `focused` from the `focus`/`blur` events the Scene emits on its shadow `<button>`, so keyboard users get a visible focus indicator.
+  - **`Link` opened two tabs** — the shadow `<a href target="_blank">` navigates natively on a real DOM click, and that click was also forwarded to the entity's handler which called `window.open` again. Link now skips `window.open` when the click is a genuine DOM click on an `<a>` (native navigation already happened), while still opening for canvas/Three/XR-path clicks where no anchor navigated.
+  - **`Modal` had no dialog semantics** — it now reports `role="dialog"` + `aria-modal="true"` (new `A11yAttributes.ariaModal`, synced by `Scene`), closes on `Escape`, moves focus into the dialog on open, and restores focus to the previously-focused element on close.
+  - **`Overlay.hide()` left it interactive and announced** — setting `opacity = 0` alone kept the overlay hit-testable, focusable, and read by screen readers. `hide()` now also clears `interactive` and prunes the a11y/portal shadow subtree (`detachA11y`); a later `showAt`/`showAtPoint` re-shows it and the per-frame sync re-creates the shadow nodes.
+
+- 7b0d7f8: Fix DOM text-selection drift on justified text. `ContentProjectionRun` gains optional `x` / `width`: when set, the Scene lays the run out as a positioned carrier (`inline-block` + relative `left`) at the exact canvas x, the same technique the code-grid path uses. `Text` now emits positioned per-word runs on justified lines, so the native selection highlight overlaps the widened canvas glyphs instead of drifting left under the browser's natural inter-word spacing (verified on real Chrome). Left-aligned text is unchanged (no positioned runs, natural flow).
+- cca3235: Two measured per-frame wins from the micro-walk survey (the rest of that list was
+  measured and found not to be hotspots — see below):
+
+  - **`measureText` shaped before checking its own cache** (`@vectojs/ui`). The LRU
+    was keyed on the _shaped_ text, so every cache **hit** still ran
+    `ArabicShaper.shapeArabic()` first — measured at ~60% of the whole hit cost
+    (49.7ms of 83ms per 20k hits), and pure overhead for the ASCII majority where
+    shaping returns the input unchanged yet still allocates an index map. The key is
+    now the raw text and shaping happens only on a miss: **4.14µs → 0.34µs per hit
+    (12×)**. Arabic is still measured in its contextually-shaped form — the change
+    affects only _when_ shaping runs.
+  - **`syncOverlayGeometry` re-wrote every overlay style every frame**
+    (`@vectojs/core`). It assigned ten style properties per overlay layer on every
+    synced frame even when the canvas box, logical size, and CSS↔logical scale were
+    all unchanged — the normal case, since those only move on resize, zoom, or an
+    ancestor scroll. It now memoizes the geometry it last wrote and returns early
+    when nothing moved; the memo is invalidated when a WebGL/WebGPU layer is created
+    lazily, so a brand-new layer is still positioned.
+
+  Measured and **not** changed, to save the next person the investigation: the
+  `scene` getter's parent-chain walk (`Entity.ts`) costs 0.14µs per read at depth 50
+  (28.4ms per 200k reads) — caching it would add reparenting/attach invalidation
+  complexity for no measurable gain.
+
+- ed2614e: Make wrapping `Stack` (and `Flow`) appends O(1) instead of O(children). `Stack.add()` already had an O(1) fast path for the non-wrap, start-aligned case, but a **wrapping** stack fell back to a full `layout()` on every `add()` — so building a wrapping `Flow` one child at a time (a streaming list of chips/tags) cost O(children²) total. There is now an O(1) wrap fast-append that places each new child at the end of the current line (or the start of a new one) using persisted last-line state, recomputed at the end of each full `layout()` and updated per append. It runs under the same invariants as the existing fast path (`align: 'start'`, not immediately after a `remove()`) — start alignment is what makes it safe, since a later, cross-larger child on a line never shifts an already-placed sibling. Behavior is identical to a full re-layout (unit-tested for equivalence across both directions and a mid-stream `layout()`).
+
+  Real-hardware benchmark (`benchmarks/stack-wrap`, Chrome 150 + Firefox 153): fast-append total build time stays ~0.5–1.4 ms as the child count grows, while the old full-layout-per-add grows quadratically — at 4000 children, 195 ms → 0.9 ms on Chrome (**213×**) and 173 ms → 1.4 ms on Firefox (**120×**).
+
+- 63fc4b7: Two text-correctness fixes.
+
+  **Text-default pictographs no longer count as double-width** (`@vectojs/text`). `PreparedContentGrid`'s `isWideCluster` treated every `Extended_Pictographic` code point as width-2, but `© ® ™ ☺ ✔ ❤` (and many others) are _text-default_ — width-1 unless an emoji variation selector (VS16) forces emoji presentation. This drifted the caret in the monospace content grid. A pictograph is now wide only when it carries VS16 or is `Emoji_Presentation` by default (and VS15 forces it narrow); flags, keycaps, and CJK are unaffected.
+
+  **Inline `code` now renders (and measures) as monospace** (`@vectojs/layout`, `@vectojs/ui`, `@vectojs/markdown`). `TextStyle` gains an optional `fontFamily`, and `GlyphMeasurer.measure` gains an optional `fontFamily` argument, so a run in a different family lays out at its own metrics instead of the base font's. `RichText` honors it in both drawing (`nodeFont`) and measurement, and Markdown inline `codespan` now sets `fontFamily` to the theme's monospace stack — previously inline code was only tinted, rendered in the proportional prose font. Fenced `CodeBlock` was already monospace and is unchanged. Runs without `fontFamily` keep the component's base family (no behavior change for existing callers).
+
+- ed68e3c: Two per-frame `@vectojs/ui` hot paths that scaled with content size are now flat:
+
+  - **VirtualList row math**: `_totalH`/`_rowTop`/`_visibleRange` were O(items) and ran every scroll frame, defeating virtualization on long feeds. Replaced the height bookkeeping with a Fenwick prefix-sum tree (new exported `RowHeights`): `total()` O(1), `prefix()`/`indexAt()` O(log n), O(log n) point updates when a measured height replaces its estimate. Measured height caching and variable-row support are unchanged.
+  - **RichText per-frame rebuild**: `visualLineGroups()` rebuilt the visual-line grouping (an O(glyphs) walk with `Math.max(...map())` per line) on every `render()` and every content-projection call. It is now memoized on the layout-`result` identity and invalidated whenever `layout()` produces a new result.
+
+  Real-hardware benchmark (`benchmarks/ui-perf`, Chrome 150 + Firefox 153): VirtualList row math stays ~0.04–0.09 ms as the list grows while the previous linear scan reaches 391 ms (Chrome) / 165 ms (Firefox) at 500k rows — up to 4350× / 4130×. RichText memoized warm frames are ~0.0002 ms vs cold builds up to ~1.2 ms. Behavior is unchanged (all 357 ui tests plus new `RowHeights` and memoization regression tests pass).
+
 ## 2.0.0
 
 ### Major Changes
