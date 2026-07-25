@@ -1255,6 +1255,8 @@ export class Scene {
   // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
   private pointRenderer: PointRenderer | null = null;
   private glCanvas: HTMLCanvasElement | null = null;
+  private glContextLostHandler: ((e: Event) => void) | null = null;
+  private glContextRestoredHandler: (() => void) | null = null;
   private debugA11y: boolean;
   public width: number;
   public height: number;
@@ -1611,6 +1613,7 @@ export class Scene {
         pr.resize(this.width, this.height);
         this.glCanvas = gl;
         this.pointRenderer = pr;
+        this.setupGLContextRecovery(gl);
       } else {
         gl.remove(); // WebGL2 unavailable → fall back to the Canvas2D batch
       }
@@ -1658,6 +1661,39 @@ export class Scene {
     query.addEventListener?.('change', handler);
     this.dprMediaQuery = query;
     this.dprChangeHandler = handler;
+  }
+
+  /**
+   * Recover the WebGL point layer from a GPU context loss (driver TDR reset,
+   * tab backgrounded on mobile, GPU switch). Two things are required:
+   *
+   *  1. The `webglcontextlost` handler MUST call `preventDefault()`, or the
+   *     browser never fires `webglcontextrestored` and the layer is blank
+   *     forever. While lost, the old renderer's GL calls are silently ignored,
+   *     so we drop it and the render loop simply skips the point layer.
+   *  2. On `webglcontextrestored`, all GL objects (programs, buffers, textures)
+   *     are gone, so we rebuild the renderer from scratch via `Scene.webglCreator`
+   *     on the same canvas, restore DPR/size, and repaint.
+   */
+  private setupGLContextRecovery(gl: HTMLCanvasElement): void {
+    if (typeof gl.addEventListener !== 'function') return;
+    this.glContextLostHandler = (e: Event) => {
+      e.preventDefault(); // mandatory — otherwise 'restored' never fires
+      this.pointRenderer?.destroy();
+      this.pointRenderer = null;
+    };
+    this.glContextRestoredHandler = () => {
+      if (this.destroyed || !this.glCanvas) return;
+      const pr = Scene.webglCreator ? Scene.webglCreator(this.glCanvas) : null;
+      if (pr) {
+        pr.maxDPR = this.maxDPR;
+        pr.resize(this.width, this.height);
+        this.pointRenderer = pr;
+        this.markDirty();
+      }
+    };
+    gl.addEventListener('webglcontextlost', this.glContextLostHandler);
+    gl.addEventListener('webglcontextrestored', this.glContextRestoredHandler);
   }
 
   private endContentSelectionDrag(): void {
@@ -1964,6 +2000,16 @@ export class Scene {
     for (const probe of this.contentGridCalibrationProbes.values()) probe.remove();
     this.contentGridCalibrationProbes.clear();
     this.endContentSelectionDrag();
+    if (this.glCanvas) {
+      if (this.glContextLostHandler) {
+        this.glCanvas.removeEventListener('webglcontextlost', this.glContextLostHandler);
+      }
+      if (this.glContextRestoredHandler) {
+        this.glCanvas.removeEventListener('webglcontextrestored', this.glContextRestoredHandler);
+      }
+    }
+    this.glContextLostHandler = null;
+    this.glContextRestoredHandler = null;
     this.pointRenderer?.destroy();
     // Release the main renderer's backend (e.g. WebGLRenderer + GL context)
     // before GC — prevents context leakage across SPA/XR recreate cycles.
