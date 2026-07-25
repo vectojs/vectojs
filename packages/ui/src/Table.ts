@@ -83,6 +83,11 @@ class GridCellHotspot extends UIComponent {
       role: this.rowIndex < 0 ? 'columnheader' : 'gridcell',
       label: this.label,
       tabIndex: this.table.isGridTabStop(this.rowIndex, this.colIndex) ? 0 : -1,
+      // The cell's own selectable text projection sits underneath and must own
+      // the pointer hit for native drag-selection; this hotspot exists only for
+      // semantics + keyboard focus (roving tabindex), so it opts out of pointer
+      // hit-testing. `pointer-events:none` does not affect keyboard focus.
+      pointerEvents: 'none',
     };
   }
 

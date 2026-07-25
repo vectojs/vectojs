@@ -100,6 +100,11 @@ class TreeItemHotspot extends UIComponent {
       selected: this.tree.isSelected(this.nodeId),
       // Roving tabindex: only the active row is a tab stop; arrows move within.
       tabIndex: this.tree.isTabStop(this.nodeId) ? 0 : -1,
+      // The TreeView owns mouse handling (tap-to-toggle + drag-to-scroll); this
+      // hotspot exists for semantics + keyboard focus, so it opts out of pointer
+      // hit-testing so a real click/drag reaches the tree. Keyboard focus and
+      // AT-synthesized `click` still work under `pointer-events:none`.
+      pointerEvents: 'none',
     };
   }
 

@@ -274,6 +274,11 @@ export class ContextMenu extends Overlay {
       haspopup: hasSub ? 'menu' : undefined,
       expanded: hasSub ? this._submenuFor === item && !!this._submenu : undefined,
       tabIndex: this.isMenuTabStop(idx) ? 0 : -1,
+      // The ContextMenu owns mouse handling (pointerdown-by-localY selects the
+      // row + opens submenus); this hotspot is for semantics + keyboard focus,
+      // so it opts out of pointer hit-testing so a real click reaches the menu.
+      // Keyboard focus and AT-synthesized `click` still work under this.
+      pointerEvents: 'none',
     };
   }
 
