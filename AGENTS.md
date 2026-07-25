@@ -64,24 +64,38 @@ machine and CI runner uses the same locked version.
 - **Git hooks**: `lefthook` (`lefthook.yml`) replaces Husky + lint-staged + the Python `pre-commit`. `bun install` runs `lefthook install` via the `prepare` script. There is no `.husky/` directory in this repo.
 - **Commit messages**: `commitlint` (conventional commits) on `commit-msg`.
 - **Compiler**: TypeScript **7.x** everywhere; verify types with the package `build` (`tsc -p tsconfig.build.json`).
-- **Unit testing**: Vitest via `bun run test`.
-- **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`. Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). Never build with a bare `cargo build --target wasm32-unknown-unknown` — always use `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
+- **Task runner (preferred entry point)**: `just` — a `Justfile` of thin wrappers over the package.json scripts + pinned toolchain. Prefer `just <recipe>` over the raw `bun run …`/`cargo …` invocations (run `just --list` to see all); each recipe calls the same underlying command, so CI parity is preserved.
+- **Unit testing**: Vitest — `just test` (all packages), `just test-pkg <pkg>`, or `just test-file <pkg> <file>` (each wraps `bun run test` / `bun run --filter …`).
+- **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`, wrapped as `just wasm-check`; build with `just wasm` (never a bare `cargo build --target wasm32-unknown-unknown`). Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). `just wasm` runs `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
 
 ### Build & Verification Workflow
+
+**Prefer `just`.** The repo has a `Justfile` of thin wrappers over the
+package.json scripts + the pinned toolchain, so the long `bun run --filter …` /
+`RUSTFLAGS …` invocations become one short word. Run `just` (or `just --list`)
+to see every recipe. Use these first; the underlying `bun run <script>` still
+works and is what each recipe calls.
 
 Run from the workspace root (all tools resolve to the locked local versions):
 
 ```bash
-# Format (oxfmt) + all lint gates (oxlint, markdownlint, actionlint)
-bun run format        # oxfmt --write
-bun run check         # format:check + lint + lint:md + lint:actions
-
-# Lint only (no warnings allowed)
-bun run lint          # oxlint --deny-warnings
-
-# Run unit tests
-bun run test
+just fmt            # format every source file in place (oxfmt — the authority)
+just check          # full CI gate: format check + oxlint + markdownlint + actionlint
+just lint           # lint only, warnings are errors (oxlint)
+just test           # all unit tests across every package
+just test-pkg core  # unit tests for one package
+just test-file core test/wasm/anim-kernel.test.ts  # a single vitest file
+just verify         # check + test — the pre-push habit
+just build          # build every package in dependency order
+just wasm           # build the Rust wasm core (correct RUSTFLAGS baked in)
+just wasm-check     # rustfmt + clippy on the wasm target (warnings as errors)
+just wasm-test      # build the wasm, then run the core differential suite
+just e2e            # browser e2e (HiDPI + text-projection)
 ```
+
+Each recipe maps to the same `bun run <script>` a contributor would otherwise
+type by hand (e.g. `just check` → `bun run check`, `just wasm` →
+`crates/vectojs-core-rs/build.sh`), so CI and local runs stay identical.
 
 The `lefthook` pre-commit hook auto-runs `oxfmt --write`, `oxlint --fix`, and
 `markdownlint-cli2 --fix` on staged files, so formatting is applied for you at
@@ -92,7 +106,7 @@ commit time.
 ## 3. Agent Rules & Constraints
 
 1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `/mnt/data/Workspace/Projects/vectojs` while working.
-2. **Use locked local tooling**: All build/lint/format tools are pinned `devDependencies` run through `bun run <script>` or `bunx <tool>`, so everyone uses the same version. Do **not** rely on globally-installed tools or `bun add -g`; do not use `npx`. (`actionlint` is the sole exception — a Go binary with no npm package, enforced in CI via a pinned Docker image.)
+2. **Use locked local tooling, `just` first**: All build/lint/format tools are pinned `devDependencies`. Prefer the `just` recipes (`just --list`) — they wrap the exact `bun run <script>` / `bunx <tool>` a contributor would otherwise type, so everyone uses the same version and CI parity holds. Fall back to `bun run <script>` / `bunx <tool>` directly when no recipe fits. Do **not** rely on globally-installed tools or `bun add -g`; do not use `npx`. (`actionlint` is the sole exception — a Go binary with no npm package, enforced in CI via a pinned Docker image.)
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.

@@ -23,8 +23,9 @@ function installMatchMedia() {
   return {
     lists,
     fireChange() {
-      // Fire every currently-registered dpr listener (there is one live query).
-      for (const l of [...lists]) l.handler();
+      // Snapshot first: a handler re-arms by pushing a fresh query onto `lists`
+      // mid-iteration, so iterate a copy to avoid firing the just-added one.
+      for (const l of lists.slice()) l.handler();
     },
   };
 }
