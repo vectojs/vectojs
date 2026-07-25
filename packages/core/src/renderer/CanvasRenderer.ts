@@ -25,6 +25,14 @@ export class CanvasRenderer implements IRenderer {
   private ctx: CanvasRenderingContext2D;
   private width: number;
   private height: number;
+  private canvas: HTMLCanvasElement;
+  /** True between a `contextlost` and its `contextrestored` — the 2D context is
+   *  unusable, so draw calls are skipped until it comes back. Canvas2D context
+   *  loss is rare (GPU reset / memory pressure) but a real browser event. */
+  private contextLost = false;
+  /** Invoked after the context is restored + re-initialized, so the owner
+   *  (`Scene`) can repaint the now-blank canvas. Set via {@link onContextRestored}. */
+  private contextRestoredCb: (() => void) | null = null;
 
   /**
    * Cap on the effective device pixel ratio applied by the constructor and
@@ -91,6 +99,42 @@ export class CanvasRenderer implements IRenderer {
     const ctx = canvas.getContext('2d');
     this.ctx = ctx as CanvasRenderingContext2D;
     if (ctx) ctx.scale(dpr, dpr);
+    this.canvas = canvas;
+    this.setupContextLossRecovery();
+  }
+
+  /** Register a callback fired after a lost 2D context is restored + re-scaled,
+   *  so the owner can repaint (the restored canvas comes back cleared). */
+  public onContextRestored(cb: () => void): void {
+    this.contextRestoredCb = cb;
+  }
+
+  /**
+   * Handle Canvas2D context loss/restore (GPU reset, memory pressure). The
+   * `contextlost` handler MUST call `preventDefault()` or the browser never
+   * fires `contextrestored`; while lost, draw calls are skipped. On restore we
+   * re-acquire the 2D context, re-apply the DPR scale, drop cached style, and
+   * notify the owner to repaint.
+   */
+  private setupContextLossRecovery(): void {
+    if (typeof this.canvas.addEventListener !== 'function') return;
+    this.canvas.addEventListener('contextlost', (e: Event) => {
+      e.preventDefault();
+      this.contextLost = true;
+    });
+    this.canvas.addEventListener('contextrestored', () => {
+      const ctx = this.canvas.getContext('2d');
+      if (!ctx) return;
+      this.ctx = ctx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(this.effectiveDPR(), this.effectiveDPR());
+      this._cachedFont = '';
+      this._cachedFill = '';
+      this.batchActive = false;
+      this.batchCount = 0;
+      this.contextLost = false;
+      this.contextRestoredCb?.();
+    });
   }
 
   /**
@@ -129,8 +173,15 @@ export class CanvasRenderer implements IRenderer {
     this.ctx.scale(dpr, dpr);
   }
 
+  /** Whether the 2D context is currently lost (drawing is a no-op until it is
+   *  restored). The owner skips its render pass while this is true. */
+  public isContextLost(): boolean {
+    return this.contextLost;
+  }
+
   /** @inheritdoc */
   clear(): void {
+    if (this.contextLost) return; // context gone → nothing to clear/draw
     this.flush();
     this.ctx.clearRect(0, 0, this.width, this.height);
   }
