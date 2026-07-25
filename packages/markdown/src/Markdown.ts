@@ -482,18 +482,35 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
       return segments;
     }
 
-    // Strings
+    // Strings. Only colored when the quote actually CLOSES on this line —
+    // otherwise a stray quote (a Rust lifetime `&'a str`, an apostrophe in an
+    // identifier or trailing prose, a generic `'` in shell) would swallow the
+    // whole rest of the line as a green "string". An unterminated quote falls
+    // through and is treated as ordinary punctuation.
     if (ch === '"' || ch === "'" || ch === '`') {
-      flush(theme.codeColor);
       const quote = ch;
       let j = i + 1;
-      while (j < line.length && line[j] !== quote) {
-        if (line[j] === '\\') j++; // skip escaped
+      let closed = false;
+      while (j < line.length) {
+        if (line[j] === '\\') {
+          j += 2; // skip the escape and whatever it escapes
+          continue;
+        }
+        if (line[j] === quote) {
+          closed = true;
+          break;
+        }
         j++;
       }
-      j++; // include closing quote
-      segments.push({ text: line.slice(i, j), color: STRING_COLOR });
-      i = j;
+      if (closed) {
+        flush(theme.codeColor);
+        segments.push({ text: line.slice(i, j + 1), color: STRING_COLOR });
+        i = j + 1; // past the closing quote
+        continue;
+      }
+      // Unterminated: emit as plain text and move on.
+      buf += ch;
+      i++;
       continue;
     }
 

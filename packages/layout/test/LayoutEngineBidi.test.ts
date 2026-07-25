@@ -78,4 +78,72 @@ describe('LayoutEngine BiDi Integration', () => {
       expect(right).toBeCloseTo(50, 0);
     }
   });
+
+  describe('RTL + justify spans the full measure', () => {
+    // A justified RTL line skips the whole-line flush-right shift (justify is
+    // supposed to reach the edge itself). But the logical TRAILING space is reset
+    // to the base level by L1 and lands at the VISUAL LEFT, where it used to keep
+    // its width — so the line started a space-width inside the measure and only
+    // the right edge was flush. Both edges must be flush.
+    const TEXT = '\u05E9\u05E9 \u05DC\u05DC \u05E9\u05E9 \u05DC\u05DC';
+    const WRAP = 110;
+
+    /** Content (non-whitespace) left/right edge of each visual line, by y. */
+    const contentEdges = (nodes: { char: string; x: number; y: number; width: number }[]) => {
+      const byY = new Map<number, { left: number; right: number }>();
+      for (const n of nodes) {
+        if (n.char.trim() === '') continue;
+        const e = byY.get(n.y) ?? { left: Infinity, right: -Infinity };
+        e.left = Math.min(e.left, n.x);
+        e.right = Math.max(e.right, n.x + n.width);
+        byY.set(n.y, e);
+      }
+      return [...byY.entries()].sort((a, b) => a[0] - b[0]).map(([, e]) => e);
+    };
+
+    it('justified RTL lines are flush on BOTH edges', () => {
+      const engine = new LayoutEngine(WRAP, 500);
+      (engine as unknown as { textAlign: string }).textAlign = 'justify';
+      const edges = contentEdges(engine.layoutText(TEXT, mockFontAtlas, 32).nodes);
+
+      expect(edges.length).toBeGreaterThan(1); // actually wrapped
+      // Every line but the paragraph-final one is justified: left at the origin,
+      // right at the wrap edge.
+      for (const e of edges.slice(0, -1)) {
+        expect(e.left).toBeCloseTo(0, 4);
+        expect(e.right).toBeCloseTo(WRAP, 4);
+      }
+    });
+
+    it('leaves the paragraph-final RTL line unjustified but still flush right', () => {
+      const engine = new LayoutEngine(WRAP, 500);
+      (engine as unknown as { textAlign: string }).textAlign = 'justify';
+      const edges = contentEdges(engine.layoutText(TEXT, mockFontAtlas, 32).nodes);
+      const last = edges[edges.length - 1];
+      // Not stretched to the left origin…
+      expect(last.left).toBeGreaterThan(0);
+      // …but still ends at the wrap edge (RTL alignment).
+      expect(last.right).toBeCloseTo(WRAP, 4);
+    });
+
+    it('does not change the non-justified RTL path', () => {
+      const engine = new LayoutEngine(WRAP, 500); // default align
+      const edges = contentEdges(engine.layoutText(TEXT, mockFontAtlas, 32).nodes);
+      for (const e of edges) {
+        expect(e.right).toBeCloseTo(WRAP, 4); // flush right
+        expect(e.left).toBeGreaterThan(0); // not stretched
+      }
+    });
+
+    it('keeps LTR justify flush left-to-right (unchanged)', () => {
+      const engine = new LayoutEngine(WRAP, 500);
+      (engine as unknown as { textAlign: string }).textAlign = 'justify';
+      const edges = contentEdges(engine.layoutText('AB AB AB AB', mockFontAtlas, 32).nodes);
+      expect(edges.length).toBeGreaterThan(1);
+      for (const e of edges.slice(0, -1)) {
+        expect(e.left).toBeCloseTo(0, 4);
+        expect(e.right).toBeCloseTo(WRAP, 4);
+      }
+    });
+  });
 });
