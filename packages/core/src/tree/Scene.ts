@@ -20,7 +20,13 @@ export interface IWebGPUParticleSystemManager {
   destroy(): void;
 }
 
-import { Entity, VectoJSEvent, type ContentProjection, type AnimatableProp } from './Entity';
+import {
+  Entity,
+  VectoJSEvent,
+  type Bounds,
+  type ContentProjection,
+  type AnimatableProp,
+} from './Entity';
 import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
@@ -4435,18 +4441,70 @@ export class Scene {
     }
   }
 
-  private findHitRecursively(node: Entity, x: number, y: number): Entity | null {
-    // Walk children in reverse order (drawn last/top-most first)
+  private findHitRecursively(
+    node: Entity,
+    x: number,
+    y: number,
+    clip: Bounds | null = null,
+  ): Entity | null {
+    // An invisible subtree (opacity 0) is not drawn, so nothing in it should be
+    // hit — skip the node AND its children (opacity accumulates down the tree).
+    if (node.opacity <= 0) return null;
+
+    // A `clipChildren` node clips its descendants to its world box: intersect it
+    // into the clip rect passed down to the children (but the node itself is
+    // still hit-testable against the incoming clip).
+    let childClip = clip;
+    if (node.clipChildren) {
+      const box = node.getWorldBounds();
+      childClip = clip ? intersectBounds(clip, box) : box;
+    }
+
+    // Walk children in reverse order (drawn last/top-most first).
     for (let i = node.children.length - 1; i >= 0; i--) {
-      const hit = this.findHitRecursively(node.children[i], x, y);
+      const hit = this.findHitRecursively(node.children[i], x, y, childClip);
       if (hit) return hit;
     }
 
-    // If the node itself has isPointInside and is hit
-    if (node.isPointInside && node.isPointInside(x, y)) {
+    // The node itself is a hit target only if the point is inside it, inside any
+    // clipping ancestor, and it isn't opted out of pointer input (a disabled
+    // control or an explicit `pointerEvents: 'none'`).
+    if (
+      node.isPointInside &&
+      node.isPointInside(x, y) &&
+      (!clip || pointInBounds(clip, x, y)) &&
+      !this.isPointerTransparent(node)
+    ) {
       return node;
     }
 
     return null;
   }
+
+  /** Whether `node` opts out of being a pointer hit target: a disabled control
+   *  or an explicit `pointerEvents: 'none'` in its a11y attributes. Its children
+   *  are still walked (a transparent container can hold hittable descendants). */
+  private isPointerTransparent(node: Entity): boolean {
+    const attrs = node.getA11yAttributes();
+    return attrs.disabled === true || attrs.pointerEvents === 'none';
+  }
+}
+
+/** Axis-aligned intersection of two world-space boxes (empty if disjoint). */
+function intersectBounds(a: Bounds, b: Bounds): Bounds {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return {
+    x,
+    y,
+    width: Math.max(0, right - x),
+    height: Math.max(0, bottom - y),
+  };
+}
+
+/** Whether world point `(x, y)` lies within box `b`. */
+function pointInBounds(b: Bounds, x: number, y: number): boolean {
+  return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
 }
