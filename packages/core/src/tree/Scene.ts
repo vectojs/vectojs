@@ -821,6 +821,17 @@ export class Scene {
   private canvasResizeObserver: ResizeObserver | null = null;
   private dprChangeHandler: (() => void) | null = null;
   private focusedA11yElement: HTMLElement | null = null;
+  /** Last geometry `syncOverlayGeometry` wrote, so an unchanged frame can skip the
+   *  style writes entirely. Reset to `null` to force the next sync (a new overlay
+   *  layer was created and has never been positioned). */
+  private _overlayGeometry: {
+    left: number;
+    top: number;
+    cssWidth: number;
+    cssHeight: number;
+    width: number;
+    height: number;
+  } | null = null;
   /** Shadow elements the pointer is currently inside. Lets a removal that happens
    *  mid-hover synthesize the `pointerleave` the browser never sends for a
    *  detached element, so the entity doesn't keep its hover state. */
@@ -1802,6 +1813,9 @@ export class Scene {
         pr.resize(this.width, this.height);
         this.glCanvas = gl;
         this.pointRenderer = pr;
+        // A brand-new layer has never been positioned; force the next geometry
+        // sync to write instead of short-circuiting on an unchanged box.
+        this._overlayGeometry = null;
         this.setupGLContextRecovery(gl);
       } else {
         gl.remove(); // WebGL2 unavailable → fall back to the Canvas2D batch
@@ -3596,6 +3610,32 @@ export class Scene {
     const scaleX = this.width > 0 ? cssWidth / this.width : 1;
     const scaleY = this.height > 0 ? cssHeight / this.height : 1;
 
+    // The overlay layers only move when the canvas box, the logical size, or the
+    // CSS↔logical scale actually changes — which is rare (resize, zoom, a
+    // scrolled ancestor), not every frame. Bail out when nothing moved instead of
+    // re-writing ten style properties per layer per frame: identical assignments
+    // still touch the CSSOM, and the write set grows with every overlay layer.
+    const prev = this._overlayGeometry;
+    if (
+      prev !== null &&
+      prev.left === left &&
+      prev.top === top &&
+      prev.cssWidth === cssWidth &&
+      prev.cssHeight === cssHeight &&
+      prev.width === this.width &&
+      prev.height === this.height
+    ) {
+      return;
+    }
+    this._overlayGeometry = {
+      left,
+      top,
+      cssWidth,
+      cssHeight,
+      width: this.width,
+      height: this.height,
+    };
+
     for (const root of [this.a11yRoot, this.portalRoot]) {
       if (!root) continue;
       root.style.left = `${left}px`;
@@ -4528,6 +4568,8 @@ export class Scene {
         this.canvas.parentElement.appendChild(gpuCanvas);
       }
       this.gpuCanvas = gpuCanvas;
+      // Never positioned yet — force the next geometry sync (see _overlayGeometry).
+      this._overlayGeometry = null;
       this.gpuContext = gpuCanvas.getContext('webgpu');
     }
 
