@@ -66,10 +66,15 @@ describe('DOMPortalEntity', () => {
       const disconnect = vi.fn();
       const observe = vi.fn();
       const orig = globalThis.ResizeObserver;
+      // Match the real ResizeObserver signature (a required callback arg).
+      // A 0-arg anonymous class here makes CodeQL merge it into the global
+      // ResizeObserver type and flag the source's `new ResizeObserver(cb)` as a
+      // superfluous-argument call (alert js/superfluous-trailing-arguments).
       globalThis.ResizeObserver = class {
         observe = observe;
         disconnect = disconnect;
         unobserve = vi.fn();
+        constructor(_callback: ResizeObserverCallback) {}
       } as any;
       try {
         const portal = new DOMPortalEntity(div);

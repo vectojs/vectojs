@@ -1,5 +1,9 @@
 import { Entity } from './Entity';
 import { IRenderer } from '../renderer/IRenderer';
+// Type-only: particle-backend imports the PARTICLE_OFFSET_* consts from this
+// file, so a value import would form a runtime cycle. The backend is passed in
+// by Scene (which owns the WASM instance); this file never constructs one.
+import type { ParticleBackend } from '../wasm/particle-backend';
 
 /**
  * Options for configuring a {@link ComputeParticleEntity}.
@@ -61,6 +65,11 @@ export class ComputeParticleEntity extends Entity {
   public computeBindGroup: any = null;
   /** WebGPU bind group for the render pass (usually same as compute). */
   public renderBindGroup: any = null;
+
+  /** When the last simulation step ran through the WASM backend, its fused
+   *  pending-animation flag; `null` when the last step used the JS `updateCPU`
+   *  path (so `hasPendingAnimations` falls back to its own scan). */
+  private _wasmPending: boolean | null = null;
 
   constructor(options: ComputeParticleOptions = {}) {
     super();
@@ -201,6 +210,12 @@ export class ComputeParticleEntity extends Entity {
    * always return `true` and defeat the idle throttle entirely.
    */
   public override hasPendingAnimations(): boolean {
+    // If the last step ran through the WASM backend it already computed this
+    // exact velocity/distance test in the same buffer walk (fused), so reuse
+    // its flag instead of re-scanning. Falls back to the JS scan on the JS path.
+    if (this._wasmPending !== null) {
+      return this._wasmPending || this.pendingExplosion !== null;
+    }
     const EPS_VELOCITY = 0.5; // px/s — below this a particle looks at rest
     const EPS_DISTANCE = 0.5; // px — below this "still approaching origin" is imperceptible
     for (let i = 0; i < this.maxParticles; i++) {
@@ -237,6 +252,9 @@ export class ComputeParticleEntity extends Entity {
     width: number,
     height: number,
   ): void {
+    // JS path: invalidate the WASM fused-flag cache so hasPendingAnimations
+    // re-scans this buffer rather than trusting a stale backend flag.
+    this._wasmPending = null;
     const safeDt = isNaN(dt) ? 0.016 : Math.max(0.0, Math.min(dt, 0.1));
     const explosion = this.pendingExplosion;
     const safeWidth = Math.max(1.0, width);
@@ -340,6 +358,45 @@ export class ComputeParticleEntity extends Entity {
       this.particleData[offset + 7] = nlife;
     }
 
+    this.pendingExplosion = null;
+  }
+
+  /**
+   * Advance the simulation one step through the WASM particle kernel: transpose
+   * this entity's AoS buffer into the backend's SoA views, run `particle_step`,
+   * and scatter position/velocity/life back. Produces an f32 result (matching
+   * the WGSL shader) that differs from {@link updateCPU}'s f64 by <1 ULP/step —
+   * the accepted CPU-vs-GPU-class divergence. Caches the kernel's fused
+   * pending-animation flag so {@link hasPendingAnimations} needs no second scan.
+   *
+   * The backend holds one resident SoA store, so a Scene with multiple particle
+   * entities reuses it sequentially — origin is therefore re-gathered each call
+   * (not upload-once), a couple of extra f32 reads per particle.
+   */
+  public stepWithBackend(
+    backend: ParticleBackend,
+    dt: number,
+    mouseX: number,
+    mouseY: number,
+    width: number,
+    height: number,
+  ): void {
+    const count = this.maxParticles;
+    backend.ensure(count);
+    backend.gather(this.particleData, count, true);
+    this._wasmPending = backend.step(count, {
+      dt,
+      mouseX,
+      mouseY,
+      width,
+      height,
+      springK: this.springK,
+      damping: this.damping,
+      bounceDamping: this.bounceDamping,
+      maxVelocity: this.maxVelocity,
+      explosion: this.pendingExplosion,
+    });
+    backend.scatter(this.particleData, count);
     this.pendingExplosion = null;
   }
 

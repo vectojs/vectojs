@@ -50,6 +50,12 @@ import {
   type AnimModuleSource,
   type AnimBackend,
 } from '../wasm/anim-backend';
+import {
+  instantiateAsync as instantiateParticleAsync,
+  instantiateStreaming as instantiateParticleStreaming,
+  type ParticleModuleSource,
+  type ParticleBackend,
+} from '../wasm/particle-backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -1070,6 +1076,46 @@ export class Scene {
       : await instantiateAnimStreaming(source as Exclude<AnimModuleSource, BufferSource>);
     if (!backend) return false;
     this.setAnimBackend(backend);
+    return true;
+  }
+
+  // ── WASM particle CPU-sim backend (invisible accelerator, G4) ───────────────
+  // Advances a ComputeParticleEntity's whole buffer in one `particle_step` call
+  // (spring/mouse/explosion/integrate/bounce/life), replacing the per-particle
+  // JS `updateCPU` loop on the GPU-less fallback path. Measured ~2.1-2.5x on
+  // Chrome and ~1.4-2.0x on Firefox including the per-frame AoS<->SoA transpose
+  // (benchmarks/particle-wasm). f32 (matches the WGSL shader), bit-identical to
+  // a JS f32 reference oracle; updateCPU (f64) stays the permanent fallback when
+  // no backend is installed or a scene runs on WebGPU.
+  private _particleWasm: ParticleBackend | null = null;
+
+  /** Which backend runs the CPU particle simulation. Reflects only whether a
+   *  backend is installed (the WebGPU compute path, when active, is used first
+   *  regardless). */
+  public get particleSimBackend(): 'js' | 'wasm' {
+    return this._particleWasm ? 'wasm' : 'js';
+  }
+
+  /** Install (or clear) a WASM particle backend directly. Prefer
+   *  {@link enableWasmParticles} for the normal async hot-swap. */
+  public setParticleBackend(backend: ParticleBackend | null): void {
+    this._particleWasm = backend;
+  }
+
+  /**
+   * Asynchronously instantiate the WASM particle core and, on success, use it
+   * for the CPU particle fallback. Accepts the same source shapes as
+   * {@link enableWasmTransforms}. Stays on the JS `updateCPU` path if
+   * instantiation fails — failure is the default state, not an error path.
+   * Resolves `true` if WASM is now active.
+   */
+  public async enableWasmParticles(source: ParticleModuleSource): Promise<boolean> {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    const backend = isBytes
+      ? await instantiateParticleAsync(source)
+      : await instantiateParticleStreaming(source as Exclude<ParticleModuleSource, BufferSource>);
+    if (!backend) return false;
+    this.setParticleBackend(backend);
     return true;
   }
 
@@ -3711,7 +3757,11 @@ export class Scene {
               my = -9999;
             }
           }
-          entity.updateCPU(dt / 1000, mx, my, this.width, this.height);
+          if (this._particleWasm) {
+            entity.stepWithBackend(this._particleWasm, dt / 1000, mx, my, this.width, this.height);
+          } else {
+            entity.updateCPU(dt / 1000, mx, my, this.width, this.height);
+          }
         }
       }
     } else if (isMainRenderer) {
