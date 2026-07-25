@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { buildStore, composeJS, type InputNode, type TransformStore } from '../../src/wasm/soa';
+import {
+  buildStore,
+  composeJS,
+  computeAabbsJS,
+  type InputNode,
+  type TransformStore,
+} from '../../src/wasm/soa';
 import { instantiateSync, type WasmTransformBackend } from '../../src/wasm/backend';
 
 // The WASM asset is built by crates/vectojs-core-rs/build.sh and is gitignored
@@ -40,13 +46,22 @@ function randomTree(count: number, topo: Topology, rand: () => number): InputNod
       scaleY: 0.25 + rand() * 3,
       rotation: (rand() - 0.5) * Math.PI * 4,
       opacity: rand(),
+      // Local render bounds for the world-AABB pass — include a non-zero origin
+      // sometimes so the bx/by (not just bw/bh) path is exercised.
+      bx: rand() < 0.3 ? (rand() - 0.5) * 40 : 0,
+      by: rand() < 0.3 ? (rand() - 0.5) * 40 : 0,
+      bw: rand() * 300,
+      bh: rand() * 200,
     });
   }
   return nodes;
 }
 
 /** Two independent stores from the same tree, one composed in JS, one in WASM. */
-function pair(nodes: InputNode[]): { js: TransformStore; wasm: TransformStore } {
+function pair(nodes: InputNode[]): {
+  js: TransformStore;
+  wasm: TransformStore;
+} {
   return { js: buildStore(nodes), wasm: buildStore(nodes) };
 }
 
@@ -138,6 +153,117 @@ describe.skipIf(!haveWasm)('WASM/JS differential (bit-identical f64)', () => {
       expect(outV.wf[i]).toBe(js.wf[i]);
       expect(outV.wo[i]).toBe(js.wo[i]);
     }
+  });
+});
+
+describe.skipIf(!haveWasm)('WASM/JS world-AABB differential (G1+, bit-identical f64)', () => {
+  let backend: WasmTransformBackend;
+
+  const assertAabbsIdentical = (js: TransformStore, wasm: TransformStore) => {
+    for (let i = 0; i < js.count; i++) {
+      expect(wasm.aminx[i]).toBe(js.aminx[i]);
+      expect(wasm.aminy[i]).toBe(js.aminy[i]);
+      expect(wasm.amaxx[i]).toBe(js.amaxx[i]);
+      expect(wasm.amaxy[i]).toBe(js.amaxy[i]);
+    }
+  };
+
+  it('instantiates', () => {
+    backend = instantiateSync(readFileSync(wasmPath))!;
+    expect(backend).not.toBeNull();
+  });
+
+  const topos: Topology[] = ['flat', 'chain', 'bushy', 'mixed'];
+  for (const topo of topos) {
+    for (const count of [1, 2, 3, 8, 64, 1000, 10_000]) {
+      it(`${topo} tree, ${count} nodes — compute_aabbs matches JS bit-for-bit`, () => {
+        const nodes = randomTree(count, topo, rng(count * 47 + topo.length));
+        const { js, wasm } = pair(nodes);
+        // AABBs need composed world matrices first.
+        composeJS(js);
+        computeAabbsJS(js);
+        backend.compose(wasm, 'simd');
+        backend.computeAabbs(wasm);
+        assertAabbsIdentical(js, wasm);
+      });
+    }
+  }
+
+  it('resident path (boundsView + runAabbs + aabbView) matches JS bit-for-bit', () => {
+    const nodes = randomTree(2000, 'mixed', rng(0xaab));
+    const js = buildStore(nodes);
+    const wasm = buildStore(nodes);
+    composeJS(js);
+    computeAabbsJS(js);
+
+    // Size + compose once, publish runs, write inputs + bounds in place, run.
+    backend.compose(wasm, 'simd');
+    backend.uploadRuns(wasm);
+    const inV = backend.inputView();
+    const bV = backend.boundsView();
+    for (let i = 0; i < wasm.count; i++) {
+      inV.x[i] = wasm.x[i];
+      inV.y[i] = wasm.y[i];
+      inV.sx[i] = wasm.sx[i];
+      inV.sy[i] = wasm.sy[i];
+      inV.cos[i] = wasm.cos[i];
+      inV.sin[i] = wasm.sin[i];
+      inV.opacity[i] = wasm.opacity[i];
+      bV.bx[i] = wasm.bx[i];
+      bV.by[i] = wasm.by[i];
+      bV.bw[i] = wasm.bw[i];
+      bV.bh[i] = wasm.bh[i];
+    }
+    backend.runKernel('simd');
+    backend.runAabbs(wasm.count);
+
+    const aV = backend.aabbView();
+    for (let i = 0; i < js.count; i++) {
+      expect(aV.aminx[i]).toBe(js.aminx[i]);
+      expect(aV.aminy[i]).toBe(js.aminy[i]);
+      expect(aV.amaxx[i]).toBe(js.amaxx[i]);
+      expect(aV.amaxy[i]).toBe(js.amaxy[i]);
+    }
+  });
+
+  it('AABB matches Entity.getWorldBounds semantics for a known transform', () => {
+    // Root(identity) → one child rotated 90° with a 100×40 box at origin.
+    const nodes: InputNode[] = [
+      {
+        parent: -1,
+        x: 0,
+        y: 0,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: 0,
+        opacity: 1,
+        bw: 0,
+        bh: 0,
+      },
+      {
+        parent: 0,
+        x: 10,
+        y: 20,
+        scaleX: 1,
+        scaleY: 1,
+        rotation: Math.PI / 2,
+        opacity: 1,
+        bx: 0,
+        by: 0,
+        bw: 100,
+        bh: 40,
+      },
+    ];
+    const js = buildStore(nodes);
+    composeJS(js);
+    computeAabbsJS(js);
+    const childStore = js.storeIndexOf[1];
+    // 90° rot of a 100×40 box at (10,20): corners (10,20),(10,120),(-30,20),
+    // (-30,120) → x∈[-30,10], y∈[20,120].
+    expect(js.aminx[childStore]).toBeCloseTo(-30, 9);
+    expect(js.amaxx[childStore]).toBeCloseTo(10, 9);
+    expect(js.aminy[childStore]).toBeCloseTo(20, 9);
+    expect(js.amaxy[childStore]).toBeCloseTo(120, 9);
   });
 });
 

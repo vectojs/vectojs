@@ -84,6 +84,18 @@ struct Store {
     wf: *mut f64,
     wo: *mut f64,
 
+    // Local render bounds inputs (bx, by, bw, bh) for the world-AABB pass.
+    bx: *mut f64,
+    by: *mut f64,
+    bw: *mut f64,
+    bh: *mut f64,
+
+    // World-space AABB outputs (min/max corner after the world transform).
+    aminx: *mut f64,
+    aminy: *mut f64,
+    amaxx: *mut f64,
+    amaxy: *mut f64,
+
     // Sibling runs: run `r` owns entities `[run_start[r], run_start[r] +
     // run_len[r])` whose shared parent is `run_parent[r]`.
     run_parent: *mut i32,
@@ -107,6 +119,14 @@ static mut S: Store = Store {
     we: ptr::null_mut(),
     wf: ptr::null_mut(),
     wo: ptr::null_mut(),
+    bx: ptr::null_mut(),
+    by: ptr::null_mut(),
+    bw: ptr::null_mut(),
+    bh: ptr::null_mut(),
+    aminx: ptr::null_mut(),
+    aminy: ptr::null_mut(),
+    amaxx: ptr::null_mut(),
+    amaxy: ptr::null_mut(),
     run_parent: ptr::null_mut(),
     run_start: ptr::null_mut(),
     run_len: ptr::null_mut(),
@@ -152,6 +172,14 @@ pub extern "C" fn init(capacity: usize, max_runs: usize) {
         S.we = leak_f64(n);
         S.wf = leak_f64(n);
         S.wo = leak_f64(n);
+        S.bx = leak_f64(n);
+        S.by = leak_f64(n);
+        S.bw = leak_f64(n);
+        S.bh = leak_f64(n);
+        S.aminx = leak_f64(n);
+        S.aminy = leak_f64(n);
+        S.amaxx = leak_f64(n);
+        S.amaxy = leak_f64(n);
         S.run_parent = leak_i32(max_runs);
         S.run_start = leak_i32(max_runs);
         S.run_len = leak_i32(max_runs);
@@ -182,6 +210,14 @@ ptr_export!(p_wd, wd, f64);
 ptr_export!(p_we, we, f64);
 ptr_export!(p_wf, wf, f64);
 ptr_export!(p_wo, wo, f64);
+ptr_export!(p_bx, bx, f64);
+ptr_export!(p_by, by, f64);
+ptr_export!(p_bw, bw, f64);
+ptr_export!(p_bh, bh, f64);
+ptr_export!(p_aminx, aminx, f64);
+ptr_export!(p_aminy, aminy, f64);
+ptr_export!(p_amaxx, amaxx, f64);
+ptr_export!(p_amaxy, amaxy, f64);
 ptr_export!(p_run_parent, run_parent, i32);
 ptr_export!(p_run_start, run_start, i32);
 ptr_export!(p_run_len, run_len, i32);
@@ -329,6 +365,100 @@ pub unsafe extern "C" fn compose_simd() {
 
                 i += 2;
             }
+        }
+    }
+}
+
+/// `Math.min` semantics: propagate NaN (unlike Rust's `f64::min`, which ignores
+/// it), and treat `-0 < +0`. Matches the JS reference's min accumulation so the
+/// AABB pass stays bit-identical even for NaN/±0 corners from overflowed
+/// transforms.
+#[inline]
+fn js_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        // -0 is "less than" +0 for Math.min.
+        if a.is_sign_negative() { a } else { b }
+    } else if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max` semantics: propagate NaN; treat `+0 > -0`.
+#[inline]
+fn js_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_positive() { a } else { b }
+    } else if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+/// World-space AABB pass (G1+). For each of the `count` entities, transform its
+/// local bounds `[bx, by, bw, bh]` through the already-composed world matrix and
+/// write the min/max of the four transformed corners to `aminx/aminy/amaxx/amaxy`.
+///
+/// Bit-identical to `soa.ts::computeAabbsJS` (and thus to `Entity.getWorldBounds`):
+/// same corner-selection bit trick, same `a*x + c*y + e` / `b*x + d*y + f` op
+/// order, same min/max accumulation over exactly four corners. Scalar (not SIMD):
+/// the min/max reduction across four corners per entity does not map cleanly onto
+/// two-lane `f64x2` without changing the reduction order (and thus bit-identity),
+/// and the pass is memory-light — the win over the JS reference is avoiding the
+/// per-entity closure/object churn across the whole batch, not lane throughput.
+///
+/// Must run AFTER a `compose_*` kernel, which fills the world matrices this reads.
+///
+/// # Safety
+///
+/// `init` must have been called with capacity ≥ `count`, and a `compose_*`
+/// kernel must have populated the world matrices for `[0, count)`. Reads/writes
+/// `[0, count)` of each SoA array; `count` beyond capacity is out of bounds.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn compute_aabbs(count: usize) {
+    unsafe {
+        for i in 0..count {
+            let a = *S.wa.add(i);
+            let b = *S.wb.add(i);
+            let c = *S.wc.add(i);
+            let d = *S.wd.add(i);
+            let e = *S.we.add(i);
+            let f = *S.wf.add(i);
+            let bx = *S.bx.add(i);
+            let by = *S.by.add(i);
+            let bw = *S.bw.add(i);
+            let bh = *S.bh.add(i);
+
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for k in 0..4 {
+                let local_x = if k & 1 != 0 { bx + bw } else { bx };
+                let local_y = if k & 2 != 0 { by + bh } else { by };
+                let world_x = a * local_x + c * local_y + e;
+                let world_y = b * local_x + d * local_y + f;
+                // js_min/js_max, NOT f64::min/max: `Math.min`/`Math.max`
+                // PROPAGATE NaN (result is NaN if either operand is NaN), while
+                // Rust's f64::min/max IGNORE NaN. A pathological transform (e.g.
+                // a 10k-deep chain whose scale overflows to Infinity, giving an
+                // Infinity*0 = NaN corner) would otherwise diverge from the JS
+                // reference. Matching Math.* keeps the pass bit-identical.
+                min_x = js_min(min_x, world_x);
+                min_y = js_min(min_y, world_y);
+                max_x = js_max(max_x, world_x);
+                max_y = js_max(max_y, world_y);
+            }
+            *S.aminx.add(i) = min_x;
+            *S.aminy.add(i) = min_y;
+            *S.amaxx.add(i) = max_x;
+            *S.amaxy.add(i) = max_y;
         }
     }
 }

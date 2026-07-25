@@ -40,6 +40,17 @@ export interface LocalTransform {
  */
 export interface InputNode extends LocalTransform {
   parent: number;
+  /**
+   * Local render bounds `[bx, by, bw, bh]` for the world-AABB pass
+   * ({@link computeAabbsJS} / the crate's `compute_aabbs`). Optional; defaults to
+   * `[0, 0, 0, 0]`, matching `Entity.getWorldBounds`'s `[0,0,width,height]`
+   * fallback when a node has no render-specific box (callers pass `width`/
+   * `height` as `bw`/`bh`).
+   */
+  bx?: number;
+  by?: number;
+  bw?: number;
+  bh?: number;
 }
 
 /** A composed world matrix (`a b c d e f`) plus accumulated opacity. */
@@ -78,6 +89,16 @@ export interface TransformStore {
   we: Float64Array;
   wf: Float64Array;
   wo: Float64Array;
+  // Local render bounds (inputs to the world-AABB pass).
+  bx: Float64Array;
+  by: Float64Array;
+  bw: Float64Array;
+  bh: Float64Array;
+  // World-space AABB outputs (min/max corner after the world transform).
+  aminx: Float64Array;
+  aminy: Float64Array;
+  amaxx: Float64Array;
+  amaxy: Float64Array;
   // Sibling runs.
   runParent: Int32Array;
   runStart: Int32Array;
@@ -139,6 +160,14 @@ export function buildStore(nodes: InputNode[]): TransformStore {
     we: new Float64Array(capacity),
     wf: new Float64Array(capacity),
     wo: new Float64Array(capacity),
+    bx: new Float64Array(capacity),
+    by: new Float64Array(capacity),
+    bw: new Float64Array(capacity),
+    bh: new Float64Array(capacity),
+    aminx: new Float64Array(capacity),
+    aminy: new Float64Array(capacity),
+    amaxx: new Float64Array(capacity),
+    amaxy: new Float64Array(capacity),
     runParent: new Int32Array(count),
     runStart: new Int32Array(count),
     runLen: new Int32Array(count),
@@ -175,7 +204,7 @@ export function buildStore(nodes: InputNode[]): TransformStore {
   return store;
 }
 
-function writeInput(s: TransformStore, i: number, n: LocalTransform): void {
+function writeInput(s: TransformStore, i: number, n: InputNode): void {
   s.x[i] = n.x;
   s.y[i] = n.y;
   s.sx[i] = n.scaleX;
@@ -183,6 +212,10 @@ function writeInput(s: TransformStore, i: number, n: LocalTransform): void {
   s.cos[i] = Math.cos(n.rotation);
   s.sin[i] = Math.sin(n.rotation);
   s.opacity[i] = n.opacity;
+  s.bx[i] = n.bx ?? 0;
+  s.by[i] = n.by ?? 0;
+  s.bw[i] = n.bw ?? 0;
+  s.bh[i] = n.bh ?? 0;
 }
 
 /**
@@ -248,5 +281,71 @@ export function readWorld(s: TransformStore, i: number): WorldMatrix {
     e: s.we[i],
     f: s.wf[i],
     opacity: s.wo[i],
+  };
+}
+
+/** A world-space axis-aligned bounding box (min/max corner). */
+export interface WorldAabb {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/**
+ * Transform each node's local bounds `[bx, by, bw, bh]` through its already-
+ * composed world matrix into a world-space AABB (the min/max of the four
+ * transformed corners), writing `aminx/aminy/amaxx/amaxy`. This is the reference
+ * oracle and permanent JS fallback for the crate's `compute_aabbs`, and is
+ * bit-identical to `Entity.getWorldBounds` — same corner-selection bit trick
+ * (`i&1`/`i&2`), same `a*x + c*y + e` / `b*x + d*y + f` op order, same
+ * `Math.min`/`Math.max` accumulation over exactly four corners.
+ *
+ * Must run AFTER {@link composeJS} (or a `compose_*` kernel), which fills the
+ * world matrices this reads. A flat pass over `[0, count)` — the world matrices
+ * already encode the hierarchy, so no run walk is needed.
+ */
+export function computeAabbsJS(s: TransformStore): void {
+  for (let i = 0; i < s.count; i++) {
+    const a = s.wa[i];
+    const b = s.wb[i];
+    const c = s.wc[i];
+    const d = s.wd[i];
+    const e = s.we[i];
+    const f = s.wf[i];
+    const bx = s.bx[i];
+    const by = s.by[i];
+    const bw = s.bw[i];
+    const bh = s.bh[i];
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let k = 0; k < 4; k++) {
+      const localX = k & 1 ? bx + bw : bx;
+      const localY = k & 2 ? by + bh : by;
+      const worldX = a * localX + c * localY + e;
+      const worldY = b * localX + d * localY + f;
+      minX = Math.min(minX, worldX);
+      minY = Math.min(minY, worldY);
+      maxX = Math.max(maxX, worldX);
+      maxY = Math.max(maxY, worldY);
+    }
+    s.aminx[i] = minX;
+    s.aminy[i] = minY;
+    s.amaxx[i] = maxX;
+    s.amaxy[i] = maxY;
+  }
+}
+
+/** Read the world-space AABB at store index `i` (valid after `computeAabbsJS`
+ *  or the crate's `compute_aabbs`). */
+export function readAabb(s: TransformStore, i: number): WorldAabb {
+  return {
+    minX: s.aminx[i],
+    minY: s.aminy[i],
+    maxX: s.amaxx[i],
+    maxY: s.amaxy[i],
   };
 }
