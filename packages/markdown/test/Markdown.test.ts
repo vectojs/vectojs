@@ -59,6 +59,43 @@ describe('Markdown', () => {
     expect(md.content.children.length).toBeGreaterThanOrEqual(1);
   });
 
+  describe('list marker side follows item reading direction', () => {
+    // Each list item is a RichText; its first/last span text carries the marker.
+    const itemSpans = (md: Markdown, i: number) => {
+      const list = md.content.children[0] as { children: any[] };
+      return (list.children[i] as { spans: { text: string }[] }).spans;
+    };
+
+    it('LTR unordered item keeps the bullet as a LEADING span', () => {
+      const md = new Markdown('- hello world');
+      const spans = itemSpans(md, 0);
+      expect(spans[0].text).toBe('• ');
+      expect(spans[spans.length - 1].text).not.toContain('\u2022');
+    });
+
+    it('RTL unordered item puts the bullet as a TRAILING span (visual right)', () => {
+      // Arabic item — the marker must trail so it reorders to the reading-start
+      // (right) side instead of the visual left.
+      const md = new Markdown('- \u0639\u0631\u0628\u064a');
+      const spans = itemSpans(md, 0);
+      expect(spans[0].text).not.toContain('\u2022'); // NOT leading
+      expect(spans[spans.length - 1].text).toBe(' \u2022'); // trailing marker
+    });
+
+    it('RTL ordered item trails a reversed " .N" marker', () => {
+      const md = new Markdown('1. \u0639\u0631\u0628\u064a');
+      const spans = itemSpans(md, 0);
+      expect(spans[0].text).not.toMatch(/^\d/); // number is NOT leading
+      expect(spans[spans.length - 1].text).toBe(' .1'); // reorders to "1. …"
+    });
+
+    it('LTR ordered item keeps the "N. " number leading', () => {
+      const md = new Markdown('1. first\n2. second');
+      expect(itemSpans(md, 0)[0].text).toBe('1. ');
+      expect(itemSpans(md, 1)[0].text).toBe('2. ');
+    });
+  });
+
   it('renders blockquotes with border', () => {
     const md = new Markdown('> This is a quote');
     expect(md.content.children.length).toBeGreaterThanOrEqual(1);
