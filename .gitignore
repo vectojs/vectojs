@@ -88,5 +88,8 @@ benchmarks/particle-wasm/page/*.wasm
 # stack-wrap benchmark build artifacts + results (page/ generated)
 benchmarks/stack-wrap/page/index.html
 
+# table-virtual benchmark build artifacts + results (page/ generated)
+benchmarks/table-virtual/page/index.html
+
 # Git Worktree
 .worktree/
