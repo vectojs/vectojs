@@ -106,7 +106,12 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy, rustfmt
       - name: Cache cargo registry + wasm build
-        uses: actions/cache@v4
+        # v6 runs on the Node24 runtime (v5 was the node20 → node24 migration;
+        # v6 additionally moved the action's internals to ESM). v4 still declared
+        # `using: node20`, which the runner now force-runs on Node24 and warns
+        # about ahead of the June 16 2026 default switch. Input surface is
+        # unchanged from v4, so this is a drop-in bump.
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
