@@ -2,7 +2,7 @@
 // The rAF loop pauses when the canvas scrolls fully off-screen (an
 // IntersectionObserver reports it) and resumes on re-entry, instead of running
 // the full update/render every frame for a scene nobody can see.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Scene } from '../src';
 
 // A controllable IntersectionObserver: records the observed element + callback
