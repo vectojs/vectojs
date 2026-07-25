@@ -1,14 +1,34 @@
-# VectoJS
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png">
+    <img src="https://cdn.vectojs.org/brand/vectojs-logo-light-512.png" alt="VectoJS" width="380">
+  </picture>
+</p>
 
-> A canvas-native UI runtime: render like a scene engine, remain operable like the DOM.
+<h1 align="center">VectoJS</h1>
 
-[![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
-[![MIT license](https://img.shields.io/badge/license-MIT-6366f1.svg)](./LICENSE)
-[![core](https://img.shields.io/npm/v/@vectojs/core?label=core&color=22d3ee)](https://www.npmjs.com/package/@vectojs/core)
-[![ui](https://img.shields.io/npm/v/@vectojs/ui?label=ui&color=22d3ee)](https://www.npmjs.com/package/@vectojs/ui)
-[![three](https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee)](https://www.npmjs.com/package/@vectojs/three)
-[![devtools](https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee)](https://www.npmjs.com/package/@vectojs/devtools)
-[![video exporter](https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee)](https://www.npmjs.com/package/@vectojs/video-exporter)
+<p align="center">
+  <em>A canvas-native UI runtime: render like a scene engine, remain operable like the DOM.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/vectojs/vectojs/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6366f1.svg"></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@vectojs/core"><img alt="core" src="https://img.shields.io/npm/v/@vectojs/core?label=core&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/ui"><img alt="ui" src="https://img.shields.io/npm/v/@vectojs/ui?label=ui&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/text"><img alt="text" src="https://img.shields.io/npm/v/@vectojs/text?label=text&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/layout"><img alt="layout" src="https://img.shields.io/npm/v/@vectojs/layout?label=layout&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/math"><img alt="math" src="https://img.shields.io/npm/v/@vectojs/math?label=math&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/animation"><img alt="animation" src="https://img.shields.io/npm/v/@vectojs/animation?label=animation&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/markdown"><img alt="markdown" src="https://img.shields.io/npm/v/@vectojs/markdown?label=markdown&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/three"><img alt="three" src="https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/devtools"><img alt="devtools" src="https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/graph3d"><img alt="graph3d" src="https://img.shields.io/npm/v/@vectojs/graph3d?label=graph3d&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/video-exporter"><img alt="video-exporter" src="https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee"></a>
+</p>
 
 VectoJS draws a scene graph onto one `<canvas>`. Layout, hit-testing, animation, text flow, and
 render scheduling operate on a Virtual Math Tree (VMT), while interactive entities project a thin
@@ -51,6 +71,7 @@ shape, glyph, point, or row.
 | [`@vectojs/markdown`](./packages/markdown)             | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + MathJax                 |
 | [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
 | [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                             |
+| [`@vectojs/graph3d`](./packages/graph3d)               | 3D force-directed graph rendering on instanced Three.js, with an in-house dependency-free Barnes-Hut layout                    |
 | [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
 
 ## Install
@@ -193,11 +214,18 @@ benchmarks instead of treating demo counts as universal guarantees.
 
 ```bash
 bun install
-bun run build
-bun run test
-oxlint --deny-warnings .
-prettier --check "**/*.{js,ts,json,md,html,yaml}"
-knip
+just verify          # = just check + just test (the pre-push habit)
+```
+
+`just check` is the same gate CI runs: `oxfmt --check` (formatting authority),
+`oxlint --deny-warnings`, `markdownlint-cli2`, and `actionlint`. Individual
+recipes are available too — run `just --list` to see them all:
+
+```bash
+just fmt             # format in place (oxfmt)
+just test-pkg core   # one package's unit tests
+just wasm            # build the Rust wasm core
+just e2e             # real-browser e2e (HiDPI + text projection)
 ```
 
 Additional reproducible workloads:
@@ -209,6 +237,27 @@ bun run compare       # text-layout comparison
 ```
 
 The project is pre-1.0. Read package changelogs before upgrading and pin versions in production.
+
+## Brand
+
+The logo is served from the project CDN — link it rather than committing copies:
+
+| Asset           | URL                                                            |
+| --------------- | -------------------------------------------------------------- |
+| Light (default) | `https://cdn.vectojs.org/brand/vectojs-logo-light-512.png`     |
+| Dark theme      | `https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png`      |
+| Full resolution | `https://cdn.vectojs.org/brand/vectojs-logo.png` (and `-dark`) |
+
+`256` and `128` width variants exist for both themes. All are trimmed PNGs with a
+transparent background. The default artwork is near-black, so **pair it with the
+dark variant** on any surface that has a dark mode:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png">
+  <img src="https://cdn.vectojs.org/brand/vectojs-logo-light-512.png" alt="VectoJS" width="380">
+</picture>
+```
 
 ## License
 
