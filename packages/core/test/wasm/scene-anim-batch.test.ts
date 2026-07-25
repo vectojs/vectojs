@@ -326,4 +326,56 @@ describe.skipIf(!haveWasm)('G2 — Scene batches active drivers through WASM', (
     tickMs(scene, 16); // batch pass must not throw on a destroyed-but-registered entity
     expect(registry.has(b)).toBe(false);
   });
+
+  it('scene.remove() unregisters a still-animating subtree (no leak / no off-tree ticking)', () => {
+    setWindow();
+    const scene = sceneWith();
+    const registry = (scene as unknown as { _activeDriverEntities: Set<Entity> })
+      ._activeDriverEntities;
+
+    const parent = new Box('parent');
+    const child = new Box('child');
+    parent.add(child);
+    scene.add(parent);
+    parent.setTransition({ x: { duration: 100000, easing: 'linear' } });
+    child.setTransition({ y: { duration: 100000, easing: 'linear' } });
+    parent.x = 500; // long, still-in-flight animations on both nodes
+    child.y = 500;
+    expect(registry.has(parent)).toBe(true);
+    expect(registry.has(child)).toBe(true);
+
+    // Removing the subtree mid-animation must drop BOTH from the candidate set,
+    // so they neither leak nor keep ticking off-tree.
+    scene.remove(parent);
+    expect(registry.has(parent)).toBe(false);
+    expect(registry.has(child)).toBe(false);
+  });
+
+  it('re-adding a subtree removed mid-animation resumes its drivers', () => {
+    setWindow();
+    const scene = sceneWith();
+    const registry = (scene as unknown as { _activeDriverEntities: Set<Entity> })
+      ._activeDriverEntities;
+
+    const box = new Box('box');
+    scene.add(box);
+    box.setTransition({ x: { duration: 100000, easing: 'linear' } });
+    box.x = 500;
+    scene.remove(box);
+    expect(registry.has(box)).toBe(false);
+
+    // Its driver state still lives on the entity; re-adding re-registers it.
+    scene.add(box);
+    expect(registry.has(box)).toBe(true);
+  });
+
+  it('re-adding a subtree with no live drivers does not register it', () => {
+    setWindow();
+    const scene = sceneWith();
+    const registry = (scene as unknown as { _activeDriverEntities: Set<Entity> })
+      ._activeDriverEntities;
+    const box = new Box('idle');
+    scene.add(box);
+    expect(registry.has(box)).toBe(false); // never animated → not a candidate
+  });
 });
