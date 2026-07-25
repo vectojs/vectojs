@@ -50,6 +50,10 @@ export interface TreeViewOptions {
  * });
  * scene.add(tree.setPosition(0, 0));
  */
+/** Max pointer travel (px) between down and up that still counts as a tap
+ *  (toggles a row) rather than a drag-scroll. */
+const TREE_TAP_SLOP = 6;
+
 export class TreeView extends UIComponent {
   private _roots: TreeNode[];
   private _rows: FlatRow[] = [];
@@ -62,6 +66,13 @@ export class TreeView extends UIComponent {
   private _targetY = 0;
   private _velY = 0;
   private _rh: number;
+  /** Drag-to-scroll state. `_downY` is the pointerdown localY; a pointerup that
+   *  moved less than {@link TREE_TAP_SLOP} from it counts as a tap (toggles the
+   *  row) rather than a scroll drag. */
+  private _drag = false;
+  private _lastPY = 0;
+  private _downY = 0;
+  private _dragMoved = false;
   private _font: string;
   private _color: string;
   private _selColor: string;
@@ -160,19 +171,38 @@ export class TreeView extends UIComponent {
       this._clamp();
       this.scene?.markDirty();
     });
+    // Pointer handling does double duty: a tap toggles a row, a drag scrolls.
+    // Toggling is deferred to pointerup so a touch drag-scroll doesn't
+    // accidentally expand/collapse the row the finger landed on — the toggle
+    // fires only if the pointer moved less than TREE_TAP_SLOP (a tap).
     this.on('pointerdown', (e: { localY?: number }) => {
       if (e.localY === undefined) return;
-      const ly = e.localY;
-      const idx = Math.floor((ly + this._scrollY) / this._rh);
-      if (idx >= 0 && idx < this._rows.length) void this._toggle(idx);
+      this._drag = true;
+      this._dragMoved = false;
+      this._lastPY = e.localY;
+      this._downY = e.localY;
     });
     this.on('pointermove', (e: { localY?: number }) => {
       if (e.localY === undefined) return;
       const ly = e.localY;
       this._hoverIdx = Math.floor((ly + this._scrollY) / this._rh);
+      if (this._drag) {
+        if (Math.abs(ly - this._downY) > TREE_TAP_SLOP) this._dragMoved = true;
+        this._targetY += this._lastPY - ly; // finger down → reveal earlier rows
+        this._lastPY = ly;
+        this._clamp();
+      }
       this.scene?.markDirty();
     });
+    this.on('pointerup', (e: { localY?: number }) => {
+      const wasTap = this._drag && !this._dragMoved;
+      this._drag = false;
+      if (!wasTap || e.localY === undefined) return;
+      const idx = Math.floor((e.localY + this._scrollY) / this._rh);
+      if (idx >= 0 && idx < this._rows.length) void this._toggle(idx);
+    });
     this.on('pointerleave', () => {
+      this._drag = false;
       this._hoverIdx = -1;
       this.scene?.markDirty();
     });

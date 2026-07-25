@@ -76,6 +76,8 @@ export class Table extends UIComponent {
   private _scrollY = 0;
   private _targetY = 0;
   private _velY = 0;
+  private _drag = false;
+  private _lastPY = 0;
   /** Body rows currently mounted into `bodyClip`, keyed by row index. */
   private readonly mountedRows = new Set<number>();
   private readonly overscan = 2;
@@ -137,6 +139,29 @@ export class Table extends UIComponent {
       this.clampScroll();
       this.scene?.markDirty();
     });
+    // Touch / pointer drag-to-scroll (mirrors VirtualList & ScrollView): the
+    // body follows the finger 1:1. Without this a virtualized Table could only
+    // be scrolled with a wheel — unusable on a touchscreen.
+    this.on('pointerdown', (e: { localY?: number }) => {
+      if (e.localY === undefined) return;
+      this._drag = true;
+      this._lastPY = e.localY;
+    });
+    this.on('pointermove', (e: { localY?: number }) => {
+      if (!this._drag || e.localY === undefined) return;
+      const y = e.localY;
+      // Dragging the content down (finger moves down) reveals earlier rows →
+      // scroll offset decreases; matches the wheel sign convention above.
+      this._targetY -= y - this._lastPY;
+      this._lastPY = y;
+      this.clampScroll();
+      this.scene?.markDirty();
+    });
+    const endDrag = () => {
+      this._drag = false;
+    };
+    this.on('pointerup', endDrag);
+    this.on('pointerleave', endDrag);
   }
 
   private clampScroll(): void {
