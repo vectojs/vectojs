@@ -612,6 +612,58 @@ describe('Scene', () => {
     (scene as any).syncA11y((scene as any).root);
     expect(element.hasAttribute('tabindex')).toBe(false);
   });
+
+  it('clips an interactive mirror scrolled outside a clipChildren ancestor (display:none)', () => {
+    const parent = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parent.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    // A ScrollView-like clip box with an interactive button child.
+    const clip = new TestEntity('clip');
+    clip.width = 100;
+    clip.height = 80;
+    clip.clipChildren = true;
+    const button = new TestEntity('btn');
+    button.interactive = true;
+    button.width = 60;
+    button.height = 20;
+    button.setPosition(20, 10); // inside the clip box
+    clip.add(button);
+    scene.add(clip);
+
+    (scene as any).syncA11y((scene as any).root);
+    const el = scene.getA11yElement(button.id)!;
+    // On-screen: interactive mirror is visible (not display:none).
+    expect(el.style.display).not.toBe('none');
+
+    // Scroll the button far below the clip box → fully clipped.
+    button.setPosition(20, 500);
+    (scene as any).syncA11y((scene as any).root);
+    // Clipped: the mirror is hidden so it can't steal clicks / focus / SR.
+    expect(el.style.display).toBe('none');
+
+    // Scroll it back into the clip box → visible again.
+    button.setPosition(20, 10);
+    (scene as any).syncA11y((scene as any).root);
+    expect(el.style.display).not.toBe('none');
+    scene.destroy();
+  });
+
+  it('never clips an a11yFullViewport interactive overlay', () => {
+    const parent = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parent.appendChild(canvas);
+    const scene = new Scene(canvas);
+    const overlay = new TestEntity('overlay');
+    overlay.interactive = true;
+    overlay.a11yFullViewport = true;
+    scene.add(overlay);
+    (scene as any).syncA11y((scene as any).root);
+    const el = scene.getA11yElement(overlay.id)!;
+    expect(el.style.display).not.toBe('none');
+    scene.destroy();
+  });
 });
 
 describe('Scene render loop: culling, onDemand, a11y early-out', () => {

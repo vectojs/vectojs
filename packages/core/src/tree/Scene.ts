@@ -2319,13 +2319,24 @@ export class Scene {
         el.style.width = `${this.width}px`;
         el.style.height = `${this.height}px`;
         el.style.transform = '';
+        // A full-viewport overlay is intentionally unbounded — never clip it.
+        if (el.style.display === 'none') el.style.display = '';
       } else {
-        const { a, b, c, d, e, f } = node.getWorldTransform();
+        const worldTf = node.getWorldTransform();
+        const { a, b, c, d, e, f } = worldTf;
         el.style.left = `${e + node.a11yOffsetX}px`;
         el.style.top = `${f + node.a11yOffsetY}px`;
         el.style.width = `${node.width}px`;
         el.style.height = `${node.height}px`;
         el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+        // Viewport/clip gate: an interactive mirror scrolled outside its
+        // clipChildren ancestor (a Button in a ScrollView/VirtualList) or the
+        // viewport must stop intercepting clicks, taking focus, and being
+        // announced — otherwise it steals input over whatever is drawn on top.
+        // Same exact (margin 0) test the content-projection branch uses.
+        const visible = this.projectionBoxVisible(node, worldTf, 0);
+        const display = visible ? '' : 'none';
+        if (el.style.display !== display) el.style.display = display;
       }
     }
 
