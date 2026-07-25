@@ -248,4 +248,72 @@ describe('A11y Root and Agent Contract', () => {
     expect(spy).toHaveBeenCalledExactlyOnceWith();
     spy.mockRestore();
   });
+
+  describe('aria-live and related ARIA attributes', () => {
+    class LiveRegion extends Entity {
+      public attrs: A11yAttributes = { role: 'status' };
+      constructor(id: string) {
+        super(id);
+        this.interactive = true;
+        this.width = 200;
+        this.height = 40;
+      }
+      isPointInside() {
+        return true;
+      }
+      render() {}
+      getA11yAttributes(): A11yAttributes {
+        return this.attrs;
+      }
+    }
+
+    it('projects aria-live/atomic/relevant onto the shadow element', () => {
+      const region = new LiveRegion('live-1');
+      region.attrs = {
+        role: 'log',
+        live: 'polite',
+        atomic: true,
+        relevant: 'additions text',
+      };
+      scene.add(region);
+      tick();
+      const el = (scene as any).a11yElements.get('live-1') as HTMLElement;
+      expect(el.getAttribute('aria-live')).toBe('polite');
+      expect(el.getAttribute('aria-atomic')).toBe('true');
+      expect(el.getAttribute('aria-relevant')).toBe('additions text');
+    });
+
+    it('projects labelledby/describedby/required/invalid/level', () => {
+      const region = new LiveRegion('field-1');
+      region.attrs = {
+        role: 'textbox',
+        labelledby: 'lbl',
+        describedby: 'hint',
+        required: true,
+        invalid: true,
+        level: 2,
+      };
+      scene.add(region);
+      tick();
+      const el = (scene as any).a11yElements.get('field-1') as HTMLElement;
+      expect(el.getAttribute('aria-labelledby')).toBe('lbl');
+      expect(el.getAttribute('aria-describedby')).toBe('hint');
+      expect(el.getAttribute('aria-required')).toBe('true');
+      expect(el.getAttribute('aria-invalid')).toBe('true');
+      expect(el.getAttribute('aria-level')).toBe('2');
+    });
+
+    it('removes aria-live when the attribute is cleared', () => {
+      const region = new LiveRegion('live-2');
+      region.attrs = { role: 'status', live: 'assertive' };
+      scene.add(region);
+      tick();
+      const el = (scene as any).a11yElements.get('live-2') as HTMLElement;
+      expect(el.getAttribute('aria-live')).toBe('assertive');
+
+      region.attrs = { role: 'status' }; // drop live
+      tick();
+      expect(el.hasAttribute('aria-live')).toBe(false);
+    });
+  });
 });
