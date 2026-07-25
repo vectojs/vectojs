@@ -88,6 +88,34 @@ describe('Scene', () => {
     expect(updateCPU).toHaveBeenCalledTimes(1);
   });
 
+  it('caches the ComputeParticleEntity list per structure version and rebuilds on topology change', () => {
+    const scene = new Scene(mockCanvas as any, { particleBackend: 'cpu' });
+    const s = scene as any;
+
+    // Empty scene → empty list, and a repeat call returns the SAME array
+    // instance (cache hit, no re-walk).
+    const first = s._computeEntitiesFor(s._structureVersion);
+    expect(first).toEqual([]);
+    expect(s._computeEntitiesFor(s._structureVersion)).toBe(first);
+
+    // Adding a compute entity bumps the structure version → cache rebuilds and
+    // now contains it.
+    const particles = new ComputeParticleEntity({ maxParticles: 1 });
+    scene.add(particles);
+    const afterAdd = s._computeEntitiesFor(s._structureVersion);
+    expect(afterAdd).not.toBe(first);
+    expect(afterAdd).toContain(particles);
+
+    // A non-structural repeat call is a cache hit (same instance).
+    expect(s._computeEntitiesFor(s._structureVersion)).toBe(afterAdd);
+
+    // Removing it bumps the version again → rebuilt list drops it.
+    scene.remove(particles);
+    const afterRemove = s._computeEntitiesFor(s._structureVersion);
+    expect(afterRemove).not.toBe(afterAdd);
+    expect(afterRemove).toEqual([]);
+  });
+
   it('toSVG does not mutate a11y z-order or mount DOM portals', () => {
     const parent = document.createElement('div');
     const canvas = document.createElement('canvas');
