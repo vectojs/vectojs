@@ -79,7 +79,11 @@ function softWrap(
     for (let k = 0; k < word.length; k++) {
       const c = word[k];
       if (chunk !== '' && measure(chunk + c) > maxWidth) {
-        lines.push({ text: chunk, start: chunkStart, end: chunkStart + chunk.length });
+        lines.push({
+          text: chunk,
+          start: chunkStart,
+          end: chunkStart + chunk.length,
+        });
         chunkStart += chunk.length;
         chunk = c;
       } else {
@@ -309,7 +313,11 @@ export class TextArea extends UIComponent {
       }
 
       if (lineGroups.length === 0) {
-        lines.push({ text: '', start: pStart, end: pStart + paragraphText.length });
+        lines.push({
+          text: '',
+          start: pStart,
+          end: pStart + paragraphText.length,
+        });
       } else {
         for (const group of lineGroups) {
           group.sort((a, b) => a.x - b.x);
@@ -449,8 +457,13 @@ export class TextArea extends UIComponent {
       );
     }
 
-    // Selection highlight across lines (drawn behind the text).
-    if (this.selectionStart !== this.selectionEnd) {
+    // Selection highlight across lines (drawn behind the text). Suppressed while
+    // an IME composition is active for the same reason as in `Input`: composing
+    // over a selection replaces that range, but the native element keeps
+    // reporting the pre-composition offsets until commit, so the highlight would
+    // be stale. The composition underline below marks the active region instead.
+    const composing = !!this.composition && this.composition.length > 0;
+    if (!composing && this.selectionStart !== this.selectionEnd) {
       const a = Math.min(this.selectionStart, this.selectionEnd);
       const b = Math.max(this.selectionStart, this.selectionEnd);
       for (let i = 0; i < lines.length; i++) {
@@ -494,6 +507,28 @@ export class TextArea extends UIComponent {
           this.font,
           this.color,
         );
+      }
+    }
+
+    // IME composition underline. Marks the text the IME is still composing (not
+    // yet committed) — the only in-canvas feedback that a multi-keystroke
+    // conversion is in progress. Drawn per line so a composition that wraps is
+    // underlined on every line it covers.
+    if (composing && this.composition) {
+      const cs = this.composition.start;
+      const ce = cs + this.composition.length;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lo = Math.max(cs, line.start);
+        const hi = Math.min(ce, line.end);
+        if (hi <= lo) continue;
+        const ux0 = originX + this.offsetX(line, lo);
+        const ux1 = originX + this.offsetX(line, hi);
+        const uy = originY + i * lh + baselineOffset + 2;
+        r.beginPath();
+        r.moveTo(ux0, uy);
+        r.lineTo(ux1, uy);
+        r.stroke(this.color, 1);
       }
     }
 

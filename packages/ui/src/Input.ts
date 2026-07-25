@@ -260,7 +260,13 @@ export class Input extends UIComponent {
     r.clip(this.padding, this.padding, innerWidth, editorLineHeight);
 
     // Selection highlight (drawn behind the text, even when not focused).
-    if (this.selectionStart !== this.selectionEnd) {
+    // Suppressed while an IME composition is active: composing over a selection
+    // logically REPLACES that range, but the native element keeps reporting the
+    // pre-composition `selectionStart/End` until the composition commits — so
+    // painting it would show a stale highlight behind (and wider than) the
+    // composition underline. The composition range is the active region.
+    const composing = !!this.composition && this.composition.length > 0;
+    if (!composing && this.selectionStart !== this.selectionEnd) {
       const a = Math.min(this.selectionStart, this.selectionEnd);
       const b = Math.max(this.selectionStart, this.selectionEnd);
 

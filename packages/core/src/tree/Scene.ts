@@ -821,6 +821,10 @@ export class Scene {
   private canvasResizeObserver: ResizeObserver | null = null;
   private dprChangeHandler: (() => void) | null = null;
   private focusedA11yElement: HTMLElement | null = null;
+  /** Shadow elements the pointer is currently inside. Lets a removal that happens
+   *  mid-hover synthesize the `pointerleave` the browser never sends for a
+   *  detached element, so the entity doesn't keep its hover state. */
+  private readonly hoveredA11yElements = new WeakSet<HTMLElement>();
   /** Persistent tabindex=-1 element in a11yRoot. When the focused a11y mirror is
    *  pruned (virtualization/streaming/removal) while it holds focus, we move
    *  focus here instead of letting the browser drop it to <body> — keeping the
@@ -2055,6 +2059,15 @@ export class Scene {
           this.caretBlinkTimer = null;
         }
       }
+      // Hover is driven by the shadow element's mouseenter/mouseleave. Detaching
+      // it fires no `mouseleave`, so an entity removed WHILE hovered would keep
+      // its hover state forever — visible the moment it's re-added (a pooled
+      // virtualized row, a reopened menu) as hover styling with no pointer over
+      // it. Synthesize the leave before the element goes away.
+      if (this.hoveredA11yElements.has(el)) {
+        this.hoveredA11yElements.delete(el);
+        node.dispatchEvent(new VectoJSEvent('pointerleave', node, undefined, false));
+      }
       this.preserveFocusOnRemoval(el);
       el.remove();
       this.a11yElements.delete(node.id);
@@ -2526,13 +2539,17 @@ export class Scene {
           node.dispatchEvent(new VectoJSEvent('dblclick', node, e));
         });
 
-        // Developer debugger mode hover feedback
+        // Developer debugger mode hover feedback. The enter/leave pair is also
+        // tracked in `hoveredA11yElements` so a mid-hover removal can synthesize
+        // the leave the browser will never send (see removeA11yRecursively).
         el.addEventListener('mouseenter', (e) => {
           if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.2)';
+          this.hoveredA11yElements.add(el!);
           node.dispatchEvent(new VectoJSEvent('hover', node, e, false));
         });
         el.addEventListener('mouseleave', (e) => {
           if (this.debugA11y) el!.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';
+          this.hoveredA11yElements.delete(el!);
           node.dispatchEvent(new VectoJSEvent('pointerleave', node, e, false));
         });
 
