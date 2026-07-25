@@ -48,7 +48,12 @@ class CircleEntity extends Entity {
     super(id);
   }
   getBounds(): Bounds {
-    return { x: -this.radius, y: -this.radius, width: this.radius * 2, height: this.radius * 2 };
+    return {
+      x: -this.radius,
+      y: -this.radius,
+      width: this.radius * 2,
+      height: this.radius * 2,
+    };
   }
   isPointInside(gx: number, gy: number): boolean {
     const local = this.worldToLocal(gx, gy);
@@ -98,6 +103,8 @@ function sceneWith(w = 400, h = 300): Scene {
     beginPath: vi.fn(),
     closePath: vi.fn(),
     arc: vi.fn(),
+    rect: vi.fn(),
+    clip: vi.fn(),
     fill: vi.fn(),
     stroke: vi.fn(),
     canvas: null as unknown,
@@ -282,5 +289,73 @@ describe.skipIf(!haveWasm)('G3 — findEntityAt reads the WASM hit-test grid', (
     expect(scene.hitTestBackend).toBe('js');
     tick(scene);
     expect(scene.findEntityAt(15, 15)?.id).toBe('e');
+  });
+
+  it('applies the same clip/opacity/disabled gating as the JS walk', () => {
+    // A rect that can be made invisible/disabled to prove the WASM candidate
+    // confirmation gates identically to findHitRecursively (#180).
+    class GatedRect extends RectEntity {
+      public attrs: { disabled?: boolean; pointerEvents?: 'auto' | 'none' } = {};
+      getA11yAttributes() {
+        return this.attrs as never;
+      }
+    }
+    setWindow();
+    const scene = sceneWith();
+    enableWasmHit(scene);
+
+    const r = new GatedRect('r', 100, 100);
+    r.x = 0;
+    r.y = 0;
+    scene.add(r);
+    tick(scene);
+    // Baseline: opaque, enabled → hit.
+    expect(scene.findEntityAt(50, 50)?.id).toBe('r');
+
+    // Invisible → WASM path must miss (matches JS).
+    r.opacity = 0;
+    tick(scene);
+    expect(scene.findEntityAt(50, 50)).toBeNull();
+    r.opacity = 1;
+
+    // Disabled → miss.
+    r.attrs = { disabled: true };
+    tick(scene);
+    expect(scene.findEntityAt(50, 50)).toBeNull();
+    r.attrs = {};
+
+    // pointerEvents:none → miss.
+    r.attrs = { pointerEvents: 'none' };
+    tick(scene);
+    expect(scene.findEntityAt(50, 50)).toBeNull();
+    r.attrs = {};
+
+    // Restored.
+    tick(scene);
+    expect(scene.findEntityAt(50, 50)?.id).toBe('r');
+  });
+
+  it('WASM path rejects a hit on a child clipped outside a clipChildren ancestor', () => {
+    setWindow();
+    const scene = sceneWith();
+    enableWasmHit(scene);
+
+    const clip = new RectEntity('clip', 100, 100);
+    clip.clipChildren = true;
+    const child = new RectEntity('child', 40, 40);
+    child.x = 200; // outside the clip box
+    child.y = 200;
+    clip.add(child);
+    scene.add(clip);
+    tick(scene);
+
+    // The child's own AABB contains (220,220), but it's clipped away — both the
+    // WASM and JS paths must agree there's no hit there.
+    const wasmHit = scene.findEntityAt(220, 220)?.id ?? null;
+    scene.setHitTestBackend(null);
+    tick(scene);
+    const jsHit = scene.findEntityAt(220, 220)?.id ?? null;
+    expect(wasmHit).toBe(jsHit);
+    expect(wasmHit).toBeNull();
   });
 });

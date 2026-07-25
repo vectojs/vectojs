@@ -988,7 +988,7 @@ export class Scene {
         const idx = cell[k];
         if (x < minx[idx] || x > maxx[idx] || y < miny[idx] || y > maxy[idx]) continue;
         const entity = this._hitSlotEntity[idx];
-        if (entity?.isPointInside(x, y)) {
+        if (entity?.isPointInside(x, y) && this.isHitEligible(entity, x, y)) {
           bestIndex = idx;
           bestEntity = entity;
           break;
@@ -996,7 +996,7 @@ export class Scene {
       }
     }
     for (const { entity, index } of this._hitBoundless) {
-      if (index > bestIndex && entity.isPointInside(x, y)) {
+      if (index > bestIndex && entity.isPointInside(x, y) && this.isHitEligible(entity, x, y)) {
         bestIndex = index;
         bestEntity = entity;
       }
@@ -4536,6 +4536,36 @@ export class Scene {
   private isPointerTransparent(node: Entity): boolean {
     const attrs = node.getA11yAttributes();
     return attrs.disabled === true || attrs.pointerEvents === 'none';
+  }
+
+  /**
+   * Whether a confirmed geometric hit on `node` at world `(x, y)` is a REAL hit,
+   * applying the same visibility/input gating as {@link findHitRecursively} but
+   * from a flat candidate (the WASM grid has no recursion clip-stack): the node
+   * and all ancestors are visible (`opacity > 0`), the point lies inside every
+   * `clipChildren` ancestor's world box, and the node isn't pointer-transparent
+   * (disabled / `pointerEvents: 'none'`). Keeps the WASM and JS hit paths in
+   * lockstep so they return the same entity.
+   */
+  private isHitEligible(node: Entity, x: number, y: number): boolean {
+    if (this.isPointerTransparent(node)) return false;
+    if (node.opacity <= 0) return false;
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (ancestor.opacity <= 0) return false;
+      if (ancestor.clipChildren && ancestor.width > 0 && ancestor.height > 0) {
+        const local = ancestor.worldToLocal(x, y);
+        if (
+          !local ||
+          local.x < 0 ||
+          local.y < 0 ||
+          local.x > ancestor.width ||
+          local.y > ancestor.height
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 }
 
