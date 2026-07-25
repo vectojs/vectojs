@@ -23,7 +23,11 @@ export interface GlyphAtlas {
  * abstract so callers can supply their own metrics source.
  */
 export interface GlyphMeasurer {
-  measure(char: string, fontSize: number): number;
+  /** Measure one grapheme's advance at `fontSize`. `fontFamily`, when given,
+   *  overrides the measurer's base family for this glyph — needed so a run in a
+   *  different family (e.g. inline monospace `code` inside proportional prose)
+   *  is measured at its own metrics, not the base font's. */
+  measure(char: string, fontSize: number, fontFamily?: string): number;
 }
 
 /**
@@ -39,6 +43,13 @@ export interface TextStyle {
   bold?: boolean;
   /** Italic slant (rendering only). */
   italic?: boolean;
+  /**
+   * CSS font-family for this run, overriding the base family (e.g. a monospace
+   * stack for inline `code`). Affects both measurement (width) and rendering,
+   * so a run in a different family lays out at its own metrics. When omitted the
+   * run uses the component's base family.
+   */
+  fontFamily?: string;
   /** Hyperlink destination; carried through to the positioned nodes for hit-testing / a11y. */
   href?: string;
 }
@@ -372,10 +383,18 @@ export class LayoutEngine {
    * Resolve a grapheme's advance width at `fontSize`, in priority order:
    * pre-baked atlas entry → injected {@link GlyphMeasurer} → `0.5em` fallback.
    */
-  private glyphWidth(char: string, fontAtlas: GlyphAtlas, fontSize: number): number {
-    const glyphInfo = fontAtlas[char];
+  private glyphWidth(
+    char: string,
+    fontAtlas: GlyphAtlas,
+    fontSize: number,
+    fontFamily?: string,
+  ): number {
+    // A run-specific family (e.g. inline monospace code) skips the atlas — the
+    // atlas is baked for the base family, so measuring it there would return the
+    // wrong advance; go straight to the measurer with the run's family.
+    const glyphInfo = fontFamily === undefined ? fontAtlas[char] : undefined;
     if (glyphInfo) return glyphInfo.width * (fontSize / glyphInfo.baseSize);
-    if (this.measurer) return this.measurer.measure(char, fontSize);
+    if (this.measurer) return this.measurer.measure(char, fontSize, fontFamily);
     return fontSize * 0.5;
   }
 
@@ -808,7 +827,7 @@ export class LayoutEngine {
             fallbackToCanvas = true;
           }
 
-          const w = this.glyphWidth(glyphKey, fontAtlas, gfs);
+          const w = this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
 
           glyphs.push({
             char,
@@ -909,7 +928,7 @@ export class LayoutEngine {
         const style = styleAt[charIdx];
         const gfs = style?.fontSize ?? baseFontSize;
         if (char.trim().length > 0 && !fontAtlas[glyphKey]) wordFallback = true;
-        const w = this.glyphWidth(glyphKey, fontAtlas, gfs);
+        const w = this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
         glyphs.push({
           char,
           width: w,

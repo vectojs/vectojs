@@ -120,4 +120,40 @@ describe('prepareContentGrid', () => {
       }),
     ).toThrow(RangeError);
   });
+
+  it('counts text-default pictographs as width 1, not 2 (no caret drift)', () => {
+    // © ® ™ ☺ ✔ ❤ are Extended_Pictographic but text-default: one column each,
+    // not two — mis-counting them drifts the caret in the code grid.
+    const source = '©®™☺✔❤';
+    const grid = prepareContentGrid(source, {
+      font: '15px monospace',
+      cellWidth: 10,
+      lineHeight: 24,
+      baseline: 18,
+    });
+    // Each grapheme is its own cell, all width-1 (advance === cellWidth).
+    expect(grid.lines[0].cells.map((c) => source.slice(c.sourceStart, c.sourceEnd))).toEqual([
+      '©',
+      '®',
+      '™',
+      '☺',
+      '✔',
+      '❤',
+    ]);
+    expect(grid.lines[0].cells.map((c) => c.advance)).toEqual([10, 10, 10, 10, 10, 10]);
+    expect(grid.lines[0].width).toBe(60);
+  });
+
+  it('VS16 promotes a text-default pictograph to width 2; VS15 keeps a real emoji width 1', () => {
+    // ❤ (text-default, w1) + ❤️ (❤+VS16 → emoji, w2); 😀 (emoji-default, w2) +
+    // 😀︎ (😀+VS15 → text, w1).
+    const source = '\u2764\u2764\ufe0f\u{1f600}\u{1f600}\ufe0e';
+    const grid = prepareContentGrid(source, {
+      font: '15px monospace',
+      cellWidth: 10,
+      lineHeight: 24,
+      baseline: 18,
+    });
+    expect(grid.lines[0].cells.map((c) => c.advance)).toEqual([10, 20, 20, 10]);
+  });
 });

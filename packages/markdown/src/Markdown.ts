@@ -718,7 +718,13 @@ function collectSpans(
         const t = token as Tokens.Codespan;
         out.push({
           text: decodeEntities(t.text),
-          style: { ...inherited, color: theme.codeColor },
+          // Inline code renders in the theme's monospace family (not just tinted
+          // prose) — TextStyle.fontFamily drives both measurement and drawing.
+          style: {
+            ...inherited,
+            color: theme.codeColor,
+            fontFamily: theme.codeFont,
+          },
         });
         break;
       }

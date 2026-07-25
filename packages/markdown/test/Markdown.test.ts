@@ -270,6 +270,12 @@ Plain paragraph at the end.
     const rt = paragraph as RichText;
     const codeSpan = rt.spans.find((s) => s.text === 'console.log');
     expect(codeSpan).toBeDefined();
+    // Inline code carries a monospace fontFamily so it renders (and measures)
+    // as mono, not just tinted proportional prose.
+    expect(codeSpan?.style?.fontFamily).toContain('monospace');
+    // A plain prose run in the same paragraph has no family override.
+    const proseSpan = rt.spans.find((s) => s.text.includes('Use'));
+    expect(proseSpan?.style?.fontFamily).toBeUndefined();
   });
 
   it('renders links with href in spans', () => {

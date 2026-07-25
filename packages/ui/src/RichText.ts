@@ -106,11 +106,12 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
   if (!ctx) return null;
   const cache = new Map<string, number>();
   return {
-    measure(char: string, fontSize: number): number {
-      const key = `${fontSize} ${char}`;
+    measure(char: string, fontSize: number, fontFamily?: string): number {
+      const family = fontFamily ?? familyOf(font);
+      const key = `${fontSize} ${family} ${char}`;
       let w = cache.get(key);
       if (w === undefined) {
-        ctx.font = `${fontSize}px ${familyOf(font)}`;
+        ctx.font = `${fontSize}px ${family}`;
         w = ctx.measureText(char).width;
         cache.set(key, w);
       }
@@ -451,7 +452,10 @@ export class RichText extends UIComponent {
   private nodeFont(style: TextStyle | undefined, size: number): string {
     const italic = style?.italic ? 'italic ' : '';
     const bold = style?.bold ? 'bold ' : '';
-    return `${italic}${bold}${size}px ${familyOf(this.font)}`;
+    // A run may override the family (e.g. inline monospace code); fall back to
+    // the component's base family otherwise.
+    const family = style?.fontFamily ?? familyOf(this.font);
+    return `${italic}${bold}${size}px ${family}`;
   }
 
   public getA11yAttributes(): A11yAttributes {
