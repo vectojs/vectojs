@@ -99,4 +99,116 @@ describe('runtime devicePixelRatio change', () => {
     scene.destroy();
     expect(mm.lists.length).toBe(0);
   });
+
+  it('sizes the WebGPU particle canvas backing store by DPR (crisp on HiDPI)', () => {
+    (window as any).devicePixelRatio = 2;
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas);
+    // Inject a fake gpuCanvas (the WebGPU init path only runs with a real GPU).
+    const gpu = document.createElement('canvas');
+    (scene as any).gpuCanvas = gpu;
+
+    scene.resize(400, 300);
+    // Backing store at logical × DPR; CSS box at logical size.
+    expect(gpu.width).toBe(800);
+    expect(gpu.height).toBe(600);
+    expect(gpu.style.width).toBe('400px');
+    expect(gpu.style.height).toBe('300px');
+  });
+
+  it('honors maxDPR when sizing the WebGPU particle canvas', () => {
+    (window as any).devicePixelRatio = 3;
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas, { maxDPR: 2 });
+    const gpu = document.createElement('canvas');
+    (scene as any).gpuCanvas = gpu;
+
+    scene.resize(100, 100);
+    expect(gpu.width).toBe(200); // clamped to maxDPR 2, not 3
+    expect(gpu.height).toBe(200);
+  });
+});
+
+describe('embedded (disableWindowResize) canvas ResizeObserver', () => {
+  let scene: Scene;
+  const observed: Array<{ cb: ResizeObserverCallback; el: Element }> = [];
+  let origRO: typeof ResizeObserver;
+
+  beforeEach(() => {
+    HTMLCanvasElement.prototype.getContext = (() => fakeCtx()) as never;
+    (window as any).devicePixelRatio = 1;
+    observed.length = 0;
+    origRO = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(private cb: ResizeObserverCallback) {}
+      observe(el: Element) {
+        observed.push({ cb: this.cb, el });
+      }
+      unobserve() {}
+      disconnect() {
+        const i = observed.findIndex((o) => o.cb === this.cb);
+        if (i >= 0) observed.splice(i, 1);
+      }
+    } as never;
+  });
+  afterEach(() => {
+    scene?.destroy();
+    globalThis.ResizeObserver = origRO;
+  });
+
+  it('resizes the scene when the observed canvas element changes size', () => {
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas, {
+      disableWindowResize: true,
+      width: 100,
+      height: 80,
+    });
+    expect(observed.length).toBe(1);
+    expect(observed[0].el).toBe(canvas);
+
+    const resizeSpy = vi.spyOn(scene, 'resize');
+    // Simulate the element resizing to 250×160.
+    observed[0].cb(
+      [{ contentRect: { width: 250, height: 160 } } as ResizeObserverEntry],
+      {} as ResizeObserver,
+    );
+    expect(resizeSpy).toHaveBeenCalledWith(250, 160);
+  });
+
+  it('ignores a no-op size report (same dimensions)', () => {
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas, {
+      disableWindowResize: true,
+      width: 120,
+      height: 90,
+    });
+    const resizeSpy = vi.spyOn(scene, 'resize');
+    // Report the scene's CURRENT size back — nothing changed, so no resize().
+    observed[0].cb(
+      [
+        {
+          contentRect: { width: scene.width, height: scene.height },
+        } as ResizeObserverEntry,
+      ],
+      {} as ResizeObserver,
+    );
+    expect(resizeSpy).not.toHaveBeenCalled();
+  });
+
+  it('disconnects the observer on destroy', () => {
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas, {
+      disableWindowResize: true,
+      width: 100,
+      height: 80,
+    });
+    expect(observed.length).toBe(1);
+    scene.destroy();
+    expect(observed.length).toBe(0);
+  });
 });

@@ -645,6 +645,10 @@ function extendSelection(
 export class Scene {
   private static webglCreator: WebGLPointRendererCreator | null = null;
   private static webgpuManagerClass: any = null;
+  /** Upper bound (ms) on a single frame's `dt`. Caps the giant elapsed gap a
+   *  backgrounded/refocused tab produces so physics advances at most one slow
+   *  frame instead of the whole idle duration (~100ms ≈ 6 frames at 60fps). */
+  private static readonly MAX_FRAME_DT = 100;
 
   public static registerWebGLPointRendererCreator(creator: WebGLPointRendererCreator) {
     Scene.webglCreator = creator;
@@ -754,6 +758,11 @@ export class Scene {
    *  A resolution media query only fires when leaving its exact value, so the
    *  handler re-arms a fresh query for the new DPR each time. */
   private dprMediaQuery: MediaQueryList | null = null;
+  /** For embedded (`disableWindowResize`) scenes: observes the canvas element so
+   *  a CSS/layout-driven size change re-runs `resize()`. A window `resize`
+   *  listener never fires for these (the window isn't what changed), so without
+   *  this an embedded canvas stayed at its initial size forever. */
+  private canvasResizeObserver: ResizeObserver | null = null;
   private dprChangeHandler: (() => void) | null = null;
   private focusedA11yElement: HTMLElement | null = null;
   /** Persistent tabindex=-1 element in a11yRoot. When the focused a11y mirror is
@@ -2048,6 +2057,10 @@ export class Scene {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
+    if (this.canvasResizeObserver) {
+      this.canvasResizeObserver.disconnect();
+      this.canvasResizeObserver = null;
+    }
     if (this.dprMediaQuery && this.dprChangeHandler) {
       this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
       this.dprMediaQuery = null;
@@ -2122,6 +2135,26 @@ export class Scene {
   private setupEvents(): void {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
+    } else if (
+      this.disableWindowResize &&
+      typeof ResizeObserver !== 'undefined' &&
+      this.canvas &&
+      typeof (this.canvas as HTMLCanvasElement).getBoundingClientRect === 'function'
+    ) {
+      // Embedded scene: the window never resizes, but the canvas element can be
+      // resized by CSS/layout. Observe it and re-run resize() at its new logical
+      // (CSS) size so the backing store tracks the element.
+      this.canvasResizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const box = entry.contentRect;
+        const w = Math.round(box.width);
+        const h = Math.round(box.height);
+        if (w > 0 && h > 0 && (w !== this.width || h !== this.height)) {
+          this.resize(w, h);
+        }
+      });
+      this.canvasResizeObserver.observe(this.canvas as HTMLCanvasElement);
     }
     // Watch for a runtime DPR change (window dragged to a monitor with a
     // different pixel density, or browser zoom) so the canvas backing store is
@@ -3556,6 +3589,14 @@ export class Scene {
       const nominal = 1000 / cap;
       if (Math.abs(dt - nominal) < nominal * 0.3) dt = nominal;
     }
+    // Clamp a huge elapsed gap: a backgrounded tab (rAF paused) or a long stall
+    // makes `time - lastTime` seconds long, and feeding that straight into
+    // `update(dt)` / property drivers on refocus jumps physics forward by a
+    // giant step (a spring explodes, a tween snaps past its end). Cap to
+    // MAX_FRAME_DT so the first frame after a stall advances by at most one
+    // "slow frame" instead of the whole idle duration. Frame telemetry below
+    // still uses the true `time`, so FPS/interval readings are unaffected.
+    if (dt > Scene.MAX_FRAME_DT) dt = Scene.MAX_FRAME_DT;
     this.lastTime = time;
 
     // onDemand: only redraw when dirty or an animation is in flight.
@@ -4150,11 +4191,26 @@ export class Scene {
     }
     // Keep the WebGPU particle layer's backing store in step — otherwise it
     // rasterizes at the creation-time resolution and gets CSS-stretched.
-    if (this.gpuCanvas) {
-      this.gpuCanvas.width = width;
-      this.gpuCanvas.height = height;
-    }
+    if (this.gpuCanvas) this.sizeGpuCanvas(this.gpuCanvas, width, height);
     this.markDirty();
+  }
+
+  /** Effective device pixel ratio, matching CanvasRenderer: real DPR clamped to
+   *  `maxDPR` when set. */
+  private effectiveDPR(): number {
+    const real = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
+  }
+
+  /** Size the WebGPU particle canvas: backing store at logical × DPR, CSS box at
+   *  the logical size. Sizing the backing store in logical px (the old
+   *  behavior) left it rasterized at 1× and CSS-stretched — blurry on HiDPI. */
+  private sizeGpuCanvas(gpuCanvas: HTMLCanvasElement, width: number, height: number): void {
+    const dpr = this.effectiveDPR();
+    gpuCanvas.width = Math.max(1, Math.round(width * dpr));
+    gpuCanvas.height = Math.max(1, Math.round(height * dpr));
+    gpuCanvas.style.width = `${width}px`;
+    gpuCanvas.style.height = `${height}px`;
   }
 
   /**
@@ -4232,8 +4288,7 @@ export class Scene {
 
     if (typeof document !== 'undefined' && !this.gpuCanvas) {
       const gpuCanvas = document.createElement('canvas');
-      gpuCanvas.width = this.width;
-      gpuCanvas.height = this.height;
+      this.sizeGpuCanvas(gpuCanvas, this.width, this.height);
       gpuCanvas.style.position = 'absolute';
       gpuCanvas.style.top = '0';
       gpuCanvas.style.left = '0';
