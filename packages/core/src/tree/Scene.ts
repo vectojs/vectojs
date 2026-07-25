@@ -1647,6 +1647,76 @@ export class Scene {
   }
 
   /**
+   * Rebuild a content-projection element's DOM (`rebuild`) while preserving a
+   * text selection the user made inside it. A streaming message replaces its
+   * projection children on every appended chunk; without this, a selection in
+   * the UNCHANGED prefix is wiped on each frame ("can't select text in a
+   * message still receiving tokens"). We snapshot the selection's anchor/focus
+   * as linear character offsets within `el` before the rebuild and re-resolve
+   * them against the new DOM after, clamped to the new text length.
+   *
+   * Only fires when `el` owns the current selection and there is no active drag
+   * (mid-drag the browser is authoritative). The virtualization case — where
+   * `el` itself is removed from the DOM — is out of scope here (the node is
+   * genuinely freed; the browser clears the selection and there is nothing to
+   * restore against).
+   */
+  private preserveContentSelectionAcrossRebuild(el: HTMLElement, rebuild: () => void): void {
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    const owns =
+      !!selection &&
+      !this.blankRegionSelectionDrag &&
+      ((selection.anchorNode ? el.contains(selection.anchorNode) : false) ||
+        (selection.focusNode ? el.contains(selection.focusNode) : false));
+
+    if (!owns || !selection.anchorNode || !selection.focusNode) {
+      // Nothing to preserve — fall back to the plain release + rebuild.
+      this.releaseContentSelectionForRebuild(el);
+      rebuild();
+      return;
+    }
+
+    // Snapshot as linear offsets within this element's text. Selection
+    // endpoints are only meaningful to the offset walk when they are text
+    // nodes; a non-Text endpoint yields null and we skip restore.
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    const anchorOffset =
+      anchorNode instanceof Text
+        ? projectionAbsoluteOffset(el, {
+            node: anchorNode,
+            offset: selection.anchorOffset,
+          })
+        : null;
+    const focusOffset =
+      focusNode instanceof Text
+        ? projectionAbsoluteOffset(el, {
+            node: focusNode,
+            offset: selection.focusOffset,
+          })
+        : null;
+
+    this.endContentSelectionDrag();
+    selection.removeAllRanges();
+    rebuild();
+
+    if (anchorOffset === null || focusOffset === null) return;
+    const textLen = (el.textContent ?? '').length;
+    if (anchorOffset > textLen || focusOffset > textLen) return; // selection ran into removed tail
+    const anchor = projectionCaretAt(el, anchorOffset, 'forward');
+    const focus = projectionCaretAt(el, focusOffset, 'backward');
+    if (!anchor || !focus) return;
+    try {
+      selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+    } catch {
+      // Engine rejected a reverse/cross-node range — leave selection cleared.
+    }
+  }
+
+  /**
    * Expose the underlying {@link IRenderer} for advanced direct-draw operations.
    *
    * @returns The active renderer instance.
@@ -2572,75 +2642,76 @@ export class Scene {
         fallbackLineHeight: projection.lineHeight ?? 16,
       });
       if (el.dataset.vectoProjectionLines !== signature) {
-        this.releaseContentSelectionForRebuild(el);
-        el.replaceChildren();
-        for (let index = 0; index < lines.length; index++) {
-          const line = lines[index];
-          const lineElement = document.createElement('span');
-          const lineFont = line.font ?? projection.font ?? '';
-          const lineHeight = line.lineHeight ?? projection.lineHeight ?? 16;
-          const hasPositionedRuns = !!line.runs && line.runs.some((run) => run.x !== undefined);
-          lineElement.style.position = 'absolute';
-          // Positioned carriers already encode visual order via each run's x
-          // (the engine did the bidi reorder). Force LTR flow so the browser
-          // lays them out in DOM order and does NOT re-bidi them — otherwise an
-          // RTL line re-reverses the carriers and the running left = x - logicalX
-          // accounting breaks. Natural-flow lines keep auto so the browser bidis
-          // the plain text.
-          lineElement.dir = hasPositionedRuns ? 'ltr' : 'auto';
-          lineElement.style.left = `${line.x}px`;
-          lineElement.style.top = `${line.y + line.baseline - cssLineBoxBaseline(lineFont, lineHeight)}px`;
-          lineElement.style.whiteSpace = 'pre';
-          if (lineFont) lineElement.style.font = lineFont;
-          // Assigning the CSS `font` shorthand resets line-height to `normal`.
-          // Set the explicit line box afterwards, or selection geometry drifts
-          // differently in each browser for mixed-size text.
-          lineElement.style.lineHeight = `${lineHeight}px`;
-          const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
-          if (line.runs && line.runs.length > 0) {
-            // Positioned runs (justify / RTL / non-natural spacing): each run
-            // carries its own absolute canvas x. Place each as an ABSOLUTELY
-            // positioned carrier at `left = run.x - line.x` inside the line
-            // (itself absolutely positioned, so it is the containing block).
-            // Absolute (not flow-relative) positioning is what lets the DOM
-            // order stay LOGICAL — correct for copy / screen readers / RTL —
-            // while every box still lands at its VISUAL x, so the selection
-            // rectangles overlap the drawn glyphs regardless of order. (A
-            // flow-relative `left = x - runningX` only works when runs are in
-            // visual order, which RTL logical-order runs are not.)
-            const positioned = line.runs.some((run) => run.x !== undefined);
-            for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
-              const run = line.runs[runIndex];
-              const runElement = document.createElement('span');
-              // Keep the separator in the final logical Text node. Firefox
-              // emits a duplicate Range rectangle when the same positioned
-              // line contains a second, separator-only Text node.
-              runElement.textContent =
-                run.text + (runIndex === line.runs.length - 1 ? separator : '');
-              if (run.font) runElement.style.font = run.font;
-              // A run-level font shorthand also resets line-height. Preserve
-              // the visual line's shared baseline for every mixed-size run.
-              runElement.style.lineHeight = `${lineHeight}px`;
-              if (positioned && run.x !== undefined) {
-                runElement.style.position = 'absolute';
-                runElement.style.left = `${run.x - line.x}px`;
-                runElement.style.top = '0';
-                if (run.width !== undefined) runElement.style.width = `${run.width}px`;
-                runElement.style.whiteSpace = 'pre';
-                runElement.style.verticalAlign = 'top';
-                // Isolate each carrier's own bidi so a single RTL/base char in
-                // the box isn't mirrored relative to its neighbors — the
-                // carrier's x already places it in visual order.
-                runElement.style.unicodeBidi = 'isolate';
-                runElement.dir = 'ltr';
+        this.preserveContentSelectionAcrossRebuild(el, () => {
+          el.replaceChildren();
+          for (let index = 0; index < lines.length; index++) {
+            const line = lines[index];
+            const lineElement = document.createElement('span');
+            const lineFont = line.font ?? projection.font ?? '';
+            const lineHeight = line.lineHeight ?? projection.lineHeight ?? 16;
+            const hasPositionedRuns = !!line.runs && line.runs.some((run) => run.x !== undefined);
+            lineElement.style.position = 'absolute';
+            // Positioned carriers already encode visual order via each run's x
+            // (the engine did the bidi reorder). Force LTR flow so the browser
+            // lays them out in DOM order and does NOT re-bidi them — otherwise an
+            // RTL line re-reverses the carriers and the running left = x - logicalX
+            // accounting breaks. Natural-flow lines keep auto so the browser bidis
+            // the plain text.
+            lineElement.dir = hasPositionedRuns ? 'ltr' : 'auto';
+            lineElement.style.left = `${line.x}px`;
+            lineElement.style.top = `${line.y + line.baseline - cssLineBoxBaseline(lineFont, lineHeight)}px`;
+            lineElement.style.whiteSpace = 'pre';
+            if (lineFont) lineElement.style.font = lineFont;
+            // Assigning the CSS `font` shorthand resets line-height to `normal`.
+            // Set the explicit line box afterwards, or selection geometry drifts
+            // differently in each browser for mixed-size text.
+            lineElement.style.lineHeight = `${lineHeight}px`;
+            const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
+            if (line.runs && line.runs.length > 0) {
+              // Positioned runs (justify / RTL / non-natural spacing): each run
+              // carries its own absolute canvas x. Place each as an ABSOLUTELY
+              // positioned carrier at `left = run.x - line.x` inside the line
+              // (itself absolutely positioned, so it is the containing block).
+              // Absolute (not flow-relative) positioning is what lets the DOM
+              // order stay LOGICAL — correct for copy / screen readers / RTL —
+              // while every box still lands at its VISUAL x, so the selection
+              // rectangles overlap the drawn glyphs regardless of order. (A
+              // flow-relative `left = x - runningX` only works when runs are in
+              // visual order, which RTL logical-order runs are not.)
+              const positioned = line.runs.some((run) => run.x !== undefined);
+              for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
+                const run = line.runs[runIndex];
+                const runElement = document.createElement('span');
+                // Keep the separator in the final logical Text node. Firefox
+                // emits a duplicate Range rectangle when the same positioned
+                // line contains a second, separator-only Text node.
+                runElement.textContent =
+                  run.text + (runIndex === line.runs.length - 1 ? separator : '');
+                if (run.font) runElement.style.font = run.font;
+                // A run-level font shorthand also resets line-height. Preserve
+                // the visual line's shared baseline for every mixed-size run.
+                runElement.style.lineHeight = `${lineHeight}px`;
+                if (positioned && run.x !== undefined) {
+                  runElement.style.position = 'absolute';
+                  runElement.style.left = `${run.x - line.x}px`;
+                  runElement.style.top = '0';
+                  if (run.width !== undefined) runElement.style.width = `${run.width}px`;
+                  runElement.style.whiteSpace = 'pre';
+                  runElement.style.verticalAlign = 'top';
+                  // Isolate each carrier's own bidi so a single RTL/base char in
+                  // the box isn't mirrored relative to its neighbors — the
+                  // carrier's x already places it in visual order.
+                  runElement.style.unicodeBidi = 'isolate';
+                  runElement.dir = 'ltr';
+                }
+                lineElement.appendChild(runElement);
               }
-              lineElement.appendChild(runElement);
+            } else {
+              lineElement.textContent = line.text + separator;
             }
-          } else {
-            lineElement.textContent = line.text + separator;
+            el.appendChild(lineElement);
           }
-          el.appendChild(lineElement);
-        }
+        });
         el.dataset.vectoProjectionLines = signature;
       }
     } else {
