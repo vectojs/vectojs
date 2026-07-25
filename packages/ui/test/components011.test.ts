@@ -562,6 +562,54 @@ describe('UI 0.1.1 Components', () => {
       expect(group.value).toBe('b');
       expect(onChange).toHaveBeenCalledWith('b');
     });
+
+    it('projects a role=radio hotspot per option with aria-checked + roving tabindex', () => {
+      const group = new RadioGroup({
+        options: [
+          { value: 'a', label: 'Option A' },
+          { value: 'b', label: 'Option B' },
+          { value: 'c', label: 'Option C', disabled: true },
+        ],
+        value: 'a',
+      });
+      const spots = group.children.filter((c) => (c as any).getA11yAttributes?.().role === 'radio');
+      expect(spots).toHaveLength(3);
+      const attrs = spots.map((s) => (s as any).getA11yAttributes());
+      expect(attrs[0]).toMatchObject({
+        role: 'radio',
+        checked: true,
+        tabIndex: 0,
+      });
+      expect(attrs[1]).toMatchObject({
+        role: 'radio',
+        checked: false,
+        tabIndex: -1,
+      });
+      expect(attrs[2]).toMatchObject({ role: 'radio', disabled: true });
+    });
+
+    it('arrow keys move + select within the group, skipping disabled and wrapping', () => {
+      const onChange = vi.fn();
+      const group = new RadioGroup({
+        options: [
+          { value: 'a', label: 'A' },
+          { value: 'b', label: 'B', disabled: true },
+          { value: 'c', label: 'C' },
+        ],
+        value: 'a',
+        onChange,
+      });
+      // From 'a', ArrowDown skips disabled 'b' → 'c'.
+      group.handleRadioKey({ key: 'ArrowDown', preventDefault() {} } as any, 'a');
+      expect(group.value).toBe('c');
+      // From 'c', ArrowDown wraps to 'a'.
+      group.handleRadioKey({ key: 'ArrowDown', preventDefault() {} } as any, 'c');
+      expect(group.value).toBe('a');
+      // Space selects the focused option.
+      group.handleRadioKey({ key: ' ', preventDefault() {} } as any, 'c');
+      expect(group.value).toBe('c');
+      expect(onChange).toHaveBeenLastCalledWith('c');
+    });
   });
 
   describe('Tabs', () => {
@@ -591,6 +639,56 @@ describe('UI 0.1.1 Components', () => {
       expect(onChange).toHaveBeenCalledWith('tab2');
       expect(tabs.children).not.toContain(tab1Content);
       expect(tabs.children).toContain(tab2Content);
+    });
+
+    it('projects a role=tab hotspot per tab with aria-selected + roving tabindex', () => {
+      const tabs = new Tabs({
+        width: 300,
+        height: 200,
+        tabs: [
+          { id: 'tab1', label: 'Tab 1', content: new Entity('t1') },
+          { id: 'tab2', label: 'Tab 2', content: new Entity('t2') },
+        ],
+        value: 'tab1',
+      });
+      const spots = tabs.children.filter((c) => (c as any).getA11yAttributes?.().role === 'tab');
+      expect(spots).toHaveLength(2);
+      const attrs = spots.map((s) => (s as any).getA11yAttributes());
+      expect(attrs[0]).toMatchObject({
+        role: 'tab',
+        selected: true,
+        tabIndex: 0,
+      });
+      expect(attrs[1]).toMatchObject({
+        role: 'tab',
+        selected: false,
+        tabIndex: -1,
+      });
+    });
+
+    it('arrow/Home/End keys move + activate tabs (wrapping)', () => {
+      const onChange = vi.fn();
+      const tabs = new Tabs({
+        width: 300,
+        height: 200,
+        tabs: [
+          { id: 'a', label: 'A', content: new Entity('a') },
+          { id: 'b', label: 'B', content: new Entity('b') },
+          { id: 'c', label: 'C', content: new Entity('c') },
+        ],
+        value: 'a',
+        onChange,
+      });
+      tabs.handleTabKey({ key: 'ArrowRight', preventDefault() {} } as any, 'a');
+      expect(tabs.value).toBe('b');
+      tabs.handleTabKey({ key: 'ArrowLeft', preventDefault() {} } as any, 'b');
+      expect(tabs.value).toBe('a');
+      tabs.handleTabKey({ key: 'ArrowLeft', preventDefault() {} } as any, 'a'); // wrap
+      expect(tabs.value).toBe('c');
+      tabs.handleTabKey({ key: 'Home', preventDefault() {} } as any, 'c');
+      expect(tabs.value).toBe('a');
+      tabs.handleTabKey({ key: 'End', preventDefault() {} } as any, 'a');
+      expect(tabs.value).toBe('c');
     });
 
     it('fires onClose when the × affordance of a tab is clicked', () => {

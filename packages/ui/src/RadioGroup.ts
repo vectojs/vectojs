@@ -2,6 +2,44 @@ import { A11yAttributes, IRenderer } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
 
+/**
+ * A transparent, focusable hotspot over one radio option. The {@link RadioGroup}
+ * paints the circle + label on canvas; this exists so the a11y/automation layer
+ * projects a real `role="radio"` with `aria-checked` and a roving tabindex that
+ * a screen reader and keyboard user can operate (WCAG 4.1.2 / 2.1.1).
+ */
+class RadioHotspot extends UIComponent {
+  constructor(
+    public optionValue: string,
+    private group: RadioGroup,
+    private label: string,
+  ) {
+    super();
+    this.interactive = true;
+    this.on('click', () => this.group.selectByValue(this.optionValue, true));
+    this.on('keydown', (e: KeyboardEvent) => this.group.handleRadioKey(e, this.optionValue));
+  }
+  public setMeta(label: string): void {
+    this.label = label;
+  }
+  public getA11yAttributes(): A11yAttributes {
+    const checked = this.group.value === this.optionValue;
+    const disabled = this.group.isDisabled(this.optionValue);
+    return {
+      role: 'radio',
+      label: this.label,
+      checked,
+      disabled: disabled || undefined,
+      // Roving tabindex: only the checked option (or the first, when none
+      // matches) is in the tab order; arrows move within the group.
+      tabIndex: this.group.isTabStop(this.optionValue) ? 0 : -1,
+    };
+  }
+  public render(): void {
+    /* invisible — RadioGroup paints the control */
+  }
+}
+
 export interface RadioOption {
   value: string;
   label: string;
@@ -46,6 +84,8 @@ export class RadioGroup extends UIComponent {
   public border: string;
 
   private _hoverIdx: number = -1;
+  /** One `role="radio"` hotspot per option, kept in sync with the layout. */
+  private _hotspots: RadioHotspot[] = [];
 
   constructor(opts: RadioGroupOptions) {
     super();
@@ -61,6 +101,7 @@ export class RadioGroup extends UIComponent {
     this.interactive = true;
 
     this._layout();
+    this._syncHotspots();
 
     this.on('pointerdown', (e: { localX?: number; localY?: number }) => {
       if (e.localX === undefined || e.localY === undefined) return;
@@ -88,8 +129,97 @@ export class RadioGroup extends UIComponent {
       if (this.value === e.value) return;
       this.value = e.value;
       opts.onChange?.(this.value);
+      this._syncHotspots();
       this.scene?.markDirty();
     });
+  }
+
+  /** Whether the option is disabled (used by the radio hotspots). */
+  public isDisabled(value: string): boolean {
+    return this.options.find((o) => o.value === value)?.disabled ?? false;
+  }
+
+  /** Roving-tabindex tab stop: the checked option, or the first enabled option
+   *  when the current value matches none. */
+  public isTabStop(value: string): boolean {
+    if (this.options.some((o) => o.value === this.value)) return value === this.value;
+    const firstEnabled = this.options.find((o) => !o.disabled);
+    return !!firstEnabled && firstEnabled.value === value;
+  }
+
+  /** Select an option by value (from a hotspot click or keyboard), emitting
+   *  `change` through the same path as a pointer selection. */
+  public selectByValue(value: string, focusIt = false): void {
+    if (this.isDisabled(value) || value === this.value) return;
+    this.emit('change', { value });
+    if (focusIt) this._focusHotspot(value);
+  }
+
+  /** Arrow-key navigation within the group (WCAG radio pattern): Up/Left → prev,
+   *  Down/Right → next (wrapping, skipping disabled), selecting on move; Space
+   *  selects the focused option. */
+  public handleRadioKey(e: KeyboardEvent, fromValue: string): void {
+    const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar'];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      this.selectByValue(fromValue, true);
+      return;
+    }
+    const forward = e.key === 'ArrowDown' || e.key === 'ArrowRight';
+    const n = this.options.length;
+    const startIdx = this.options.findIndex((o) => o.value === fromValue);
+    if (startIdx === -1) return;
+    for (let step = 1; step <= n; step++) {
+      const idx = (startIdx + (forward ? step : -step) + n * step) % n;
+      const opt = this.options[idx];
+      if (!opt.disabled) {
+        this.selectByValue(opt.value, true);
+        return;
+      }
+    }
+  }
+
+  private _focusHotspot(value: string): void {
+    this._hotspots.find((h) => h.optionValue === value)?.focus();
+  }
+
+  /** Create/position one transparent `role="radio"` hotspot per option over its
+   *  circle+label box, matching `_idxAt`'s geometry. */
+  private _syncHotspots(): void {
+    // Rebuild if the option set changed (add/remove children as needed).
+    if (this._hotspots.length !== this.options.length) {
+      for (const h of this._hotspots) {
+        this.scene?.detachA11y?.(h);
+        this.remove(h);
+      }
+      this._hotspots = this.options.map((o) => new RadioHotspot(o.value, this, o.label));
+      for (const h of this._hotspots) this.add(h);
+    }
+
+    let current = 0;
+    const isH = this.direction === 'horizontal';
+    for (let i = 0; i < this.options.length; i++) {
+      const opt = this.options[i];
+      const labelW = measureText(opt.label, this.font);
+      const itemW = this.size + 8 + labelW;
+      const hotspot = this._hotspots[i];
+      hotspot.setMeta(opt.label);
+      if (isH) {
+        hotspot.x = current;
+        hotspot.y = 0;
+        hotspot.width = itemW;
+        hotspot.height = this.size;
+        current += itemW + this.gap;
+      } else {
+        hotspot.x = 0;
+        hotspot.y = current;
+        hotspot.width = itemW;
+        hotspot.height = this.size;
+        current += this.size + this.gap;
+      }
+    }
+    this.scene?.markDirty();
   }
 
   private _layout(): void {
