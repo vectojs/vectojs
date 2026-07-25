@@ -38,6 +38,59 @@ export interface TableOptions {
   viewportHeight?: number;
 }
 
+/** A transparent, structural `role="row"` container so the projected grid is
+ *  `grid > row > gridcell`, which assistive tech requires. Not focusable and
+ *  not a pointer surface — its cell hotspots own interaction. */
+class RowHotspot extends UIComponent {
+  constructor() {
+    super();
+    this.interactive = true;
+  }
+  public getA11yAttributes(): A11yAttributes {
+    return { role: 'row', pointerEvents: 'none' };
+  }
+  public render(): void {}
+}
+
+/**
+ * A transparent, focusable hotspot over one table cell so the a11y/automation
+ * layer projects a real `role="gridcell"` (body) / `columnheader` (header) with
+ * an accessible name and a roving tabindex a keyboard user can drive
+ * (WCAG 4.1.2 / 2.1.1). The {@link Table} paints the cell text on canvas; this
+ * hotspot sits above it purely for semantics + focus.
+ */
+class GridCellHotspot extends UIComponent {
+  public rowIndex = -1; // -1 = header row
+  public colIndex = 0;
+  private label = '';
+
+  constructor(private table: Table) {
+    super();
+    this.interactive = true;
+    this.on('keydown', (e: KeyboardEvent) =>
+      this.table.handleGridKey(e, this.rowIndex, this.colIndex),
+    );
+  }
+
+  public bind(rowIndex: number, colIndex: number, label: string): void {
+    this.rowIndex = rowIndex;
+    this.colIndex = colIndex;
+    this.label = label;
+  }
+
+  public getA11yAttributes(): A11yAttributes {
+    return {
+      role: this.rowIndex < 0 ? 'columnheader' : 'gridcell',
+      label: this.label,
+      tabIndex: this.table.isGridTabStop(this.rowIndex, this.colIndex) ? 0 : -1,
+    };
+  }
+
+  public render(): void {
+    /* invisible — Table paints the cell */
+  }
+}
+
 /**
  * A canvas-native data table whose cells are VMT entities.
  *
@@ -81,6 +134,17 @@ export class Table extends UIComponent {
   /** Body rows currently mounted into `bodyClip`, keyed by row index. */
   private readonly mountedRows = new Set<number>();
   private readonly overscan = 2;
+
+  // ── Grid a11y (role=row/gridcell/columnheader + roving-tabindex keyboard) ──
+  /** Pinned header row + its columnheader hotspots (created once). */
+  private headerRow: RowHotspot | null = null;
+  private headerCellHotspots: GridCellHotspot[] = [];
+  /** Pool of body row hotspots (one per visible body row), each with a cell
+   *  hotspot per column; re-bound to the row currently in each slot. */
+  private bodyRowPool: Array<{ row: RowHotspot; cells: GridCellHotspot[] }> = [];
+  /** The cell that owns the roving tab stop / focus. `-1` row = the header. */
+  private _activeRow = -1;
+  private _activeCol = 0;
 
   constructor(opts: TableOptions) {
     super();
@@ -184,11 +248,13 @@ export class Table extends UIComponent {
     if (Math.abs(this._velY) > 0.05 || Math.abs(diff) > 0.05) {
       this._scrollY += this._velY;
       this.reconcileVirtualRows();
+      this._syncGridA11y();
       this.scene?.markDirty();
     } else if (this._scrollY !== this._targetY) {
       this._scrollY = this._targetY;
       this._velY = 0;
       this.reconcileVirtualRows();
+      this._syncGridA11y();
     }
   }
 
@@ -250,6 +316,215 @@ export class Table extends UIComponent {
       this.mountedRows.add(rowIndex);
     }
     this.scene?.markDirty();
+  }
+
+  /** Accessible name for a cell: the original string source, else the cell
+   *  entity's own aria label / text if it exposes one, else empty. */
+  private cellLabel(rowIndex: number, column: number): string {
+    const src = rowIndex < 0 ? this.headers[column] : this.rows[rowIndex]?.[column];
+    if (typeof src === 'string') return src;
+    const ent = src as unknown as {
+      text?: string;
+      getA11yAttributes?: () => A11yAttributes;
+    };
+    if (ent && typeof ent.text === 'string') return ent.text;
+    return ent?.getA11yAttributes?.().label ?? '';
+  }
+
+  private columnCount(): number {
+    return this.headers.length;
+  }
+
+  /** Whether a given (row, col) owns the grid's single roving tab stop. Clamped
+   *  so an out-of-range active cell (after data change / scroll) still yields
+   *  exactly one tab stop at the header's first column. */
+  public isGridTabStop(rowIndex: number, colIndex: number): boolean {
+    const cols = this.columnCount();
+    let r = this._activeRow;
+    let c = this._activeCol;
+    if (c < 0 || c >= cols) c = 0;
+    if (r < -1 || r >= this.bodyCells.length) r = -1;
+    return rowIndex === r && colIndex === c;
+  }
+
+  /**
+   * Grid keyboard model (WCAG grid pattern): Arrow keys move the focused cell
+   * one step (clamped at the edges, header is row -1); Home/End jump to the
+   * first/last column of the row; Ctrl+Home/Ctrl+End jump to the first
+   * header cell / last body cell. The target cell is scrolled into view and
+   * focused.
+   */
+  public handleGridKey(e: KeyboardEvent, rowIndex: number, colIndex: number): void {
+    const keys = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(e.key)) return;
+    e.preventDefault();
+    const cols = this.columnCount();
+    const lastRow = this.bodyCells.length - 1;
+    let r = rowIndex;
+    let c = colIndex;
+    switch (e.key) {
+      case 'ArrowDown':
+        r = Math.min(lastRow, r + 1);
+        break;
+      case 'ArrowUp':
+        r = Math.max(-1, r - 1);
+        break;
+      case 'ArrowRight':
+        c = Math.min(cols - 1, c + 1);
+        break;
+      case 'ArrowLeft':
+        c = Math.max(0, c - 1);
+        break;
+      case 'Home':
+        if (e.ctrlKey) {
+          r = -1;
+        }
+        c = 0;
+        break;
+      case 'End':
+        if (e.ctrlKey) {
+          r = lastRow;
+        }
+        c = cols - 1;
+        break;
+    }
+    this._focusCell(r, c);
+  }
+
+  private _focusCell(rowIndex: number, colIndex: number): void {
+    this._activeRow = rowIndex;
+    this._activeCol = colIndex;
+    if (this.virtualized && rowIndex >= 0) {
+      this._scrollRowIntoView(rowIndex);
+      this.reconcileVirtualRows();
+    }
+    this._syncGridA11y();
+    // Locate the freshly-synced hotspot and focus it.
+    const target =
+      rowIndex < 0
+        ? this.headerCellHotspots[colIndex]
+        : this.bodyRowPool
+            .flatMap((p) => p.cells)
+            .find((h) => h.rowIndex === rowIndex && h.colIndex === colIndex);
+    target?.focus();
+    this.scene?.markDirty();
+  }
+
+  /** Snap a body row into the viewport (virtualized) before focusing it. */
+  private _scrollRowIntoView(rowIndex: number): void {
+    const rh = this.baseRowHeight;
+    const top = rowIndex * rh;
+    const bottom = top + rh;
+    const viewport = Math.max(0, this.viewportHeight - this.headerHeight);
+    if (top < this._scrollY) {
+      this._scrollY = this._targetY = top;
+    } else if (bottom > this._scrollY + viewport) {
+      this._scrollY = this._targetY = bottom - viewport;
+    }
+    this.clampScroll();
+    if (this._scrollY > this._targetY) this._scrollY = this._targetY;
+  }
+
+  /**
+   * Project the ARIA grid structure: a pinned header `role="row"` with one
+   * `columnheader` per column, and one body `role="row"` per visible body row
+   * (pooled, virtualization-aware) with a `gridcell` per column. Hotspots are
+   * transparent and sit over the canvas-drawn cells purely for semantics +
+   * roving-tabindex keyboard focus.
+   */
+  private _syncGridA11y(): void {
+    const cols = this.columnCount();
+    // Header row (created once, pinned as a direct Table child).
+    if (!this.headerRow) {
+      this.headerRow = new RowHotspot();
+      this.add(this.headerRow);
+      this.headerCellHotspots = Array.from({ length: cols }, () => {
+        const h = new GridCellHotspot(this);
+        this.headerRow!.add(h);
+        return h;
+      });
+    }
+    this.headerRow.x = 0;
+    this.headerRow.y = 0;
+    this.headerRow.width = this.width;
+    this.headerRow.height = this.headerHeight;
+    let hx = 0;
+    for (let c = 0; c < cols; c++) {
+      const h = this.headerCellHotspots[c];
+      h.bind(-1, c, this.cellLabel(-1, c));
+      h.x = hx;
+      h.y = 0;
+      h.width = this.colWidths[c];
+      h.height = this.headerHeight;
+      hx += this.colWidths[c];
+    }
+
+    // Body rows: which indices are on screen, and where each sits. Body row
+    // hotspots parent to the scrolled clip when virtualized, else to the Table.
+    const rh = this.baseRowHeight;
+    const rowParent: Entity = this.bodyClip ?? this;
+    let first: number;
+    let last: number;
+    let rowTopFor: (i: number) => number;
+    if (this.virtualized) {
+      const bodyViewport = Math.max(0, this.viewportHeight - this.headerHeight);
+      first = Math.max(0, Math.floor(this._scrollY / rh) - this.overscan);
+      last = Math.min(
+        this.bodyCells.length - 1,
+        Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
+      );
+      rowTopFor = (i) => i * rh - this._scrollY; // clip-relative
+    } else {
+      first = 0;
+      last = this.bodyCells.length - 1;
+      rowTopFor = (i) => {
+        let y = this.headerHeight;
+        for (let k = 0; k < i; k++) y += this.rowHeights[k];
+        return y;
+      };
+    }
+    const need = this.bodyCells.length === 0 ? 0 : last - first + 1;
+
+    // Grow / shrink the pool.
+    while (this.bodyRowPool.length < need) {
+      const row = new RowHotspot();
+      const cells = Array.from({ length: cols }, () => new GridCellHotspot(this));
+      for (const cell of cells) row.add(cell);
+      rowParent.add(row);
+      this.bodyRowPool.push({ row, cells });
+    }
+    while (this.bodyRowPool.length > need) {
+      const entry = this.bodyRowPool.pop()!;
+      this.scene?.detachA11y?.(entry.row);
+      for (const cell of entry.cells) this.scene?.detachA11y?.(cell);
+      entry.row.parent?.remove(entry.row);
+    }
+    // A pool row may need to move between `this` and `bodyClip` if the mode
+    // changed; ensure correct parent.
+    for (let slot = 0; slot < need; slot++) {
+      const i = first + slot;
+      const { row, cells } = this.bodyRowPool[slot];
+      if (row.parent !== rowParent) {
+        row.parent?.remove(row);
+        rowParent.add(row);
+      }
+      const top = rowTopFor(i);
+      const rowH = this.virtualized ? rh : this.rowHeights[i];
+      row.x = 0;
+      row.y = top;
+      row.width = this.width;
+      row.height = rowH;
+      let cx = 0;
+      for (let c = 0; c < cols; c++) {
+        const cell = cells[c];
+        cell.bind(i, c, this.cellLabel(i, c));
+        cell.x = cx;
+        cell.y = 0;
+        cell.width = this.colWidths[c];
+        cell.height = rowH;
+        cx += this.colWidths[c];
+      }
+    }
   }
 
   private normalizeColumnWidths(widths: number[] | undefined): number[] {
@@ -338,6 +613,7 @@ export class Table extends UIComponent {
       this.clampScroll();
       this._scrollY = this._targetY;
       this.reconcileVirtualRows();
+      this._syncGridA11y();
       this.scene?.markDirty();
       return this;
     }
@@ -367,6 +643,7 @@ export class Table extends UIComponent {
     }
 
     this.height = y;
+    this._syncGridA11y();
     this.scene?.markDirty();
     return this;
   }

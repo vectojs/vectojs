@@ -97,8 +97,12 @@ describe('Table', () => {
       });
     }
     // The clipped body sub-container holds the mounted body cells.
-    const bodyClip = (t: Table) => (t as any).bodyClip as { children: unknown[] };
+    const bodyClip = (t: Table) => (t as any).bodyClip as { children: any[] };
     const mounted = (t: Table) => (t as any).mountedRows as Set<number>;
+    // Count only the Text cell entities (the grid a11y layer adds transparent
+    // RowHotspot/GridCellHotspot children that are not the mounted cells).
+    const textCellCount = (children: any[]) =>
+      children.filter((c) => c?.constructor?.name === 'Text').length;
 
     it('mounts only a viewport-worth of body rows, not the whole table', () => {
       // 800 rows is plenty to prove the point — the mounted count is bounded by
@@ -110,7 +114,7 @@ describe('Table', () => {
       expect(mounted(t).size).toBeLessThanOrEqual(13);
       expect(mounted(t).size).toBeGreaterThan(0);
       // Body clip holds only those rows' cells (2 cols each), far below 1600.
-      expect(bodyClip(t).children.length).toBe(mounted(t).size * 2);
+      expect(textCellCount(bodyClip(t).children)).toBe(mounted(t).size * 2);
       // The table's own height is the fixed viewport, not the full content.
       expect(t.height).toBe(300);
     });
@@ -140,8 +144,9 @@ describe('Table', () => {
         rowHeight: 30,
       });
       expect((t as any).bodyClip).toBeNull();
-      // 50 rows × 2 cols body cells + 2 header cells all direct children.
-      expect(t.children.length).toBe(50 * 2 + 2);
+      // 50 rows × 2 cols body cells + 2 header cells all direct Text children
+      // (the grid a11y layer adds transparent row/cell hotspots alongside).
+      expect(textCellCount(t.children)).toBe(50 * 2 + 2);
       // Grows to fit all rows (variable heights ≥ rowHeight), not a fixed
       // viewport — so much taller than any single viewport would be.
       expect(t.height).toBeGreaterThanOrEqual(51 * 30);
@@ -178,6 +183,85 @@ describe('Table', () => {
       const parked = (t as any)._targetY;
       t.emit('pointermove', { localY: 0 }); // no active drag → ignored
       expect((t as any)._targetY).toBe(parked);
+    });
+  });
+
+  describe('a11y: role=grid/row/gridcell + keyboard (E-4b)', () => {
+    const cellHotspots = (t: Table) => {
+      const out: any[] = [];
+      const walk = (e: any) => {
+        if (e.getA11yAttributes) {
+          const role = e.getA11yAttributes().role;
+          if (role === 'gridcell' || role === 'columnheader') out.push(e);
+        }
+        for (const c of e.children ?? []) walk(c);
+      };
+      walk(t);
+      return out;
+    };
+
+    it('projects columnheader + gridcell hotspots inside role=row containers', () => {
+      const t = new Table({
+        headers: ['Name', 'Age'],
+        rows: [
+          ['Alice', '30'],
+          ['Bob', '25'],
+        ],
+        width: 240,
+      });
+      // Header row + 2 body rows are role=row.
+      const rows = t.children.filter((c) => (c as any).getA11yAttributes?.().role === 'row');
+      expect(rows.length).toBe(3);
+
+      const cells = cellHotspots(t).map((h) => h.getA11yAttributes());
+      const headers = cells.filter((a) => a.role === 'columnheader');
+      const body = cells.filter((a) => a.role === 'gridcell');
+      expect(headers.map((a) => a.label)).toEqual(['Name', 'Age']);
+      expect(body.map((a) => a.label)).toEqual(['Alice', '30', 'Bob', '25']);
+      // Exactly one roving tab stop across the whole grid (header col 0).
+      expect(cells.filter((a) => a.tabIndex === 0)).toHaveLength(1);
+    });
+
+    it('table itself is role=grid', () => {
+      const t = new Table({ headers: ['A'], rows: [['x']], width: 100 });
+      expect(t.getA11yAttributes().role).toBe('grid');
+    });
+
+    it('ArrowDown/ArrowRight move the focused cell (roving tabindex follows)', () => {
+      const t = new Table({
+        headers: ['A', 'B'],
+        rows: [
+          ['a0', 'b0'],
+          ['a1', 'b1'],
+        ],
+        width: 200,
+      });
+      // From header col 0, ArrowDown → body row 0 col 0.
+      t.handleGridKey({ key: 'ArrowDown', preventDefault() {} } as any, -1, 0);
+      expect(t.isGridTabStop(0, 0)).toBe(true);
+      // ArrowRight → col 1.
+      t.handleGridKey({ key: 'ArrowRight', preventDefault() {} } as any, 0, 0);
+      expect(t.isGridTabStop(0, 1)).toBe(true);
+      // ArrowUp back to the header row.
+      t.handleGridKey({ key: 'ArrowUp', preventDefault() {} } as any, 0, 1);
+      expect(t.isGridTabStop(-1, 1)).toBe(true);
+      // Clamped at the top edge.
+      t.handleGridKey({ key: 'ArrowUp', preventDefault() {} } as any, -1, 1);
+      expect(t.isGridTabStop(-1, 1)).toBe(true);
+    });
+
+    it('Ctrl+End jumps to the last body row, last column', () => {
+      const t = new Table({
+        headers: ['A', 'B'],
+        rows: [
+          ['a0', 'b0'],
+          ['a1', 'b1'],
+          ['a2', 'b2'],
+        ],
+        width: 200,
+      });
+      t.handleGridKey({ key: 'End', ctrlKey: true, preventDefault() {} } as any, -1, 0);
+      expect(t.isGridTabStop(2, 1)).toBe(true);
     });
   });
 });

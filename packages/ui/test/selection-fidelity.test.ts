@@ -172,10 +172,20 @@ describe('selection fidelity of content projections', () => {
     });
 
     it('lays out cells before render and keeps render free of geometry mutations', () => {
-      const header = new RichText([{ text: 'Header' }], { font: '14px sans-serif' });
-      const first = new RichText([{ text: 'First row' }], { font: '14px sans-serif' });
-      const second = new RichText([{ text: 'Second row' }], { font: '14px sans-serif' });
-      const table = new Table({ headers: [header], rows: [[first], [second]], width: 180 });
+      const header = new RichText([{ text: 'Header' }], {
+        font: '14px sans-serif',
+      });
+      const first = new RichText([{ text: 'First row' }], {
+        font: '14px sans-serif',
+      });
+      const second = new RichText([{ text: 'Second row' }], {
+        font: '14px sans-serif',
+      });
+      const table = new Table({
+        headers: [header],
+        rows: [[first], [second]],
+        width: 180,
+      });
       const before = [header.x, header.y, first.x, first.y, second.x, second.y, table.height];
 
       expect(first.y).toBeGreaterThan(header.y);
@@ -195,9 +205,17 @@ describe('selection fidelity of content projections', () => {
     });
 
     it('reflows row and table geometry after a cell changes', () => {
-      const first = new RichText([{ text: 'short' }], { font: '14px sans-serif' });
-      const second = new RichText([{ text: 'next' }], { font: '14px sans-serif' });
-      const table = new Table({ headers: ['Header'], rows: [[first], [second]], width: 140 });
+      const first = new RichText([{ text: 'short' }], {
+        font: '14px sans-serif',
+      });
+      const second = new RichText([{ text: 'next' }], {
+        font: '14px sans-serif',
+      });
+      const table = new Table({
+        headers: ['Header'],
+        rows: [[first], [second]],
+        width: 140,
+      });
       const oldHeight = table.height;
       const oldSecondY = second.y;
 
@@ -218,11 +236,17 @@ describe('selection fidelity of content projections', () => {
         selectable: false,
       });
       expect(table.getContentProjection()).toBeNull();
+      // The grid a11y layer adds transparent row/cell hotspots (null projection)
+      // alongside the Text cells; scope to the projection-bearing cells.
+      const projectingCells = table.children.filter((c) => c.getContentProjection() !== null);
+      expect(projectingCells.map((cell) => cell.getContentProjection()?.text)).toEqual([
+        'A',
+        'B',
+        'one',
+        'two',
+      ]);
       expect(
-        table.children.map((cell) => cell.getContentProjection()?.text).filter(Boolean),
-      ).toEqual(['A', 'B', 'one', 'two']);
-      expect(
-        table.children.every((cell) => cell.getContentProjection()?.selectable === false),
+        projectingCells.every((cell) => cell.getContentProjection()?.selectable === false),
       ).toBe(true);
     });
 
@@ -231,11 +255,14 @@ describe('selection fidelity of content projections', () => {
       const rows: Array<Array<string | RichText>> = [['before', overflow]];
       const table = new Table({ headers: ['H'], rows, width: 160 });
       expect(overflow.parent).toBeNull();
-      expect(table.children).toHaveLength(2);
+      // Two projection-bearing cells (header 'H' + body 'before'); the malformed
+      // overflow RichText is dropped, and transparent grid hotspots don't count.
+      const cells = () => table.children.filter((c) => c.getContentProjection() !== null);
+      expect(cells()).toHaveLength(2);
 
       rows[0][0] = 'after';
       table.layout();
-      expect(table.children[1].getContentProjection()?.text).toBe('after');
+      expect(cells()[1].getContentProjection()?.text).toBe('after');
     });
   });
 });
