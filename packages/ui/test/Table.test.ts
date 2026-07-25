@@ -100,12 +100,16 @@ describe('Table', () => {
     const bodyClip = (t: Table) => (t as any).bodyClip as { children: unknown[] };
     const mounted = (t: Table) => (t as any).mountedRows as Set<number>;
 
-    it('mounts only a viewport-worth of body rows, not all 10000', () => {
-      const t = makeTable(10000);
+    it('mounts only a viewport-worth of body rows, not the whole table', () => {
+      // 800 rows is plenty to prove the point — the mounted count is bounded by
+      // the viewport, not the row total — while keeping cell-entity construction
+      // cheap enough to stay well under the CI test timeout (10k rows = 20k Text
+      // entities took >5s on slower runners).
+      const t = makeTable(800);
       // header 30 + 270/30 = 9 visible rows + overscan(2 each side) ≈ ≤ 13 rows.
       expect(mounted(t).size).toBeLessThanOrEqual(13);
       expect(mounted(t).size).toBeGreaterThan(0);
-      // Body clip holds only those rows' cells (2 cols each), far below 20000.
+      // Body clip holds only those rows' cells (2 cols each), far below 1600.
       expect(bodyClip(t).children.length).toBe(mounted(t).size * 2);
       // The table's own height is the fixed viewport, not the full content.
       expect(t.height).toBe(300);
@@ -114,7 +118,7 @@ describe('Table', () => {
     it('mounts rows around the scrolled position after a wheel scroll', () => {
       const canvas = document.createElement('canvas');
       const scene = new Scene(canvas);
-      const t = makeTable(10000);
+      const t = makeTable(400);
       scene.add(t);
       const before = new Set(mounted(t));
       expect(before.has(0)).toBe(true);
