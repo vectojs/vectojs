@@ -125,12 +125,21 @@ export class Overlay extends UIComponent {
     return ((source as Entity).scene as Scene | null) ?? null;
   }
 
-  /** Animate the overlay out (stays mounted; re-show via showAt). */
+  /** Hide the overlay. Setting `opacity = 0` alone left it hit-testable,
+   *  keyboard-focusable, and announced to screen readers — its interactive
+   *  children and shadow DOM nodes persisted. So this also drops `interactive`
+   *  and prunes the a11y/portal shadow subtree (`detachA11y`), making "hidden"
+   *  mean hidden to pointer, keyboard, and assistive tech. The entity stays in
+   *  the tree (not drawn while `opacity = 0`), so a subsequent `showAt`/
+   *  `showAtPoint` re-shows it and the per-frame `syncA11y` re-creates the
+   *  shadow nodes. */
   public hide(): void {
     this.visible = false;
     this.opacity = 0;
     this.scaleX = 0.92;
     this.scaleY = 0.92;
+    this.interactive = false;
+    (this.scene as Scene | null)?.detachA11y(this);
     this.scene?.markDirty();
   }
 

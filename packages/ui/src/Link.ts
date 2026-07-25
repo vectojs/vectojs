@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer, sanitizeUrl } from '@vectojs/core';
+import { A11yAttributes, IRenderer, sanitizeUrl, VectoJSEvent } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText, fontSizePx } from './measure';
 
@@ -41,7 +41,20 @@ export class Link extends UIComponent {
     this.width = measureText(this.label, this.font);
     this.height = fontSizePx(this.font);
 
-    this.on('click', () => {
+    this.on('click', (e: VectoJSEvent) => {
+      // The shadow `<a href target=_blank>` navigates NATIVELY on a real DOM
+      // click, and that same click is also forwarded here — calling
+      // window.open again would open a SECOND tab. So only open programmatically
+      // for a canvas/Three/XR-path click (no real anchor navigated): detect a
+      // genuine DOM click whose target is an <a> and bail in that case.
+      const native = e.nativeEvent as Event | undefined;
+      const target = native?.target as { tagName?: string } | undefined;
+      const isNativeAnchorClick =
+        typeof Event !== 'undefined' &&
+        native instanceof Event &&
+        target?.tagName?.toLowerCase() === 'a';
+      if (isNativeAnchorClick) return; // browser already navigated the shadow <a>
+
       const safe = sanitizeUrl(this.href);
       if (safe && safe !== '#' && typeof window !== 'undefined') {
         window.open(safe, '_blank', 'noopener');
@@ -50,7 +63,12 @@ export class Link extends UIComponent {
   }
 
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'a', href: sanitizeUrl(this.href), label: this.label, target: '_blank' };
+    return {
+      tag: 'a',
+      href: sanitizeUrl(this.href),
+      label: this.label,
+      target: '_blank',
+    };
   }
 
   public render(r: IRenderer): void {

@@ -148,6 +148,22 @@ describe('Button', () => {
 
     expect(markDirty).toHaveBeenCalledTimes(2);
   });
+
+  it('drives the focus ring from focus/blur events', () => {
+    const markDirty = vi.fn();
+    const b = new Button('Focusable');
+    (b as unknown as { _scene: unknown })._scene = { markDirty };
+    expect((b as unknown as { focused: boolean }).focused).toBe(false);
+
+    b.emit('focus', {});
+    expect((b as unknown as { focused: boolean }).focused).toBe(true);
+    b.emit('focus', {}); // idempotent — no extra markDirty
+    b.emit('blur', {});
+    expect((b as unknown as { focused: boolean }).focused).toBe(false);
+
+    // markDirty on focus + blur (the duplicate focus is a no-op).
+    expect(markDirty).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('Link', () => {

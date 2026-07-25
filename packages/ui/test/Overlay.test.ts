@@ -117,4 +117,27 @@ describe('Overlay.showAtPoint', () => {
     // opacity animates back toward 0 via the registered transition; the
     // synchronous signal is `visible` flipping to false.
   });
+
+  it('hide() drops interactivity and prunes the a11y shadow (not just opacity)', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const overlay = new TestOverlay();
+    overlay.interactive = true;
+    overlay.showAtPoint(50, 50, scene);
+    (scene as any).syncA11y((scene as any).root);
+    expect(overlay.interactive).toBe(true);
+    expect((scene as any).a11yElements.get(overlay.id)).toBeInstanceOf(HTMLElement);
+
+    overlay.hide();
+    (scene as any).syncA11y((scene as any).root);
+    // Hidden = not hit-testable and not announced, not merely transparent.
+    expect(overlay.interactive).toBe(false);
+    expect((scene as any).a11yElements.get(overlay.id)).toBeUndefined();
+
+    // Re-show restores both.
+    overlay.interactive = true;
+    overlay.showAtPoint(60, 60, scene);
+    (scene as any).syncA11y((scene as any).root);
+    expect((scene as any).a11yElements.get(overlay.id)).toBeInstanceOf(HTMLElement);
+  });
 });
