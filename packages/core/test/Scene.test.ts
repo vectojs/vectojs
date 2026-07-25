@@ -2092,15 +2092,25 @@ describe('Scene maxFPS / prefers-reduced-motion (power saving)', () => {
       }
     });
 
-    it('does not quantize a genuine stall (dt far from nominal)', () => {
+    it('does not quantize a genuine stall, but clamps it to MAX_FRAME_DT', () => {
       const { scene, spy } = makeDtScene(60);
       scene.markDirty();
       (scene as any).lastTime = -1000;
-      (scene as any).loop(0); // first frame, dt = 1000 (far from 16.667)
-      expect(spy.dts[0]).toBe(1000);
+      (scene as any).loop(0); // first frame, dt = 1000 — a stall, not snapped to
+      // the nominal 16.667, but capped to the 100ms max-frame-dt so physics
+      // doesn't jump forward a full second on refocus.
+      expect(spy.dts[0]).toBe(100);
       scene.markDirty();
-      (scene as any).loop(500); // 500ms stall, dt = 500 — not snapped
-      expect(spy.dts[1]).toBe(500);
+      (scene as any).loop(500); // 500ms stall → also clamped to 100
+      expect(spy.dts[1]).toBe(100);
+    });
+
+    it('a modest stall between the nominal and the cap passes through unmodified', () => {
+      const { scene, spy } = makeDtScene(60);
+      scene.markDirty();
+      (scene as any).lastTime = -40;
+      (scene as any).loop(0); // dt = 40 (far from 16.667 nominal, below 100 cap)
+      expect(spy.dts[0]).toBe(40);
     });
 
     it('uncapped (maxFPS=0) never quantizes dt', () => {
