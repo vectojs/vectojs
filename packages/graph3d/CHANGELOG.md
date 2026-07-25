@@ -1,5 +1,42 @@
 # @vectojs/graph3d
 
+## 0.3.0
+
+### Minor Changes
+
+- 6bdd1dc: Add `VectoForceLayout` — an in-house, dependency-free 3D force-directed graph layout, offered as an alternative `GraphLayout` to the `d3-force-3d`-backed `D3ForceLayout`.
+
+  It is a **new force model**, not a d3 adapter: repulsion is an in-house **Barnes-Hut octree** N-body (O(N log N) per tick), combined with link springs, an origin-centering pull, velocity-decay integration, and alpha cooling. It is deterministic (a seeded PRNG places un-seeded nodes, so a given graph lays out identically every run), computes in f32 throughout, and implements the full `GraphLayout` contract including `pinNode`/`unpinNode`/`reheat` for interactive drag. It has **no runtime dependency on d3-force-3d** — apps that don't need d3 can drop it.
+
+  Real-hardware benchmark (`benchmarks/graph-layout`, per-tick cost vs `D3ForceLayout` on the same graph, Chrome 150 + Firefox 153): **4.2–7.2× faster on Chrome, 5.0–8.3× on Firefox** across 500–5000 nodes, with the margin widening as the graph grows (the Barnes-Hut O(N log N) advantage). A matching Rust/WASM kernel that accelerates this exact model (differential-tested against it) is a planned follow-up.
+
+### Patch Changes
+
+- 778f0c9: Two measured per-frame fixes from the remaining micro-walk survey (the third
+  item, Tabs' per-frame visibility scan, was measured at 0.5–2.0µs/frame for 60
+  tabs and deliberately left alone):
+
+  - **`SpatialHashGrid` degraded as O(area / cellSize²)** (`@vectojs/math`). Cell
+    enumeration touched every cell an AABB covered, so one large box was
+    pathological: measured **789µs per query** over a 10000×10000 region and
+    **1.2ms to insert** a single 6400×6400 box at cellSize 64 — a single
+    screen-sized entity could blow the frame budget by itself. Boxes spanning more
+    than 64 cells now go to an oversized list and are AABB-tested directly, and an
+    oversized _query_ walks the occupied cells (bounded by real content) instead of
+    its own area. `clear()` now also empties that list — it previously would have
+    leaked oversized entries into every later frame. Verified differentially
+    against an exhaustive AABB scan: the broad phase never misses a true overlap.
+  - **`Graph3D.applyPositions` computed its bounding sphere in a second pass**
+    (`@vectojs/graph3d`). `InstancedMesh.computeBoundingSphere()` re-reads every
+    instance matrix out of the buffer the method has just written, and measured at
+    **60–78% of the whole method** (more than the matrix-write loop it follows).
+    The sphere is now derived inline from the positions already in hand:
+    **2.4× faster** at 500 nodes, **3.2×** at 2000, **2.3×** at 10000 (0.567 →
+    0.248ms). `nodeMesh` keeps frustum culling on, so the sphere stays
+    conservative — it expands by each instance's true world radius
+    (`nodeRadius × cbrt(val)`, not the scale alone) and uses the AABB circumradius,
+    asserted by containing every node's full extent.
+
 ## 0.2.1
 
 ### Patch Changes
