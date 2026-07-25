@@ -1332,20 +1332,110 @@ export class LayoutEngine {
   ): void {
     buffer.reset();
     const fontSize = prepared.fontSize;
-    const lineHeight = fontSize * 1.5;
     let currentX = 0;
     let currentY = 0;
 
+    // Slots [lineStart, buffer.count) hold the current visual line in LOGICAL
+    // order; commitLine turns them into VISUAL order (UAX #9 L2) and assigns the
+    // final x + shared-baseline y — mirroring layoutPrepared's commitLine so the
+    // zero-GC path agrees glyph-for-glyph with the allocating one.
+    let lineStart = 0;
+    let paragraphBaseLevel = 0;
+    let lineMax = fontSize; // tallest glyph on the line → shared baseline
+
+    const commitLine = (): void => {
+      const end = buffer.count;
+      const len = end - lineStart;
+      if (len <= 0) return;
+
+      // Reorder only when the line actually carries RTL content: a pure-LTR line
+      // (the common hot path) stays fully allocation-free here.
+      let hasRTL = paragraphBaseLevel % 2 === 1;
+      for (let i = lineStart; !hasRTL && i < end; i++) {
+        if (buffer.levels[i] % 2 === 1) hasRTL = true;
+      }
+
+      if (hasRTL) {
+        let str = '';
+        const lvls = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          str += buffer.chars[lineStart + i];
+          lvls[i] = buffer.levels[lineStart + i];
+        }
+        // Reverse each L2 segment in place across ALL parallel arrays, so a
+        // glyph's char/width/height/level travel together into visual order.
+        const segments = BidiResolver.reorderSegments(str, lvls, paragraphBaseLevel);
+        for (const [segStart, segEnd] of segments) {
+          let left = lineStart + segStart;
+          let right = lineStart + segEnd;
+          while (left < right) {
+            const tc = buffer.chars[left];
+            buffer.chars[left] = buffer.chars[right];
+            buffer.chars[right] = tc;
+            const tw = buffer.ws[left];
+            buffer.ws[left] = buffer.ws[right];
+            buffer.ws[right] = tw;
+            const th = buffer.hs[left];
+            buffer.hs[left] = buffer.hs[right];
+            buffer.hs[right] = th;
+            const tl = buffer.levels[left];
+            buffer.levels[left] = buffer.levels[right];
+            buffer.levels[right] = tl;
+            left++;
+            right--;
+          }
+        }
+      }
+
+      // Assign visual x left-to-right from the (now visually ordered) widths. An
+      // RTL paragraph packs left while placing, so shift the whole line so its
+      // content ends flush at the wrap edge (skipped when the width is the
+      // unbounded 1e9 sentinel — nothing to align to).
+      let contentW = 0;
+      for (let i = lineStart; i < end; i++) contentW += buffer.ws[i];
+      const rtlShift =
+        paragraphBaseLevel % 2 === 1 && this.maxWidth < 1e9 && contentW < this.maxWidth
+          ? this.maxWidth - contentW
+          : 0;
+      let x = rtlShift;
+      for (let i = lineStart; i < end; i++) {
+        buffer.xs[i] = x;
+        // Canvas text is positioned by baseline while `y` is the local top, so
+        // offset smaller runs by their BASELINE delta (0.8em), not the full
+        // em-box delta — mixed-size glyphs then share one real baseline.
+        buffer.ys[i] = currentY + (lineMax - buffer.hs[i]) * 0.8;
+        x += buffer.ws[i];
+      }
+    };
+
     for (const paragraph of prepared.paragraphs) {
       if (paragraph.isEmpty) {
-        currentY += lineHeight;
+        currentY += fontSize * 1.5;
         currentX = 0;
         continue;
       }
 
+      paragraphBaseLevel = paragraph.baseLevel ?? 0;
+
+      // Tallest run in the paragraph drives line height + the shared baseline
+      // (plain single-size text: pMax === fontSize, so every offset below
+      // collapses to the original behavior).
+      let pMax = fontSize;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const gfs = glyph.style?.fontSize ?? fontSize;
+          if (gfs > pMax) pMax = gfs;
+        }
+      }
+      const lineHeight = pMax * 1.5;
+      lineStart = buffer.count;
+      lineMax = pMax;
+
       for (const word of paragraph.words) {
         if (currentX + word.width > this.maxWidth && currentX > 0) {
           if (word.isWordLike === false && word.isWhitespace) continue;
+          commitLine();
+          lineStart = buffer.count;
           currentX = 0;
           currentY += lineHeight;
         }
@@ -1354,15 +1444,18 @@ export class LayoutEngine {
           if (buffer.count >= LayoutResultBuffer.CAPACITY) break;
 
           const charWidth = glyph.width;
+          const gfs = glyph.style?.fontSize ?? fontSize;
 
           let foundSpot = false;
           while (currentY < this.maxHeight) {
             if (currentX + charWidth > this.maxWidth && currentX > 0) {
+              commitLine();
+              lineStart = buffer.count;
               currentX = 0;
               currentY += lineHeight;
               continue;
             }
-            if (exclusionMask && exclusionMask(currentX, currentY, charWidth, fontSize)) {
+            if (exclusionMask && exclusionMask(currentX, currentY, charWidth, gfs)) {
               currentX += charWidth;
               continue;
             }
@@ -1374,18 +1467,23 @@ export class LayoutEngine {
 
           if (currentX === 0 && glyph.char.trim().length === 0) continue;
 
+          // Written in LOGICAL order at a provisional x/y; commitLine assigns
+          // the final visual x and the shared-baseline y for the whole line.
           const idx = buffer.count;
           buffer.chars[idx] = glyph.char;
           buffer.xs[idx] = currentX;
           buffer.ys[idx] = currentY;
           buffer.ws[idx] = charWidth;
-          buffer.hs[idx] = fontSize;
+          buffer.hs[idx] = gfs;
+          buffer.levels[idx] = (glyph.level ?? paragraphBaseLevel) & 0x7f;
           buffer.count++;
 
           currentX += charWidth;
         }
       }
 
+      commitLine();
+      lineStart = buffer.count;
       currentX = 0;
       currentY += lineHeight;
     }
@@ -1408,6 +1506,9 @@ export class LayoutResultBuffer {
   hs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Character for each glyph slot. */
   chars: string[] = Array.from({ length: LayoutResultBuffer.CAPACITY });
+  /** Resolved BiDi embedding level of each glyph (even = LTR, odd = RTL). Used
+   *  for visual reordering; also lets a consumer know a glyph's direction. */
+  levels: Uint8Array = new Uint8Array(LayoutResultBuffer.CAPACITY);
   /** Number of valid glyphs written in this buffer. */
   count: number = 0;
 
