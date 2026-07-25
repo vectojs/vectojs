@@ -459,4 +459,80 @@ Plain paragraph at the end.
       for (const b of before) expect(b.parent).toBeNull();
     });
   });
+
+  describe('inline-math tokenizer does not eat currency', () => {
+    // Inline math renders as a gold (#fcd34d) styled RichText span; currency
+    // text does not. Collect every span so we can tell them apart.
+    const MATH_COLOR = '#fcd34d';
+    const collectSpansOf = (md: Markdown): Array<{ text: string; color?: string }> => {
+      const out: Array<{ text: string; color?: string }> = [];
+      const walk = (e: any) => {
+        if (Array.isArray(e.spans)) {
+          for (const s of e.spans) out.push({ text: s?.text ?? '', color: s?.style?.color });
+        }
+        if (typeof e.text === 'string' && !Array.isArray(e.spans)) out.push({ text: e.text });
+        for (const c of e.children ?? []) walk(c);
+      };
+      walk(md.content);
+      return out;
+    };
+    const hasMathSpan = (md: Markdown) => collectSpansOf(md).some((s) => s.color === MATH_COLOR);
+    const allText = (md: Markdown) =>
+      collectSpansOf(md)
+        .map((s) => s.text)
+        .join(' ');
+
+    it('does not turn "$5 to $10" into a math span', () => {
+      const md = new Markdown('It costs $5 to $10 per unit.');
+      expect(hasMathSpan(md)).toBe(false); // no inline-math span produced
+      const text = allText(md);
+      expect(text).toContain('$5');
+      expect(text).toContain('$10');
+    });
+
+    it('leaves standalone currency like "$9 each" as prose (no math span)', () => {
+      const md = new Markdown('Only $9 each, down from $12.');
+      expect(hasMathSpan(md)).toBe(false);
+    });
+
+    it('still tokenizes genuine inline math "$x+1$" as a math span', () => {
+      const md = new Markdown('The equation $x+1$ holds.');
+      expect(hasMathSpan(md)).toBe(true);
+    });
+
+    it('does not treat "$$" (empty) as a math span', () => {
+      const md = new Markdown('An empty $$ pair.');
+      expect(hasMathSpan(md)).toBe(false);
+    });
+  });
+
+  describe('updateTokens child-index stays aligned across null-rendering tokens', () => {
+    it('updates the right entity when a null-rendering HTML comment precedes the tail', () => {
+      // An HTML comment renders no entity. A paragraph after it must still be
+      // targeted correctly as the stream grows (previously the comment shifted
+      // every subsequent child index by one).
+      const md = new Markdown('<!-- note -->\n\nHello');
+      const paras = md.content.children;
+      const lastPara = paras[paras.length - 1];
+      md.appendMarkdown(' world');
+      // The same paragraph entity grew in place — not a sibling wrongly updated.
+      expect(md.content.children[md.content.children.length - 1]).toBe(lastPara);
+    });
+
+    it('removes the correct block when a null-rendering token sits before the change', () => {
+      const md = new Markdown('<!-- c -->\n\nkeep me\n\ndrop me');
+      const keep = md.content.children.find((c: any) =>
+        (c.spans?.[0]?.text ?? c.text ?? '').includes('keep'),
+      );
+      expect(keep).toBeDefined();
+      // Rewrite so only "keep me" survives; the reconcile must not destroy the
+      // wrong entity due to the leading comment's index offset.
+      md.setContent('<!-- c -->\n\nkeep me');
+      const survivors = md.content.children
+        .map((c: any) => c.spans?.[0]?.text ?? c.text ?? '')
+        .join(' ');
+      expect(survivors).toContain('keep');
+      expect(survivors).not.toContain('drop');
+    });
+  });
 });

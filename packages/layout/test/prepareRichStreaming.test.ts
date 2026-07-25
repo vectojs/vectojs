@@ -8,7 +8,9 @@ import {
 } from '../src/LayoutEngine';
 
 // Width ∝ fontSize (0.5em/char) so widths are deterministic and comparable.
-const measurer: GlyphMeasurer = { measure: (_char, fontSize) => fontSize * 0.5 };
+const measurer: GlyphMeasurer = {
+  measure: (_char, fontSize) => fontSize * 0.5,
+};
 const EMPTY_ATLAS = {};
 const engine = () => new LayoutEngine(1000, 1000, measurer);
 
@@ -160,5 +162,41 @@ describe('prepareRich — incremental streaming fast path', () => {
       }
     }
     expect(i).toBe('alpha beta gamma'.length);
+  });
+
+  describe('trailing-run boundaries dissolve to match one-shot segmentation', () => {
+    // Streamed char-by-char, a boundary the segmenter would NOT put in a
+    // one-shot shape (mid-decimal, mid-URL, mid-abbreviation) used to freeze
+    // into the cache because only the last word was re-segmented.
+    const cases = [
+      'value is 3.14159 exactly', // decimal
+      'go to https://example.com/a/b now', // URL
+      'e.g. i.e. etc. and so on', // abbreviations
+      'call 555-123-4567 today', // hyphenated number
+      'a,b,c,d,e,f list', // comma-joined run
+      'price 42 units', // spaced digits stay separate
+    ];
+    for (const full of cases) {
+      it(`"${full}" matches a from-scratch shape at every streamed prefix`, () => {
+        const e = engine();
+        for (let n = 1; n <= full.length; n++) {
+          const text = full.slice(0, n);
+          const incremental = e.prepareRich([{ text }], EMPTY_ATLAS, 20);
+          const cold = shapeCold([{ text }], 20);
+          expect(glyphDump(incremental)).toEqual(glyphDump(cold));
+        }
+      });
+    }
+
+    it('streamed trailing whitespace run matches one-shot (a + spaces)', () => {
+      const e = engine();
+      const full = 'a      b'; // grow through a multi-space run
+      for (let n = 1; n <= full.length; n++) {
+        const text = full.slice(0, n);
+        expect(glyphDump(e.prepareRich([{ text }], EMPTY_ATLAS, 20))).toEqual(
+          glyphDump(shapeCold([{ text }], 20)),
+        );
+      }
+    });
   });
 });

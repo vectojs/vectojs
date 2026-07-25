@@ -6,10 +6,13 @@ marked.use({
       name: 'inlineMath',
       level: 'inline',
       start(src) {
-        return src.match(/\$/)?.index;
+        return src.match(/(?<![\\$])\$(?![$\s])/)?.index;
       },
       tokenizer(src) {
-        const match = /^\$([^$]+)\$/.exec(src);
+        // Keep in lockstep with Markdown.ts's inlineMath tokenizer: guard
+        // against currency ("$5 to $10"), `$$`, and trailing digits so only
+        // real inline math ("$x+1$") tokenizes.
+        const match = /^\$(?![$\s\d])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
         if (match) {
           return {
             type: 'inlineMath',
@@ -35,7 +38,11 @@ self.onmessage = (e: MessageEvent) => {
   // with a non-string or crash the handler.
   const data = e.data;
   if (typeof data !== 'object' || data === null) return;
-  const { id, text, oldRaws } = data as { id: unknown; text: unknown; oldRaws?: unknown };
+  const { id, text, oldRaws } = data as {
+    id: unknown;
+    text: unknown;
+    oldRaws?: unknown;
+  };
   if (typeof text !== 'string') return;
   try {
     // `marked` has no incremental lexing API, so re-lexing the whole
