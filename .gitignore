@@ -85,5 +85,8 @@ benchmarks/ui-perf/page/index.html
 benchmarks/particle-wasm/page/index.html
 benchmarks/particle-wasm/page/*.wasm
 
+# stack-wrap benchmark build artifacts + results (page/ generated)
+benchmarks/stack-wrap/page/index.html
+
 # Git Worktree
 .worktree/

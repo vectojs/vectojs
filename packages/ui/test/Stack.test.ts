@@ -67,7 +67,12 @@ describe('Stack fast-append path', () => {
   });
 
   it('still falls back to full layout when wrap is true', () => {
-    const stack = new Stack({ direction: 'horizontal', wrap: true, maxWidth: 100, gap: 10 });
+    const stack = new Stack({
+      direction: 'horizontal',
+      wrap: true,
+      maxWidth: 100,
+      gap: 10,
+    });
     stack.add(new Box(50, 20));
     stack.add(new Box(50, 20));
     stack.add(new Box(50, 20));
@@ -77,7 +82,11 @@ describe('Stack fast-append path', () => {
   });
 
   it('still falls back to full layout for non-start align', () => {
-    const stack = new Stack({ direction: 'horizontal', align: 'center', gap: 0 });
+    const stack = new Stack({
+      direction: 'horizontal',
+      align: 'center',
+      gap: 0,
+    });
     stack.add(new Box(50, 20));
     stack.add(new Box(50, 40));
     expect(stack.children[0].y).toBe(10); // (40 - 20) / 2
@@ -223,7 +232,12 @@ describe('Stack.resizeLastChild', () => {
   });
 
   it('falls back to a full layout for wrap or non-start align', () => {
-    const wrapStack = new Stack({ direction: 'horizontal', wrap: true, maxWidth: 100, gap: 0 });
+    const wrapStack = new Stack({
+      direction: 'horizontal',
+      wrap: true,
+      maxWidth: 100,
+      gap: 0,
+    });
     const a = new Box(50, 20);
     const b = new Box(50, 20);
     wrapStack.add(a);
@@ -231,7 +245,11 @@ describe('Stack.resizeLastChild', () => {
     b.width = 90;
     expect(() => wrapStack.resizeLastChild(b)).not.toThrow();
 
-    const centerStack = new Stack({ direction: 'vertical', align: 'center', gap: 0 });
+    const centerStack = new Stack({
+      direction: 'vertical',
+      align: 'center',
+      gap: 0,
+    });
     const c = new Box(20, 10);
     const d = new Box(20, 10);
     centerStack.add(c);
@@ -257,5 +275,76 @@ describe('Stack.resizeLastChild', () => {
     // fastAppendDirty forces a full layout() resync here, which correctly
     // reflects the post-remove, post-resize state (only a + resized b).
     expect(stack.height).toBe(10 + 5 + 40);
+  });
+});
+
+describe('Stack wrap fast-append equivalence (O(N^2) -> O(N))', () => {
+  // Deterministic size profile so the test is reproducible.
+  function boxes(): Array<[number, number]> {
+    let s = 0x9e37;
+    const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0x100000000);
+    return Array.from({ length: 40 }, () => [
+      8 + Math.floor(rand() * 40),
+      6 + Math.floor(rand() * 20),
+    ]);
+  }
+
+  for (const direction of ['horizontal', 'vertical'] as const) {
+    it(`${direction}: incremental wrap appends match a single full layout`, () => {
+      const limit = 120;
+      const opts = {
+        direction,
+        gap: 5,
+        wrap: true,
+        maxWidth: direction === 'horizontal' ? limit : Infinity,
+        maxHeight: direction === 'vertical' ? limit : Infinity,
+      };
+      const sizes = boxes();
+
+      // FAST: one add() per child (each takes the O(1) wrap fast path).
+      const fast = new Stack(opts);
+      for (const [w, h] of sizes) fast.add(new Box(w, h));
+
+      // REFERENCE: same children, but force a single full layout() at the end.
+      const ref = new Stack(opts);
+      for (const [w, h] of sizes) (ref as any).children.push(new Box(w, h));
+      // give each child its scene-graph parent link the way add() would
+      for (const c of (ref as any).children) c.parent = ref;
+      ref.layout();
+
+      // Identical container size…
+      expect(fast.width).toBeCloseTo(ref.width, 6);
+      expect(fast.height).toBeCloseTo(ref.height, 6);
+      // …and identical per-child positions.
+      for (let i = 0; i < sizes.length; i++) {
+        expect(fast.children[i].x).toBeCloseTo(ref.children[i].x, 6);
+        expect(fast.children[i].y).toBeCloseTo(ref.children[i].y, 6);
+      }
+    });
+  }
+
+  it('a full layout() after fast appends keeps subsequent fast appends correct', () => {
+    const opts = {
+      direction: 'horizontal' as const,
+      gap: 5,
+      wrap: true,
+      maxWidth: 100,
+    };
+    const fast = new Stack(opts);
+    for (const [w, h] of boxes().slice(0, 10)) fast.add(new Box(w, h));
+    fast.layout(); // force a full re-layout mid-stream (refreshes wrap state)
+    for (const [w, h] of boxes().slice(10, 20)) fast.add(new Box(w, h));
+
+    const ref = new Stack(opts);
+    for (const [w, h] of boxes().slice(0, 20)) (ref as any).children.push(new Box(w, h));
+    for (const c of (ref as any).children) c.parent = ref;
+    ref.layout();
+
+    expect(fast.width).toBeCloseTo(ref.width, 6);
+    expect(fast.height).toBeCloseTo(ref.height, 6);
+    for (let i = 0; i < 20; i++) {
+      expect(fast.children[i].x).toBeCloseTo(ref.children[i].x, 6);
+      expect(fast.children[i].y).toBeCloseTo(ref.children[i].y, 6);
+    }
   });
 });

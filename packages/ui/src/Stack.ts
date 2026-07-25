@@ -44,6 +44,20 @@ export class Stack extends UIComponent {
   // positions correctly before further fast appends resume.
   private fastAppendDirty = false;
 
+  // Incremental wrap-append state, kept O(1) so a wrapping Stack built one
+  // child at a time (a streaming Flow of tags/chips) doesn't re-run the full
+  // O(children) `layout()` on every `add()` — which made total build cost
+  // O(children²). Describes the LAST line only; `layout()` recomputes these at
+  // the end and `appendFastWrap()` updates them per append. Valid under the
+  // same invariants as the non-wrap fast path (`align: 'start'`, not right
+  // after a `remove()`), because start alignment pins every child to its
+  // line's start, so a later child that grows the line's cross size never
+  // shifts an already-placed one.
+  private wrapLineMain = 0; // main-axis extent of the last line (incl. inner gaps)
+  private wrapLineCross = 0; // cross-axis extent (max child cross) of the last line
+  private wrapPriorCross = 0; // summed cross (incl. gaps) of all lines before the last
+  private wrapMaxMain = 0; // largest line main-extent seen (drives cross-axis size)
+
   constructor(opts: StackOptions = {}) {
     super();
     this.direction = opts.direction ?? 'vertical';
@@ -73,9 +87,11 @@ export class Stack extends UIComponent {
    */
   public add(child: Entity): this {
     super.add(child);
-    if (this.fastAppendDirty || this.wrap || this.align !== 'start') {
+    if (this.fastAppendDirty || this.align !== 'start') {
       this.layout();
       this.fastAppendDirty = false;
+    } else if (this.wrap) {
+      this.appendFastWrap(child);
     } else {
       this.appendFast(child);
     }
@@ -146,6 +162,58 @@ export class Stack extends UIComponent {
   }
 
   /**
+   * O(1) incremental append for the WRAP + start-align case. Places `child`
+   * either at the end of the current line (if it still fits within the main-
+   * axis limit) or as the first child of a new line, using only the persisted
+   * last-line state — never re-walking earlier children. Start alignment is
+   * what makes this safe: every child sits at its line's start on the cross
+   * axis, so a later, cross-larger child on the same line grows `wrapLineCross`
+   * without shifting any already-placed sibling. Mirrors the grouping/placement
+   * `layout()` does, so the result is identical to a full re-layout.
+   */
+  private appendFastWrap(child: Entity): void {
+    const vertical = this.direction === 'vertical';
+    const limit = vertical ? this.maxHeight : this.maxWidth;
+    const childMain = vertical ? child.height : child.width;
+    const childCross = vertical ? child.width : child.height;
+    const firstEver = this.children.length === 1;
+
+    // Wrap when the current (non-empty) line can't fit the child within the
+    // main-axis limit — identical test to layout()'s pass 1.
+    const startsNewLine = !firstEver && this.wrapLineMain + this.gap + childMain > limit;
+
+    if (firstEver) {
+      this.wrapPriorCross = 0;
+      this.wrapLineMain = childMain;
+      this.wrapLineCross = childCross;
+    } else if (startsNewLine) {
+      // Close the current line: its cross extent (plus a gap) now sits above
+      // the new line.
+      this.wrapPriorCross += this.wrapLineCross + this.gap;
+      this.wrapLineMain = childMain;
+      this.wrapLineCross = childCross;
+    } else {
+      this.wrapLineMain += this.gap + childMain;
+      this.wrapLineCross = Math.max(this.wrapLineCross, childCross);
+    }
+
+    // Main-axis start position of this child within its line.
+    const mainStart = startsNewLine || firstEver ? 0 : this.wrapLineMain - childMain;
+    if (vertical) {
+      child.x = this.wrapPriorCross; // start-align: line start on the cross axis
+      child.y = mainStart;
+    } else {
+      child.x = mainStart;
+      child.y = this.wrapPriorCross;
+    }
+
+    this.wrapMaxMain = Math.max(this.wrapMaxMain, this.wrapLineMain);
+    const totalCross = this.wrapPriorCross + this.wrapLineCross;
+    this.width = vertical ? totalCross : this.wrapMaxMain;
+    this.height = vertical ? this.wrapMaxMain : totalCross;
+  }
+
+  /**
    * Position all children along the main axis and align them on the cross axis,
    * then size this container to fit.
    */
@@ -209,6 +277,28 @@ export class Stack extends UIComponent {
 
     this.width = vertical ? totalCross : maxTotalMain;
     this.height = vertical ? maxTotalMain : totalCross;
+
+    // Refresh the incremental wrap-append state from the just-computed lines so
+    // the next wrapping `add()` can extend the last line in O(1) instead of
+    // re-running this whole pass. Describes the LAST line + everything above it.
+    if (this.wrap) {
+      const lastLine = lines[lines.length - 1];
+      let lineMain = 0;
+      let lineCross = 0;
+      if (lastLine) {
+        for (const c of lastLine) {
+          lineCross = Math.max(lineCross, vertical ? c.width : c.height);
+          lineMain += vertical ? c.height : c.width;
+        }
+        lineMain += (lastLine.length - 1) * this.gap;
+      }
+      this.wrapLineMain = lineMain;
+      this.wrapLineCross = lineCross;
+      // Prior cross = total cross minus the last line's cross (and its leading
+      // gap, present whenever there is more than one line).
+      this.wrapPriorCross = lines.length > 1 ? totalCross - lineCross : 0;
+      this.wrapMaxMain = maxTotalMain;
+    }
   }
 
   /** Structural container — draws nothing itself. */
