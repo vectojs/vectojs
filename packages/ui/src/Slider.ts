@@ -12,8 +12,17 @@ export class Slider extends UIComponent {
   private progressColor: string;
   private handleColor: string;
 
+  /**
+   * Accessible name. A `role="slider"` with no name is announced as just
+   * "slider", giving no indication of what it controls (WCAG 4.1.2), so set this
+   * whenever the surrounding visual label is drawn on canvas rather than
+   * projected.
+   */
+  public label?: string;
+
   constructor(props: any = {}) {
     super();
+    this.label = props.label;
     this.min = props.min ?? 0;
     this.max = props.max ?? 100;
     this.value = props.value ?? this.min;
@@ -96,6 +105,7 @@ export class Slider extends UIComponent {
   public getA11yAttributes(): A11yAttributes {
     return {
       role: 'slider',
+      label: this.label,
       value: String(this.value),
       valuemin: String(this.min),
       valuemax: String(this.max),

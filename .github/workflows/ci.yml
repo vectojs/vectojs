@@ -89,6 +89,13 @@ jobs:
         run: cd packages/core && bun run test:e2e
       - name: DevTools event trace e2e
         run: cd packages/devtools && bun run test:e2e
+      - name: A11y conformance e2e (roles, names, states, keyboard protocol)
+        # Asserts the browser's own accessibility tree in both engines: a role
+        # with no accessible name, a disabled control that projects as enabled,
+        # or a composite widget with more than one tab stop all fail here.
+        env:
+          FIREFOX_EXECUTABLE_PATH: ${{ steps.setup-firefox.outputs.firefox-path }}
+        run: cd packages/ui && bun run test:e2e
 
   wasm:
     name: WASM core (build + differential tests)

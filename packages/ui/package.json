@@ -4,7 +4,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "High-level canvas UI components (Text, Button, Link) for VectoJS — rendered to canvas with an accessibility/automation shadow layer.",
+  "description": "High-level canvas UI components (Text, Button, Link) for VectoJS \u2014 rendered to canvas with an accessibility/automation shadow layer.",
   "keywords": [
     "canvas",
     "ui",
@@ -59,7 +59,8 @@
   "scripts": {
     "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsup src/Input.ts --format cjs,esm && tsup src/Text.ts --format cjs,esm && tsup src/measure.ts --format cjs,esm && tsup src/ContextMenu.ts --format cjs,esm && tsc -p tsconfig.build.json && bun run verify:lightweight-entries",
     "test": "vitest run",
-    "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs"
+    "verify:lightweight-entries": "node scripts/verify-lightweight-entries.mjs",
+    "test:e2e": "bun e2e/a11y-conformance.e2e.ts"
   },
   "dependencies": {},
   "peerDependencies": {
@@ -70,6 +71,7 @@
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "puppeteer-core": "^25.3.0"
   }
 }

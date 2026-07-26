@@ -33,7 +33,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.16.1",
+      "version": "1.16.2",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.3.0",
@@ -159,6 +159,7 @@
         "@vectojs/core": "workspace:*",
         "esbuild": "^0.28.1",
         "jsdom": "^29.1.1",
+        "puppeteer-core": "^25.3.0",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
       },

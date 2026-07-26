@@ -47,6 +47,34 @@ describe('UI component accessibility contract', () => {
     expect(sliderEl.getAttribute('aria-valuemax')).toBe('50');
   });
 
+  it('projects an accessible name for Slider and Dropdown', () => {
+    // A role with no accessible name is announced as bare "slider"/"combobox",
+    // which says nothing about what the control does (WCAG 4.1.2). Both
+    // components previously had no way to supply one — their visual labels are
+    // drawn on canvas, so nothing reached the semantic layer. Found by driving
+    // the a11y conformance fixture in a real browser and reading Chrome's
+    // accessibility tree.
+    const { scene, root, tick } = makeScene();
+    const slider = new Slider({ min: 0, max: 100, value: 40, label: 'Volume' }).setPosition(0, 0);
+    const dropdown = new Dropdown(['Small', 'Large'], { label: 'Size' }).setPosition(0, 60);
+    scene.add(slider);
+    scene.add(dropdown);
+    tick();
+
+    expect(root.querySelector('[role="slider"]')!.getAttribute('aria-label')).toBe('Volume');
+    expect(root.querySelector('[role="combobox"]')!.getAttribute('aria-label')).toBe('Size');
+  });
+
+  it('omits aria-label when no name is supplied rather than inventing one', () => {
+    // The fix must not fabricate a name from the value: "40" is not a label, and
+    // a wrong name is worse than a missing one for a screen-reader user.
+    const { scene, root, tick } = makeScene();
+    scene.add(new Slider({ min: 0, max: 100, value: 40 }).setPosition(0, 0));
+    tick();
+
+    expect(root.querySelector('[role="slider"]')!.hasAttribute('aria-label')).toBe(false);
+  });
+
   it('verifies Dropdown keyboard accessibility navigation and WAI-ARIA states', () => {
     const { scene, root, tick } = makeScene();
     const dropdown = new Dropdown(['Apple', 'Banana', 'Cherry'], { value: 'Banana' }).setPosition(

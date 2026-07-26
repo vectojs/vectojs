@@ -70,6 +70,93 @@ describe('A11y Root and Agent Contract', () => {
     canvas.remove();
   });
 
+  describe('projection gate transitions', () => {
+    // The gate `interactive && (width > 0 || a11yFullViewport)` decides
+    // projection, and nothing pinned what happens when an entity stops
+    // satisfying it. `syncA11y` only creates and updates, which reads like a
+    // leak — but it is always followed by `enforceA11yDomOrder`, whose prune
+    // pass removes elements whose entity no longer qualifies. These tests pin
+    // that the gate is symmetric in the real frame path, so the planned
+    // `a11yProjection` modes have a defined baseline to change.
+    it('removes the element when interactive flips to false', () => {
+      const e = new TestInteractiveEntity('toggle');
+      scene.add(e);
+      tick();
+      expect(scene.a11yElements.size).toBe(1);
+      expect(scene.getA11yElement('toggle')).toBeTruthy();
+
+      e.interactive = false;
+      tick();
+      expect(scene.a11yElements.size).toBe(0);
+      expect(scene.getA11yElement('toggle')).toBeUndefined();
+      expect(document.querySelector('[data-vecto-id="toggle"]')).toBeNull();
+    });
+
+    it('re-projects when interactive flips back to true', () => {
+      const e = new TestInteractiveEntity('recycle');
+      scene.add(e);
+      tick();
+      e.interactive = false;
+      tick();
+      expect(scene.a11yElements.size).toBe(0);
+
+      e.interactive = true;
+      tick();
+      expect(scene.a11yElements.size).toBe(1);
+      expect(scene.getA11yElement('recycle')).toBeTruthy();
+    });
+
+    it('removes the element when the box collapses to zero width', () => {
+      const e = new TestInteractiveEntity('shrink');
+      scene.add(e);
+      tick();
+      expect(scene.a11yElements.size).toBe(1);
+
+      // A zero-size element is unfocusable and unhittable, so the gate treats
+      // it as not projectable.
+      e.width = 0;
+      tick();
+      expect(scene.a11yElements.size).toBe(0);
+
+      e.width = 100;
+      tick();
+      expect(scene.a11yElements.size).toBe(1);
+    });
+
+    it('keeps projecting a zero-width entity when a11yFullViewport is set', () => {
+      const e = new TestInteractiveEntity('boundless');
+      e.width = 0;
+      e.a11yFullViewport = true;
+      scene.add(e);
+      tick();
+      expect(scene.a11yElements.size).toBe(1);
+
+      // Clearing the exception makes it fail the gate, since width is still 0.
+      e.a11yFullViewport = false;
+      tick();
+      expect(scene.a11yElements.size).toBe(0);
+    });
+
+    it('moves focus to the sentinel when the focused element fails the gate', () => {
+      const e = new TestInteractiveEntity('focused');
+      scene.add(e);
+      tick();
+      const el = scene.getA11yElement('focused')!;
+      el.focus();
+      expect(document.activeElement).toBe(el);
+
+      // Pruning a focused element must not drop focus to <body>, or keyboard
+      // position is lost entirely.
+      e.interactive = false;
+      tick();
+      expect(scene.a11yElements.size).toBe(0);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement)?.hasAttribute('data-vecto-focus-sentinel'),
+      ).toBe(true);
+    });
+  });
+
   it('maintains strict physical order of DOM nodes consistent with DFS preorder traversal', () => {
     const parent = new TestInteractiveEntity('parent');
     const child1 = new TestInteractiveEntity('child1');
