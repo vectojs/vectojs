@@ -1166,7 +1166,61 @@ export class Scene {
    * own target browser mix and driver-kind distribution, or leave WASM
    * animation batching disabled entirely on a Firefox-heavy audience.
    */
-  public animDriverGateCount = 256;
+  /**
+   * Back-compat alias for {@link animGate}. Reading it returns the tween gate
+   * (the conservative one the single knob used to represent); writing it sets all
+   * three, so code that tuned one number keeps behaving as before.
+   *
+   * Prefer {@link animGate} — a single threshold cannot be right for both kinds,
+   * which is why this exists as an alias rather than the primary control.
+   */
+  public get animDriverGateCount(): number {
+    return this.animGate.tween;
+  }
+
+  public set animDriverGateCount(n: number) {
+    this.animGate = { spring: n, tween: n, mixed: n };
+  }
+
+  /**
+   * Per-kind driver gates, in active batchable drivers.
+   *
+   * Measured on the integrated path (`benchmarks/anim-wasm-scene`, real Chrome
+   * 150 / Firefox 153): spring and mixed workloads are a ~1.4-2.3x win from 128
+   * drivers up through 16384, while pure tween is a **0.71x loss** at 128 and
+   * only turns net-positive near 256. One scalar threshold therefore had to be
+   * set for the worst kind, discarding the 128-255 spring win to avoid making a
+   * tween-heavy scene slower.
+   *
+   * Firefox is a net loss at every count measured up to 16384 — not an
+   * allocation artifact (confirmed after removing all per-frame allocation from
+   * gather/scatter); SpiderMonkey's wasm-boundary cost for this call shape
+   * appears to structurally exceed the saving at these scales. These defaults are
+   * Chrome-oriented; on a Firefox-heavy audience, leave
+   * {@link enableWasmAnimBatching} off entirely rather than tuning these.
+   *
+   * Setting {@link animDriverGateCount} overwrites all three, so existing code
+   * that tuned the single knob keeps working unchanged.
+   */
+  private _animBatchedLastFrame = false;
+
+  /**
+   * Whether the WASM batch path actually ran on the most recent frame.
+   *
+   * Distinct from {@link animBackend}, which reports only that a backend is
+   * installed — a gate below the driver count means the frame still ticked in JS.
+   * Conflating the two makes it easy to believe an accelerator is active when it
+   * never opens.
+   */
+  public get animBatchedLastFrame(): boolean {
+    return this._animBatchedLastFrame;
+  }
+
+  public animGate: { spring: number; tween: number; mixed: number } = {
+    spring: 128,
+    tween: 256,
+    mixed: 128,
+  };
 
   /** Which backend advances active property drivers on the current gate
    *  decision. Reflects only whether a backend is installed — the per-frame
@@ -1297,7 +1351,8 @@ export class Scene {
     // drivers to decide the gate. O(active drivers), never O(tree size).
     // _driverEntries() returns the entity's Map directly (no callback, no
     // per-entity closure allocation).
-    let batchable = 0;
+    let springBatchable = 0;
+    let tweenBatchable = 0;
     for (const entity of this._activeDriverEntities) {
       const entries = entity._driverEntries();
       if (!entries || entries.size === 0) {
@@ -1305,13 +1360,35 @@ export class Scene {
         continue;
       }
       for (const driver of entries.values()) {
-        if (driver instanceof SpringDriver) batchable++;
-        else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) batchable++;
+        if (driver instanceof SpringDriver) springBatchable++;
+        else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) tweenBatchable++;
       }
     }
+    const batchable = springBatchable + tweenBatchable;
 
     const backend = this._animWasm;
-    if (!backend || batchable < this.animDriverGateCount) return; // stay on the JS tick path
+    // Kind-aware gate. Spring and tween have measurably different break-even
+    // points — spring/mixed win from ~128 drivers while pure tween is a 0.71x
+    // LOSS there and only turns positive near 256 — so a single scalar gate had
+    // to be set for the worse case, giving up the 128-255 spring win to avoid a
+    // tween regression. The counts were already separated here; only the
+    // threshold was shared.
+    //
+    // A mixed frame uses the mixed gate: the batch is one call per kind, so its
+    // economics track the combined driver count rather than either kind alone.
+    this._animBatchedLastFrame = false;
+    if (!backend) return; // stay on the JS tick path
+    const gate =
+      springBatchable > 0 && tweenBatchable > 0
+        ? this.animGate.mixed
+        : tweenBatchable > 0
+          ? this.animGate.tween
+          : this.animGate.spring;
+    if (batchable < gate) return;
+    // Record that the gate actually opened this frame. `animBackend === 'wasm'`
+    // only means the backend is INSTALLED, which has misled readers into
+    // assuming every frame runs through WASM.
+    this._animBatchedLastFrame = true;
 
     // Pass 2: claim every registered entity. Gather batchable drivers into the
     // reused scratch arrays; tick+finalize non-batchable ones directly in JS;
