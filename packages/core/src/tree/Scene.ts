@@ -2130,7 +2130,19 @@ export class Scene {
    * without removing it from the scene graph. Components that manage dynamic
    * interactive *child* entities (e.g. a {@link Entity}'s per-link hotspots) call
    * this before discarding those children so their shadow `<a>`/controls don't
-   * leak (the per-frame `syncA11y` only creates/updates, it never prunes).
+   * leak.
+   *
+   * `syncA11y` itself only creates and updates, never prunes — but it is always
+   * followed by `enforceA11yDomOrder`, whose prune pass removes any element
+   * whose entity is no longer reachable in the tree or no longer satisfies
+   * {@link shouldProjectA11y}. So an entity that is `remove()`d, or whose
+   * `interactive` flips to `false`, has its element torn down on the next synced
+   * frame without any explicit call.
+   *
+   * This method is for the case that pass cannot see: a child dropped from a
+   * component's own bookkeeping while still parented, or one discarded before
+   * the next sync runs. Calling it is always safe and is the right habit for
+   * pooled children.
    *
    * @param entity - The subtree whose shadow nodes should be removed.
    */
