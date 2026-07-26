@@ -195,6 +195,71 @@ describe.skipIf(!haveWasm)('G2 — Scene batches active drivers through WASM', (
     expect(b.x).toBe(100);
   });
 
+  describe('kind-aware gate', () => {
+    // Spring and tween have different measured break-even points (spring/mixed
+    // win from ~128 drivers; pure tween is a 0.71x LOSS there and only turns
+    // positive near 256), so a single scalar gate had to be set for the worse
+    // kind, discarding the 128-255 spring win. These pin that each kind now
+    // consults its own threshold.
+    function spawnSprings(scene: Scene, n: number): void {
+      for (let i = 0; i < n; i++) {
+        const e = new Box(`s${i}`);
+        scene.root.add(e);
+        e.springTo({ x: 50 });
+      }
+    }
+    function spawnTweens(scene: Scene, n: number): void {
+      for (let i = 0; i < n; i++) {
+        const e = new Box(`t${i}`);
+        scene.root.add(e);
+        e.animateTo({ x: 50 }, { duration: 400, easing: 'linear' });
+      }
+    }
+
+    it('opens for springs at the spring gate but not the tween gate', () => {
+      const scene = sceneWith();
+      scene.setAnimBackend(instantiateSync(bytes())!);
+      scene.animGate = { spring: 4, tween: 1000, mixed: 1000 };
+      spawnSprings(scene, 6);
+      tickMs(scene, 16);
+      // 6 springs >= spring gate 4: the batch must engage even though the tween
+      // gate is far higher.
+      expect(scene.animBatchedLastFrame).toBe(true);
+    });
+
+    it('does not open for tweens below the tween gate', () => {
+      const scene = sceneWith();
+      scene.setAnimBackend(instantiateSync(bytes())!);
+      scene.animGate = { spring: 4, tween: 1000, mixed: 1000 };
+      spawnTweens(scene, 6);
+      tickMs(scene, 16);
+      // Same count, different kind: the tween gate applies and stays shut. This
+      // is the case a single gate could not express.
+      expect(scene.animBatchedLastFrame).toBe(false);
+    });
+
+    it('uses the mixed gate when both kinds are active', () => {
+      const scene = sceneWith();
+      scene.setAnimBackend(instantiateSync(bytes())!);
+      scene.animGate = { spring: 1000, tween: 1000, mixed: 4 };
+      spawnSprings(scene, 3);
+      spawnTweens(scene, 3);
+      tickMs(scene, 16);
+      // Neither kind alone clears its own gate; the combined count clears mixed,
+      // which is the right economics since the batch is one call per kind.
+      expect(scene.animBatchedLastFrame).toBe(true);
+    });
+
+    it('animDriverGateCount still sets all three', () => {
+      const scene = sceneWith();
+      scene.animDriverGateCount = 77;
+      expect(scene.animGate).toEqual({ spring: 77, tween: 77, mixed: 77 });
+      // Reading back reports the conservative (tween) gate, as the single knob
+      // always effectively did.
+      expect(scene.animDriverGateCount).toBe(77);
+    });
+  });
+
   it('springTo/animateTo promises resolve when settled by the batch pass', async () => {
     setWindow();
     const scene = sceneWith();
