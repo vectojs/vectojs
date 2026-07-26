@@ -1509,19 +1509,23 @@ export class Scene {
 
     // 1. detachA11y leak detection
     if (this.a11yElements) {
-      let interactiveCount = 0;
+      // Count with the same predicate that decides projection, so the
+      // comparison is exact. This previously tested `interactive && width > 0`,
+      // which undercounts `a11yFullViewport` nodes (projected with width 0) and
+      // needed a `+2` fudge to avoid false positives — that slack also hid real
+      // leaks of one or two elements.
+      let projectableCount = 0;
       const walk = (node: Entity): void => {
-        if (node.interactive && node.width > 0) interactiveCount++;
+        if (this.shouldProjectA11y(node)) projectableCount++;
         for (const c of node.children) walk(c);
       };
       walk(this.root);
       for (const c of this.overlayRoot.children) walk(c);
 
       const shadowCount = this.a11yElements.size;
-      // Allow some slack for a11yFullViewport entities and timing
-      if (shadowCount > interactiveCount + 2) {
+      if (shadowCount > projectableCount) {
         this._devWarn(
-          `a11yElements (${shadowCount}) exceeds interactive entities (${interactiveCount}). ` +
+          `a11yElements (${shadowCount}) exceeds projectable entities (${projectableCount}). ` +
             'Call scene.detachA11y(entity) before removing interactive children ' +
             'from the tree, or their shadow nodes leak.',
         );
@@ -2488,12 +2492,35 @@ export class Scene {
     if (element.getAttribute(name) !== value) element.setAttribute(name, value);
   }
 
+  /**
+   * Whether `node` should have an a11y shadow element projected for it.
+   *
+   * The single authority for that decision. It was previously inlined verbatim
+   * at four call sites — `syncA11y` (create/update), `enforceA11yDomOrder`
+   * (which ids survive pruning), `getA11yTree` (the public snapshot) and
+   * `render` (z-index / reading-order assignment). Four copies of one predicate
+   * is a standing correctness hazard: if any of them drifts, elements either
+   * leak (created but never marked active, so pruned every frame and rebuilt) or
+   * go missing from the semantic tree while still present in the DOM.
+   *
+   * A box is required because a zero-size element is unfocusable and
+   * unhittable; `a11yFullViewport` is the deliberate exception, since those
+   * nodes are boundless interaction surfaces mounted behind everything else.
+   *
+   * Keep this the only place the rule is written. A planned per-entity
+   * `a11yProjection` mode ('eager' | 'onDemand' | 'never') extends exactly this
+   * predicate, which is only tractable while it has one home.
+   */
+  private shouldProjectA11y(node: Entity): boolean {
+    return node.interactive && (node.width > 0 || node.a11yFullViewport);
+  }
+
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
       return;
     }
-    if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
+    if (this.shouldProjectA11y(node)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
       const expectedTag = attrs.tag || 'div';
@@ -3469,7 +3496,7 @@ export class Scene {
         else this.normalElements.push(contentEl);
       }
 
-      if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
+      if (this.shouldProjectA11y(node)) {
         const el = this.a11yElements.get(node.id);
         if (el) {
           this.activeIds.add(node.id);
@@ -3664,7 +3691,7 @@ export class Scene {
 
       let currentA11yNode: A11yTreeNode | null = null;
 
-      if (node.interactive && (node.width > 0 || node.a11yFullViewport)) {
+      if (this.shouldProjectA11y(node)) {
         const el = this.a11yElements.get(node.id);
         if (el) {
           const attrs = node.getA11yAttributes();
@@ -4281,8 +4308,7 @@ export class Scene {
         Math.abs(a * c + b * d) <= orthogonalTolerance;
 
       const a11yEl = isMainRenderer ? this.a11yElements.get(node.id) : undefined;
-      const willProjectA11y =
-        isMainRenderer && node.interactive && (node.width > 0 || node.a11yFullViewport);
+      const willProjectA11y = isMainRenderer && this.shouldProjectA11y(node);
       if (a11yEl || willProjectA11y) {
         const renderOrder = this.renderOrderCounter++;
         if (willProjectA11y) this.a11yRenderOrders.set(node.id, renderOrder);

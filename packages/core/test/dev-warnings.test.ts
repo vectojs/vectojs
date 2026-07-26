@@ -90,6 +90,22 @@ function runFrames(scene: Scene, n = 125) {
   for (let i = 0; i < n; i++) scene.step(16.67);
 }
 
+// `step()` renders but does not sync the a11y layer — that lives in the rAF
+// `loop()`, which a test cannot drive. Projection-related checks therefore have
+// to invoke the sync passes directly.
+function runFramesWithA11y(scene: Scene, n = 125) {
+  const s = scene as unknown as {
+    syncA11y: (n: Entity) => void;
+    enforceA11yDomOrder: () => void;
+    root: Entity;
+  };
+  for (let i = 0; i < n; i++) {
+    scene.step(16.67);
+    s.syncA11y(s.root);
+    s.enforceA11yDomOrder();
+  }
+}
+
 describe('dev warnings — Scene.devMode', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -170,7 +186,7 @@ describe('dev warnings — Scene.devMode', () => {
     expect(warnings).toHaveLength(0);
   });
 
-  it('warns on a11y shadow-node leak', () => {
+  it('prunes tree-detached shadow nodes and warns on unreachable ones', () => {
     const { scene } = makeScene();
     // Re-enable content projection for a11y tracking
     (scene as any).contentProjectionEnabled = true;
@@ -187,14 +203,62 @@ describe('dev warnings — Scene.devMode', () => {
     ent.width = 50;
     ent.height = 20;
     scene.add(ent);
-    runFrames(scene);
-    // Simulate a leak: remove entity without detachA11y
-    scene.remove(ent);
-    // After another round of sync, shadow count should exceed interactive count
-    runFrames(scene);
-    // The leak-detection warning may or may not fire depending on timing; this
-    // case only asserts the sync path doesn't crash and the callback structure
-    // is sound.
-    expect(true).toBe(true);
+    runFramesWithA11y(scene);
+    expect(scene.a11yElements.size).toBe(1);
+
+    // A tree-detached entity does NOT leak: enforceA11yDomOrder's prune pass
+    // drops any element whose id is absent from activeIds, so the orphan is
+    // cleaned up on the next sync. That is the real contract worth pinning.
+    (scene.root as unknown as { children: Entity[] }).children.length = 0;
+    warnSpy.mockClear();
+    runFramesWithA11y(scene);
+
+    expect(scene.a11yElements.size).toBe(0);
+    const leakWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('exceeds projectable entities'),
+    );
+    expect(leakWarnings).toHaveLength(0);
+
+    // The warning fires for elements the prune pass cannot see — one injected
+    // directly into the map, which models the state detachA11y() exists to
+    // avoid. With the counter now using the projection predicate exactly, a
+    // single stray element is enough; the previous `+2` slack hid this.
+    const stray = document.createElement('div');
+    scene.a11yElements.set('stray-node', stray);
+    warnSpy.mockClear();
+    scene.step(16.67);
+    for (let i = 0; i < 130; i++) scene.step(16.67);
+
+    const strayWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('exceeds projectable entities'),
+    );
+    expect(strayWarnings.length).toBeGreaterThan(0);
+  });
+
+  it('does not warn when a11yFullViewport entities are projected', () => {
+    // The counter must use the same predicate as projection. It previously
+    // tested `interactive && width > 0`, which misses a11yFullViewport nodes
+    // (projected at width 0) and needed +2 slack to stay quiet — slack that also
+    // hid genuine one- and two-element leaks.
+    const { scene } = makeScene();
+
+    for (let i = 0; i < 4; i++) {
+      const overlay = new (class Overlay extends Entity {
+        isPointInside() {
+          return false;
+        }
+        render() {}
+      })();
+      overlay.interactive = true;
+      overlay.a11yFullViewport = true; // width stays 0
+      scene.add(overlay);
+    }
+    runFramesWithA11y(scene);
+
+    expect(scene.a11yElements.size).toBe(4);
+    const leakWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('exceeds projectable entities'),
+    );
+    expect(leakWarnings).toHaveLength(0);
   });
 });
