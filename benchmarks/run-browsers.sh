@@ -39,8 +39,8 @@ HOME_WORKSPACE=$(hyprctl activeworkspace -j | python3 -c 'import json,sys; print
 # this run's start stamp. Generic on purpose, so any benchmark page works.
 # One minute is enough for a normal run; extend once if the page is still
 # working. The deliverable is the JSON the page POSTs, not anything on screen.
-RUN_TIMEOUT=${RUN_TIMEOUT:-60}   # per-browser budget before the one extension
-RUN_EXTEND=${RUN_EXTEND:-180}    # one-shot extension if still working at the deadline
+RUN_TIMEOUT=${RUN_TIMEOUT:-60} # per-browser budget before the one extension
+RUN_EXTEND=${RUN_EXTEND:-180}  # one-shot extension if still working at the deadline
 LOG="/tmp/${BENCH}-server.log"
 
 start_server() {
@@ -94,7 +94,7 @@ close_and_return() {
 }
 
 run_one() {
-  local browser="$1" bin class cmd addr waited out before profile_dir
+  local browser="$1" bin class cmd addr waited out profile_dir
   local timeout=$RUN_TIMEOUT extend=$RUN_EXTEND
   # A fresh, disposable profile/user-data dir per run — not just for a clean
   # slate, but for correctness: both browsers default to a SINGLE-INSTANCE
@@ -114,27 +114,38 @@ run_one() {
   profile_dir=$(mktemp -d)
   trap 'rm -rf "$profile_dir"' RETURN
   case "$browser" in
-    chrome)
-      bin=$(command -v google-chrome-stable || command -v chromium || true)
-      class="chrome"
-      cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
-      ;;
-    firefox)
-      bin=$(command -v firefox || true)
-      class="firefox"
-      # --new-instance is the documented fix ("Open new instance, not a new
-      # window in running instance" — `firefox --help`); --profile with a
-      # fresh directory additionally avoids any profile-lock contention with
-      # a concurrently running default-profile Firefox.
-      cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
-      ;;
-    *) echo "unknown browser: $browser" >&2; return 1 ;;
+  chrome)
+    bin=$(command -v google-chrome-stable || command -v chromium || true)
+    class="chrome"
+    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
+    ;;
+  firefox)
+    bin=$(command -v firefox || true)
+    class="firefox"
+    # --new-instance is the documented fix ("Open new instance, not a new
+    # window in running instance" — `firefox --help`); --profile with a
+    # fresh directory additionally avoids any profile-lock contention with
+    # a concurrently running default-profile Firefox.
+    cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
+    ;;
+  *)
+    echo "unknown browser: $browser" >&2
+    return 1
+    ;;
   esac
-  [ -z "$bin" ] && { echo "  $browser: not installed, skipping"; return 0; }
+  [ -z "$bin" ] && {
+    echo "  $browser: not installed, skipping"
+    return 0
+  }
 
   mkdir -p "$RESULTS"
-  before=$(find "$RESULTS" -name "*.json" | wc -l)
-  STAMP="$RESULTS/.stamp-$browser"; : >"$STAMP"; sleep 0.05
+  # Detect completion by FRESHNESS, not by file count. Counting broke whenever a
+  # result from an earlier (or aborted) run already existed: the count never
+  # increased, so a finished run spun until the timeout and reported failure even
+  # though its JSON had just been rewritten.
+  STAMP="$RESULTS/.stamp-$browser"
+  : >"$STAMP"
+  sleep 0.05
 
   echo "  launching $browser on workspace $WORKSPACE (incognito)…"
   # The exec rule places the window before it maps, so it never flashes onto
@@ -143,12 +154,25 @@ run_one() {
   hyprctl dispatch workspace "$WORKSPACE" >/dev/null
   sleep 3
 
+  # A fast benchmark can POST its results and self-close before this loop ever
+  # observes the window, so treat "results already landed" as success rather than
+  # as a missing window.
   for _ in $(seq 1 60); do
     addr=$(window_on_workspace "$class")
     [ -n "$addr" ] && break
+    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    if [ -n "$out" ]; then
+      echo "  $browser -> $out (finished before its window was seen)"
+      return 0
+    fi
     sleep 0.5
   done
   if [ -z "$addr" ]; then
+    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    if [ -n "$out" ]; then
+      echo "  $browser -> $out"
+      return 0
+    fi
     echo "  $browser: no window appeared on workspace $WORKSPACE" >&2
     return 1
   fi
@@ -159,8 +183,8 @@ run_one() {
 
   waited=0
   while [ "$waited" -lt "$timeout" ]; do
-    if [ "$(find "$RESULTS" -name "*.json" | wc -l)" -gt "$before" ]; then
-      out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    if [ -n "$out" ]; then
       echo "  $browser -> $out"
       close_and_return "$addr"
       return 0

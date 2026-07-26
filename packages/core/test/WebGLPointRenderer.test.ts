@@ -2,11 +2,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createWebGLPointRenderer } from '../src/renderer/WebGLPointRenderer';
 
-/** A mock WebGL2 context that records bufferData / drawArrays / viewport. */
+/** A mock WebGL2 context that records bufferData / draw calls / viewport. */
 function mockGL() {
   const captures = {
     drawArrays: [] as { mode: number; first: number; count: number }[],
+    drawElements: [] as { mode: number; count: number; type: number; offset: number }[],
     drawInstanced: [] as { mode: number; first: number; vcount: number; icount: number }[],
+    /** ELEMENT_ARRAY_BUFFER uploads (the shared static quad index buffer). */
+    indexData: [] as { data: Uint32Array; usage: number }[],
     bufferData: [] as { data: Float32Array; usage: number }[],
     divisors: [] as number[],
     viewport: [] as number[][],
@@ -51,8 +54,16 @@ function mockGL() {
     bindVertexArray: vi.fn(),
     deleteVertexArray: vi.fn(),
     bindBuffer: vi.fn(),
-    bufferData: vi.fn((_t: number, data: Float32Array, usage: number) =>
-      captures.bufferData.push({ data, usage }),
+    bufferData: vi.fn(
+      (target: number, data: Float32Array | Uint32Array | number, usage: number) => {
+        // The shared quad index buffer uploads Uint32Array to ELEMENT_ARRAY_BUFFER;
+        // keep it out of `bufferData` so vertex-payload assertions stay precise.
+        if (target === 30) {
+          captures.indexData.push({ data: data as Uint32Array, usage });
+          return;
+        }
+        captures.bufferData.push({ data: data as Float32Array, usage });
+      },
     ),
     enableVertexAttribArray: vi.fn(),
     vertexAttribPointer: vi.fn(),
@@ -69,6 +80,9 @@ function mockGL() {
     ),
     drawArraysInstanced: vi.fn((mode: number, first: number, vcount: number, icount: number) =>
       captures.drawInstanced.push({ mode, first, vcount, icount }),
+    ),
+    drawElements: vi.fn((mode: number, count: number, type: number, offset: number) =>
+      captures.drawElements.push({ mode, count, type, offset }),
     ),
     // Texture path (for sprites)
     TEXTURE_2D: 16,
@@ -94,6 +108,8 @@ function mockGL() {
     STATIC_DRAW: 14,
     TRIANGLES: 15,
     ALIASED_POINT_SIZE_RANGE: 27,
+    ELEMENT_ARRAY_BUFFER: 30,
+    UNSIGNED_INT: 31,
     getParameter: vi.fn(() => new Float32Array([1, 255])),
   };
   return { gl, captures };
@@ -133,7 +149,7 @@ describe('createWebGLPointRenderer', () => {
     expect(Array.from(buf.slice(7, 14))).toEqual([30, 20, 5, 1, 0, 0, 1]);
   });
 
-  it('expands rects into a triangle batch and one TRIANGLES draw (6 verts/rect)', () => {
+  it('expands rects into an indexed quad batch and one TRIANGLES drawElements', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;
 
@@ -142,11 +158,17 @@ describe('createWebGLPointRenderer', () => {
     r.addRect(50, 60, 5, 5, '#00ff00');
     r.flush();
 
-    expect(captures.drawArrays).toHaveLength(1);
-    expect(captures.drawArrays[0]).toMatchObject({ mode: gl.TRIANGLES, first: 0, count: 12 }); // 2 rects × 6
+    // Indexed: 4 verts/rect uploaded, 6 INDICES/rect drawn.
+    expect(captures.drawElements).toHaveLength(1);
+    expect(captures.drawElements[0]).toMatchObject({
+      mode: gl.TRIANGLES,
+      count: 12, // 2 rects × 6 indices
+      type: gl.UNSIGNED_INT,
+      offset: 0,
+    });
 
-    // 6 floats/vertex (x,y,r,g,b,a), 6 verts/rect → 72 floats for 2 rects.
-    const buf = captures.bufferData.find((b) => b.data.length === 72)!;
+    // 6 floats/vertex (x,y,r,g,b,a), 4 verts/rect → 48 floats for 2 rects.
+    const buf = captures.bufferData.find((b) => b.data.length === 48)!;
     expect(buf).toBeTruthy();
     // First vertex of rect 0 = top-left corner (10,20) with green color.
     expect(Array.from(buf.data.slice(0, 6))).toEqual([10, 20, 0, 1, 0, 1]);
@@ -164,7 +186,8 @@ describe('createWebGLPointRenderer', () => {
     r.flush();
 
     expect(captures.clearCount).toBe(1); // single clear
-    expect(captures.drawArrays).toHaveLength(2); // rects (TRIANGLES) + circles (POINTS)
+    expect(captures.drawElements).toHaveLength(1); // rects, indexed
+    expect(captures.drawArrays).toHaveLength(1); // circles keep the POINTS path
   });
 
   it('begin() resets the buffer; an empty frame clears but does not draw', () => {
@@ -245,17 +268,20 @@ describe('createWebGLPointRenderer', () => {
     r.addSprite(50, 60, 10, 10, 0.5, 0.5, 1, 1);
     r.flush();
 
-    // sprites drawn as TRIANGLES, 6 verts/sprite → 12 for 2 sprites
-    const spriteDraw = captures.drawArrays.find((d) => d.mode === gl.TRIANGLES && d.count === 12);
+    // sprites drawn indexed: 6 indices/sprite → 12 for 2 sprites
+    const spriteDraw = captures.drawElements.find((d) => d.mode === gl.TRIANGLES && d.count === 12);
     expect(spriteDraw).toBeTruthy();
 
-    // 8 floats/vertex (x,y,u,v,r,g,b,a) × 6 verts × 2 sprites = 96 floats
-    const buf = captures.bufferData.find((b) => b.data.length === 96)!;
+    // 8 floats/vertex (x,y,u,v,r,g,b,a) × 4 verts × 2 sprites = 64 floats
+    const buf = captures.bufferData.find((b) => b.data.length === 64)!;
     expect(buf).toBeTruthy();
     // First vertex of sprite 0: pos (10,20), uv (0,0), white tint (1,1,1,1).
     expect(Array.from(buf.data.slice(0, 8))).toEqual([10, 20, 0, 0, 1, 1, 1, 1]);
     // Third vertex (bottom-right): pos (40,60), uv (0.5,0.5).
     expect(Array.from(buf.data.slice(16, 20))).toEqual([40, 60, 0.5, 0.5]);
+    // Fourth vertex (bottom-left) closes the quad; the index buffer builds the
+    // two triangles, so no corner is duplicated in the payload.
+    expect(Array.from(buf.data.slice(24, 28))).toEqual([10, 60, 0, 0.5]);
   });
 
   it('addSprite rotates quad corners about its origin', () => {
@@ -269,7 +295,7 @@ describe('createWebGLPointRenderer', () => {
     // 90deg CW in screen space (y down): local +x maps to +y, local +y to -x.
     r.addSprite(100, 100, 20, 10, 0, 0, 1, 1, '#ffffff', 1, Math.PI / 2);
     r.flush();
-    const buf = captures.bufferData.find((b) => b.data.length === 48)!;
+    const buf = captures.bufferData.find((b) => b.data.length === 32)!;
     const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 4);
     // v0 = origin, unmoved by rotation.
     near(buf.data[0]!, 100);
@@ -280,9 +306,9 @@ describe('createWebGLPointRenderer', () => {
     // v2 = + height along rotated +y → (90, 120).
     near(buf.data[16]!, 90);
     near(buf.data[17]!, 120);
-    // v5 (last, bottom-left) = origin + height along rotated +y → (90, 100).
-    near(buf.data[40]!, 90);
-    near(buf.data[41]!, 100);
+    // v3 (bottom-left) = origin + height along rotated +y → (90, 100).
+    near(buf.data[24]!, 90);
+    near(buf.data[25]!, 100);
   });
 
   it('addSprite applies a tint color and alpha', () => {
@@ -292,7 +318,7 @@ describe('createWebGLPointRenderer', () => {
     r.begin();
     r.addSprite(0, 0, 10, 10, 0, 0, 1, 1, '#ff0000', 0.5);
     r.flush();
-    const buf = captures.bufferData.find((b) => b.data.length === 48)!; // 1 sprite × 6 × 8
+    const buf = captures.bufferData.find((b) => b.data.length === 32)!; // 1 sprite × 4 × 8
     expect(Array.from(buf.data.slice(4, 8))).toEqual([1, 0, 0, 0.5]); // red, alpha 0.5
   });
 
@@ -302,7 +328,7 @@ describe('createWebGLPointRenderer', () => {
     r.begin();
     r.addSprite(0, 0, 10, 10, 0, 0, 1, 1); // no setTexture → skipped
     r.flush();
-    expect(captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(0);
+    expect(captures.drawElements.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(0);
   });
 
   it('setMSDFTexture uploads the field atlas to its own texture', () => {
@@ -347,7 +373,9 @@ describe('createWebGLPointRenderer', () => {
     r.addGlyph(20, 0, 10, 10, 0, 0, 1, 1);
     r.flush();
 
-    const glyphDraws = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES && d.count === 6);
+    const glyphDraws = captures.drawElements.filter(
+      (d) => d.mode === gl.TRIANGLES && d.count === 6,
+    );
     expect(glyphDraws).toHaveLength(2); // one draw per atlas
   });
 
@@ -361,14 +389,14 @@ describe('createWebGLPointRenderer', () => {
     r.addGlyph(50, 60, 10, 10, 0.5, 0.5, 1, 1);
     r.flush();
 
-    // glyphs drawn as TRIANGLES, 6 verts/glyph → 12 for 2 glyphs
-    const glyphDraw = captures.drawArrays.find((d) => d.mode === gl.TRIANGLES && d.count === 12);
+    // glyphs drawn indexed: 6 indices/glyph → 12 for 2 glyphs
+    const glyphDraw = captures.drawElements.find((d) => d.mode === gl.TRIANGLES && d.count === 12);
     expect(glyphDraw).toBeTruthy();
     // distance range plumbed to the shader (no points drawn → only this uniform1f)
     expect(captures.uniform1f).toContain(4);
 
-    // 8 floats/vertex (x,y,u,v,r,g,b,a) × 6 verts × 2 glyphs = 96 floats
-    const buf = captures.bufferData.find((b) => b.data.length === 96)!;
+    // 8 floats/vertex (x,y,u,v,r,g,b,a) × 4 verts × 2 glyphs = 64 floats
+    const buf = captures.bufferData.find((b) => b.data.length === 64)!;
     expect(buf).toBeTruthy();
     // First vertex of glyph 0: pos (10,20), uv (0,0), white tint (1,1,1,1).
     expect(Array.from(buf.data.slice(0, 8))).toEqual([10, 20, 0, 0, 1, 1, 1, 1]);
@@ -383,7 +411,7 @@ describe('createWebGLPointRenderer', () => {
     r.begin();
     r.addGlyph(0, 0, 10, 10, 0, 0, 1, 1, '#ff0000', 0.5);
     r.flush();
-    const buf = captures.bufferData.find((b) => b.data.length === 48)!; // 1 glyph × 6 × 8
+    const buf = captures.bufferData.find((b) => b.data.length === 32)!; // 1 glyph × 4 × 8
     expect(Array.from(buf.data.slice(4, 8))).toEqual([1, 0, 0, 0.5]); // red, alpha 0.5
   });
 
@@ -405,7 +433,8 @@ describe('createWebGLPointRenderer', () => {
     r.destroy();
     r.destroy();
 
-    expect(gl.deleteBuffer).toHaveBeenCalledTimes(5);
+    // 5 vertex buffers + the shared static quad index buffer.
+    expect(gl.deleteBuffer).toHaveBeenCalledTimes(6);
     expect(gl.deleteVertexArray).toHaveBeenCalledTimes(5);
     expect(gl.deleteProgram).toHaveBeenCalledTimes(5); // + the circle-quad fallback path
     expect(gl.deleteTexture).toHaveBeenCalledTimes(2);
@@ -424,10 +453,10 @@ describe('gl.POINTS clip fallback', () => {
     r.flush();
 
     const points = captures.drawArrays.filter((d) => d.mode === gl.POINTS);
-    const tris = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES);
+    const tris = captures.drawElements.filter((d) => d.mode === gl.TRIANGLES);
     expect(points).toHaveLength(0);
     expect(tris).toHaveLength(1);
-    expect(tris[0].count).toBe(6); // one quad = two triangles
+    expect(tris[0].count).toBe(6); // one quad = 6 indices
   });
 
   it('routes circles larger than the GPU max point size to the quad path', () => {
@@ -439,7 +468,7 @@ describe('gl.POINTS clip fallback', () => {
     r.flush();
 
     expect(captures.drawArrays.filter((d) => d.mode === gl.POINTS)).toHaveLength(0);
-    expect(captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(1);
+    expect(captures.drawElements.filter((d) => d.mode === gl.TRIANGLES)).toHaveLength(1);
   });
 
   it('interior small circles keep the fast POINTS path', () => {
@@ -452,7 +481,7 @@ describe('gl.POINTS clip fallback', () => {
     r.flush();
 
     const points = captures.drawArrays.filter((d) => d.mode === gl.POINTS);
-    const tris = captures.drawArrays.filter((d) => d.mode === gl.TRIANGLES);
+    const tris = captures.drawElements.filter((d) => d.mode === gl.TRIANGLES);
     expect(points).toHaveLength(1);
     expect(points[0].count).toBe(1);
     expect(tris).toHaveLength(1);
