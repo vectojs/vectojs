@@ -258,6 +258,33 @@ describe('createWebGLPointRenderer', () => {
     expect(Array.from(buf.data.slice(16, 20))).toEqual([40, 60, 0.5, 0.5]);
   });
 
+  it('addSprite rotates quad corners about its origin', () => {
+    // The batching path unrolls the corner maths and fast-paths rotation === 0
+    // (it is the hot loop: ~25k glyphs/frame). Pin the rotated geometry so that
+    // optimisation cannot silently regress non-zero rotations.
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.setTexture({} as TexImageSource);
+    r.begin();
+    // 90deg CW in screen space (y down): local +x maps to +y, local +y to -x.
+    r.addSprite(100, 100, 20, 10, 0, 0, 1, 1, '#ffffff', 1, Math.PI / 2);
+    r.flush();
+    const buf = captures.bufferData.find((b) => b.data.length === 48)!;
+    const near = (a: number, b: number) => expect(a).toBeCloseTo(b, 4);
+    // v0 = origin, unmoved by rotation.
+    near(buf.data[0]!, 100);
+    near(buf.data[1]!, 100);
+    // v1 = origin + width along rotated +x → (100, 120).
+    near(buf.data[8]!, 100);
+    near(buf.data[9]!, 120);
+    // v2 = + height along rotated +y → (90, 120).
+    near(buf.data[16]!, 90);
+    near(buf.data[17]!, 120);
+    // v5 (last, bottom-left) = origin + height along rotated +y → (90, 100).
+    near(buf.data[40]!, 90);
+    near(buf.data[41]!, 100);
+  });
+
   it('addSprite applies a tint color and alpha', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;

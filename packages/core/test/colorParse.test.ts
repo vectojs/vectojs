@@ -63,12 +63,13 @@ describe('parseColorToRGBA', () => {
     expect(a).toBe(b); // cached, not re-parsed
   });
 
-  it('evicts least-recently-used entries instead of growing unbounded', () => {
+  it('evicts old entries instead of growing unbounded', () => {
     // Point-cloud/particle rendering reads a color every frame (see
     // Entity.getBatchCircle's doc comment), so a workload with thousands of
     // distinctly-colored, continuously-varying entities can mint a new unique
     // color string every frame — this cache must not remember all of them
-    // forever.
+    // forever. Eviction is insertion-order (FIFO): a hit deliberately does NOT
+    // promote, because the promote cost dominates at ~25k lookups/frame.
     const seed = parseColorToRGBA('#123456');
     for (let i = 0; i < 2000; i++) {
       parseColorToRGBA(`#${(i % 0xffffff).toString(16).padStart(6, '0')}`);
