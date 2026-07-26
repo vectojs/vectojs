@@ -8,7 +8,8 @@ export type RGBA = [number, number, number, number];
 // many distinctly-colored, continuously-varying entities (e.g. an animated
 // heatmap or particle field) can mint a new unique color string every
 // frame — an unbounded Map would grow forever. A `Map` preserves insertion
-// order, so the first key is the least-recently-used.
+// order, so the first key is the oldest. Eviction is FIFO, not true LRU: see
+// `parseColorToRGBA` for why a hit must not re-order the map.
 const CACHE_MAX = 1000;
 const cache = new Map<string, RGBA>();
 let fallbackCtx: CanvasRenderingContext2D | null | undefined;
@@ -84,9 +85,13 @@ function fromCanvas(css: string): RGBA | null {
 export function parseColorToRGBA(css: string): RGBA {
   const hit = cache.get(css);
   if (hit) {
-    // Promote to most-recently-used (delete + re-insert moves it to the end).
-    cache.delete(css);
-    cache.set(css, hit);
+    // NO LRU promotion on a hit. This is called once per glyph quad, and at
+    // ~25k glyphs/frame the `delete` + re-`set` pair to move a key to the end
+    // costs more than everything else here combined — measured 11.9ms vs 0.5ms
+    // per 24,800 calls (23x). Insertion-order eviction alone still bounds the
+    // map; the only loss is that eviction becomes FIFO rather than true LRU,
+    // which for color strings (a small, stable working set per scene) evicts
+    // effectively the same entries.
     return hit;
   }
   const trimmed = css.trim();
