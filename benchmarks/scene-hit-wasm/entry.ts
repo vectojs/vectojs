@@ -161,10 +161,29 @@ async function run(): Promise<void> {
     const jsColdNs = jsColdMs * 1e6;
 
     // WASM: same scene topology, hit-test backend enabled.
+    //
+    // Transforms are enabled FIRST and deliberately: with the transform store
+    // resident, the grid build reads world AABBs straight out of WASM memory (the
+    // fused gather) instead of re-deriving four transformed corners per entity in
+    // JS. That JS gather is what made the cold query slower than the JS walk
+    // despite a much faster kernel, so a run without it measures the old
+    // bottleneck rather than the current path.
     const wasmScene = sceneWith();
     buildEntities(wasmScene, n);
+    const transformsOk = await wasmScene.enableWasmTransforms(bytes.slice(0));
     const wasmOk = await wasmScene.enableWasmHitTest(bytes.slice(0));
     renderFrame(wasmScene);
+    // Report which gather actually ran, so a regression here is visible rather
+    // than silently showing up as "WASM got slower".
+    wasmScene.findEntityAt(1, 1);
+    const gatherPath = wasmScene.hitGatherPath;
+
+    // Control: hit-test WASM WITHOUT resident transforms, i.e. the pre-fusion
+    // path, measured in the same run so the delta is not a cross-build compare.
+    const unfusedScene = sceneWith();
+    buildEntities(unfusedScene, n);
+    await unfusedScene.enableWasmHitTest(bytes.slice(0));
+    renderFrame(unfusedScene);
 
     // Correctness sanity check in the REAL engine (not just jsdom): the first
     // 200 query results must match a fresh JS-only scene with the same seed.
@@ -187,6 +206,15 @@ async function run(): Promise<void> {
       (t) => wasmScene.findEntityAt(queryX[t], queryY[t]),
     );
     const wasmColdNs = wasmColdMs * 1e6;
+
+    // Same cold measurement on the unfused control, so the fusion's effect is a
+    // same-run delta rather than a comparison across two builds.
+    const unfusedColdNs =
+      minMsWithSetup(
+        TRIALS,
+        () => renderFrame(unfusedScene),
+        (t) => unfusedScene.findEntityAt(queryX[t], queryY[t]),
+      ) * 1e6;
 
     // warm: fresh render (untimed setup) then WARM_QUERIES queries — the
     // first pays gather+build, the rest are grid-query-only; per-query cost
@@ -235,7 +263,12 @@ async function run(): Promise<void> {
       wasmColdNsPerQuery: Number(wasmColdNs.toFixed(1)),
       wasmWarmNsPerQuery: Number(wasmWarmPerQueryNs.toFixed(1)),
       wasmHotNsPerQuery: Number(wasmHotPerQueryNs.toFixed(1)),
+      gatherPath,
+      transformsResident: transformsOk,
+      unfusedColdNsPerQuery: Number(unfusedColdNs.toFixed(1)),
       coldSpeedup: Number((jsColdNs / wasmColdNs).toFixed(2)),
+      coldSpeedupUnfused: Number((jsColdNs / unfusedColdNs).toFixed(2)),
+      fusionGain: Number((unfusedColdNs / wasmColdNs).toFixed(2)),
       warmSpeedup: Number((jsSteadyNs / wasmWarmPerQueryNs).toFixed(2)),
       hotSpeedup: Number((jsSteadyNs / wasmHotPerQueryNs).toFixed(2)),
     });

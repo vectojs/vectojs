@@ -39,6 +39,7 @@ import { buildTreeStore } from '../wasm/scene-store';
 import type { TransformStore } from '../wasm/soa';
 import { type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
 import { gatherHitAABBs } from '../wasm/hit-store';
+import { createHitGatherBuffer, gatherHitAABBsFromStore } from '../wasm/hit-store-fused';
 import { type CoreModuleSource, type CoreWasmRuntime, loadCoreWasmRuntime } from '../wasm/runtime';
 import { type HitModuleSource, type HitTestBackend } from '../wasm/hit-backend';
 import { type AnimModuleSource, type AnimBackend } from '../wasm/anim-backend';
@@ -1001,6 +1002,25 @@ export class Scene {
   private _hitGridOk = false;
   private _hitSlotEntity: Entity[] = [];
   private _hitBoundless: Array<{ entity: Entity; index: number }> = [];
+  /** Reused buffer for the fused gather, so a pointer query allocates nothing. */
+  private _hitGatherBuffer: ReturnType<typeof createHitGatherBuffer> | null = null;
+  /**
+   * Whether the last grid build sourced its AABBs from the WASM transform store
+   * rather than recomputing them in JS. Diagnostic only — both paths must
+   * produce the same entity for a given point.
+   */
+  private _hitFusedGather = false;
+  /**
+   * Whether `compute_aabbs` has run against the current frame's world matrices.
+   * The AABB pass is only meaningful after a `compose_*`, so the fused gather
+   * must not read the views before then.
+   */
+  private _wasmAabbsFresh = false;
+
+  /** Did the last hit-grid build use the fused (WASM-store) gather? */
+  public get hitGatherPath(): 'fused' | 'js' {
+    return this._hitFusedGather ? 'fused' : 'js';
+  }
 
   /** Which backend answers `findEntityAt` for the main tree. */
   public get hitTestBackend(): 'js' | 'wasm' {
@@ -1043,7 +1063,35 @@ export class Scene {
     if (!backend) return false;
     if (this._hitGridFrame === this.currentFrame) return this._hitGridOk;
 
-    const gathered = gatherHitAABBs(this.root, this.currentFrame);
+    // Prefer the fused path: when the transform backend is active it has already
+    // reduced every world matrix to an AABB inside the SAME linear memory (all
+    // backends share one instance), so the gather becomes a copy plus an index
+    // remap instead of re-deriving four transformed corners per entity in JS.
+    //
+    // That JS gather is what made the integrated hit-test path *slower* than the
+    // JS walk for an ordinary hover despite a 65-170x faster kernel: 11.2ms vs
+    // 39us at 100k entities, essentially all of it in front of the kernel.
+    //
+    // It returns null when the store cannot answer (a tree change since the last
+    // rebuild leaves a stale `_storeSlot`), in which case fall through to the JS
+    // gather — a wrong AABB would mean the wrong entity under the cursor, and a
+    // slower correct answer beats a faster wrong one.
+    let gathered: ReturnType<typeof gatherHitAABBs> | null = null;
+    if (this._wasm && this._ensureWasmAabbs()) {
+      this._hitGatherBuffer ??= createHitGatherBuffer();
+      this._wasm.revalidateViews();
+      gathered = gatherHitAABBsFromStore(
+        this.root,
+        this._wasm.aabbView(),
+        this._slotEntity,
+        this._hitGatherBuffer,
+      );
+      if (gathered) this._hitFusedGather = true;
+    }
+    if (!gathered) {
+      this._hitFusedGather = false;
+      gathered = gatherHitAABBs(this.root, this.currentFrame);
+    }
     // ensure() must run BEFORE writing AABBs: a capacity growth detaches the
     // previous typed-array views, so sizing after writing would write into a
     // stale buffer.
@@ -1496,6 +1544,16 @@ export class Scene {
       this._storeStructureVersion = this._structureVersion;
     }
 
+    // Another backend sharing this instance (hit_init allocates its own grid
+    // arrays in the same linear memory) may have grown memory and detached these
+    // views since the last frame. Re-acquire them before writing, or every write
+    // silently lands nowhere.
+    backend.revalidateViews();
+    if (this._wasmInputs && this._wasmInputs.x.length === 0) {
+      this._wasmInputs = backend.inputView();
+      this._wasmWorld = backend.worldView();
+    }
+
     // Gather local transforms into the resident input view. Slot 0 is the root,
     // which the kernel seeds to identity, so start at 1. cos/sin come from the
     // Phase-0 per-entity trig cache (recomputed only when rotation changed).
@@ -1513,7 +1571,46 @@ export class Scene {
       inp.opacity[slot] = e.opacity;
     }
     backend.runKernel('simd');
+    // The world matrices just changed, so any AABBs computed from the previous
+    // frame's matrices are stale. They are recomputed on demand rather than every
+    // frame: a pointer query happens ad-hoc, and most frames never need them.
+    this._wasmAabbsFresh = false;
     return this._wasmWorld;
+  }
+
+  /**
+   * Run the WASM world-AABB pass over the current frame's world matrices, so the
+   * fused hit gather can read AABBs straight out of the store.
+   *
+   * Local bounds are uploaded here rather than in the per-frame transform sync
+   * because `getBounds()` is a virtual call that allocates a rect on most
+   * entities — paying it every frame for a query that may never come would move
+   * cost onto the render path to save it on hover. Returns `false` if any entity
+   * cannot supply bounds through the store, so the caller uses the JS gather.
+   */
+  private _ensureWasmAabbs(): boolean {
+    const backend = this._wasm;
+    const store = this._treeStore;
+    if (!backend || !store) return false;
+    if (this._wasmAabbsFresh) return true;
+
+    backend.revalidateViews();
+    const bounds = backend.boundsView();
+    const slotEntity = this._slotEntity;
+    for (let slot = 0; slot < slotEntity.length; slot++) {
+      const e = slotEntity[slot];
+      if (!e) continue;
+      const b = e.getBounds();
+      // A boundless entity keeps zeroed bounds; the fused gather routes it
+      // through `boundless` and never reads its AABB slots.
+      bounds.bx[slot] = b ? b.x : 0;
+      bounds.by[slot] = b ? b.y : 0;
+      bounds.bw[slot] = b ? b.width : 0;
+      bounds.bh[slot] = b ? b.height : 0;
+    }
+    backend.runAabbs(slotEntity.length);
+    this._wasmAabbsFresh = true;
+    return true;
   }
 
   /**
