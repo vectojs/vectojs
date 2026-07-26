@@ -7,6 +7,7 @@
       "devDependencies": {
         "@biomejs/biome": "^2.5.5",
         "@changesets/cli": "^2.31.1",
+        "@chenglou/pretext": "^0.0.8",
         "@commitlint/cli": "^21.2.1",
         "@commitlint/config-conventional": "^21.2.0",
         "knip": "^6.29.0",
@@ -19,9 +20,9 @@
     },
     "packages/animation": {
       "name": "@vectojs/animation",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
-        "@vectojs/math": "^0.1.0",
+        "@vectojs/math": "^0.1.1",
       },
       "devDependencies": {
         "tsup": "^8.3.5",
@@ -30,12 +31,12 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.15.0",
+      "version": "1.16.0",
       "dependencies": {
-        "@vectojs/animation": "^0.1.0",
-        "@vectojs/layout": "^0.1.0",
-        "@vectojs/math": "^0.1.0",
-        "@vectojs/text": "^0.1.0",
+        "@vectojs/animation": "^0.1.1",
+        "@vectojs/layout": "^0.2.0",
+        "@vectojs/math": "^0.1.1",
+        "@vectojs/text": "^0.2.0",
       },
       "devDependencies": {
         "@vitest/coverage-v8": "^4.1.10",
@@ -48,7 +49,7 @@
     },
     "packages/devtools": {
       "name": "@vectojs/devtools",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/markdown": "workspace:*",
@@ -69,7 +70,7 @@
     },
     "packages/graph3d": {
       "name": "@vectojs/graph3d",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "d3-force-3d": "^3.0.6",
       },
@@ -85,9 +86,9 @@
     },
     "packages/layout": {
       "name": "@vectojs/layout",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
-        "@vectojs/text": "^0.1.0",
+        "@vectojs/text": "^0.2.0",
       },
       "devDependencies": {
         "esbuild": "^0.28.1",
@@ -98,7 +99,7 @@
     },
     "packages/markdown": {
       "name": "@vectojs/markdown",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "marked": "^18.0.7",
         "mathjax-full": "^3.2.2",
@@ -118,7 +119,7 @@
     },
     "packages/math": {
       "name": "@vectojs/math",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
@@ -126,7 +127,7 @@
     },
     "packages/text": {
       "name": "@vectojs/text",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "bidi-js": "^1.0.3",
       },
@@ -137,7 +138,7 @@
     },
     "packages/three": {
       "name": "@vectojs/three",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "devDependencies": {
         "@types/three": "^0.185.1",
         "@vectojs/core": "workspace:*",
@@ -151,7 +152,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "esbuild": "^0.28.1",
@@ -260,6 +261,8 @@
     "@changesets/types": ["@changesets/types@6.1.0", "", {}, "sha512-rKQcJ+o1nKNgeoYRHKOS07tAMNd3YSN0uHaJOZYjBAgxfV7TUE7JE+z4BzZdQwb5hKaYbayKN5KrYV7ODb2rAA=="],
 
     "@changesets/write": ["@changesets/write@0.4.0", "", { "dependencies": { "@changesets/types": "^6.1.0", "fs-extra": "^7.0.1", "human-id": "^4.1.1", "prettier": "^2.7.1" } }, "sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q=="],
+
+    "@chenglou/pretext": ["@chenglou/pretext@0.0.8", "", {}, "sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA=="],
 
     "@commitlint/cli": ["@commitlint/cli@21.2.1", "", { "dependencies": { "@commitlint/config-conventional": "^21.2.0", "@commitlint/format": "^21.2.0", "@commitlint/lint": "^21.2.0", "@commitlint/load": "^21.2.0", "@commitlint/read": "^21.2.1", "@commitlint/types": "^21.2.0", "tinyexec": "^1.0.0", "yargs": "^18.0.0" }, "bin": { "commitlint": "cli.js" } }, "sha512-blsZGe29hJ72VGEFVl72IVYX+1vsfINpjA9yWQA6i7OKD/McGEOXg08sKIRKjFk4JvzhV/9n0l3i6NooPLTNfg=="],
 

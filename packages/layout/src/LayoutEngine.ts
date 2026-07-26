@@ -1022,6 +1022,76 @@ export class LayoutEngine {
    *   line is split into the free x-segments left after subtracting them. Omitting
    *   it (or passing `[]`) leaves the single-column path byte-for-byte unchanged.
    */
+  /**
+   * Line count + total height for prepared text at the engine's current
+   * `maxWidth`, WITHOUT positioning any glyph or allocating a node.
+   *
+   * `layoutPrepared()` exists to produce positioned glyphs — selection geometry
+   * and the a11y projection need them. But a caller that only wants "how tall is
+   * this at this width" (a virtualized list measuring rows, a resize pass
+   * deciding heights, an autosizing container) pays the full O(glyphs) walk plus
+   * one `LayoutNode` allocation per glyph for data it discards.
+   *
+   * This walks the prepared WORD widths instead — O(words), zero allocation —
+   * reusing the same greedy wrap decisions as the full path. Prompted by
+   * benchmarking against `@chenglou/pretext`, whose hot path is segment-level for
+   * exactly this reason; see `comparisons/text-layout-pretext/`.
+   *
+   * Break decisions match `layoutPrepared()` for the single-column case
+   * (no exclusions, no hyphenation, no per-glyph exclusion mask). Text that
+   * needs any of those must use the full path.
+   */
+  public measurePrepared(prepared: PreparedText): { lineCount: number; height: number } {
+    const fontSize = prepared.fontSize;
+    let lineCount = 0;
+    let height = 0;
+
+    for (const paragraph of prepared.paragraphs) {
+      if (paragraph.isEmpty) {
+        lineCount += 1;
+        height += fontSize * 1.5;
+        continue;
+      }
+      // Tallest glyph drives this paragraph's line height, same as the full path.
+      let pMax = fontSize;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const gfs = glyph.style?.fontSize ?? fontSize;
+          if (gfs > pMax) pMax = gfs;
+        }
+      }
+      const lineHeight = pMax * 1.5;
+
+      let x = 0;
+      let lines = 1;
+      for (const word of paragraph.words) {
+        if (x + word.width > this.maxWidth && x > 0) {
+          // Trailing whitespace never forces a wrap (matches the full path).
+          if (word.isWordLike === false && word.isWhitespace) continue;
+          lines++;
+          x = 0;
+        }
+        // A word wider than the measure can't fit on any line, so the full path
+        // breaks it mid-word at glyph boundaries. Walk its glyph advances to
+        // count those overflow lines rather than reporting one impossible line.
+        if (word.width > this.maxWidth) {
+          for (const glyph of word.glyphs) {
+            if (x + glyph.width > this.maxWidth && x > 0) {
+              lines++;
+              x = 0;
+            }
+            x += glyph.width;
+          }
+          continue;
+        }
+        x += word.width;
+      }
+      lineCount += lines;
+      height += lines * lineHeight;
+    }
+    return { lineCount, height };
+  }
+
   public layoutPrepared(
     prepared: PreparedText,
     exclusionMask?: (x: number, y: number, w: number, h: number) => boolean,
