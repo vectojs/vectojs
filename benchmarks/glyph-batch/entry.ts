@@ -25,6 +25,9 @@ import { createWebGLPointRenderer, type PointRenderer } from '@vectojs/core';
 const p = new URLSearchParams(location.search);
 const GLYPH_COUNTS = (p.get('glyphs') ?? '1000,5000,12000,24800,50000').split(',').map(Number);
 const TRIALS = Number(p.get('trials') ?? 15);
+const HUD = p.get('hud') === '1';
+const SUSTAIN_MS = Number(p.get('sustainMs') ?? 6000);
+const SUSTAIN_GLYPHS = Number(p.get('sustainGlyphs') ?? 24800);
 const VIEW_W = 1900;
 const VIEW_H = 1000;
 
@@ -145,6 +148,125 @@ const median = (xs: number[]): number => {
 };
 const yieldToBrowser = () => new Promise<void>((r) => setTimeout(r, 0));
 
+interface HostMetrics {
+  cpu: number;
+  ramUsed: number;
+  ramTotal: number;
+  gpu: { name: string; util: number; mem: number; temp: number; clock: number } | null;
+}
+
+/**
+ * Drive a continuously animating glyph field for `SUSTAIN_MS`, measuring real
+ * per-frame cost under vsync, and paint a HUD so one `grim` capture carries the
+ * frame stats AND the host CPU/RAM/GPU state. Returns the frame summary.
+ *
+ * Frame times on a high-refresh panel are vsync-quantized, so a mean is
+ * misleading — this reports percentiles plus the share of frames that fit one
+ * 240Hz interval, which is the number that actually decides whether the scene
+ * feels locked.
+ */
+async function runSustained(renderer: PointRenderer): Promise<Record<string, unknown>> {
+  const glyphs = makeGlyphs(SUSTAIN_GLYPHS);
+  const vx = glyphs.map(() => 40 + Math.random() * 160);
+
+  const hud = document.createElement('pre');
+  hud.style.cssText =
+    'position:fixed;top:8px;left:8px;margin:0;padding:10px 14px;z-index:9;' +
+    'font:13px/1.45 monospace;color:#7dffa8;background:rgba(0,0,0,.82);' +
+    'border:1px solid #2c5;border-radius:6px;white-space:pre;pointer-events:none';
+  document.body.appendChild(hud);
+
+  let host: HostMetrics | null = null;
+  const poll = setInterval(() => {
+    void fetch('/metrics')
+      .then((r) => r.json())
+      .then((m: HostMetrics) => {
+        host = m;
+      })
+      .catch(() => {});
+  }, 500);
+
+  const accumMs: number[] = [];
+  const flushMs: number[] = [];
+  const frameMs: number[] = [];
+  const heapMB: number[] = [];
+  let last = performance.now();
+  const started = last;
+  let frames = 0;
+
+  await new Promise<void>((done) => {
+    const tick = (): void => {
+      const now = performance.now();
+      const dt = now - last;
+      last = now;
+      if (frames > 0) frameMs.push(dt);
+
+      const step = dt / 1000;
+      renderer.begin();
+      const a0 = performance.now();
+      for (let i = 0; i < glyphs.length; i++) {
+        const g = glyphs[i]!;
+        g.x += vx[i]! * step;
+        if (g.x > VIEW_W) g.x = -g.w;
+        renderer.addGlyph(g.x, g.y, g.w, g.h, 0, 0, 1, 1, g.color, 1, 0);
+      }
+      const a1 = performance.now();
+      renderer.flush();
+      const a2 = performance.now();
+      accumMs.push(a1 - a0);
+      flushMs.push(a2 - a1);
+      frames++;
+
+      const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+      if (mem) heapMB.push(mem.usedJSHeapSize / 1048576);
+
+      // Repaint the HUD ~4x/sec so a capture is readable and stable.
+      if (frames % 15 === 0) {
+        const fps = frameMs.length ? 1000 / median(frameMs.slice(-60)) : 0;
+        const g = host?.gpu;
+        hud.textContent =
+          `vectojs glyph-batch — sustained scene\n` +
+          `glyphs/frame  ${SUSTAIN_GLYPHS.toLocaleString()}   dpr ${devicePixelRatio.toFixed(2)}\n` +
+          `FPS           ${fps.toFixed(1)}   (240Hz budget 4.17ms)\n` +
+          `frame p50     ${median(frameMs.slice(-120)).toFixed(2)} ms\n` +
+          `JS accum p50  ${median(accumMs.slice(-120)).toFixed(2)} ms\n` +
+          `GPU flush p50 ${median(flushMs.slice(-120)).toFixed(2)} ms\n` +
+          `JS heap       ${heapMB.length ? heapMB[heapMB.length - 1]!.toFixed(0) + ' MB' : 'n/a (non-Chrome)'}\n` +
+          `host CPU      ${host ? host.cpu.toFixed(0) + ' %' : '…'}\n` +
+          `host RAM      ${host ? host.ramUsed.toFixed(1) + ' / ' + host.ramTotal.toFixed(1) + ' GB' : '…'}\n` +
+          `GPU           ${g ? `${g.name}\n              ${g.util}% util  ${g.clock} MHz  ${g.temp}°C  ${g.mem} MiB` : '…'}`;
+      }
+
+      if (now - started >= SUSTAIN_MS) {
+        done();
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+
+  clearInterval(poll);
+
+  const pct = (xs: number[], q: number): number => {
+    const s2 = [...xs].sort((a, b) => a - b);
+    return s2[Math.min(s2.length - 1, Math.floor(s2.length * q))] ?? 0;
+  };
+  const fit240 = frameMs.filter((f) => f <= 4.17).length / (frameMs.length || 1);
+  return {
+    glyphsPerFrame: SUSTAIN_GLYPHS,
+    frames,
+    fps: +(1000 / median(frameMs)).toFixed(1),
+    frameP50: +median(frameMs).toFixed(2),
+    frameP99: +pct(frameMs, 0.99).toFixed(2),
+    accumP50: +median(accumMs).toFixed(2),
+    flushP50: +median(flushMs).toFixed(2),
+    framesFitting240Hz: +(fit240 * 100).toFixed(1),
+    heapMBLast: heapMB.length ? +heapMB[heapMB.length - 1]!.toFixed(0) : null,
+    host,
+  };
+}
+
 async function main(): Promise<void> {
   const canvas = document.createElement('canvas');
   canvas.width = VIEW_W;
@@ -219,6 +341,12 @@ async function main(): Promise<void> {
     await yieldToBrowser();
   }
 
+  // --- Sustained-frame phase + HUD (opt-in, for grim capture) -------------
+  let sustained: Record<string, unknown> | null = null;
+  if (HUD) {
+    sustained = await runSustained(renderer);
+  }
+
   const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
   const payload = {
     name: 'glyph-batch',
@@ -232,8 +360,12 @@ async function main(): Promise<void> {
       note: 'oldAccum is an inlined replica of the pre-CTX-0069 per-quad body, timed in the same run',
     },
     rows,
+    sustained,
   };
   pre.textContent = JSON.stringify(payload, null, 2);
+  // run-browsers.sh closes the window the moment results land, so in HUD mode
+  // hold the page open long enough to be captured before reporting.
+  if (HUD) await new Promise((r) => setTimeout(r, Number(p.get('holdMs') ?? 20000)));
   try {
     await fetch('/results', {
       method: 'POST',
