@@ -1,5 +1,139 @@
 # @vectojs/core
 
+## 1.17.0
+
+### Minor Changes
+
+- d25cbe2: Split the WASM animation gate per driver kind, and expose whether it opened.
+
+  Spring and tween drivers have measurably different break-even points on the
+  integrated path: spring and mixed workloads win ~1.4-2.3x from 128 active drivers,
+  while pure tween is a **0.71x loss** at 128 and only turns net-positive near 256.
+  One scalar `animDriverGateCount` therefore had to be set for the worse kind, which
+  discarded the 128-255 spring win to avoid regressing a tween-heavy scene. The two
+  counts were already tracked separately — only the threshold was shared.
+
+  ```ts
+  scene.animGate = { spring: 128, tween: 256, mixed: 128 }; // new defaults
+  ```
+
+  A frame with both kinds active uses `mixed`, since the batch is one call per kind
+  and its economics track the combined count.
+
+  `animDriverGateCount` still works: writing it sets all three, reading returns the
+  tween (conservative) gate.
+
+  Adds `Scene.animBatchedLastFrame`, which reports whether the batch path actually
+  ran. `animBackend === 'wasm'` only means a backend is _installed_ — a gate above
+  the driver count still ticks in JS, and conflating the two makes it easy to believe
+  an accelerator is active when it never opens.
+
+  Firefox remains a net loss at every count measured up to 16384, so these defaults
+  are Chrome-oriented; on a Firefox-heavy audience leave animation batching off
+  rather than tuning the gates.
+
+- 447eb4f: Share one WASM instance per Scene across all four accelerators.
+
+  Each `enableWasm*` previously instantiated `vectojs_core.wasm` itself, so a Scene
+  enabling transforms, animation, hit-test and particles compiled the same binary
+  up to four times and held four separate linear memories plus four sets of
+  module-level statics. Nothing required that: the Rust crate already keeps those
+  four stores in distinct statics, so they do not alias within a single instance.
+
+  Now the compiled `WebAssembly.Module` is cached globally per URL source, and one
+  `Instance` is created per Scene. Sharing a compile is safe; sharing mutable stores
+  is not, so two Scenes still get separate instances.
+
+  New public API:
+
+  - `Scene.wasmRuntime` — the shared runtime, or `null`.
+  - `Scene.setWasmRuntime(runtime)` — install a pre-built runtime so several Scenes
+    can share one compile.
+  - `loadCoreWasmModule`, `createCoreWasmRuntime`, `loadCoreWasmRuntime`,
+    `clearCoreWasmModuleCache` from `@vectojs/core`.
+
+  Behaviour is unchanged: every `enableWasm*` still returns `boolean`, still falls
+  back to JS on any failure (CSP, 404, corrupt bytes, unsupported SIMD), and each
+  accelerator keeps its own independent gate. A failed load is no longer cached, so
+  one transient 503 cannot disable WASM for the page's lifetime.
+
+  This is also the prerequisite for fusing transform -> AABB -> hit-grid inside one
+  instance, which is what makes the cold hit-test path viable.
+
+### Patch Changes
+
+- 493370a: Stop shipping the rejected f32x4 benchmark kernel in the released WASM binary.
+
+  `simd_f32_bench` was declared unconditionally and the crate had no `[features]`
+  section, so the f32x4 compose prototype was compiled into every published
+  `vectojs_core.wasm`. That kernel had already been measured and **rejected**: f32
+  error accumulates along a transform chain (~93px on a deep tree), and it is not
+  bit-comparable to the JS reference the differential suite is built on. It was dead
+  weight in every download.
+
+  It now sits behind a `bench-f32` Cargo feature, off by default. Measured saving:
+  **36,816 → 33,792 bytes (3,024 bytes, 8.2%)**.
+
+  `benchmarks/f32-simd-eval` still works, with an explicit build step:
+
+  ```bash
+  ./crates/vectojs-core-rs/build.sh --features bench-f32
+  ```
+
+  Run against a default build, the bench now reports the missing kernel and how to
+  enable it, instead of failing on an undefined export several frames in.
+
+- 6a0e942: Validate arguments in the raw WASM ABI instead of trusting the caller.
+
+  The crate's exports take raw counts and dereference raw pointers, and their Safety
+  contracts were enforced only by the TypeScript calling convention — `capacity`
+  appeared 7 times against 21 `unsafe`/`static mut` sites, and the original Phase 1
+  review already found two out-of-bounds read paths that way. The sandbox prevents
+  such a bug corrupting the browser, but it can still trap, corrupt the module's own
+  linear memory, or silently return wrong geometry and break a frame.
+
+  `init` now records its allocated capacities, and `set_run_count`, `compose_scalar`,
+  `compose_simd` and `compute_aabbs` return a status code instead of `void`:
+
+  - `0` ok
+  - `1` a count exceeded what `init` allocated
+  - `2` a kernel ran before `init`
+  - `3` a sibling run addressed a slot or parent outside the store
+
+  A rejected call is a no-op, so it cannot half-write the store, and the JS side
+  skips reading results back rather than copying stale matrices over the caller's
+  data. Run-table validation uses checked arithmetic, so `start + len` cannot wrap
+  past a naive bounds comparison, and negative `i32` fields are rejected before the
+  cast to `usize` turns them into enormous indices.
+
+  `WasmTransformBackend.lastStatus` exposes the most recent status, and
+  `WASM_STATUS` is exported for comparisons. Arithmetic is unchanged — the guards
+  only decide whether a kernel runs, not what it computes, so the differential tests
+  still pass bit-exact.
+
+- 49a7b3c: Re-acquire WASM typed-array views when a shared instance grows its memory.
+
+  Sharing one instance per Scene means all four backends share one linear memory, so
+  one backend's allocation can grow it and **detach every view built over the old
+  buffer**. A detached `Float64Array` reports length 0 and returns `undefined` for
+  every index, so the transform store silently appeared empty instead of failing.
+
+  Verified directly against the binary: after `init(100000, …)` the world-matrix view
+  is length 100008; after a subsequent `hit_init(…)` it is 0.
+
+  `WasmTransformBackend.revalidateViews()` rebuilds the views when the buffer they
+  were built over is gone, and the Scene calls it before writing transform inputs,
+  before uploading local bounds, and before reading world AABBs. Without it, a Scene
+  that enabled transforms _and_ hit-test would write every per-frame transform into a
+  dead buffer.
+
+  Also adds the fused hit-grid gather: with the transform store resident, the grid
+  build reads world AABBs out of WASM memory instead of re-deriving four transformed
+  corners per entity in JS. Measured on real hardware it is a **modest** 1.07-1.09x
+  on Chrome and neutral-to-slightly-negative on Firefox — it does _not_ fix the cold
+  hit-test path, whose cost is the JS pre-order walk and the grid build, not the
+  corner arithmetic. `Scene.hitGatherPath` reports which gather ran.
+
 ## 1.16.3
 
 ### Patch Changes
