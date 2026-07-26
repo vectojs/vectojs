@@ -88,6 +88,45 @@ benchmark, but only because the engine caches prepared paragraphs internally and
 the corpus repeats. That is not a like-for-like win and is deliberately excluded
 from any published table.
 
+## `render-canvas-libs` — vs [Konva](https://konvajs.org) / [Fabric.js](http://fabricjs.com) / DOM
+
+For a _rendering_ library, a throughput number alone is misleading. What actually
+differs is what a user and a screen reader can do with the result. This page
+renders the same label + button four ways and probes the live DOM.
+
+Chrome 150 (DPR 1) and Firefox 153 (DPR 1.579 — a fractional ratio, deliberately):
+
+| | backing-store ratio | a11y tree | accessible name | text selectable |
+| --- | --- | --- | --- | --- |
+| DOM (baseline) | n/a | yes | `Run export` | yes |
+| **VectoJS** | matches DPR | **yes** | **`Run export`** | **yes** |
+| Konva 10.3.0 | matches DPR | no | — | no |
+| Fabric.js 7.4.0 | matches DPR | no | — | no |
+
+**DPR is not a differentiator — do not claim it as one.** All three canvas
+libraries scale their backing store correctly, including at Firefox's fractional
+1.579. Text is crisp in all four (screenshot baseline:
+`cmp-render-canvas-libs-chrome150-dpr2-2026-07-26.png`).
+
+The real difference is the semantic layer. `getByRole('button', { name: 'Run
+export' })` resolves in VectoJS and in the DOM baseline; in Konva and Fabric there
+is nothing to resolve, and the drawn text cannot be selected or copied. That is
+consistent with their source: **zero `aria-` or `role=` occurrences anywhere in
+`konva/src` or `fabric/src`.**
+
+This is a scope statement, not a criticism. Konva and Fabric are scene-graph and
+object-model libraries; accessibility is left to the embedder. If you need it, you
+build the shadow layer yourself — which is the thing VectoJS is.
+
+### Method note
+
+The first `grim` capture of this page showed the VectoJS panel **entirely black**,
+which looked like a rendering failure. It wasn't: the canvas had 5,335 non-background
+pixels: the screenshot was taken before the render settled. The page now emits a
+`#probe-done` marker and the driver waits for it. Trusting that first screenshot
+would have produced a false bug report — capture after an explicit settle signal,
+and cross-check pixels programmatically before believing an image.
+
 ## Libraries reviewed but not yet benchmarked
 
 Cloned into `tmp/references/` for source review: `pixijs`, `konva`, `fabric`,
