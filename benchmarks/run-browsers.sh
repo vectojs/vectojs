@@ -43,9 +43,24 @@ RUN_TIMEOUT=${RUN_TIMEOUT:-60} # per-browser budget before the one extension
 RUN_EXTEND=${RUN_EXTEND:-180}  # one-shot extension if still working at the deadline
 LOG="/tmp/${BENCH}-server.log"
 
+# PID of whatever currently listens on $PORT, if anything.
+server_pid() {
+  ss -ltnp 2>/dev/null | grep -oP "${PORT}.*pid=\K[0-9]+" | head -1 || true
+}
+
+# Stop this run's server. `serve.ts` never exits on its own, and it is reparented
+# out of this script's process tree (see start_server), so nothing reaps it
+# automatically — without this every run on a fresh port leaks a listener that
+# then competes for CPU with later measurements.
+stop_server() {
+  local pid
+  pid=$(server_pid)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+}
+
 start_server() {
   local pid
-  pid=$(ss -ltnp 2>/dev/null | grep -oP "${PORT}.*pid=\K[0-9]+" | head -1 || true)
+  pid=$(server_pid)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && sleep 1
   # `serve.ts` never exits on its own (it's a long-running HTTP server, by
   # design — left running so a later invocation can reuse it). `setsid --fork`
@@ -212,7 +227,7 @@ run_one() {
 start_server
 echo "serving $BENCH on $URL"
 # Return to the caller's workspace even if a run dies unexpectedly.
-trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
+trap 'stop_server; hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 
 for b in "${BROWSERS[@]}"; do run_one "$b" || true; done
 echo "results in $RESULTS/"
