@@ -1,5 +1,12 @@
 # @vectojs/core
 
+## 1.16.1
+
+### Patch Changes
+
+- Updated dependencies [48bc2ee]
+  - @vectojs/layout@0.3.0
+
 ## 1.16.0
 
 ### Minor Changes
