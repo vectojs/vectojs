@@ -1,5 +1,50 @@
 # @vectojs/core
 
+## 1.16.3
+
+### Patch Changes
+
+- 75b06a3: Pin a11y projection gate symmetry and correct the `detachA11y` doc comment.
+
+  Nothing tested what happens when an entity stops satisfying the projection gate
+  (`interactive && (width > 0 || a11yFullViewport)`). Reading `syncA11y` alone
+  suggests a leak, since it only creates and updates — but it is always followed by
+  `enforceA11yDomOrder`, whose prune pass removes any element whose entity no longer
+  qualifies. Measured: `interactive = true` projects, flipping to `false` removes the
+  element on the next synced frame, and flipping back re-projects.
+
+  Adds tests for each transition, including a zero-width collapse, the
+  `a11yFullViewport` exception, and that focus moves to the sentinel rather than
+  `<body>` when a _focused_ element is pruned.
+
+  `detachA11y`'s doc said "the per-frame `syncA11y` only creates/updates, it never
+  prunes", which is true of that method but reads as though removal never happens
+  automatically. It now explains that the following order pass does prune, and that
+  `detachA11y` is for the case that pass cannot see — a child dropped from a
+  component's own bookkeeping while still parented, or discarded before the next
+  sync.
+
+  No behaviour change.
+
+- 912cac2: Consolidate the a11y projection gate behind a single predicate.
+
+  `interactive && (width > 0 || a11yFullViewport)` was inlined verbatim at four
+  sites — `syncA11y` (create/update), `enforceA11yDomOrder` (which ids survive
+  pruning), `getA11yTree` (the public snapshot) and `render` (reading-order and
+  z-index assignment). Four copies of one rule is a standing correctness hazard: if
+  any drifts, elements either leak (created but never marked active, so pruned and
+  rebuilt every frame) or vanish from the semantic tree while still in the DOM. All
+  four now call `shouldProjectA11y(node)`.
+
+  The dev-mode leak warning counted with a _different_, approximate rule
+  (`interactive && width > 0`), which undercounts `a11yFullViewport` nodes —
+  projected at width 0 — and needed `+2` slack to avoid false positives. That slack
+  also hid genuine one- and two-element leaks. It now uses the same predicate and
+  compares exactly; its message says "projectable entities" rather than "interactive
+  entities", which is what it always meant.
+
+  No behaviour change for projection itself.
+
 ## 1.16.2
 
 ### Patch Changes
