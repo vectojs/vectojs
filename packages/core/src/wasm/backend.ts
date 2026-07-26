@@ -289,6 +289,25 @@ export class WasmTransformBackend {
     };
   }
 
+  /**
+   * Re-create the typed-array views if the memory buffer they were built over has
+   * been detached.
+   *
+   * Necessary because all backends of a Scene now share one instance, and
+   * therefore one linear memory: another backend's allocation (notably
+   * `hit_init`, which allocates its own grid arrays) can grow the memory and
+   * detach every view built over the old buffer. A detached `Float64Array` reads
+   * as length 0 and silently returns `undefined` for every index, so without this
+   * the transform store appears empty rather than failing loudly.
+   */
+  public revalidateViews(): void {
+    if (this.cap === 0) return;
+    // A detached view reports byteLength 0; the buffer identity check also
+    // catches a same-size replacement.
+    if (this.vwa.length === this.cap && this.vwa.buffer === this.ex.memory.buffer) return;
+    this.refreshViews();
+  }
+
   private ensure(count: number, runCount: number): void {
     if (count + PAD <= this.cap && runCount <= this.runCap) return;
     this.cap = count + PAD;
