@@ -102,6 +102,19 @@ struct Store {
     run_start: *mut i32,
     run_len: *mut i32,
     run_count: usize,
+
+    /// Entity slots allocated by `init` (the logical capacity, excluding the
+    /// SIMD tail padding). Recorded so every export can validate the counts the
+    /// JS side passes instead of trusting them: the Safety contracts below used
+    /// to be enforced only by the TypeScript caller, and PR #136's own review
+    /// found two out-of-bounds read paths that way. The sandbox stops such a bug
+    /// corrupting the browser, but it can still trap, corrupt this module's own
+    /// memory, or silently return wrong geometry and break a frame. One
+    /// comparison per kernel call is not measurable against the work the call
+    /// does.
+    capacity: usize,
+    /// Sibling-run slots allocated by `init`.
+    run_capacity: usize,
 }
 
 static mut S: Store = Store {
@@ -131,6 +144,8 @@ static mut S: Store = Store {
     run_start: ptr::null_mut(),
     run_len: ptr::null_mut(),
     run_count: 0,
+    capacity: 0,
+    run_capacity: 0,
 };
 
 /// Leak a zeroed, 16-byte-aligned `f64` array of `n` elements. Leaked on
@@ -183,6 +198,59 @@ pub extern "C" fn init(capacity: usize, max_runs: usize) {
         S.run_parent = leak_i32(max_runs);
         S.run_start = leak_i32(max_runs);
         S.run_len = leak_i32(max_runs);
+        S.capacity = capacity;
+        S.run_capacity = max_runs;
+        S.run_count = 0;
+    }
+}
+
+/// Status codes returned by the exports that can reject their arguments.
+/// `0` is success; a non-zero result means the call did nothing, so the JS side
+/// can fall back to its reference path rather than render from a half-written
+/// store.
+pub const STATUS_OK: i32 = 0;
+/// A count exceeded what `init` allocated.
+pub const STATUS_CAPACITY: i32 = 1;
+/// A kernel ran before `init`, so the store pointers are still null.
+pub const STATUS_UNINITIALIZED: i32 = 2;
+/// A sibling run referenced a slot or parent outside the allocated range.
+pub const STATUS_BAD_RUN: i32 = 3;
+
+/// True once `init` has allocated the store.
+#[inline]
+fn initialized() -> bool {
+    unsafe { S.capacity > 0 && !S.x.is_null() }
+}
+
+/// Validate that every sibling run addresses slots inside `[0, capacity)` and
+/// names a parent inside the same range.
+///
+/// This is the check that matters most: a run's `start + len` is what the
+/// composition kernels iterate, and a bad `parent` index is dereferenced to read
+/// the parent matrix. Both were previously guaranteed only by convention.
+fn runs_in_bounds() -> bool {
+    unsafe {
+        for r in 0..S.run_count {
+            let parent = *S.run_parent.add(r);
+            let start = *S.run_start.add(r);
+            let len = *S.run_len.add(r);
+            if parent < 0 || start < 0 || len < 0 {
+                return false;
+            }
+            let parent = parent as usize;
+            let start = start as usize;
+            let len = len as usize;
+            if parent >= S.capacity {
+                return false;
+            }
+            // Checked arithmetic: `start + len` could otherwise wrap on a
+            // hostile or corrupted table and pass a naive comparison.
+            match start.checked_add(len) {
+                Some(end) if end <= S.capacity => {}
+                _ => return false,
+            }
+        }
+        true
     }
 }
 
@@ -222,9 +290,23 @@ ptr_export!(p_run_parent, run_parent, i32);
 ptr_export!(p_run_start, run_start, i32);
 ptr_export!(p_run_len, run_len, i32);
 
+/// Set the number of sibling runs the composition kernels will walk.
+///
+/// Returns [`STATUS_OK`], or a non-zero status when `n` exceeds the run table
+/// `init` allocated — in which case `run_count` is left unchanged, so a rejected
+/// call cannot make a later kernel walk past the table.
 #[unsafe(no_mangle)]
-pub extern "C" fn set_run_count(n: usize) {
-    unsafe { S.run_count = n }
+pub extern "C" fn set_run_count(n: usize) -> i32 {
+    if !initialized() {
+        return STATUS_UNINITIALIZED;
+    }
+    unsafe {
+        if n > S.run_capacity {
+            return STATUS_CAPACITY;
+        }
+        S.run_count = n;
+    }
+    STATUS_OK
 }
 
 /// Seed the root (index 0) to the identity transform. The store builder always
@@ -245,8 +327,16 @@ unsafe fn seed_root() {
 
 /// Scalar f64 composition. Canvas `T * S * R` order (translate → scale →
 /// rotate), matching `renderNode` and the JS reference composer exactly.
+/// Returns [`STATUS_OK`], or a non-zero status when the store is uninitialized or
+/// the run table addresses slots outside it — in which case nothing is written.
 #[unsafe(no_mangle)]
-pub extern "C" fn compose_scalar() {
+pub extern "C" fn compose_scalar() -> i32 {
+    if !initialized() {
+        return STATUS_UNINITIALIZED;
+    }
+    if !runs_in_bounds() {
+        return STATUS_BAD_RUN;
+    }
     unsafe {
         seed_root();
         for r in 0..S.run_count {
@@ -292,6 +382,7 @@ pub extern "C" fn compose_scalar() {
             }
         }
     }
+    STATUS_OK
 }
 
 /// f64x2 SIMD composition. `v128` holds two f64 lanes, so the ceiling is 2×
@@ -312,7 +403,13 @@ pub extern "C" fn compose_scalar() {
 #[cfg(target_arch = "wasm32")]
 #[target_feature(enable = "simd128")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn compose_simd() {
+pub unsafe extern "C" fn compose_simd() -> i32 {
+    if !initialized() {
+        return STATUS_UNINITIALIZED;
+    }
+    if !runs_in_bounds() {
+        return STATUS_BAD_RUN;
+    }
     // Edition 2024: an `unsafe fn` body is no longer implicitly unsafe.
     unsafe {
         seed_root();
@@ -367,6 +464,7 @@ pub unsafe extern "C" fn compose_simd() {
             }
         }
     }
+    STATUS_OK
 }
 
 /// `Math.min` semantics: propagate NaN (unlike Rust's `f64::min`, which ignores
@@ -421,7 +519,15 @@ fn js_max(a: f64, b: f64) -> f64 {
 /// kernel must have populated the world matrices for `[0, count)`. Reads/writes
 /// `[0, count)` of each SoA array; `count` beyond capacity is out of bounds.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn compute_aabbs(count: usize) {
+pub unsafe extern "C" fn compute_aabbs(count: usize) -> i32 {
+    if !initialized() {
+        return STATUS_UNINITIALIZED;
+    }
+    // SAFETY of the loop below now rests on this check rather than on the
+    // caller's discipline.
+    if count > unsafe { S.capacity } {
+        return STATUS_CAPACITY;
+    }
     unsafe {
         for i in 0..count {
             let a = *S.wa.add(i);
@@ -461,4 +567,5 @@ pub unsafe extern "C" fn compute_aabbs(count: usize) {
             *S.amaxy.add(i) = max_y;
         }
     }
+    STATUS_OK
 }

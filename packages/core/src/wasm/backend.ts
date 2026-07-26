@@ -10,13 +10,34 @@
  */
 import type { TransformStore } from './soa';
 
+/**
+ * Status codes returned by the crate's fallible exports, mirroring the `STATUS_*`
+ * constants in `crates/vectojs-core-rs/src/lib.rs`.
+ *
+ * The kernels used to trust their arguments completely — the Safety contracts
+ * were enforced only by this file's calling convention, and PR #136's review
+ * found two out-of-bounds read paths that way. Now a rejected call writes nothing
+ * and reports why, so a bad batch degrades to the JS path instead of rendering
+ * from a half-written store.
+ */
+export const WASM_STATUS = {
+  OK: 0,
+  /** A count exceeded what `init` allocated. */
+  CAPACITY: 1,
+  /** A kernel ran before `init`. */
+  UNINITIALIZED: 2,
+  /** A sibling run addressed a slot or parent outside the store. */
+  BAD_RUN: 3,
+} as const;
+
 /** The raw C ABI the crate (`crates/vectojs-core-rs`) exports. */
 interface CoreExports {
   memory: WebAssembly.Memory;
   init(capacity: number, maxRuns: number): void;
-  set_run_count(n: number): void;
-  compose_simd(): void;
-  compose_scalar(): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  set_run_count(n: number): number;
+  compose_simd(): number;
+  compose_scalar(): number;
   p_x(): number;
   p_y(): number;
   p_sx(): number;
@@ -115,10 +136,16 @@ export class WasmTransformBackend {
     this.vrp.set(store.runParent.subarray(0, rc));
     this.vrs.set(store.runStart.subarray(0, rc));
     this.vrl.set(store.runLen.subarray(0, rc));
-    this.ex.set_run_count(rc);
+    if (this.ex.set_run_count(rc) !== WASM_STATUS.OK) {
+      this.lastStatus = WASM_STATUS.CAPACITY;
+      return;
+    }
 
-    if (kernel === 'scalar') this.ex.compose_scalar();
-    else this.ex.compose_simd();
+    const status = kernel === 'scalar' ? this.ex.compose_scalar() : this.ex.compose_simd();
+    this.lastStatus = status;
+    // A rejected kernel wrote nothing, so reading back would copy stale matrices
+    // over the caller's store and silently render the previous frame's geometry.
+    if (status !== WASM_STATUS.OK) return;
 
     // Read world matrices back.
     store.wa.set(this.vwa.subarray(0, n));
@@ -140,9 +167,10 @@ export class WasmTransformBackend {
    * once at the current capacity to size the store and set the run count; call
    * {@link uploadRuns} after a topology change.
    */
-  runKernel(kernel: Kernel = 'simd'): void {
-    if (kernel === 'scalar') this.ex.compose_scalar();
-    else this.ex.compose_simd();
+  runKernel(kernel: Kernel = 'simd'): number {
+    const status = kernel === 'scalar' ? this.ex.compose_scalar() : this.ex.compose_simd();
+    this.lastStatus = status;
+    return status;
   }
 
   /** Upload only the run table + count (topology), leaving per-entity inputs to
@@ -153,8 +181,14 @@ export class WasmTransformBackend {
     this.vrp.set(store.runParent.subarray(0, rc));
     this.vrs.set(store.runStart.subarray(0, rc));
     this.vrl.set(store.runLen.subarray(0, rc));
-    this.ex.set_run_count(rc);
+    this.lastStatus = this.ex.set_run_count(rc);
   }
+
+  /**
+   * Status of the most recent kernel or run-table call. `WASM_STATUS.OK` unless
+   * the crate rejected its arguments, in which case that call was a no-op.
+   */
+  public lastStatus: number = WASM_STATUS.OK;
 
   /** The resident wasm input views (`x,y,sx,sy,cos,sin,opacity`), valid until
    *  the next capacity growth. Writing here is what makes uploads unnecessary. */
