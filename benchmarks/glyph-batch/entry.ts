@@ -267,6 +267,29 @@ async function runSustained(renderer: PointRenderer): Promise<Record<string, unk
   };
 }
 
+/**
+ * POST the results, then close the window so the run ends the moment the data
+ * lands. `run-browsers.sh` waits on the results file and closes the window
+ * itself, but a page that self-terminates means a run never depends on the
+ * harness noticing — and never sits burning its timeout after finishing.
+ *
+ * `window.close()` is ignored for a browser-launched top-level window in some
+ * engines, so this is best-effort: the harness's own close remains the fallback.
+ */
+async function postResults(payload: unknown, holdMs = 0): Promise<void> {
+  try {
+    await fetch('/results', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    /* payload is already rendered into the page as a fallback */
+  }
+  if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));
+  window.close();
+}
+
 async function main(): Promise<void> {
   const canvas = document.createElement('canvas');
   canvas.width = VIEW_W;
@@ -363,18 +386,9 @@ async function main(): Promise<void> {
     sustained,
   };
   pre.textContent = JSON.stringify(payload, null, 2);
-  // run-browsers.sh closes the window the moment results land, so in HUD mode
-  // hold the page open long enough to be captured before reporting.
-  if (HUD) await new Promise((r) => setTimeout(r, Number(p.get('holdMs') ?? 20000)));
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* payload is already rendered into the page as a fallback */
-  }
+  // In HUD mode hold the page open first so it can be captured with `grim`;
+  // the results POST (and self-close) is what ends the run.
+  await postResults(payload, HUD ? Number(p.get('holdMs') ?? 20000) : 0);
 }
 
 void main();

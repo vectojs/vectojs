@@ -100,18 +100,58 @@ export interface PointRenderer {
 
 const FLOATS_PER_POINT = 7; // x, y, radius, r, g, b, a
 const POINT_STRIDE = FLOATS_PER_POINT * 4;
-// Rectangles are batched as expanded triangles (6 vertices/rect) rather than
-// instanced quads: a plain drawArrays(TRIANGLES) is far faster than
-// drawArraysInstanced on software GL, and equivalent on hardware. Each vertex
-// carries world position + color (6 floats).
+// Quads (rects, sprites, glyphs, carved circles) are batched as INDEXED
+// triangles: 4 vertices per quad plus a static index buffer, drawn with
+// drawElements. They were previously expanded to 6 vertices and drawn with
+// drawArrays, which re-uploaded the two shared corners every frame.
+//
+// The submit path is bandwidth-bound, not draw-call-bound — flush() already
+// issues at most one draw per primitive type. Measured on real hardware
+// (benchmarks/flush-upload, RTX 4060, work + gl.finish(), median of 12), the
+// 6-vertex upload cost, versus this 4-vertex indexed form:
+//
+//   quads    6-vert   indexed
+//   12,000   0.59ms   0.10ms   (5.9x)
+//   50,000   2.30ms   0.69ms   (3.3x)
+//  100,000  12.28ms   3.00ms   (4.1x)
+//
+// Firefox shows the same ordering at 1.5-2.0x (it is pinned near ~1 GB/s
+// effective upload bandwidth, so its time tracks bytes almost linearly).
+// Dropping 6 verts to 4 also cuts the JS fill by a third: writeQuad writes 32
+// floats instead of 48.
+const VERTS_PER_QUAD = 4;
+const INDICES_PER_QUAD = 6;
+// Rect vertex: world position + color (6 floats).
 const FLOATS_PER_RECT_VERT = 6; // x, y, r, g, b, a
 const RECT_VERT_STRIDE = FLOATS_PER_RECT_VERT * 4;
-const VERTS_PER_RECT = 6; // two triangles
-// Sprites: same expanded-triangle batch, plus UVs to sample a texture atlas and
-// a multiply tint. Each vertex: x, y, u, v, r, g, b, a.
+// Sprites: same indexed quad, plus UVs to sample a texture atlas and a multiply
+// tint. Each vertex: x, y, u, v, r, g, b, a.
 const FLOATS_PER_SPRITE_VERT = 8;
 const SPRITE_VERT_STRIDE = FLOATS_PER_SPRITE_VERT * 4;
-const VERTS_PER_SPRITE = 6;
+
+/**
+ * Build the static index buffer contents for `quads` quads: for quad `i` the
+ * two triangles are (0,1,2) and (0,2,3) over its 4 vertices. Uploaded once and
+ * regrown geometrically, never re-sent per frame.
+ *
+ * `Uint16Array` would cap at 65,535/4 = 16,383 quads, which real scenes exceed
+ * (the danmaku workload runs ~25k glyph quads), so this uses 32-bit indices —
+ * always available in WebGL2.
+ */
+function buildQuadIndices(quads: number): Uint32Array {
+  const out = new Uint32Array(quads * INDICES_PER_QUAD);
+  for (let i = 0; i < quads; i++) {
+    const v = i * VERTS_PER_QUAD;
+    const o = i * INDICES_PER_QUAD;
+    out[o] = v;
+    out[o + 1] = v + 1;
+    out[o + 2] = v + 2;
+    out[o + 3] = v;
+    out[o + 4] = v + 2;
+    out[o + 5] = v + 3;
+  }
+  return out;
+}
 
 const POINT_VERT = `#version 300 es
 in vec2 a_pos;
@@ -260,14 +300,15 @@ function link(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLPr
 }
 
 /**
- * Write one textured quad (two triangles, 6 verts x 8 floats) into `out` at
- * float offset `o`, rotated by `rotation` about `(x, y)`.
+ * Write one textured quad's 4 vertices (TL, TR, BR, BL) into `out` at float
+ * offset `o`, rotated by `rotation` about `(x, y)`. Triangle assembly is left to
+ * the shared static index buffer (see {@link buildQuadIndices}).
  *
- * Deliberately allocation-free and closure-free: the previous inline version
- * built a `corner` closure plus ~10 temporary arrays per quad and destructured
- * twice per vertex. That is invisible at a few hundred sprites and dominant at
- * ~25k glyphs/frame — profiling a 5,000-danmaku scene put the JS batching loop
- * at 5.4ms/frame (Chrome) vs 0.3ms for the actual GPU submit. Corner maths is
+ * Deliberately allocation-free and closure-free: an earlier version built a
+ * `corner` closure plus ~10 temporary arrays per quad and destructured twice per
+ * vertex. That is invisible at a few hundred sprites and dominant at ~25k
+ * glyphs/frame — profiling a 5,000-danmaku scene put the JS batching loop at
+ * 5.4ms/frame (Chrome) against 0.3ms for the GPU submit. Corner maths is
  * unrolled and a `rotation === 0` fast path skips the sin/cos entirely, which is
  * the overwhelmingly common case for text.
  */
@@ -289,8 +330,6 @@ function writeQuad(
   rotation: number,
 ): void {
   // Corner positions (TL, TR, BR, BL).
-  let x0 = x;
-  let y0 = y;
   let x1: number;
   let y1: number;
   let x2: number;
@@ -311,8 +350,6 @@ function writeQuad(
     const ws = width * s;
     const hc = height * c;
     const hs = height * s;
-    x0 = x;
-    y0 = y;
     x1 = x + wc;
     y1 = y + ws;
     x2 = x + wc - hs;
@@ -320,10 +357,8 @@ function writeQuad(
     x3 = x - hs;
     y3 = y + hc;
   }
-  // Triangle order 0,1,2, 0,2,3 — unrolled so there is no order array and no
-  // per-vertex destructuring.
-  out[o] = x0;
-  out[o + 1] = y0;
+  out[o] = x;
+  out[o + 1] = y;
   out[o + 2] = u0;
   out[o + 3] = v0;
   out[o + 4] = r;
@@ -346,30 +381,84 @@ function writeQuad(
   out[o + 21] = g;
   out[o + 22] = b;
   out[o + 23] = al;
-  out[o + 24] = x0;
-  out[o + 25] = y0;
+  out[o + 24] = x3;
+  out[o + 25] = y3;
   out[o + 26] = u0;
-  out[o + 27] = v0;
+  out[o + 27] = v1;
   out[o + 28] = r;
   out[o + 29] = g;
   out[o + 30] = b;
   out[o + 31] = al;
-  out[o + 32] = x2;
-  out[o + 33] = y2;
-  out[o + 34] = u1;
-  out[o + 35] = v1;
-  out[o + 36] = r;
-  out[o + 37] = g;
-  out[o + 38] = b;
-  out[o + 39] = al;
-  out[o + 40] = x3;
-  out[o + 41] = y3;
-  out[o + 42] = u0;
-  out[o + 43] = v1;
-  out[o + 44] = r;
-  out[o + 45] = g;
-  out[o + 46] = b;
-  out[o + 47] = al;
+}
+
+/**
+ * Write one solid-color quad's 4 vertices (no UVs) into `out` at float offset
+ * `o`. Same rationale as {@link writeQuad}.
+ */
+function writeRectQuad(
+  out: Float32Array,
+  o: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  r: number,
+  g: number,
+  b: number,
+  al: number,
+  rotation: number,
+): void {
+  let x1: number;
+  let y1: number;
+  let x2: number;
+  let y2: number;
+  let x3: number;
+  let y3: number;
+  if (rotation === 0) {
+    x1 = x + width;
+    y1 = y;
+    x2 = x + width;
+    y2 = y + height;
+    x3 = x;
+    y3 = y + height;
+  } else {
+    const s = Math.sin(rotation);
+    const c = Math.cos(rotation);
+    const wc = width * c;
+    const ws = width * s;
+    const hc = height * c;
+    const hs = height * s;
+    x1 = x + wc;
+    y1 = y + ws;
+    x2 = x + wc - hs;
+    y2 = y + ws + hc;
+    x3 = x - hs;
+    y3 = y + hc;
+  }
+  out[o] = x;
+  out[o + 1] = y;
+  out[o + 2] = r;
+  out[o + 3] = g;
+  out[o + 4] = b;
+  out[o + 5] = al;
+  out[o + 6] = x1;
+  out[o + 7] = y1;
+  out[o + 8] = r;
+  out[o + 9] = g;
+  out[o + 10] = b;
+  out[o + 11] = al;
+  out[o + 12] = x2;
+  out[o + 13] = y2;
+  out[o + 14] = r;
+  out[o + 15] = g;
+  out[o + 16] = b;
+  out[o + 17] = al;
+  out[o + 18] = x3;
+  out[o + 19] = y3;
+  out[o + 20] = r;
+  out[o + 21] = g;
+  out[o + 22] = b;
+  out[o + 23] = al;
 }
 
 function grow(data: Float32Array, needed: number): Float32Array {
@@ -492,6 +581,31 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.vertexAttribPointer(cATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
   gl.bindVertexArray(null);
 
+  // --- Shared static quad index buffer ------------------------------------
+  // One ELEMENT_ARRAY_BUFFER serves every quad batch (rect/sprite/glyph/circle
+  // quad): they all use the same (0,1,2, 0,2,3) winding over 4 vertices, and the
+  // largest batch dictates its size. Uploaded on growth only, never per frame.
+  const quadIndexBuffer = gl.createBuffer();
+  let quadIndexCapacity = 0;
+  /** Ensure the shared index buffer covers `quads` quads, growing geometrically. */
+  const ensureQuadIndices = (quads: number): void => {
+    if (quads <= quadIndexCapacity) return;
+    let cap = quadIndexCapacity || 256;
+    while (cap < quads) cap *= 2;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, buildQuadIndices(cap), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+    quadIndexCapacity = cap;
+  };
+
+  // Bind the shared index buffer into each quad VAO once. A VAO records its
+  // ELEMENT_ARRAY_BUFFER binding, so drawElements needs no per-frame rebind.
+  for (const vao of [rectVAO, spriteVAO, glyphVAO, circleQuadVAO]) {
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
+    gl.bindVertexArray(null);
+  }
+
   let texture: WebGLTexture | null = null;
   let textureSource: TexImageSource | null = null;
   let msdfTexture: WebGLTexture | null = null;
@@ -500,16 +614,14 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
   let pointData: Float32Array = new Float32Array(FLOATS_PER_POINT * 1024);
   let pointCount = 0;
-  let rectData: Float32Array = new Float32Array(FLOATS_PER_RECT_VERT * VERTS_PER_RECT * 256);
+  let rectData: Float32Array = new Float32Array(FLOATS_PER_RECT_VERT * VERTS_PER_QUAD * 256);
   let rectCount = 0;
-  let spriteData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 256);
+  let spriteData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 256);
   let spriteCount = 0;
-  // Glyphs reuse the sprite vertex layout (8 floats/vert, 6 verts/quad).
-  let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 1024);
+  // Glyphs reuse the sprite vertex layout (8 floats/vert, 4 verts/quad).
+  let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 1024);
   let glyphCount = 0;
-  let circleQuadData: Float32Array = new Float32Array(
-    FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE * 64,
-  );
+  let circleQuadData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 64);
   let circleQuadCount = 0;
   let logicalW = 0;
   let logicalH = 0;
@@ -528,7 +640,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   // batched against the previous font aren't drawn with the new one.
   const drawGlyphs = () => {
     if (glyphCount === 0 || !msdfTexture) return;
-    const floats = glyphCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+    const floats = glyphCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
     gl.useProgram(msdfProgram);
     gl.bindVertexArray(glyphVAO);
     gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
@@ -538,7 +650,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     gl.uniform1i(gUTex, 0);
     gl.uniform2f(gURes, logicalW, logicalH);
     gl.uniform1f(gURange, distanceRange);
-    gl.drawArrays(gl.TRIANGLES, 0, glyphCount * VERTS_PER_SPRITE);
+    ensureQuadIndices(glyphCount);
+    gl.drawElements(gl.TRIANGLES, glyphCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
     gl.bindVertexArray(null);
     glyphCount = 0;
   };
@@ -587,7 +700,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     addSprite(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
       if (!texture) return; // nothing to sample yet
-      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
       spriteData = grow(spriteData, (spriteCount + 1) * stride);
       const rgba = parseColorToRGBA(color);
       writeQuad(
@@ -635,7 +748,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
       if (!msdfTexture) return; // no glyph atlas yet
-      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
       glyphData = grow(glyphData, (glyphCount + 1) * stride);
       const rgba = parseColorToRGBA(color);
       writeQuad(
@@ -667,7 +780,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
           (x < radius || y < radius || x > logicalW - radius || y > logicalH - radius)) ||
         radius * 2 * dpr > maxPointSize;
       if (needsQuad) {
-        const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_SPRITE;
+        const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
         circleQuadData = grow(circleQuadData, (circleQuadCount + 1) * stride);
         const rgba = parseColorToRGBA(color);
         const d = radius * 2;
@@ -705,45 +818,35 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     addRect(x, y, width, height, color, alpha = 1, rotation = 0) {
-      const stride = FLOATS_PER_RECT_VERT * VERTS_PER_RECT;
+      const stride = FLOATS_PER_RECT_VERT * VERTS_PER_QUAD;
       rectData = grow(rectData, (rectCount + 1) * stride);
-      const [r, g, b, a] = parseColorToRGBA(color);
-      const al = a * alpha;
-      // Four corners (top-left origin), rotated about (x, y).
-      const s = Math.sin(rotation);
-      const c = Math.cos(rotation);
-      const corner = (lx: number, ly: number): [number, number] => [
-        x + lx * c - ly * s,
-        y + lx * s + ly * c,
-      ];
-      const p0 = corner(0, 0);
-      const p1 = corner(width, 0);
-      const p2 = corner(width, height);
-      const p3 = corner(0, height);
-      // Two triangles: p0,p1,p2 and p0,p2,p3.
-      const verts = [p0, p1, p2, p0, p2, p3];
-      let o = rectCount * stride;
-      for (const [vx, vy] of verts) {
-        rectData[o] = vx;
-        rectData[o + 1] = vy;
-        rectData[o + 2] = r;
-        rectData[o + 3] = g;
-        rectData[o + 4] = b;
-        rectData[o + 5] = al;
-        o += FLOATS_PER_RECT_VERT;
-      }
+      const rgba = parseColorToRGBA(color);
+      writeRectQuad(
+        rectData,
+        rectCount * stride,
+        x,
+        y,
+        width,
+        height,
+        rgba[0],
+        rgba[1],
+        rgba[2],
+        rgba[3] * alpha,
+        rotation,
+      );
       rectCount++;
     },
 
     flush() {
       if (rectCount > 0) {
-        const floats = rectCount * VERTS_PER_RECT * FLOATS_PER_RECT_VERT;
+        const floats = rectCount * VERTS_PER_QUAD * FLOATS_PER_RECT_VERT;
         gl.useProgram(rectProgram);
         gl.bindVertexArray(rectVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, rectBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, rectData.subarray(0, floats), gl.DYNAMIC_DRAW);
         gl.uniform2f(rURes, logicalW, logicalH);
-        gl.drawArrays(gl.TRIANGLES, 0, rectCount * VERTS_PER_RECT);
+        ensureQuadIndices(rectCount);
+        gl.drawElements(gl.TRIANGLES, rectCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
       }
 
       if (pointCount > 0) {
@@ -761,17 +864,18 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       }
 
       if (circleQuadCount > 0) {
-        const floats = circleQuadCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+        const floats = circleQuadCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
         gl.useProgram(circleQuadProgram);
         gl.bindVertexArray(circleQuadVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, circleQuadBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, circleQuadData.subarray(0, floats), gl.DYNAMIC_DRAW);
         gl.uniform2f(cURes, logicalW, logicalH);
-        gl.drawArrays(gl.TRIANGLES, 0, circleQuadCount * VERTS_PER_SPRITE);
+        ensureQuadIndices(circleQuadCount);
+        gl.drawElements(gl.TRIANGLES, circleQuadCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
       }
 
       if (spriteCount > 0 && texture) {
-        const floats = spriteCount * VERTS_PER_SPRITE * FLOATS_PER_SPRITE_VERT;
+        const floats = spriteCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
         gl.useProgram(spriteProgram);
         gl.bindVertexArray(spriteVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
@@ -780,7 +884,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.uniform1i(sUTex, 0);
         gl.uniform2f(sURes, logicalW, logicalH);
-        gl.drawArrays(gl.TRIANGLES, 0, spriteCount * VERTS_PER_SPRITE);
+        ensureQuadIndices(spriteCount);
+        gl.drawElements(gl.TRIANGLES, spriteCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
       }
 
       gl.bindVertexArray(null);
@@ -795,6 +900,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       gl.deleteBuffer(spriteBuffer);
       gl.deleteBuffer(glyphBuffer);
       gl.deleteBuffer(circleQuadBuffer);
+      gl.deleteBuffer(quadIndexBuffer);
       gl.deleteVertexArray(pointVAO);
       gl.deleteVertexArray(rectVAO);
       gl.deleteVertexArray(spriteVAO);

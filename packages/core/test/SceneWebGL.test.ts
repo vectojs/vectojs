@@ -85,9 +85,15 @@ function mockGL() {
       TRIANGLE_STRIP: 13,
       STATIC_DRAW: 14,
       TRIANGLES: 15,
+      ELEMENT_ARRAY_BUFFER: 30,
+      UNSIGNED_INT: 31,
       bindBuffer: () => {},
-      bufferData: (_t: number, data: Float32Array) => {
-        lastUpload = data.slice();
+      bufferData: (target: number, data: Float32Array | Uint32Array | number) => {
+        // Ignore the shared static quad index buffer: it uploads Uint32Array
+        // indices to ELEMENT_ARRAY_BUFFER and would otherwise clobber the vertex
+        // payload this test inspects.
+        if (target === 30) return;
+        lastUpload = (data as Float32Array).slice();
       },
       enableVertexAttribArray: () => {},
       vertexAttribPointer: () => {},
@@ -103,11 +109,12 @@ function mockGL() {
           // POINTS = circles
           captures.drawCount = count;
           captures.buffer = lastUpload;
-        } else {
-          // TRIANGLES = rects (6 verts/rect)
-          captures.rectInstances = count / 6;
-          captures.rectBuffer = lastUpload;
         }
+      },
+      drawElements: (_mode: number, count: number) => {
+        // Rects are indexed: 6 indices per rect over 4 uploaded vertices.
+        captures.rectInstances = count / 6;
+        captures.rectBuffer = lastUpload;
       },
     },
   };
