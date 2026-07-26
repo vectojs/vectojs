@@ -33,10 +33,10 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.16.0",
+      "version": "1.16.1",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
-        "@vectojs/layout": "^0.2.0",
+        "@vectojs/layout": "^0.3.0",
         "@vectojs/math": "^0.1.1",
         "@vectojs/text": "^0.2.0",
       },
@@ -88,7 +88,7 @@
     },
     "packages/layout": {
       "name": "@vectojs/layout",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@vectojs/text": "^0.2.0",
       },
