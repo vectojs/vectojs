@@ -10,6 +10,15 @@
 # Output is packages/core/src/wasm/vectojs_core.wasm, which is gitignored: the
 # asset is built in CI and published to npm, never committed. Contributors who
 # touch only TypeScript never need a Rust toolchain — the JS path always works.
+#
+# Pass extra cargo args to opt into non-default features, e.g. the f32x4
+# evaluation kernel that benchmarks/f32-simd-eval needs:
+#
+#   ./build.sh --features bench-f32
+#
+# The default build deliberately excludes it: f32 was measured and rejected for
+# transforms (error accumulates along the chain), so shipping the kernel would be
+# dead weight in every downloaded binary.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -19,7 +28,8 @@ mkdir -p "$out_dir"
 RUSTFLAGS="-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld" \
   cargo build --release \
   --target wasm32-unknown-unknown \
-  --manifest-path "$here/Cargo.toml"
+  --manifest-path "$here/Cargo.toml" \
+  "$@"
 
 artifact="$here/target/wasm32-unknown-unknown/release/vectojs_core_rs.wasm"
 cp "$artifact" "$out_dir/vectojs_core.wasm"
