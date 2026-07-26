@@ -37,31 +37,12 @@ import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSyst
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { buildTreeStore } from '../wasm/scene-store';
 import type { TransformStore } from '../wasm/soa';
-import {
-  instantiateAsync,
-  instantiateStreaming,
-  type WasmModuleSource,
-  type WasmTransformBackend,
-} from '../wasm/backend';
+import { type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
 import { gatherHitAABBs } from '../wasm/hit-store';
-import {
-  instantiateAsync as instantiateHitAsync,
-  instantiateStreaming as instantiateHitStreaming,
-  type HitModuleSource,
-  type HitTestBackend,
-} from '../wasm/hit-backend';
-import {
-  instantiateAsync as instantiateAnimAsync,
-  instantiateStreaming as instantiateAnimStreaming,
-  type AnimModuleSource,
-  type AnimBackend,
-} from '../wasm/anim-backend';
-import {
-  instantiateAsync as instantiateParticleAsync,
-  instantiateStreaming as instantiateParticleStreaming,
-  type ParticleModuleSource,
-  type ParticleBackend,
-} from '../wasm/particle-backend';
+import { type CoreModuleSource, type CoreWasmRuntime, loadCoreWasmRuntime } from '../wasm/runtime';
+import { type HitModuleSource, type HitTestBackend } from '../wasm/hit-backend';
+import { type AnimModuleSource, type AnimBackend } from '../wasm/anim-backend';
+import { type ParticleModuleSource, type ParticleBackend } from '../wasm/particle-backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
@@ -949,12 +930,9 @@ export class Scene {
    * Resolves `true` if WASM is now active, `false` if the JS path remains.
    */
   public async enableWasmTransforms(source: WasmModuleSource): Promise<boolean> {
-    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
-    const backend = isBytes
-      ? await instantiateAsync(source)
-      : await instantiateStreaming(source as Exclude<WasmModuleSource, BufferSource>);
-    if (!backend) return false;
-    this.setTransformBackend(backend);
+    const runtime = await this.ensureWasmRuntime(source);
+    if (!runtime) return false;
+    this.setTransformBackend(runtime.transform());
     return true;
   }
 
@@ -969,6 +947,50 @@ export class Scene {
   // ever change *how fast* a hit is found, never *which* entity is returned —
   // every grid candidate is re-confirmed against its own precise
   // isPointInside before being trusted (see hit-store.ts / hit-backend.ts).
+  /**
+   * The one WASM instance this Scene's accelerators share.
+   *
+   * Each `enableWasm*` used to instantiate the binary itself, so enabling all
+   * four compiled the same module four times and held four linear memories. The
+   * Rust crate already keeps transform/anim/hit/particle in separate statics, so
+   * one instance serves all of them without aliasing. The compiled module is
+   * cached globally; the instance is per-Scene, which is the isolation that
+   * actually matters.
+   */
+  private _wasmRuntime: CoreWasmRuntime | null = null;
+
+  /**
+   * Load (or reuse) this Scene's shared WASM runtime.
+   *
+   * Returns `null` on any failure — CSP `wasm-unsafe-eval`, a 404, corrupt bytes,
+   * unsupported SIMD — so every caller keeps its JS path. Failure is the default
+   * state here, not an error path.
+   */
+  private async ensureWasmRuntime(source: CoreModuleSource): Promise<CoreWasmRuntime | null> {
+    if (this._wasmRuntime) return this._wasmRuntime;
+    const runtime = await loadCoreWasmRuntime(source);
+    if (!runtime) return null;
+    // A concurrent `enableWasm*` may have won the race while we awaited; keep
+    // whichever landed first so the backends cannot end up on two instances.
+    if (this._wasmRuntime) return this._wasmRuntime;
+    this._wasmRuntime = runtime;
+    return runtime;
+  }
+
+  /**
+   * Install a pre-built runtime, so several Scenes can share one compile while
+   * each keeps its own stores. Pass `null` to detach (backends already installed
+   * keep working; only subsequent `enableWasm*` calls re-load).
+   */
+  public setWasmRuntime(runtime: CoreWasmRuntime | null): void {
+    this._wasmRuntime = runtime;
+  }
+
+  /** The shared WASM runtime, if one has been loaded. */
+  public get wasmRuntime(): CoreWasmRuntime | null {
+    return this._wasmRuntime;
+  }
+
   private _hitWasm: HitTestBackend | null = null;
   // Cache key: which frame + structure version the grid was last (successfully,
   // non-overflowing) built for. findEntityAt is called ad-hoc (pointer
@@ -1000,12 +1022,9 @@ export class Scene {
    * state, not an error path. Resolves `true` if WASM is now active.
    */
   public async enableWasmHitTest(source: HitModuleSource): Promise<boolean> {
-    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
-    const backend = isBytes
-      ? await instantiateHitAsync(source)
-      : await instantiateHitStreaming(source as Exclude<HitModuleSource, BufferSource>);
-    if (!backend) return false;
-    this.setHitTestBackend(backend);
+    const runtime = await this.ensureWasmRuntime(source);
+    if (!runtime) return false;
+    this.setHitTestBackend(runtime.hit());
     return true;
   }
 
@@ -1171,12 +1190,9 @@ export class Scene {
    * if WASM is now available (not necessarily active every frame).
    */
   public async enableWasmAnimBatching(source: AnimModuleSource): Promise<boolean> {
-    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
-    const backend = isBytes
-      ? await instantiateAnimAsync(source)
-      : await instantiateAnimStreaming(source as Exclude<AnimModuleSource, BufferSource>);
-    if (!backend) return false;
-    this.setAnimBackend(backend);
+    const runtime = await this.ensureWasmRuntime(source);
+    if (!runtime) return false;
+    this.setAnimBackend(runtime.anim());
     return true;
   }
 
@@ -1211,12 +1227,9 @@ export class Scene {
    * Resolves `true` if WASM is now active.
    */
   public async enableWasmParticles(source: ParticleModuleSource): Promise<boolean> {
-    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
-    const backend = isBytes
-      ? await instantiateParticleAsync(source)
-      : await instantiateParticleStreaming(source as Exclude<ParticleModuleSource, BufferSource>);
-    if (!backend) return false;
-    this.setParticleBackend(backend);
+    const runtime = await this.ensureWasmRuntime(source);
+    if (!runtime) return false;
+    this.setParticleBackend(runtime.particle());
     return true;
   }
 
