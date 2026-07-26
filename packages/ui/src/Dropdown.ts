@@ -11,8 +11,16 @@ export class Dropdown extends UIComponent {
   private activeBackdrop: Entity | null = null;
   private highlightedIndex: number = -1;
 
+  /**
+   * Accessible name. A `role="combobox"` with no name is announced as just
+   * "combobox" (WCAG 4.1.2) — the selected value alone does not say what the
+   * control is for.
+   */
+  public label?: string;
+
   constructor(options: string[], props: any = {}) {
     super();
+    this.label = props.label;
     this.options = options;
     this.selectedValue = props.value ?? (options.length > 0 ? options[0] : '');
     this.interactive = true;
@@ -93,6 +101,7 @@ export class Dropdown extends UIComponent {
   public getA11yAttributes() {
     return {
       role: 'combobox',
+      label: this.label,
       expanded: this.activeMenu !== null,
       controls: this.activeMenu ? this.activeMenu.id : undefined,
       haspopup: 'listbox',
