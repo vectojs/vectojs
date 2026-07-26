@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png">
-    <img src="https://cdn.vectojs.org/brand/vectojs-logo-light-512.png" alt="VectoJS" width="380">
+    <source media="(prefers-color-scheme: dark)" srcset="https://cdn.vectojs.org/brand/vectojs-logo-dark.svg">
+    <img src="https://cdn.vectojs.org/brand/vectojs-logo-light.svg" alt="VectoJS" width="380">
   </picture>
 </p>
 
@@ -237,27 +237,6 @@ bun run compare       # text-layout comparison
 ```
 
 The project is pre-1.0. Read package changelogs before upgrading and pin versions in production.
-
-## Brand
-
-The logo is served from the project CDN — link it rather than committing copies:
-
-| Asset           | URL                                                            |
-| --------------- | -------------------------------------------------------------- |
-| Light (default) | `https://cdn.vectojs.org/brand/vectojs-logo-light-512.png`     |
-| Dark theme      | `https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png`      |
-| Full resolution | `https://cdn.vectojs.org/brand/vectojs-logo.png` (and `-dark`) |
-
-`256` and `128` width variants exist for both themes. All are trimmed PNGs with a
-transparent background. The default artwork is near-black, so **pair it with the
-dark variant** on any surface that has a dark mode:
-
-```html
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://cdn.vectojs.org/brand/vectojs-logo-dark-512.png">
-  <img src="https://cdn.vectojs.org/brand/vectojs-logo-light-512.png" alt="VectoJS" width="380">
-</picture>
-```
 
 ## License
 
