@@ -50,7 +50,12 @@ jobs:
       - name: Format check (oxfmt)
         run: bun run format:check
       - name: Lint (oxlint)
-        run: bunx oxlint packages/math/src packages/text/src packages/layout/src packages/animation/src packages/core/src packages/ui/src packages/markdown/src packages/three/src packages/video-exporter/src packages/devtools/src packages/graph3d/src
+        # Whole repo, matching the local `just check` / `bun run lint` gate. This
+        # used to enumerate only `packages/*/src`, so warnings in `test/`,
+        # `e2e/`, `benchmarks/` and `scripts/` never blocked a PR — a real
+        # `unicorn(no-useless-spread)` warning in a core test survived 17 merged
+        # PRs that way and only surfaced when a release ran the local gate.
+        run: bun run lint
       - name: Lint Markdown (markdownlint)
         run: bun run lint:md
       - name: Lint GitHub Actions (actionlint)

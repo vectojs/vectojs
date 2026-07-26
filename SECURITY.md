@@ -2,14 +2,25 @@
 
 ## Supported Versions
 
-VectoJS is pre-1.0 and ships from the latest published release only. Security fixes land on the
-latest minor of each package; older `0.x` minors are not back-patched.
+Security fixes land on the **latest published minor of each package**. Earlier
+minors are not back-patched — upgrade to the current release to receive them.
 
-| Package          | Supported            |
-| ---------------- | -------------------- |
-| `@vectojs/core`  | latest `0.x` release |
-| `@vectojs/ui`    | latest `0.x` release |
-| `@vectojs/three` | latest `0.x` release |
+| Package                   | Supported            |
+| ------------------------- | -------------------- |
+| `@vectojs/core`           | latest `1.x` release |
+| `@vectojs/ui`             | latest `2.x` release |
+| `@vectojs/text`           | latest `0.x` release |
+| `@vectojs/layout`         | latest `0.x` release |
+| `@vectojs/math`           | latest `0.x` release |
+| `@vectojs/animation`      | latest `0.x` release |
+| `@vectojs/markdown`       | latest `0.x` release |
+| `@vectojs/three`          | latest `0.x` release |
+| `@vectojs/devtools`       | latest `0.x` release |
+| `@vectojs/graph3d`        | latest `0.x` release |
+| `@vectojs/video-exporter` | latest `0.x` release |
+
+Packages still on `0.x` are pre-1.0: treat a minor bump as potentially breaking
+and pin versions in production.
 
 ## Reporting a Vulnerability
 
