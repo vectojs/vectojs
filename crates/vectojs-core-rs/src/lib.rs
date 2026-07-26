@@ -47,7 +47,11 @@ mod particle;
 // f32 SIMD evaluation — bench-only f32x4 compose kernel with its own isolated
 // store. Never a production backend (f32 is not bit-comparable to the JS
 // reference); exists solely to measure f32x4 vs the shipped f64x2. wasm32-only.
-#[cfg(target_arch = "wasm32")]
+//
+// Gated behind the `bench-f32` feature so it stays out of the released binary.
+// It was declared unconditionally before, which meant every user downloaded a
+// kernel that had already been measured and rejected.
+#[cfg(all(target_arch = "wasm32", feature = "bench-f32"))]
 mod simd_f32_bench;
 
 use core::ptr;
