@@ -8,6 +8,17 @@ description = "WASM f64/f64x2-SIMD world-transform core for @vectojs/core (invis
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# f32x4 evaluation kernel, built only for `benchmarks/f32-simd-eval`.
+#
+# It is NOT a production backend and was explicitly rejected: f32 error
+# accumulates along a transform chain (~93px on a deep/bushy tree in the #143
+# measurements), and it is not bit-comparable to the JS reference, which is the
+# basis of the differential suite. Shipping it anyway put ~3KB of dead kernel in
+# every downloaded binary, so it is opt-in behind this feature.
+bench-f32 = []
+
 [profile.release]
 opt-level = 3
 lto = true

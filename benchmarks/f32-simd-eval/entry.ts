@@ -10,6 +10,15 @@
 //
 // Also reports maxAbsErr / maxRelErr of f32 output vs the f64 reference, to put
 // a number on the precision the 4-lane path would cost.
+//
+// REQUIRES a wasm build with the f32 kernel opted in — it is not in the released
+// binary (it was measured, rejected, and would otherwise be ~3KB of dead weight
+// in every download):
+//
+//   ./crates/vectojs-core-rs/build.sh --features bench-f32
+//
+// Without that, the `*_f32` exports are absent and this page reports the missing
+// kernel rather than silently comparing nothing.
 import { buildStore, type InputNode } from '@core/soa';
 
 type Topo = 'flat' | 'chain' | 'bushy';
@@ -137,6 +146,15 @@ function cell(ex: Exports, n: number, topo: Topo): Record<string, unknown> {
   ex.set_run_count(runs);
 
   // --- f32 store upload (init_f32 may grow memory; re-view after) ---
+  // The f32 kernel is behind the `bench-f32` Cargo feature and absent from the
+  // released binary. Say so plainly instead of failing on `undefined is not a
+  // function` several frames later.
+  if (typeof ex.init_f32 !== 'function') {
+    throw new Error(
+      'this wasm build has no f32 kernel — rebuild with: ' +
+        './crates/vectojs-core-rs/build.sh --features bench-f32',
+    );
+  }
   ex.init_f32(cap, runs);
   const b = ex.memory.buffer;
   const F32 = (ptr: number) => new Float32Array(b, ptr, cap);
