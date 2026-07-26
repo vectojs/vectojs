@@ -26,7 +26,7 @@ These exist to be useful, not flattering. So:
    TODO — see the Pretext case, which produced a real optimization.
 
 Reference sources for the libraries under comparison are cloned (shallow) into
-`tmp/references/` — read their actual implementation before writing a comparison.
+`references/` (workspace root) — read their actual implementation before writing a comparison.
 
 Libraries being compared against are added as root `devDependencies` (e.g.
 `@chenglou/pretext`). They are dev-only and never reachable from any published
@@ -129,7 +129,7 @@ and cross-check pixels programmatically before believing an image.
 
 ## Libraries reviewed but not yet benchmarked
 
-Cloned into `tmp/references/` for source review: `pixijs`, `konva`, `fabric`,
+Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
 `paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`, `alibaba-canvas-ui`,
 `danmaku`, `streaming-markdown`.
 

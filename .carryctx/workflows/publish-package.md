@@ -7,7 +7,7 @@ User asks to "release", "publish", "cut a version", or "bump" a package under `p
 ## Preconditions
 
 - All intended changes for the release are already committed to `main` (or the current branch is about to be merged to `main`).
-- `gh` CLI available; `HTTPS_PROXY=http://127.0.0.1:1080` set per the global tool-invocation rule when calling `gh`.
+- `gh` CLI available; `HTTPS_PROXY=$NETWORK_PROXY` set per the global tool-invocation rule when calling `gh`.
 
 ## Steps (translate into `carryctx progress todo` items, then execute sequentially)
 
