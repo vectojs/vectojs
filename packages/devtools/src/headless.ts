@@ -42,6 +42,13 @@ export {
   type DirtyDiagnosisOptions,
 } from './dirtyDiagnosis';
 export {
+  explainHitTest,
+  formatHitExplanation,
+  type HitCandidate,
+  type HitExplanation,
+  type HitVerdict,
+} from './hitExplain';
+export {
   a11yReadingOrder,
   auditA11y,
   inspectA11y,

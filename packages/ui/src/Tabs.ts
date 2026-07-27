@@ -1,4 +1,4 @@
-import { Entity, A11yAttributes, IRenderer } from '@vectojs/core';
+import { Entity, A11yAttributes, IRenderer, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
 
@@ -19,6 +19,14 @@ class TabHotspot extends UIComponent {
     this.on('click', () => this.group.selectTab(this.tabId, true));
     this.on('keydown', (e: KeyboardEvent) => this.group.handleTabKey(e, this.tabId));
   }
+  /**
+   * Tabs lays out its header buttons and sizes each panel to the content area, so
+   * both position and size are owned here.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public setLabel(label: string): void {
     this.label = label;
   }

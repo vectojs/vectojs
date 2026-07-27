@@ -1,4 +1,4 @@
-import { Entity, IRenderer } from '@vectojs/core';
+import { Entity, IRenderer, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 /**
@@ -40,6 +40,14 @@ export interface PanelOptions {
  * Invokes the provided resize callback on drag.
  */
 export class PanelResizeHandle extends UIComponent {
+  /**
+   * A ResizablePanel divides its area between panes, so a pane's box is entirely
+   * determined by the split position.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public direction: 'horizontal' | 'vertical';
   private _drag = false;
   private _lastPos = 0;

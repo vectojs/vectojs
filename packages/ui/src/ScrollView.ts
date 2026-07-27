@@ -1,4 +1,9 @@
-import { type DevtoolsDescriptor, Entity, IRenderer } from '@vectojs/core';
+import {
+  type DevtoolsDescriptor,
+  Entity,
+  IRenderer,
+  type LayoutControlledProperty,
+} from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 export interface ScrollViewOptions {
@@ -161,6 +166,17 @@ export class ScrollView extends UIComponent {
    * `content.y` is the live spring position while `targetY` is where it is headed;
    * seeing both is the only way to tell a mid-animation offset from a stuck one.
    */
+  /**
+   * A ScrollView owns geometry on its internal content wrapper only — that is where
+   * the scroll offset lives. Children the caller adds go INSIDE the wrapper and keep
+   * their own coordinates, so nothing is reported for them.
+   */
+  public override getLayoutControlledProperties(
+    child: Entity,
+  ): ReadonlyArray<LayoutControlledProperty> {
+    return child === this.content ? ['y', 'width', 'height'] : [];
+  }
+
   public override getDevtoolsDescriptor(): DevtoolsDescriptor {
     const maxScroll = Math.max(0, this.content.height - this.height);
     return {

@@ -14,7 +14,7 @@ import {
 import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
 import { auditScene, type AuditFinding } from './audit';
 import { auditA11y, inspectA11y } from './a11yInspect';
-import { entityPath, inspectEntity } from './inspect';
+import { entityPath, inspectEntity, layoutControlledProperties } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
 
 export type DockSide = 'right' | 'left';
@@ -114,6 +114,8 @@ export class DevtoolsPanel {
   private a11yLines: Text[] = [];
   /** Host structure version the current tree model was built from. */
   private treeVersion = -1;
+  /** Last edited property that the selection's parent will overwrite, if any. */
+  private overriddenProp: 'x' | 'y' | null = null;
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private traceLines: Text[] = [];
   private perfLines: Text[] = [];
@@ -751,6 +753,10 @@ export class DevtoolsPanel {
 
   /** Select an entity: highlight it on the host scene and show its state. */
   public select(entity: Entity): void {
+    // Cleared here, not in `syncInspector`: that runs AFTER `writeDetails` below,
+    // so clearing there rendered the previous entity's override warning once more
+    // before dropping it.
+    this.overriddenProp = null;
     this.selected = entity;
     if (this.highlightEnabled) {
       if (!this.highlight) {
@@ -821,6 +827,15 @@ export class DevtoolsPanel {
     if (this.syncingEdit || !this.selected) return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
+
+    // Still apply the edit, but record that the parent owns this property so the
+    // readout can say the value is about to be overwritten. Refusing the edit
+    // outright would be worse: nudging a Stack child to see what moves is a
+    // legitimate thing to try, and the useful behaviour is to let it happen and
+    // explain why it did not stick.
+    this.overriddenProp =
+      prop !== 'opacity' && layoutControlledProperties(this.selected).includes(prop) ? prop : null;
+
     if (prop === 'opacity') this.selected.opacity = Math.max(0, Math.min(1, n));
     else this.selected[prop] = n;
     this.host.markDirty();
@@ -855,6 +870,15 @@ export class DevtoolsPanel {
 
   private writeDetails(entity: Entity): void {
     const lines = describeEntity(entity);
+    // A just-attempted edit to a parent-owned property gets a louder, transient
+    // line than the static `*` marker: the user is looking at the panel right now
+    // and about to conclude the editor is broken.
+    if (this.overriddenProp) {
+      const owner = entity.parent?.constructor.name ?? 'parent';
+      lines.push(
+        `! ${this.overriddenProp} is owned by ${owner}; this value reverts on the next layout`,
+      );
+    }
     for (let i = 0; i < this.detailLines.length; i++) {
       this.detailLines[i].setText(lines[i] ?? '');
     }

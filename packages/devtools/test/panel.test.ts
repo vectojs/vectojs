@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
-import { Button } from '@vectojs/ui';
+import { Button, Stack } from '@vectojs/ui';
 import { attachDevtools } from '../src/index';
 
 class Box extends Entity {
@@ -560,6 +560,67 @@ describe('incremental tree sync', () => {
     const lines = ((panel as any).detailLines as Array<{ text: string }>).map((l) => l.text);
     expect(lines.join('\n')).toContain('77');
     expect(lines.join('\n')).toContain('88');
+
+    panel.detach();
+    host.destroy();
+  });
+});
+
+describe('parent-owned property edits', () => {
+  it('warns after editing a property the parent will overwrite', () => {
+    const host = makeHost();
+    const stack = new Stack({ direction: 'vertical' });
+    const child = new Box('child');
+    stack.add(child);
+    host.add(stack);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'inspect' });
+    panel.select(child);
+    // The edit is applied rather than refused: nudging a Stack child to see what
+    // moves is legitimate, and the useful behaviour is to let it happen and
+    // explain why it did not stick.
+    (panel as any).applyEdit('x', '123');
+
+    const lines = ((panel as any).detailLines as Array<{ text: string }>).map((l) => l.text);
+    expect(lines.join('\n')).toContain('owned by Stack');
+    expect(lines.join('\n')).toContain('reverts on the next layout');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('does not warn for a property no parent controls', () => {
+    const host = makeHost();
+    const free = new Box('free');
+    host.add(free);
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'inspect' });
+    panel.select(free);
+    (panel as any).applyEdit('x', '55');
+
+    const lines = ((panel as any).detailLines as Array<{ text: string }>).map((l) => l.text);
+    expect(lines.join('\n')).not.toContain('reverts on the next layout');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('clears the warning when the selection changes', () => {
+    const host = makeHost();
+    const stack = new Stack({ direction: 'vertical' });
+    const child = new Box('child');
+    stack.add(child);
+    const other = new Box('other');
+    host.add(stack);
+    host.add(other);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'inspect' });
+    panel.select(child);
+    (panel as any).applyEdit('x', '123');
+    panel.select(other);
+
+    // The warning refers to one edit on one entity, not a persistent state.
+    const lines = ((panel as any).detailLines as Array<{ text: string }>).map((l) => l.text);
+    expect(lines.join('\n')).not.toContain('reverts on the next layout');
 
     panel.detach();
     host.destroy();
