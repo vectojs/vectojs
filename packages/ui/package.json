@@ -1,10 +1,10 @@
 {
   "name": "@vectojs/ui",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "publishConfig": {
     "access": "public"
   },
-  "description": "High-level canvas UI components (Text, Button, Link) for VectoJS \u2014 rendered to canvas with an accessibility/automation shadow layer.",
+  "description": "High-level canvas UI components (Text, Button, Link) for VectoJS — rendered to canvas with an accessibility/automation shadow layer.",
   "keywords": [
     "canvas",
     "ui",
