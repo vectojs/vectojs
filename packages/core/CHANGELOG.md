@@ -1,5 +1,72 @@
 # @vectojs/core
 
+## 1.18.0
+
+### Minor Changes
+
+- 2589602: Add dirty-reason attribution, so you can find out what keeps an `onDemand` scene awake.
+
+  `renderMode: 'onDemand'` exists so an idle scene costs nothing, but it silently
+  degrades to always-on the moment something marks the scene dirty every frame — and
+  `dirty === true` says only _that_ it happened, never _what_ did it. Diagnosing that
+  meant bisecting `markDirty()` call sites by hand.
+
+  `markDirty()` now takes an optional source:
+
+  ```ts
+  scene.markDirty({
+    entity: this.id,
+    reason: "text-changed",
+    property: "spans",
+  });
+  ```
+
+  Attribution is off by default and recording costs nothing until
+  `scene.setDirtyTracking(true)`, because `markDirty` is called from dozens of sites,
+  several per frame, so the common path stays a single field write. Read the
+  aggregated counts from `scene.dirtyReasons`.
+
+  The engine's own call sites already carry attribution, so an animation or a
+  child add/remove is identifiable without instrumenting anything.
+
+  `@vectojs/devtools` adds `diagnoseDirty(scene)` (also on the `headless` entry),
+  which turns the counts into a verdict:
+
+  ```
+  Continuous redraw detected: answer — streaming-text marked the scene dirty
+  120x over 120 frames (1.00/frame). onDemand cannot idle while this continues.
+  ```
+
+  It distinguishes a cause firing every frame from one that merely fired often, and
+  says plainly when `renderMode` is `'always'` (which makes the whole question moot)
+  or when tracking was never enabled — reporting "no causes" in that case would read
+  as a false all-clear.
+
+### Patch Changes
+
+- de369a1: Add an axe-core audit of the projected accessibility layer, and fix the three
+  violations it found.
+
+  VectoJS projects a real DOM shadow tree for semantics, so standard a11y tooling
+  applies to that layer — and running it found bugs the hand-written conformance
+  assertions could not, because those check what we thought to check.
+
+  Fixed:
+
+  - **`aria-valuenow` was emitted for every non-input element**, so a `combobox`
+    reported `aria-valuenow="Small"` — a text value on a numeric attribute that is
+    not allowed on that role, which axe flags as two separate critical violations.
+    It is now restricted to the range roles it is defined for (`slider`,
+    `spinbutton`, `progressbar`, `scrollbar`, `meter`).
+  - **`Modal` had no accessible name.** Its title was drawn on canvas and never
+    projected, so a screen reader announced a bare "dialog" with no indication of
+    what it was for.
+
+  Rules that cannot apply to a canvas runtime are disabled **with a stated reason**
+  rather than silently ignored — notably colour contrast (the projected nodes are
+  transparent; the visible pixels are canvas-drawn) and the two DOM-containment rules
+  that a flat projection cannot satisfy.
+
 ## 1.17.1
 
 ### Patch Changes
