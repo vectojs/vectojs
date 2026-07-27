@@ -25,6 +25,7 @@ import {
   VectoJSEvent,
   type Bounds,
   type ContentProjection,
+  type ContentProjectionLine,
   type AnimatableProp,
 } from './Entity';
 import { SpringDriver, TweenDriver } from '@vectojs/animation';
@@ -46,7 +47,7 @@ import { type AnimModuleSource, type AnimBackend } from '../wasm/anim-backend';
 import { type ParticleModuleSource, type ParticleBackend } from '../wasm/particle-backend';
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
-import type { PreparedContentGrid } from '@vectojs/text';
+import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
 
 /**
  * Roles for which `aria-valuenow` is valid. It is defined as a NUMBER on range
@@ -91,6 +92,16 @@ export type RenderPhase =
   | 'drawWalk'
   | 'flush'
   | 'a11ySync'
+  /**
+   * Time inside {@link Scene.syncContentGridProjection} materializing DOM
+   * carriers, nested inside `a11ySync`.
+   *
+   * Split out because `a11ySync` for a streaming code block measured 1661-1875 ms
+   * against a 210-671 ms render, and attributing that to grid materialization was
+   * an assumption. Nothing should be optimised here on the strength of the parent
+   * phase alone.
+   */
+  | 'gridMaterialize'
   | 'a11yOrder'
   /** Sum of every entity's own render(), nested inside drawWalk. */
   | 'entityPaint';
@@ -2241,6 +2252,31 @@ export class Scene {
     if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
   }
 
+  /**
+   * Index of the carrier line currently holding a selection inside `el`, or
+   * `null`.
+   *
+   * Lets a partial re-materialization decide whether the user's selection is even
+   * affected. Checks the tracked anchor first (it survives a drag) and falls back
+   * to the live DOM selection.
+   */
+  private contentGridSelectionLine(el: HTMLElement): number | null {
+    const candidates: Array<Node | null | undefined> = [this.contentSelectionAnchor?.node];
+    if (typeof window !== 'undefined' && typeof window.getSelection === 'function') {
+      const selection = window.getSelection();
+      candidates.push(selection?.anchorNode, selection?.focusNode);
+    }
+    for (const candidate of candidates) {
+      if (!candidate || !el.contains(candidate)) continue;
+      // Walk up to the direct child of `el`, which is the carrier line.
+      let cursor: Node | null = candidate;
+      while (cursor && cursor.parentNode !== el) cursor = cursor.parentNode;
+      const lineIndex = (cursor as HTMLElement | null)?.dataset?.vectoGridLine;
+      if (lineIndex !== undefined) return Number(lineIndex);
+    }
+    return null;
+  }
+
   private releaseContentSelectionForRebuild(el: HTMLElement): void {
     const selection =
       typeof window !== 'undefined' && typeof window.getSelection === 'function'
@@ -2359,7 +2395,18 @@ export class Scene {
     return this;
   }
 
-  private clearContentGridState(entityId: string, el: HTMLElement): void {
+  /**
+   * Reset per-grid calibration and bookkeeping before a (re)materialization.
+   *
+   * @param entityId - Owning entity, keyed into the calibration maps.
+   * @param el - The projection element.
+   * @param releaseSelection - Whether to drop a selection this element owns.
+   *   Pass `false` when carrier lines are being reused: the selection's DOM nodes
+   *   survive the pass, so tearing it down would wipe a user's selection on every
+   *   streamed chunk — the exact bug `preserveContentSelectionAcrossRebuild`
+   *   exists to prevent on the non-grid path.
+   */
+  private clearContentGridState(entityId: string, el: HTMLElement, releaseSelection = true): void {
     const calibrationFrame = this.contentGridCalibrationFrames.get(entityId);
     if (calibrationFrame !== undefined && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(calibrationFrame);
@@ -2375,7 +2422,7 @@ export class Scene {
     delete el.dataset.vectoGridMaterializeMs;
     delete el.dataset.vectoGridCalibrationSamples;
     delete el.dataset.vectoGridCalibrationMs;
-    this.releaseContentSelectionForRebuild(el);
+    if (releaseSelection) this.releaseContentSelectionForRebuild(el);
   }
 
   /**
@@ -3745,16 +3792,57 @@ export class Scene {
     const signature = `${grid.revision}`;
     if (el.dataset.vectoContentGrid !== signature) {
       const materializeStart = typeof performance !== 'undefined' ? performance.now() : 0;
-      this.clearContentGridState(node.id, el);
-      el.replaceChildren();
+      // Defer the selection decision until it is known which lines are rebuilt: a
+      // selection sitting in an untouched line must survive, or streaming would
+      // wipe it every frame.
+      this.clearContentGridState(node.id, el, false);
       const projectionLines = projection.lines ?? [];
+      const selectionLine = this.contentGridSelectionLine(el);
+      let rebuiltSelectionLine = false;
+
+      // Reuse carrier lines that did not change.
+      //
+      // The old code called `el.replaceChildren()` and rebuilt one `<span>` per
+      // cell on every revision bump. Streaming text bumps the revision on every
+      // append, so a growing code block re-created its whole carrier grid each
+      // frame — about 8,200 `createElement` calls per frame for a 200x40 block,
+      // measured as 898-1431 ms of `gridMaterialize` (53% of `a11ySync` on Chrome,
+      // 79% on Firefox) while a streamed block dropped a third of its input.
+      //
+      // Appending text leaves every earlier line byte-identical, so each line
+      // carries a signature of everything that determines its DOM and is rebuilt
+      // only when that changes. This mirrors the line-prefix reuse already in
+      // `CodeBlock.buildLines` (#232) — same insight, one layer further out.
+      const existingLines = el.children;
       for (let lineIndex = 0; lineIndex < grid.lines.length; lineIndex++) {
         const gridLine = grid.lines[lineIndex];
         const projectedLine = projectionLines[lineIndex];
         const lineHeight = projectedLine?.lineHeight ?? grid.lineHeight;
         const baseline = projectedLine?.baseline ?? grid.baseline;
         const lineFont = projectedLine?.font ?? grid.font;
+
+        const lineSignature = contentGridLineSignature(
+          grid,
+          gridLine,
+          projectedLine,
+          lineHeight,
+          baseline,
+          lineFont,
+          lineIndex === 0,
+        );
+        const reusable = existingLines[lineIndex] as HTMLElement | undefined;
+        if (
+          reusable !== undefined &&
+          reusable.dataset.vectoGridLineSig === lineSignature &&
+          reusable.dataset.vectoGridLine === `${lineIndex}`
+        ) {
+          continue;
+        }
+
+        if (selectionLine !== null && selectionLine === lineIndex) rebuiltSelectionLine = true;
+
         const lineElement = document.createElement('span');
+        lineElement.dataset.vectoGridLineSig = lineSignature;
         // The prepared grid already resolved bidi x coordinates. Keep carrier
         // flow logical/LTR so the browser does not reorder it a second time.
         lineElement.dir = 'ltr';
@@ -3832,13 +3920,31 @@ export class Scene {
             lineElement.appendChild(marker);
           }
         }
-        el.appendChild(lineElement);
+        // Replace in place when a line already occupies this index, so untouched
+        // neighbours keep their identity (and any live selection anchored in them).
+        const occupant = el.children[lineIndex];
+        if (occupant) el.replaceChild(lineElement, occupant);
+        else el.appendChild(lineElement);
       }
+      // Drop carriers past the end: the grid can shrink (an edit, a re-highlight),
+      // and stale lines would otherwise stay visible to a screen reader and to
+      // copy/find.
+      while (el.children.length > grid.lines.length) {
+        if (selectionLine !== null && selectionLine >= grid.lines.length) {
+          rebuiltSelectionLine = true;
+        }
+        el.lastElementChild?.remove();
+      }
+      // Only now drop the selection, and only if the line holding it was actually
+      // replaced. A selection in a reused line keeps its DOM nodes and stays live.
+      if (rebuiltSelectionLine) this.releaseContentSelectionForRebuild(el);
       el.dataset.vectoProjectionLines = signature;
       el.dataset.vectoContentGrid = signature;
       el.dataset.vectoGridCarriers = `${el.querySelectorAll('[data-vecto-grid-cell]').length}`;
       if (typeof performance !== 'undefined') {
-        el.dataset.vectoGridMaterializeMs = `${performance.now() - materializeStart}`;
+        const materializeMs = performance.now() - materializeStart;
+        el.dataset.vectoGridMaterializeMs = `${materializeMs}`;
+        if (this._phaseTiming) this._recordPhase('gridMaterialize', materializeMs);
       }
       delete el.dataset.vectoGridCalibration;
       delete el.dataset.vectoGridReady;
@@ -5382,4 +5488,63 @@ function intersectBounds(a: Bounds, b: Bounds): Bounds {
 /** Whether world point `(x, y)` lies within box `b`. */
 function pointInBounds(b: Bounds, x: number, y: number): boolean {
   return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+}
+
+/**
+ * A digest of everything about one grid line that determines its projected DOM.
+ *
+ * Used to skip rebuilding carrier lines that did not change. Streaming text bumps
+ * `grid.revision` on every append while leaving all earlier lines byte-identical,
+ * so without this the projection re-creates one `<span>` per cell for the entire
+ * block every frame.
+ *
+ * **Every field the projection reads must appear here.** A missing field means a
+ * stale carrier is served: geometry drifts from the canvas, and DOM Range offsets
+ * stop matching the source, which breaks selection and screen-reader position
+ * rather than merely looking wrong. The corresponding writes live in
+ * `syncContentGridProjection`; keep the two in step.
+ */
+function contentGridLineSignature(
+  grid: PreparedContentGrid,
+  line: PreparedContentGridLine,
+  projected: ContentProjectionLine | undefined,
+  lineHeight: number,
+  baseline: number,
+  font: string,
+  isFirstLine: boolean,
+): string {
+  const parts: string[] = [
+    // Line box: position, size, and the font that resolves its baseline.
+    `${projected?.x ?? 0}`,
+    `${projected?.y ?? ''}`,
+    `${lineHeight}`,
+    `${baseline}`,
+    font,
+    `${line.width}`,
+    // The trailing hard break belongs to this line and lands in the DOM text.
+    grid.source.slice(line.sourceEnd, line.nextSourceStart),
+    // The basis markers are appended only to line 0, so a line moving to or from
+    // index 0 changes its DOM even when nothing else does.
+    isFirstLine ? '1' : '0',
+  ];
+  if (line.cells.length === 0) {
+    // An empty line projects its break text directly, with no cell carriers.
+    parts.push('empty');
+  } else {
+    for (const cell of line.cells) {
+      parts.push(
+        `${cell.sourceStart}`,
+        `${cell.sourceEnd}`,
+        `${cell.x}`,
+        `${cell.advance}`,
+        `${cell.level}`,
+        cell.sourceCaretOffsets.join('.'),
+        // Source text, not `cell.glyph`: the carrier holds the original characters
+        // (the shaped glyph is the canvas's business), so a change in shaping alone
+        // must not invalidate a carrier, and a change in source must.
+        grid.source.slice(cell.sourceStart, cell.sourceEnd),
+      );
+    }
+  }
+  return parts.join('\u0001');
 }
