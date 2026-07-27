@@ -382,6 +382,46 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] ArrowDown must keep focus on a treeitem`,
     );
 
+    // ---- Popover: hiding must hide the whole subtree ------------------------
+    // `Overlay.hide()` drops its own `interactive` and prunes its a11y subtree,
+    // which looks sufficient — but the projection walk still descended, so a
+    // still-interactive CHILD was re-created on the next frame. Measured before
+    // the fix: the popover's element was gone while its button stayed projected
+    // with tabIndex 0 and a live box, i.e. Tab reached a button inside a hidden
+    // popover.
+    await page.evaluate(() => window.__a11yFixture.openPopover());
+    await page.waitForFunction(() => !!document.querySelector('[data-vecto-id="popover-action"]'), {
+      timeout: 5000,
+    });
+    const popoverFocused = await page.evaluate(() => {
+      const el = document.querySelector('[data-vecto-id="popover-action"]') as HTMLElement | null;
+      el?.focus();
+      return document.activeElement === el;
+    });
+    assert.ok(popoverFocused, `[${engine}] a popover child must be focusable while shown`);
+
+    await page.evaluate(() => window.__a11yFixture.closePopover());
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    const afterHide = await page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null;
+      return {
+        childProjected: !!document.querySelector('[data-vecto-id="popover-action"]'),
+        panelProjected: !!document.querySelector('[data-vecto-id="popover-menu"]'),
+        strandedOnBody: active === document.body,
+      };
+    });
+    assert.ok(
+      !afterHide.childProjected,
+      `[${engine}] hiding a popover must un-project its children, not just itself`,
+    );
+    assert.ok(!afterHide.panelProjected, `[${engine}] hidden popover must not stay projected`);
+    assert.ok(
+      !afterHide.strandedOnBody,
+      `[${engine}] hiding a popover with focus inside must not drop focus to <body>`,
+    );
+
     // ---- Virtualized list: focus across row recycling ----------------------
     // The fragile boundary: a row holding focus is recycled out as the viewport
     // moves. Dropping focus to <body> there strands a keyboard user at the top of

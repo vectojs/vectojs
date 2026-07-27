@@ -66,6 +66,7 @@ export class Overlay extends UIComponent {
     this._mount(target);
     this._position(target);
     this.visible = true;
+    this.a11yHidden = false;
     this.opacity = 1;
     this.scaleX = 1;
     this.scaleY = 1;
@@ -92,6 +93,7 @@ export class Overlay extends UIComponent {
     if (!this.parent) scene.overlayRoot.add(this);
     this._placeAt(x, y);
     this.visible = true;
+    this.a11yHidden = false;
     this.opacity = 1;
     this.scaleX = 1;
     this.scaleY = 1;
@@ -139,6 +141,11 @@ export class Overlay extends UIComponent {
     this.scaleX = 0.92;
     this.scaleY = 0.92;
     this.interactive = false;
+    // Also hide the SUBTREE: dropping `interactive` here stops this node
+    // projecting, but the walk still descends and a still-interactive child is
+    // re-created next frame. Without this, a hidden popover's button remained
+    // focusable.
+    this.a11yHidden = true;
     (this.scene as Scene | null)?.detachA11y(this);
     this.scene?.markDirty();
   }
