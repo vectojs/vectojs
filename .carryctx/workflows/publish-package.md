@@ -34,6 +34,16 @@ User asks to "release", "publish", "cut a version", or "bump" a package under `p
 7. **Monitor the triggered `release.yml` run** (`gh run watch` or `gh run list --workflow=release.yml`). It will: parse package+version from the tag, verify the tag matches `package.json`, run that package's tests, lint (`oxlint packages/<pkg>/src`), build, publish to npm (`npm publish --access public`), and attach a tarball to a GitHub Release. If it fails at the "verify tag matches package.json" step, the tag was cut against the wrong commit — fix and re-tag, don't force-push the old tag.
 8. **Verify the npm publish landed**: `npm view @vectojs/<pkg>@<version>` and confirm the GitHub Release was created with the tarball attached.
 
+9. **Sync `vectojs-website` to the new versions** — a separate repo, so this is easy to forget and was in fact skipped for two consecutive releases (1.19.0 and 1.20.0), leaving every live sandbox loading a three-versions-stale `core`. Four places must move together, and `bun run check:docs` fails on the last three if you only do the first:
+   - `src/consts.ts` → `VERSIONS` (drives the docs sidebar chips)
+   - `public/sandbox/*.html` → the `esm.sh` import-map pins (26 pins across 14 files as of 1.21.0)
+   - `package.json` + lockfile → the real `@vectojs/*` deps; `check-docs-consistency.ts` compares `VERSIONS` against what is **installed in `node_modules`**, not the declared range, so `bun install` must run
+   - `src/content/reference/ui-components.md` → the `Version documented:` line
+
+   Confirm each new pin resolves (`curl -o /dev/null -w '%{http_code}' https://esm.sh/@vectojs/<pkg>@<version>`) **before** committing: an unresolvable pin breaks the sandbox outright rather than degrading, and it only fails at runtime in a visitor's browser. Run all five CI steps locally (`check:docs`, `check`, `test`, `format:check`, `build`), then verify the deployed page with `curl -sL` — note `/sandbox/*.html` answers `308`, so `-L` is required.
+
+   Leave version references in docs prose alone ("available since `@vectojs/ui@2.2.0`") — those are historical availability statements, not pins.
+
 ## Do NOT
 
 - Do not hand-edit a package's version in package.json without going through `changeset version` — it desyncs the CHANGELOG.md and the changeset ledger.
