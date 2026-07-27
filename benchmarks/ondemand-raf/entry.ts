@@ -173,6 +173,7 @@ async function main(): Promise<void> {
           transformMs: +phase('transform').toFixed(1),
           flushMs: +phase('flush').toFixed(1),
           a11ySyncMs: +phase('a11ySync').toFixed(1),
+          gridMaterializeMs: +phase('gridMaterialize').toFixed(1),
           a11yOrderMs: +phase('a11yOrder').toFixed(1),
           // Atlas instrumentation: confirms the blit path is actually active and
           // reusing slots. A climbing 'resets' means the glyph set overflows the
