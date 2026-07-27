@@ -1,4 +1,4 @@
-import type { Bounds, Entity } from '@vectojs/core';
+import type { Bounds, DevtoolsDescriptor, Entity } from '@vectojs/core';
 
 /** Structured, JSON-safe entity report — the machine-readable sibling of `describeEntity`. */
 export interface EntityInfo {
@@ -23,6 +23,17 @@ export interface EntityInfo {
   text?: string;
   /** Present only when the entity projects a semantic shadow node. */
   a11y?: { tag?: string; role?: string; label?: string };
+  /**
+   * The entity's own description of its debug surface, when it provides one.
+   *
+   * Everything above is a generic `Entity` property, so without this the
+   * inspector cannot show what distinguishes one component from another —
+   * `Input.value`, `ScrollView.scrollTop`, `VirtualList.visibleRange`. Entities
+   * describe themselves so DevTools needs no table of component types, which
+   * would gate every new component on a debug-tool change and would break under
+   * minified builds where `constructor.name` is unreliable.
+   */
+  descriptor?: DevtoolsDescriptor;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -101,6 +112,15 @@ export function inspectEntity(entity: Entity): EntityInfo {
   const a11y = entity.getA11yAttributes();
   if (a11y && (a11y.tag || a11y.role || a11y.label)) {
     info.a11y = { tag: a11y.tag, role: a11y.role, label: a11y.label };
+  }
+  // A descriptor is optional and app-supplied, so a throwing implementation must
+  // not take the whole inspector down with it — a debug tool that crashes on the
+  // entity you are trying to debug is worse than one missing a field.
+  try {
+    const descriptor = entity.getDevtoolsDescriptor?.();
+    if (descriptor) info.descriptor = descriptor;
+  } catch {
+    /* ignore a broken descriptor */
   }
   return info;
 }

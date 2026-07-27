@@ -428,3 +428,140 @@ describe('DevtoolsPanel — modern features', () => {
     vi.useRealTimers();
   });
 });
+
+describe('A11y tab', () => {
+  it('renders the selected entity readout and the scene audit', () => {
+    const host = makeHost();
+    // Focusable with no accessible name: the defect class #212 found.
+    const nameless = new Button('', { width: 80, height: 24 });
+    nameless.interactive = true;
+    host.add(nameless);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(nameless);
+
+    const rows = ((panel as any).a11yLines as Array<{ text: string }>).map((l) => l.text);
+    const joined = rows.join('\n');
+    // The readout, then the scene-wide audit. Audits run over the whole scene
+    // because the most useful findings are relationships between entities.
+    expect(joined).toContain('name');
+    expect(joined).toContain('canvas');
+    expect(joined).toContain('audit:');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('marks a finding that belongs to the selected entity', () => {
+    const host = makeHost();
+    const a = new Button('Delete', { width: 60, height: 24 });
+    const b = new Button('Delete', { width: 60, height: 24 });
+    b.setPosition(0, 40);
+    host.add(a);
+    host.add(b);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(b);
+
+    const rows = ((panel as any).a11yLines as Array<{ text: string }>).map((l) => l.text);
+    // Duplicate names are reported against the second onward, so selecting `b`
+    // should show a marked row.
+    expect(rows.some((r) => r.startsWith('▸') && r.includes('duplicate-label'))).toBe(true);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('exposes an a11y tab id', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'a11y' });
+    expect((panel as any).tabs.value).toBe('a11y');
+    panel.detach();
+    host.destroy();
+  });
+});
+
+describe('incremental tree sync', () => {
+  it('skips the tree walk when the shape has not changed', () => {
+    const host = makeHost();
+    host.add(new Box('a'));
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+
+    const before = ((panel as any).allNodes as unknown[]).length;
+    const model = (panel as any).allNodes;
+    panel.refresh();
+    // Same array instance: no rebuild happened. The panel used to walk both trees
+    // every 500ms regardless, a constant cost proportional to entity count.
+    expect((panel as any).allNodes).toBe(model);
+    expect(((panel as any).allNodes as unknown[]).length).toBe(before);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('rebuilds when an entity is added', () => {
+    const host = makeHost();
+    host.add(new Box('a'));
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    const before = ((panel as any).allNodes as unknown[]).length;
+
+    host.add(new Box('b'));
+    panel.refresh();
+
+    expect(((panel as any).allNodes as unknown[]).length).toBeGreaterThan(before);
+    panel.detach();
+    host.destroy();
+  });
+
+  it('rebuilds when an entity is removed', () => {
+    const host = makeHost();
+    const doomed = new Box('doomed');
+    host.add(new Box('a'));
+    host.add(doomed);
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    const before = ((panel as any).allNodes as unknown[]).length;
+
+    host.remove(doomed);
+    panel.refresh();
+
+    expect(((panel as any).allNodes as unknown[]).length).toBeLessThan(before);
+    panel.detach();
+    host.destroy();
+  });
+
+  it('rebuilds on an explicit forced refresh even with no shape change', () => {
+    const host = makeHost();
+    host.add(new Box('a'));
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    const model = (panel as any).allNodes;
+
+    panel.refresh(true);
+
+    // The periodic reconcile relies on this: the version check trusts that every
+    // shape change bumps the counter, and a forced rebuild bounds how long a
+    // missed bump can leave the panel stale.
+    expect((panel as any).allNodes).not.toBe(model);
+    panel.detach();
+    host.destroy();
+  });
+
+  it('still refreshes selection details when the tree walk is skipped', () => {
+    const host = makeHost();
+    const target = new Box('sel', 40, 20);
+    host.add(target);
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(target);
+
+    target.setPosition(77, 88);
+    panel.refresh();
+
+    // Properties change without the shape changing, and a stale readout is the
+    // whole reason to be looking at the panel.
+    const lines = ((panel as any).detailLines as Array<{ text: string }>).map((l) => l.text);
+    expect(lines.join('\n')).toContain('77');
+    expect(lines.join('\n')).toContain('88');
+
+    panel.detach();
+    host.destroy();
+  });
+});

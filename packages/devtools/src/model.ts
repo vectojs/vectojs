@@ -1,5 +1,5 @@
+import type { DevtoolsDescriptor, DevtoolsField } from '@vectojs/core';
 import type { Entity, Scene } from '@vectojs/core';
-
 /** Framework-neutral tree shape used by inspectors and serialized tooling. */
 export interface DevtoolsTreeNode {
   id: string;
@@ -56,10 +56,30 @@ export function findEntityAt(root: Entity, x: number, y: number): Entity | null 
 }
 
 /** Human-readable state lines for the detail readout. */
+/** Compact one-line rendering of a descriptor field value. */
+function formatFieldValue(value: DevtoolsField['value']): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `[${value.join(', ')}]`;
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ');
+  }
+  if (typeof value === 'string') {
+    // Values land in a fixed-width panel row, so a long string has to be cut
+    // somewhere; cutting here beats letting it push the layout around.
+    return value.length > 32 ? `${value.slice(0, 32)}…` : value;
+  }
+  return String(value);
+}
+
+/** How many panel rows a descriptor may occupy. */
+const DESCRIPTOR_LINE_BUDGET = 12;
+
 export function describeEntity(entity: Entity): string[] {
   const { a, b, c, d, e, f } = entity.getWorldTransform();
   const r = (n: number) => Math.round(n * 100) / 100;
-  return [
+  const lines = [
     `${entity.constructor.name} #${entity.id}`,
     `x ${r(entity.x)}  y ${r(entity.y)}  w ${r(entity.width)}  h ${r(entity.height)}`,
     `scale ${r(entity.scaleX)},${r(entity.scaleY)}  rot ${r(entity.rotation)}  op ${r(entity.opacity)}`,
@@ -67,6 +87,42 @@ export function describeEntity(entity: Entity): string[] {
     `interactive ${entity.interactive}  animating ${entity.hasPendingAnimations()}`,
     `children ${entity.children.length}`,
   ];
+
+  // Append the entity's own description of its debug surface, when it has one.
+  // Everything above is a generic Entity property, so this is the only part that
+  // can say anything about what the component actually is.
+  //
+  // Wrapped because the descriptor is app-supplied: a component with a throwing
+  // getter must not break the inspector for the entity you are debugging.
+  let descriptor: DevtoolsDescriptor | null = null;
+  try {
+    descriptor = entity.getDevtoolsDescriptor?.() ?? null;
+  } catch {
+    lines.push('— descriptor threw —');
+  }
+  if (descriptor) {
+    let budget = DESCRIPTOR_LINE_BUDGET;
+    lines.push(`— ${descriptor.kind} —`);
+    for (const group of descriptor.groups) {
+      if (budget <= 0) break;
+      lines.push(`${group.label}:`);
+      budget--;
+      for (const field of group.fields) {
+        if (budget <= 0) break;
+        // A read-only marker is worth a character: it tells the reader an edit
+        // here will be reverted rather than leaving them to discover it.
+        const lock = field.readOnly ? ' \u00b7' : ' ';
+        lines.push(`  ${field.label}${lock} ${formatFieldValue(field.value)}`);
+        budget--;
+      }
+    }
+    for (const note of descriptor.notes ?? []) {
+      if (budget <= 0) break;
+      lines.push(`! ${note.length > 60 ? `${note.slice(0, 60)}…` : note}`);
+      budget--;
+    }
+  }
+  return lines;
 }
 
 /** Resolve which scene root (main or overlay) owns the picked point first. */

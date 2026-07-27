@@ -13,6 +13,7 @@ import {
 } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
 import { auditScene, type AuditFinding } from './audit';
+import { auditA11y, inspectA11y } from './a11yInspect';
 import { entityPath, inspectEntity } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
 
@@ -40,6 +41,23 @@ const PANEL_BG = 'rgba(13, 17, 28, 0.82)';
 const CARD_BG = 'rgba(23, 30, 46, 0.72)';
 const CARD_BORDER = 'rgba(80, 100, 140, 0.28)';
 const PANEL_FG = '#cbd5e1';
+/**
+ * Readout rows in the Inspect tab.
+ *
+ * Six carry generic Entity properties; the rest carry the selected entity's own
+ * `getDevtoolsDescriptor()` output, which is capped to a matching budget in
+ * `describeEntity` so the two cannot disagree about how much fits.
+ */
+const INSPECT_ROWS = 20;
+/** Readout rows in the A11y tab: one entity readout plus scene audit findings. */
+const A11Y_ROWS = 22;
+/**
+ * How often to rebuild the tree model regardless of the structure version.
+ *
+ * Bounds how long a missed structure bump can leave the panel stale, without
+ * giving back the per-tick saving the version check buys.
+ */
+const RECONCILE_INTERVAL_MS = 3000;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -93,6 +111,10 @@ export class DevtoolsPanel {
   private tree: TreeView;
   private auditTree: TreeView;
   private detailLines: Text[] = [];
+  private a11yLines: Text[] = [];
+  /** Host structure version the current tree model was built from. */
+  private treeVersion = -1;
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private traceLines: Text[] = [];
   private perfLines: Text[] = [];
   private eventTrace: EventTrace | null = null;
@@ -308,8 +330,14 @@ export class DevtoolsPanel {
     treeContent.add(this.tree);
 
     // Inspect tab: readout lines + inline editors + copy actions.
+    //
+    // 20 rows, not 8: `describeEntity` now appends a component's own
+    // `getDevtoolsDescriptor()` output after the six generic Entity lines, and
+    // that is the part worth reading — a `VirtualList` contributes its visible
+    // range, mounted count and measurement state. Rows are cheap (one Text each,
+    // created once) and unused ones render as empty strings.
     const inspectContent = new Container();
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < INSPECT_ROWS; i++) {
       const line = new Text('', { font: '12px monospace', color: i === 0 ? '#e8eefc' : PANEL_FG });
       line.setPosition(10, 18 + i * 17);
       this.detailLines.push(line);
@@ -317,7 +345,7 @@ export class DevtoolsPanel {
     }
     // Labeled inline editors. Each field is `label + Input`, laid out in a
     // three-column row with generous, readable inputs (13px, high contrast).
-    const editTop = 18 + 8 * 17 + 10;
+    const editTop = 18 + INSPECT_ROWS * 17 + 10;
     const fieldW = Math.floor((contentW - 16 - 2 * 8) / 3);
     const editorInput = (placeholder: string, x: number, prop: 'x' | 'y' | 'opacity'): Input => {
       inspectContent.add(
@@ -387,10 +415,28 @@ export class DevtoolsPanel {
     this.auditInner = this.auditTree;
     auditContent.add(this.auditTree);
 
+    // A11y tab: the selected entity's accessibility readout plus scene-wide audits.
+    //
+    // Worth its own tab rather than a few lines in Info, because the question it
+    // answers is specific to a zero-DOM UI: the canvas can look perfect while the
+    // projected accessibility tree is wrong, and no browser DevTools will show
+    // that divergence.
+    const a11yContent = new Container();
+    for (let i = 0; i < A11Y_ROWS; i++) {
+      const line = new Text('', {
+        font: '11px monospace',
+        color: i === 0 ? '#e8eefc' : PANEL_FG,
+      });
+      line.setPosition(10, 16 + i * 16);
+      this.a11yLines.push(line);
+      a11yContent.add(line);
+    }
+
     const tabItems: TabItem[] = [
       { id: 'tree', label: 'Tree', content: treeContent },
       { id: 'inspect', label: 'Info', content: inspectContent },
       { id: 'audit', label: 'Audit', content: auditContent },
+      { id: 'a11y', label: 'A11y', content: a11yContent },
     ];
 
     // Events tab (opt-in).
@@ -454,6 +500,15 @@ export class DevtoolsPanel {
     const interval = options.refreshInterval ?? 500;
     if (interval > 0) {
       this.refreshTimer = setInterval(() => this.refresh(), interval);
+      // Periodic forced reconcile as a consistency check.
+      //
+      // The version check makes the common tick cheap, but it trusts that every
+      // shape change bumps the counter. Anything that mutates `children` directly,
+      // bypassing `add`/`remove`, would leave the panel showing a stale tree with
+      // no way for a user to tell. A full rebuild every few seconds bounds how long
+      // such a divergence can persist, at a cost of roughly one walk per 3 s
+      // instead of six.
+      this.reconcileTimer = setInterval(() => this.refresh(true), RECONCILE_INTERVAL_MS);
     }
 
     this.layout();
@@ -565,8 +620,34 @@ export class DevtoolsPanel {
   }
 
   /** Rebuild the tree model from the host scene. */
-  public refresh(): void {
+  /**
+   * Rebuild the tree model and re-render the panel.
+   *
+   * @param force - Rebuild even when the tree's shape is unchanged. Used by the
+   *   periodic reconcile and by explicit user refreshes.
+   */
+  public refresh(force = false): void {
     if (this.destroyed) return;
+
+    // Skip the walk when the tree's shape has not changed.
+    //
+    // This ran unconditionally on a fixed interval, so a large scene paid a
+    // constant CPU cost to rebuild a model that was usually identical. The scene
+    // already maintains a structure version for its WASM transform store, bumped
+    // by `Entity.add`/`remove`, so staleness is an integer comparison.
+    //
+    // Selection details are still rewritten every tick: an entity's properties
+    // change without the tree's shape changing, and a stale readout is the whole
+    // reason to look at the panel.
+    const version = this.host.structureVersion;
+    if (!force && version === this.treeVersion && this.allNodes.length > 0) {
+      if (this.selected) this.writeDetails(this.selected);
+      this.writeCounts();
+      this.panelScene.markDirty();
+      return;
+    }
+    this.treeVersion = version;
+
     const { nodes, index } = buildTreeModel(this.host.rootEntity);
     const overlay = buildTreeModel(this.host.overlayRootEntity);
     for (const [id, entity] of overlay.index) index.set(id, entity);
@@ -712,13 +793,22 @@ export class DevtoolsPanel {
     }
   }
 
-  /** Change the auto-refresh cadence (ms; 0 disables). */
+  /** Change the auto-refresh cadence (ms; 0 disables). Also gates the reconcile. */
   public setRefreshInterval(ms: number): void {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
     }
-    if (ms > 0) this.refreshTimer = setInterval(() => this.refresh(), ms);
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
+    if (ms > 0) {
+      this.refreshTimer = setInterval(() => this.refresh(), ms);
+      // Disabling auto-refresh must disable the reconcile too, or `interval = 0`
+      // would still leave a timer walking the tree every few seconds.
+      this.reconcileTimer = setInterval(() => this.refresh(true), RECONCILE_INTERVAL_MS);
+    }
   }
 
   /** Move the dock to the given edge. */
@@ -768,6 +858,70 @@ export class DevtoolsPanel {
     for (let i = 0; i < this.detailLines.length; i++) {
       this.detailLines[i].setText(lines[i] ?? '');
     }
+    this.writeA11y(entity);
+  }
+
+  /**
+   * Fill the A11y tab: the selected entity's readout, then scene-wide findings.
+   *
+   * Audits run over the whole scene rather than the selection, because the two
+   * most useful findings — a duplicate accessible name and a focusable node
+   * clipped out of view — are relationships between entities and are invisible
+   * when looking at one node at a time.
+   */
+  private writeA11y(entity: Entity): void {
+    if (this.a11yLines.length === 0) return;
+    const rows: string[] = [];
+    try {
+      const info = inspectA11y(this.host, entity);
+      rows.push(
+        info.projected
+          ? `${info.tag ?? 'div'}${info.role ? ` role=${info.role}` : ''}`
+          : 'not projected to the a11y tree',
+      );
+      if (info.accessibleName !== undefined) {
+        rows.push(`name "${info.accessibleName}" (from ${info.nameSource})`);
+      } else {
+        rows.push('name — none —');
+      }
+      const flags: string[] = [];
+      if (info.tabIndex !== undefined) flags.push(`tabIndex ${info.tabIndex}`);
+      if (info.disabled !== undefined) flags.push(`disabled ${info.disabled}`);
+      if (info.focused !== undefined) flags.push(`focused ${info.focused}`);
+      if (info.readingOrder !== undefined) flags.push(`order #${info.readingOrder}`);
+      if (flags.length > 0) rows.push(flags.join('  '));
+      const cb = info.canvasBounds;
+      rows.push(`canvas ${cb.x},${cb.y} ${cb.width}x${cb.height}`);
+      if (info.domBounds) {
+        const db = info.domBounds;
+        rows.push(`dom    ${db.x},${db.y} ${db.width}x${db.height}`);
+        // Assistive tech takes its geometry from the DOM node, so a divergence
+        // means the focus ring lands where the user is not looking.
+        const drift =
+          Math.abs(db.width - cb.width) > 1 || Math.abs(db.height - cb.height) > 1
+            ? ' ← diverges from canvas'
+            : '';
+        if (drift) rows.push(`!${drift}`);
+      }
+
+      const findings = auditA11y(this.host);
+      rows.push('');
+      rows.push(
+        findings.length === 0 ? 'audit: no findings' : `audit: ${findings.length} finding(s)`,
+      );
+      for (const finding of findings) {
+        if (rows.length >= this.a11yLines.length) break;
+        const marker = finding.entityId === entity.id ? '▸' : ' ';
+        rows.push(`${marker} ${finding.kind}: ${finding.message.slice(0, 68)}`);
+      }
+    } catch (error) {
+      // The audits walk app-supplied `getA11yAttributes()`; a throwing
+      // implementation must not blank the panel.
+      rows.push(`a11y readout failed: ${String(error).slice(0, 60)}`);
+    }
+    for (let i = 0; i < this.a11yLines.length; i++) {
+      this.a11yLines[i].setText(rows[i] ?? '');
+    }
   }
 
   private writeTrace(): void {
@@ -789,6 +943,7 @@ export class DevtoolsPanel {
     if (this.destroyed) return;
     this.destroyed = true;
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.perfTimer) clearInterval(this.perfTimer);
     this.eventTrace?.destroy();
     document.removeEventListener('click', this.onHostPick, true);

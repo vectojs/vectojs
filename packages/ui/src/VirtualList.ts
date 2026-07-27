@@ -1,4 +1,4 @@
-import { Entity, IRenderer, A11yAttributes } from '@vectojs/core';
+import { Entity, IRenderer, A11yAttributes, type DevtoolsDescriptor } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 /**
@@ -329,6 +329,84 @@ export class VirtualList<T = unknown> extends UIComponent {
       // attribute (axe `aria-allowed-attr`, critical). The count belongs in the
       // container's accessible name, which the label above already carries, and on
       // each row — see the class doc.
+    };
+  }
+
+  /**
+   * Everything a recycling list makes invisible: which rows are mounted, how many
+   * heights are real measurements versus the estimate, and the pool's reuse ratio.
+   *
+   * This is the component where a generic inspector is least useful — position and
+   * size say nothing about whether virtualization is behaving, and the state that
+   * would say so (`_pool`, `_measured`, `_scrollY`) is all private.
+   */
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    const [start, end] = this._visibleRange();
+    const total = this._items.length;
+    return {
+      kind: 'VirtualList',
+      groups: [
+        {
+          label: 'Virtualization',
+          fields: [
+            {
+              label: 'visibleRange',
+              value: [start, end],
+              hint: 'Inclusive row indices currently mounted, before overscan',
+            },
+            { label: 'mountedRows', value: this._pool.size, readOnly: true },
+            { label: 'totalRows', value: total, readOnly: true },
+            {
+              label: 'overscan',
+              value: this._overscan,
+              hint: 'Extra rows mounted beyond the viewport on each side',
+            },
+            {
+              label: 'mountedFraction',
+              value: total > 0 ? Math.round((1000 * this._pool.size) / total) / 10 : 0,
+              hint: 'Percent of rows mounted; a rising number means virtualization is losing',
+              readOnly: true,
+            },
+          ],
+        },
+        {
+          label: 'Measurement',
+          fields: [
+            {
+              label: 'measuredRows',
+              value: this._measured.size,
+              hint: 'Rows with a real measured height; the rest use estimatedHeight',
+              readOnly: true,
+            },
+            {
+              label: 'estimatedRowHeight',
+              value: this._estH,
+              hint: 'Matches the constructor option name, used for every unmeasured row',
+            },
+            {
+              label: 'totalHeight',
+              value: Math.round(this._heights.total()),
+              hint: 'Sum over the Fenwick tree, mixing measured and estimated rows',
+              readOnly: true,
+            },
+          ],
+        },
+        {
+          label: 'Scroll',
+          fields: [
+            { label: 'scrollY', value: Math.round(this._scrollY * 10) / 10, readOnly: true },
+            { label: 'targetY', value: Math.round(this._targetY * 10) / 10, readOnly: true },
+            { label: 'velocityY', value: Math.round(this._velY * 10) / 10, readOnly: true },
+            { label: 'dragging', value: this._drag, readOnly: true },
+          ],
+        },
+      ],
+      notes:
+        this._measured.size < total
+          ? [
+              `${total - this._measured.size} of ${total} rows still use the estimated height, so totalHeight and scrollbar geometry are approximate until they are scrolled into view.`,
+            ]
+          : undefined,
     };
   }
 

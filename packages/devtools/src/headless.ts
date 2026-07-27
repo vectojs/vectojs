@@ -41,3 +41,12 @@ export {
   type DirtyDiagnosis,
   type DirtyDiagnosisOptions,
 } from './dirtyDiagnosis';
+export {
+  a11yReadingOrder,
+  auditA11y,
+  inspectA11y,
+  type A11yAuditKind,
+  type A11yAuditOptions,
+  type A11yFinding,
+  type A11yInfo,
+} from './a11yInspect';

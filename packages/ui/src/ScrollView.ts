@@ -1,4 +1,4 @@
-import { Entity, IRenderer } from '@vectojs/core';
+import { type DevtoolsDescriptor, Entity, IRenderer } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 export interface ScrollViewOptions {
@@ -153,6 +153,52 @@ export class ScrollView extends UIComponent {
     const before = this.targetY;
     this.clampTarget();
     if (this.targetY !== before) this.content.y = this.targetY;
+  }
+
+  /**
+   * Scroll offset, spring target and clamp range.
+   *
+   * `content.y` is the live spring position while `targetY` is where it is headed;
+   * seeing both is the only way to tell a mid-animation offset from a stuck one.
+   */
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    const maxScroll = Math.max(0, this.content.height - this.height);
+    return {
+      kind: 'ScrollView',
+      groups: [
+        {
+          label: 'Scroll',
+          fields: [
+            {
+              label: 'scrollTop',
+              value: Math.round(-this.content.y * 10) / 10,
+              hint: 'Live spring position, negated from content.y',
+              readOnly: true,
+            },
+            {
+              label: 'targetTop',
+              value: Math.round(-this.targetY * 10) / 10,
+              hint: 'Where the spring is headed; differs from scrollTop mid-animation',
+              readOnly: true,
+            },
+            { label: 'maxScroll', value: Math.round(maxScroll * 10) / 10, readOnly: true },
+            { label: 'dragging', value: this.dragging, readOnly: true },
+          ],
+        },
+        {
+          label: 'Content',
+          fields: [
+            { label: 'contentHeight', value: Math.round(this.content.height), readOnly: true },
+            { label: 'viewportHeight', value: Math.round(this.height), readOnly: true },
+            { label: 'childCount', value: this.content.children.length, readOnly: true },
+          ],
+        },
+      ],
+      notes:
+        maxScroll === 0
+          ? ['Content fits the viewport, so scrolling is a no-op regardless of input.']
+          : undefined,
+    };
   }
 
   public render(_r: IRenderer): void {
