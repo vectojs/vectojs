@@ -1,5 +1,35 @@
 # @vectojs/ui
 
+## 2.4.0
+
+### Minor Changes
+
+- 5b0fc75: Add the `getDevtoolsDescriptor()` protocol: entities describe their own debug
+  surface, so DevTools needs no table of component types.
+
+  `Entity.getDevtoolsDescriptor()` returns `null` by default. `VirtualList`,
+  `ScrollView`, `Slider`, `Input` and `Markdown` implement it, exposing state a
+  generic inspector cannot reach — visible range and pool/measurement counts,
+  spring position versus target, normalised thumb position, selection offsets, and
+  streaming token reuse ratio.
+
+  `inspectEntity()` carries the descriptor, and the panel's Inspect tab renders it
+  below the generic properties (20 rows, up from 8). Read-only fields are marked so
+  an edit that would be reverted is not invited.
+
+- ddd32f9: Show whether a property is a runtime override or computed by the parent's layout.
+
+  `Entity.getLayoutControlledProperties(child)` lets a container declare which of a
+  child's properties it recomputes. `Stack`, `Table`, `Tabs`, `RadioGroup`,
+  `ResizablePanel` and `ScrollView` implement it; `ScrollView` answers per child,
+  since it owns geometry on its internal wrapper but not on the children a caller
+  adds inside it.
+
+  DevTools marks those properties in the readout, names the owning container, and
+  shows a warning after an edit that will be reverted. The edit still applies —
+  nudging a `Stack` child to see what moves is legitimate; the useful behaviour is to
+  let it happen and explain why it did not stick.
+
 ## 2.3.4
 
 ### Patch Changes
