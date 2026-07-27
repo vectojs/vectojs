@@ -557,6 +557,8 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
   private grid: PreparedContentGrid | null = null;
+  /** Raw (unhighlighted) lines of the last build, for prefix reuse in buildLines. */
+  private rawLines: string[] | null = null;
   private cellWidth = 0;
   private source: string;
 
@@ -629,9 +631,39 @@ export class CodeBlock extends UIComponent {
     };
   }
 
+  /**
+   * Re-highlight the code, reusing the highlight of any unchanged line prefix.
+   *
+   * Streaming appends to the END of a block, so all but the last line or two are
+   * byte-identical to the previous call — yet this used to re-highlight every
+   * line on every chunk, making a streamed block O(N) per append and O(N^2)
+   * overall. Reusing the stable prefix makes an append proportional to what
+   * actually changed.
+   *
+   * The last previously-seen line is deliberately NOT reused: a chunk usually
+   * lands mid-line, so that line's text (and therefore its tokenization) changes.
+   */
   private buildLines(code: string): void {
     const rawLines = code.split(/\r\n|\r|\n/);
-    this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
+    const previous = this.rawLines;
+    // Longest identical prefix, excluding the previous last line (see above).
+    let reusable = 0;
+    if (previous && this.lines.length === previous.length) {
+      const limit = Math.min(previous.length - 1, rawLines.length);
+      while (reusable < limit && previous[reusable] === rawLines[reusable]) reusable++;
+    }
+
+    if (reusable > 0) {
+      const next = this.lines.slice(0, reusable);
+      for (let i = reusable; i < rawLines.length; i++) {
+        next.push(highlightLine(rawLines[i]!, this.lang, this.theme));
+      }
+      this.lines = next;
+    } else {
+      this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
+    }
+
+    this.rawLines = rawLines;
     this.grid = null;
     this.height = this.pad * 2 + rawLines.length * this.lineH;
   }
@@ -1132,14 +1164,34 @@ export class Markdown extends UIComponent {
     // prefix sum stays valid there and only the suffix is recomputed.
     const rawMatchLen = matchLen;
 
-    // Handle the common streaming case: last token changed (paragraph grew)
-    // If only the last old token changed and it's the same type, update in-place
-    if (
+    // Handle the common streaming case: the last token changed but kept its type,
+    // so its entity can be updated in place instead of destroyed and rebuilt.
+    //
+    // `code` is here alongside `paragraph` because an unclosed fenced block is the
+    // second most common shape an LLM streams, and it is the worst case for the
+    // rebuild path: CodeBlock re-tokenizes and re-measures its whole grid on
+    // construction, so a block growing one line at a time paid that for every
+    // chunk. `setCode()` already existed for live editing; the reconciler simply
+    // never called it.
+    const lastTokenSameType =
       matchLen === oldTokens.length - 1 &&
       matchLen < newTokens.length &&
-      oldTokens[matchLen]?.type === newTokens[matchLen]?.type &&
-      newTokens[matchLen]?.type === 'paragraph'
-    ) {
+      oldTokens[matchLen]?.type === newTokens[matchLen]?.type;
+
+    if (lastTokenSameType && newTokens[matchLen]?.type === 'code') {
+      const existingEntity = oldChildren[oldTokenToChild[matchLen]];
+      const codeToken = newTokens[matchLen] as Tokens.Code;
+      if (existingEntity instanceof CodeBlock) {
+        // Language can change mid-stream: ```` ``` ```` then the info string
+        // arrives on the next chunk, so pass it through rather than assuming it
+        // is stable.
+        existingEntity.setCode(codeToken.text, codeToken.lang ?? undefined);
+        matchLen++;
+        // Same O(1) tail resync as the paragraph path: the block is still the
+        // Stack's last child, so its own box changed but no sibling moved.
+        this.content.resizeLastChild(existingEntity);
+      }
+    } else if (lastTokenSameType && newTokens[matchLen]?.type === 'paragraph') {
       // Update existing paragraph entity in-place via setSpans
       const entityIdx = oldTokenToChild[matchLen];
       const existingEntity = oldChildren[entityIdx];
