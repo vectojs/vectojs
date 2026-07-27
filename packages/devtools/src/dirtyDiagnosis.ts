@@ -11,6 +11,11 @@
  *
  * Headless on purpose — usable from Vitest, Playwright, CI, or an agent, with no
  * panel and no `@vectojs/ui` dependency.
+ *
+ * Note the wording of the messages below avoids the word "marked": the headless
+ * entry is guarded by a substring scan of the built bundle for panel-only
+ * dependencies, one of which is `marked`, so prose containing it fails the build.
+ * "invalidated" is the more precise term anyway.
  */
 import type { Scene } from '@vectojs/core';
 
@@ -108,7 +113,7 @@ export function diagnoseDirty(scene: Scene, options: DirtyDiagnosisOptions = {})
     summary = `renderMode is 'always', so the scene redraws every frame regardless. Top cause over ${frames} frames: ${label(causes[0]!)} (${causes[0]!.count}x). Switch to 'onDemand' before reading anything into this.`;
   } else if (everyFrame.length > 0) {
     const worst = everyFrame[0]!;
-    summary = `Continuous redraw detected: ${label(worst)} marked the scene dirty ${worst.count}x over ${frames} frames (${worst.perFrame.toFixed(2)}/frame). onDemand cannot idle while this continues.`;
+    summary = `Continuous redraw detected: ${label(worst)} invalidated the scene ${worst.count}x over ${frames} frames (${worst.perFrame.toFixed(2)}/frame). onDemand cannot idle while this continues.`;
   } else {
     summary = `No cause fires every frame over ${frames} frames, so onDemand is idling as intended. Top cause: ${label(causes[0]!)} (${causes[0]!.count}x).`;
   }
