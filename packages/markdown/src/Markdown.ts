@@ -1111,7 +1111,9 @@ export class Markdown extends UIComponent {
         this.pendingWorkerIds.delete(id);
         this.appendInFlight = false;
         const newTokens = [...oldTokensSnapshot.slice(0, matchLen), ...tail] as TokensList;
-        this.updateTokens(newTokens);
+        // The worker's matchLen is exactly the prefix it kept, and `newTokens` is
+        // built from that same slice, so it is correct by construction here.
+        this.updateTokens(newTokens, matchLen);
         if (this.appendPending) {
           this.appendPending = false;
           this.dispatchAppend();
@@ -1136,20 +1138,31 @@ export class Markdown extends UIComponent {
     });
   }
 
-  private updateTokens(newTokens: TokensList): void {
+  private updateTokens(newTokens: TokensList, knownMatchLen?: number): void {
     const oldTokens = this.tokens;
     const oldChildren = [...this.content.children]; // snapshot
 
-    // Find the matching prefix length (by comparing token raw source)
-    let matchLen = 0;
+    // The raw-equal prefix length. The worker already computed this to decide
+    // what tail to send, so when it hands the value over there is nothing to
+    // re-derive — this loop was re-scanning every token's `raw` string on the
+    // main thread for a result the worker had already produced.
+    //
+    // Validated rather than trusted blindly: `knownMatchLen` is relative to the
+    // token snapshot the request was issued against, and a bug (or a future
+    // protocol change) that let it exceed either array would silently reuse the
+    // wrong entities. Out-of-range falls through to the scan.
+    let matchLen: number;
     const minLen = Math.min(oldTokens.length, newTokens.length);
-
-    // Compare tokens by raw source
-    for (let i = 0; i < minLen; i++) {
-      if (oldTokens[i].raw === newTokens[i].raw) {
-        matchLen++;
-      } else {
-        break;
+    if (knownMatchLen !== undefined && knownMatchLen >= 0 && knownMatchLen <= minLen) {
+      matchLen = knownMatchLen;
+    } else {
+      matchLen = 0;
+      for (let i = 0; i < minLen; i++) {
+        if (oldTokens[i].raw === newTokens[i].raw) {
+          matchLen++;
+        } else {
+          break;
+        }
       }
     }
 

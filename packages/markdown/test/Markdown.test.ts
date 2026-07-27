@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import type { Tokens } from 'marked';
+import { lexer as markedLexer } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
 import { RichText, Text } from '@vectojs/ui';
 
@@ -388,6 +389,47 @@ Plain paragraph at the end.
       const initialCount = md.content.children.length;
       md.appendMarkdown('\n\nNew paragraph added.');
       expect(md.content.children.length).toBeGreaterThan(initialCount);
+    });
+
+    it('reconciles identically whether matchLen is supplied or re-derived', () => {
+      // The worker hands over the prefix length it already computed, so the main
+      // thread no longer re-scans every token's `raw`. The reconciliation result
+      // must be indistinguishable either way — this is the guard that the
+      // shortcut is a shortcut and not a behaviour change.
+      const build = (supply: boolean) => {
+        const md = new Markdown('# Title\n\nFirst.');
+        const anyMd = md as unknown as {
+          updateTokens: (t: unknown, m?: number) => void;
+          tokens: unknown[];
+        };
+        const originalUpdate = anyMd.updateTokens.bind(anyMd);
+        if (!supply) {
+          // Force the re-derivation path by withholding the hint.
+          anyMd.updateTokens = (t: unknown) => originalUpdate(t);
+        }
+        md.appendMarkdown('\n\nSecond.');
+        md.appendMarkdown(' Third.');
+        return md.content.children.length;
+      };
+      expect(build(true)).toBe(build(false));
+    });
+
+    it('ignores an out-of-range matchLen and still reconciles correctly', () => {
+      // A hint longer than either token array would make the prefix slice reuse
+      // entities that do not correspond to the new tokens. Assert the OUTCOME —
+      // that the rendered blocks match an honest reconcile — rather than merely
+      // that nothing throws, which passes with or without the guard.
+      const honest = new Markdown('# Title\n\nFirst.\n\nSecond.');
+      const expected = honest.content.children.length;
+
+      const md = new Markdown('# Title\n\nFirst.');
+      const anyMd = md as unknown as {
+        updateTokens: (tokens: unknown, matchLen?: number) => void;
+      };
+      const newTokens = markedLexer('# Title\n\nFirst.\n\nSecond.');
+      anyMd.updateTokens(newTokens, 9999);
+
+      expect(md.content.children.length).toBe(expected);
     });
 
     it('appendMarkdown reuses unchanged prefix entities', () => {
