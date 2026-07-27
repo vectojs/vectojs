@@ -1,5 +1,37 @@
 # @vectojs/markdown
 
+## 0.2.0
+
+### Minor Changes
+
+- 5b0fc75: Add the `getDevtoolsDescriptor()` protocol: entities describe their own debug
+  surface, so DevTools needs no table of component types.
+
+  `Entity.getDevtoolsDescriptor()` returns `null` by default. `VirtualList`,
+  `ScrollView`, `Slider`, `Input` and `Markdown` implement it, exposing state a
+  generic inspector cannot reach — visible range and pool/measurement counts,
+  spring position versus target, normalised thumb position, selection offsets, and
+  streaming token reuse ratio.
+
+  `inspectEntity()` carries the descriptor, and the panel's Inspect tab renders it
+  below the generic properties (20 rows, up from 8). Read-only fields are marked so
+  an edit that would be reverted is not invited.
+
+### Patch Changes
+
+- b408036: Add `GlyphRasterAtlas`, a texture atlas of rasterized glyphs for grids that draw
+  a bounded glyph set thousands of times per frame, plus an optional
+  `IRenderer.drawImageRect` (9-argument `drawImage`) that `CanvasRenderer`
+  implements and `SVGRenderer` deliberately omits.
+
+  `CodeBlock` now blits its grid from a shared atlas where the renderer supports a
+  source-rect draw, falling back to `fillText` otherwise. Measured 1.32-2.22x
+  (Chrome) and 1.42-1.87x (Firefox) against the renderer's own font/fillStyle-cached
+  `fillText` path.
+
+  Named `GlyphRasterAtlas` because `@vectojs/layout` already exports a `GlyphAtlas`
+  interface for vector path metrics, which the core barrel re-exports.
+
 ## 0.1.2
 
 ### Patch Changes

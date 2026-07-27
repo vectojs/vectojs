@@ -1,5 +1,106 @@
 # @vectojs/core
 
+## 1.21.0
+
+### Minor Changes
+
+- 5b0fc75: Add the `getDevtoolsDescriptor()` protocol: entities describe their own debug
+  surface, so DevTools needs no table of component types.
+
+  `Entity.getDevtoolsDescriptor()` returns `null` by default. `VirtualList`,
+  `ScrollView`, `Slider`, `Input` and `Markdown` implement it, exposing state a
+  generic inspector cannot reach — visible range and pool/measurement counts,
+  spring position versus target, normalised thumb position, selection offsets, and
+  streaming token reuse ratio.
+
+  `inspectEntity()` carries the descriptor, and the panel's Inspect tab renders it
+  below the generic properties (20 rows, up from 8). Read-only fields are marked so
+  an edit that would be reverted is not invited.
+
+- 5b0fc75: Drive the DevTools tree from the scene's structure version instead of a fixed
+  interval.
+
+  `Scene.structureVersion` is now public. It was already maintained for the resident
+  WASM transform store (bumped by `Entity.add`/`remove`), and exposing it lets a
+  consumer replace a tree walk with an integer comparison.
+
+  The panel rebuilt both trees every 500ms regardless of whether anything changed, a
+  constant CPU cost proportional to entity count. It now rebuilds only when the shape
+  changed, with a forced reconcile every 3s as a consistency check. Selection details
+  still refresh every tick, since properties change without the shape changing.
+
+- ddd32f9: Show whether a property is a runtime override or computed by the parent's layout.
+
+  `Entity.getLayoutControlledProperties(child)` lets a container declare which of a
+  child's properties it recomputes. `Stack`, `Table`, `Tabs`, `RadioGroup`,
+  `ResizablePanel` and `ScrollView` implement it; `ScrollView` answers per child,
+  since it owns geometry on its internal wrapper but not on the children a caller
+  adds inside it.
+
+  DevTools marks those properties in the readout, names the owning container, and
+  shows a warning after an edit that will be reverted. The edit still applies —
+  nudging a `Stack` child to see what moves is legitimate; the useful behaviour is to
+  let it happen and explain why it did not stick.
+
+- b408036: Add `GlyphRasterAtlas`, a texture atlas of rasterized glyphs for grids that draw
+  a bounded glyph set thousands of times per frame, plus an optional
+  `IRenderer.drawImageRect` (9-argument `drawImage`) that `CanvasRenderer`
+  implements and `SVGRenderer` deliberately omits.
+
+  `CodeBlock` now blits its grid from a shared atlas where the renderer supports a
+  source-rect draw, falling back to `fillText` otherwise. Measured 1.32-2.22x
+  (Chrome) and 1.42-1.87x (Firefox) against the renderer's own font/fillStyle-cached
+  `fillText` path.
+
+  Named `GlyphRasterAtlas` because `@vectojs/layout` already exports a `GlyphAtlas`
+  interface for vector path metrics, which the core barrel re-exports.
+
+### Patch Changes
+
+- 25c8c8f: Avoid the `style.font` shorthand getter in grid calibration.
+
+  The calibration scan read `target.style.font` once per grid cell per frame. That
+  getter re-serializes from every font longhand on each access, making the scan
+  2.75 ms/frame on Chrome. Cells now mirror their font onto data attributes and
+  calibration reads those instead: about 1.4x faster, and a streaming code block
+  absorbs 196-198 of 200 chunks.
+
+  Adds `contentProjection`, `a11yNodes`, `gridSync`, `gridCalibrateSchedule`,
+  `calibScan` and `calibProbeBuild` render phases.
+
+- f6e02bb: Skip already-calibrated cells in the grid calibration scan.
+
+  The scan re-derived a measurement key for every grid cell on every revision bump —
+  O(cells) per frame to produce ~20 distinct keys. Since carrier reuse leaves an
+  untouched line's calibrated transforms in place, cells now carry a generation stamp
+  and the scan visits only unstamped ones, making it O(new cells). When nothing is
+  pending the pass skips the probe, the forced layout and the two-frame round trip
+  entirely.
+
+  Calibration scan drops 7.2-9.5x (2.75 -> 0.34-0.38 ms/frame on Chrome), and a
+  streamed code block at 50 chunk/s absorbs 190-200 of 200 chunks.
+
+- 6bf5a4a: Reuse content-grid DOM carriers across revisions instead of rebuilding every line.
+
+  The grid projection called `replaceChildren()` and re-created one `<span>` per
+  cell whenever `grid.revision` changed. Streaming text bumps the revision on every
+  append, so a growing code block re-materialized its whole carrier grid each frame.
+  Each line now carries a signature of everything that determines its DOM and is
+  rebuilt only when that changes.
+
+  A streamed code block at 50 chunk/s now absorbs 94-98% of chunks, up from 64-66%;
+  `gridMaterialize` drops 4.8-16.5x. Also fixes a selection bug the old path had:
+  `clearContentGridState` released a selection on every revision bump, so selecting
+  text inside a still-streaming code block was impossible. Selection is now released
+  only when the line holding it is actually rebuilt.
+
+  Adds a `gridMaterialize` render phase.
+
+- c7d4309: Document that `Scene.step()` renders unconditionally — it consults neither
+  `renderMode` nor `dirty` and skips the idle auto-throttle. Callers measuring
+  frame scheduling must drive `start()` instead; `step()` cannot observe frame
+  skipping, so `always` and `onDemand` report identical draw counts through it.
+
 ## 1.20.0
 
 ### Minor Changes

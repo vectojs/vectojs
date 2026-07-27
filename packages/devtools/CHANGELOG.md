@@ -1,5 +1,75 @@
 # @vectojs/devtools
 
+## 0.8.0
+
+### Minor Changes
+
+- 5b0fc75: Add an accessibility inspector and audits.
+
+  `inspectA11y()` reports the accessible name and where it came from, tabIndex,
+  disabled, focused, flat reading-order position, and DOM bounds alongside canvas
+  bounds — the divergence unique to a zero-DOM UI, where the canvas can look correct
+  while the projected tree is wrong.
+
+  `auditA11y()` covers five failure classes already observed in this codebase:
+  `no-accessible-name`, `role-tag-conflict`, `disabled-divergence`,
+  `focusable-but-clipped`, `duplicate-label`. `a11yReadingOrder()` lists the
+  projected nodes in traversal order.
+
+  The panel gains an A11y tab showing the selected entity's readout followed by the
+  scene-wide findings, with findings belonging to the selection marked.
+
+- 5b0fc75: Add the `getDevtoolsDescriptor()` protocol: entities describe their own debug
+  surface, so DevTools needs no table of component types.
+
+  `Entity.getDevtoolsDescriptor()` returns `null` by default. `VirtualList`,
+  `ScrollView`, `Slider`, `Input` and `Markdown` implement it, exposing state a
+  generic inspector cannot reach — visible range and pool/measurement counts,
+  spring position versus target, normalised thumb position, selection offsets, and
+  streaming token reuse ratio.
+
+  `inspectEntity()` carries the descriptor, and the panel's Inspect tab renders it
+  below the generic properties (20 rows, up from 8). Read-only fields are marked so
+  an edit that would be reverted is not invited.
+
+- ddd32f9: Add `explainHitTest(scene, x, y)`.
+
+  Picking returned the entity that received a pointer event but never why, and the
+  two failure modes that cost the most time — an invisible overlay swallowing clicks,
+  a control clipped out of its scroll container — look identical from outside.
+
+  Returns the winning entity plus every candidate considered with a verdict:
+  `accepted`, `invisible`, `clipped`, `pointer-transparent`, `outside-shape`, or
+  `occluded`. Verdicts mirror `Scene.findHitRecursively`'s own rejection conditions.
+  `formatHitExplanation()` renders the chain as indented lines.
+
+### Patch Changes
+
+- 5b0fc75: Drive the DevTools tree from the scene's structure version instead of a fixed
+  interval.
+
+  `Scene.structureVersion` is now public. It was already maintained for the resident
+  WASM transform store (bumped by `Entity.add`/`remove`), and exposing it lets a
+  consumer replace a tree walk with an integer comparison.
+
+  The panel rebuilt both trees every 500ms regardless of whether anything changed, a
+  constant CPU cost proportional to entity count. It now rebuilds only when the shape
+  changed, with a forced reconcile every 3s as a consistency check. Selection details
+  still refresh every tick, since properties change without the shape changing.
+
+- ddd32f9: Show whether a property is a runtime override or computed by the parent's layout.
+
+  `Entity.getLayoutControlledProperties(child)` lets a container declare which of a
+  child's properties it recomputes. `Stack`, `Table`, `Tabs`, `RadioGroup`,
+  `ResizablePanel` and `ScrollView` implement it; `ScrollView` answers per child,
+  since it owns geometry on its internal wrapper but not on the children a caller
+  adds inside it.
+
+  DevTools marks those properties in the readout, names the owning container, and
+  shows a warning after an edit that will be reverted. The edit still applies —
+  nudging a `Stack` child to see what moves is legitimate; the useful behaviour is to
+  let it happen and explain why it did not stick.
+
 ## 0.7.0
 
 ### Minor Changes
