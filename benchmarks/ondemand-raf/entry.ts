@@ -140,6 +140,21 @@ async function main(): Promise<void> {
         const idleRendered = afterIdle.renderedFrames - afterStream.renderedFrames;
         const idleSkipped = afterIdle.skippedFrames - afterStream.skippedFrames;
         const streamOffered = streamRendered + streamSkipped;
+        // Detect a starved rAF loop.
+        //
+        // Browsers throttle or suspend `requestAnimationFrame` for a window that is
+        // not visible, so anything that takes focus mid-run — switching workspace,
+        // another window raising itself — leaves this arm with a handful of frames
+        // or none at all. The per-frame figures then divide by a tiny denominator
+        // and read as a spectacular improvement. That has already misled this
+        // investigation twice, so the arm now records whether it was starved
+        // instead of leaving it to a reader to notice `rendered=0`.
+        //
+        // The threshold is deliberately loose: at 60Hz a 4 s stream offers ~240
+        // frames, so requiring a quarter of that flags real starvation without
+        // failing a merely busy machine.
+        const expectedFrames = (STREAM_MS / 1000) * 60;
+        const starved = streamOffered < expectedFrames * 0.25;
         const idleOffered = idleRendered + idleSkipped;
 
         const phase = (name: string): number =>
@@ -151,6 +166,10 @@ async function main(): Promise<void> {
           mode,
           chunksInjected: injected,
           streamOffered,
+          // When true, every per-frame number in this row is unusable: the rAF loop
+          // was throttled, almost always because the window lost focus.
+          starved,
+          expectedFrames,
           streamRendered,
           streamSkipped,
           // The headline: during a stream, what fraction of offered frames does

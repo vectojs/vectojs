@@ -946,6 +946,29 @@ export class Scene {
   private contentGridCalibrationFrames: Map<string, number> = new Map();
   /** Detached, untransformed font probes used by the cold calibration pass. */
   private contentGridCalibrationProbes: Map<string, HTMLElement> = new Map();
+  /**
+   * Monotonic stamp identifying the conditions grid cells were calibrated under.
+   *
+   * Calibration measures the difference between the advance the canvas grid assigns
+   * a cluster and the width the browser lays it out at, then writes a per-cell
+   * `scaleX`. That result stays valid until the font or the page scale changes, and
+   * it lives on the cell element — so a cell carrying this stamp needs no further
+   * work.
+   *
+   * The scan that feeds calibration was O(cells) on every revision bump: for a
+   * streaming code block it re-derived a measurement key for every cell in the
+   * block each frame in order to produce only ~20 distinct keys, costing about
+   * 2.5 ms/frame after the `style.font` fix and still over half of `a11ySync`. Since
+   * carrier reuse (#244) leaves untouched lines — and therefore their calibrated
+   * transforms — in place, cells stamped with the current generation can simply be
+   * skipped, making the scan O(new cells) instead.
+   *
+   * A plain incrementing integer rather than the descriptive calibration key,
+   * because it goes into an attribute selector and must not need escaping.
+   */
+  private contentGridCalibrationGeneration = 0;
+  /** The `(fontEpoch, pageScale)` pair the current generation corresponds to. */
+  private contentGridCalibrationStamp = '';
   /** Invalidates grid font calibration after browser font availability changes. */
   private contentFontEpoch = 0;
   /** Cached Canvas-to-client scale for the current font/viewport epoch. */
@@ -4024,6 +4047,60 @@ export class Scene {
   ): void {
     if (typeof requestAnimationFrame !== 'function') return;
     if (el.dataset.vectoGridCalibrationPending === calibrationKey) return;
+
+    // Advance the calibration generation when the conditions a measurement depends
+    // on change. The font epoch covers font availability; page scale covers browser
+    // zoom. Both alter the laid-out width of the same text, so every existing
+    // per-cell scaleX becomes wrong and must be re-measured rather than trusted.
+    const stamp = `${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
+    if (this.contentGridCalibrationStamp !== stamp) {
+      this.contentGridCalibrationStamp = stamp;
+      this.contentGridCalibrationGeneration++;
+    }
+    const generation = `${this.contentGridCalibrationGeneration}`;
+
+    // Cells not yet calibrated for this generation. Carrier reuse (#244) leaves an
+    // untouched line's cells — and the transforms already written on them — in
+    // place, so a streamed append leaves this matching only the rebuilt tail.
+    // Queried before any probe DOM is built so the common no-op case costs one
+    // selector match.
+    const pendingCells = el.querySelectorAll<HTMLElement>(
+      `[data-vecto-grid-cell]:not([data-vecto-grid-calib="${generation}"])`,
+    );
+
+    // Complete without a probe when nothing is pending: no probe construction, no
+    // forced layout, and no two-frame round trip. This is the steady state while
+    // streaming.
+    //
+    // The condition is `pendingCells.length` and NOT the number of measurable
+    // cells. Those differ on a FIRST projection, where every cell is pending yet all
+    // may be legitimately skipped as unmeasurable (zero advance, empty text). Using
+    // the measurable count marked such a grid ready without ever measuring it: a
+    // standalone Table's cell selection then returned '' instead of its text,
+    // because the e2e waits on `vectoGridReady` and proceeded before the browser had
+    // laid the new carriers out.
+    if (pendingCells.length === 0) {
+      el.dataset.vectoGridCalibrationSamples = '0';
+      delete el.dataset.vectoGridCalibrationPending;
+      // `vectoGridReady` must be published from a frame callback, not synchronously.
+      //
+      // Its contract is "this projection's geometry is settled and safe to measure",
+      // which is stronger than "calibration has no work to do". Consumers act on it
+      // by immediately calling `getBoundingClientRect` — the e2e locates a drag that
+      // way — and carriers materialized earlier in this same task have not been laid
+      // out yet, so a synchronous flag hands out a zero-width rect and a drag lands
+      // outside the text. The probe path implicitly satisfied the contract by
+      // spending two frames before setting it; this path has no probe, so it waits
+      // one frame explicitly. Still far cheaper than building and measuring a probe.
+      const readyFrame = requestAnimationFrame(() => {
+        this.contentGridCalibrationFrames.delete(entityId);
+        if (!el.isConnected) return;
+        el.dataset.vectoGridCalibration = calibrationKey;
+        el.dataset.vectoGridReady = 'true';
+      });
+      this.contentGridCalibrationFrames.set(entityId, readyFrame);
+      return;
+    }
     const previous = this.contentGridCalibrationFrames.get(entityId);
     if (previous !== undefined && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(previous);
@@ -4061,12 +4138,21 @@ export class Scene {
     }> = [];
     const measurementsByKey = new Map<string, (typeof measurements)[number]>();
     const scanStart = this._phaseTiming ? performance.now() : 0;
-    for (const target of el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')) {
+    for (const target of pendingCells) {
       const sourceLength = Number(target.dataset.vectoGridSourceLength ?? 0);
       const targetWidth = Number(target.dataset.vectoGridAdvance ?? 0);
-      if (sourceLength <= 0 || targetWidth <= 0) continue;
+      // Cells with nothing to measure are stamped immediately: leaving them
+      // unstamped would keep them in the selector and re-scan them every frame,
+      // which is the cost this whole change exists to remove.
+      if (sourceLength <= 0 || targetWidth <= 0) {
+        target.dataset.vectoGridCalib = generation;
+        continue;
+      }
       const sourceText = target.textContent?.slice(0, sourceLength) ?? '';
-      if (!sourceText) continue;
+      if (!sourceText) {
+        target.dataset.vectoGridCalib = generation;
+        continue;
+      }
       // Read the font from a data attribute, not `target.style.font`.
       //
       // `style.font` is a shorthand getter: Chrome re-serializes it from every font
@@ -4111,6 +4197,21 @@ export class Scene {
     // unzoomed Range width for a missing-glyph fallback; pageScaleX below
     // compensates that engine behavior without special-casing the font.
     if (this._phaseTiming) this._recordPhase('calibScan', performance.now() - scanStart);
+
+    // No measurable cell among the pending ones: every one was zero-advance or
+    // empty text and has just been stamped, so there is nothing to lay out and no
+    // reason to spend two animation frames. Distinct from the `pendingCells` early
+    // exit above, which covers the already-calibrated steady state.
+    if (measurements.length === 0) {
+      // The probe is not in the document yet (it is appended below), so it needs no
+      // removal here — it simply goes unreferenced.
+      el.dataset.vectoGridCalibration = calibrationKey;
+      el.dataset.vectoGridReady = 'true';
+      el.dataset.vectoGridCalibrationSamples = '0';
+      delete el.dataset.vectoGridCalibrationPending;
+      return;
+    }
+
     const appendStart = this._phaseTiming ? performance.now() : 0;
     (this.a11yRoot ?? document.body ?? document.documentElement).appendChild(probe);
     if (this._phaseTiming) this._recordPhase('calibProbeBuild', performance.now() - appendStart);
@@ -4158,6 +4259,11 @@ export class Scene {
         }
         for (const { element, scale } of updates) {
           element.style.transform = Math.abs(scale - 1) <= 0.001 ? '' : `scaleX(${scale})`;
+          // Stamp only after the transform is actually applied. If the pass bails
+          // out as invalid, these stay unstamped and are retried next revision,
+          // which is the behaviour that keeps a failed measurement from being
+          // silently treated as done.
+          element.dataset.vectoGridCalib = generation;
         }
         el.dataset.vectoGridCalibration = calibrationKey;
         el.dataset.vectoGridReady = 'true';
