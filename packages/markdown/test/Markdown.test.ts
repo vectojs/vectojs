@@ -406,6 +406,95 @@ Plain paragraph at the end.
       expect(md.content.children[0]).toBe(para);
     });
 
+    it('updates a growing unclosed code block in-place', () => {
+      // An unclosed fenced block is the second most common shape an LLM streams,
+      // and the worst case for the rebuild path: CodeBlock re-tokenizes and
+      // re-measures its whole grid on construction, so a block growing one line
+      // per chunk paid that every time.
+      const md = new Markdown('```ts\nconst a = 1;');
+      const block = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('\nconst b = 2;');
+      expect(md.content.children[md.content.children.length - 1]).toBe(block);
+
+      md.appendMarkdown('\nconst c = 3;');
+      expect(md.content.children[md.content.children.length - 1]).toBe(block);
+    });
+
+    it('keeps the reused code block content correct as it grows', () => {
+      const md = new Markdown('```ts\nline1');
+      md.appendMarkdown('\nline2');
+      md.appendMarkdown('\nline3');
+
+      const block = md.content.children[md.content.children.length - 1] as unknown as {
+        source: string;
+      };
+      // Reuse must not mean stale: the projected source has to reflect every chunk,
+      // or selection and screen-reader text lag the canvas.
+      expect(block.source).toContain('line1');
+      expect(block.source).toContain('line3');
+    });
+
+    it('produces the same highlighted lines whether streamed or set at once', () => {
+      // buildLines reuses the highlight of the unchanged line prefix, so the
+      // incremental result must be identical to a from-scratch build — otherwise
+      // the optimisation trades correctness for speed.
+      const streamed = new Markdown('```ts\nconst a = 1;');
+      streamed.appendMarkdown('\n// note "x"');
+      streamed.appendMarkdown('\nconst b = 2;');
+
+      const atOnce = new Markdown('```ts\nconst a = 1;\n// note "x"\nconst b = 2;');
+
+      const linesOf = (md: Markdown): string =>
+        JSON.stringify(
+          (
+            md.content.children[md.content.children.length - 1] as unknown as {
+              lines: unknown;
+            }
+          ).lines,
+        );
+      expect(linesOf(streamed)).toBe(linesOf(atOnce));
+    });
+
+    it('re-highlights the line a chunk lands mid-way through', () => {
+      // A chunk usually arrives mid-line, so the previous last line changes and
+      // must NOT be reused — reusing it would leave a half-tokenized line.
+      const md = new Markdown('```ts\nconst s = "unclo');
+      md.appendMarkdown('sed";');
+
+      const block = md.content.children[md.content.children.length - 1] as unknown as {
+        lines: unknown[];
+        source: string;
+      };
+      // One line, not two: the chunk continued the existing line rather than
+      // adding one, which is exactly the case the prefix reuse must not treat as
+      // stable.
+      expect(block.source).toContain('"unclosed"');
+      expect(block.lines).toHaveLength(1);
+      // And it must be fully re-tokenized, not left as the half-open string.
+      expect(JSON.stringify(block.lines)).toContain('unclosed');
+    });
+
+    it('picks up a language that arrives after the fence opens', () => {
+      // ```` ``` ```` can stream before its info string, so the language is not
+      // stable across chunks and must be passed through on every update.
+      const md = new Markdown('```\nplain');
+      md.setContent('```ts\nplain');
+      const block = md.content.children[md.content.children.length - 1] as unknown as {
+        lang: string;
+      };
+      expect(block.lang).toBe('ts');
+    });
+
+    it('rebuilds rather than reuses when the block type changes', () => {
+      // paragraph -> code is a different entity class; reusing here would be a
+      // type error waiting to happen, so the branch must not fire.
+      const md = new Markdown('some text');
+      const para = md.content.children[0];
+      md.setContent('```ts\nsome text');
+      expect(md.content.children[0]).not.toBe(para);
+    });
+
     it('keeps content/container size correct when a growing last paragraph is the only change (O(1) resize path)', () => {
       const md = new Markdown('# Title\n\nFirst paragraph.');
       const heading = md.content.children[0];
