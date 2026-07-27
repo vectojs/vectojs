@@ -380,6 +380,105 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] projected canvas text is truncated: "${caption.text.slice(0, 60)}"`,
     );
 
+    // ---- Modal: dialog semantics, focus containment, restoration -----------
+    // The WAI-ARIA dialog pattern is the easiest thing here to get subtly wrong
+    // and the most disruptive when wrong: focus that escapes a modal leaves a
+    // keyboard user operating controls they cannot see.
+    await page.focus('[data-vecto-id="btn-submit"]');
+    const beforeOpen = await page.evaluate(
+      () => document.activeElement?.getAttribute('data-vecto-id') ?? null,
+    );
+
+    await page.evaluate(() => window.__a11yFixture.openModal());
+    await page.waitForFunction(() => !!document.querySelector('[data-vecto-id="modal-confirm"]'), {
+      timeout: 5000,
+    });
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+
+    const dialog = await page.evaluate(() => {
+      const el = document.querySelector('[data-vecto-id="modal-confirm"]') as HTMLElement | null;
+      if (!el) return null;
+      return {
+        role: el.getAttribute('role'),
+        ariaModal: el.getAttribute('aria-modal'),
+        tabIndex: el.tabIndex,
+        focusedInside: el.contains(document.activeElement),
+        focusedId: document.activeElement?.getAttribute('data-vecto-id') ?? null,
+      };
+    });
+    assert.ok(dialog, `[${engine}] modal did not project a dialog node`);
+    assert.equal(dialog.role, 'dialog', `[${engine}] modal must project role=dialog`);
+    assert.equal(dialog.ariaModal, 'true', `[${engine}] modal must project aria-modal`);
+    // Focus must MOVE INTO the dialog on open, or Escape and screen-reader
+    // context never reach it.
+    assert.ok(
+      dialog.focusedInside || dialog.focusedId === 'modal-confirm',
+      `[${engine}] opening a modal must move focus into it (focus was "${dialog.focusedId}")`,
+    );
+
+    // Tab must stay inside the dialog, in BOTH directions. `aria-modal` only
+    // tells assistive tech that outside content is inert; it does not constrain
+    // the browser's tab order, so without an explicit trap a keyboard user walks
+    // the page behind the dialog. Assert against the background control ids
+    // rather than DOM containment: the a11y projection is flat (every element is
+    // a sibling under a11yRoot, ordered by sorting), so
+    // `dialog.contains(child)` is always false and would prove nothing.
+    const backgroundIds = new Set(named);
+    const visited: Array<{ id: string | null; background: boolean }> = [];
+    for (let i = 0; i < 8; i++) {
+      await page.keyboard.press('Tab');
+      visited.push(
+        await page.evaluate(
+          (bg: string[]) => {
+            const id = document.activeElement?.getAttribute('data-vecto-id') ?? null;
+            return { id, background: id !== null && bg.includes(id) };
+          },
+          [...backgroundIds],
+        ),
+      );
+    }
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.down('Shift');
+      await page.keyboard.press('Tab');
+      await page.keyboard.up('Shift');
+      visited.push(
+        await page.evaluate(
+          (bg: string[]) => {
+            const id = document.activeElement?.getAttribute('data-vecto-id') ?? null;
+            return { id, background: id !== null && bg.includes(id) };
+          },
+          [...backgroundIds],
+        ),
+      );
+    }
+    const escaped = visited.filter((v) => v.background);
+    assert.equal(
+      escaped.length,
+      0,
+      `[${engine}] Tab escaped the modal to background control(s): ${escaped
+        .map((v) => v.id)
+        .join(', ')}`,
+    );
+
+    // Escape closes it (WAI-ARIA dialog pattern).
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('[data-vecto-id="modal-confirm"]'), {
+      timeout: 5000,
+    });
+
+    // …and focus returns to whatever held it before opening. Landing on <body>
+    // instead would silently reset a keyboard user to the top of the page.
+    const afterClose = await page.evaluate(
+      () => document.activeElement?.getAttribute('data-vecto-id') ?? null,
+    );
+    assert.equal(
+      afterClose,
+      beforeOpen,
+      `[${engine}] closing a modal must restore focus to "${beforeOpen}", got "${afterClose}"`,
+    );
+
     // ---- Focus restoration across removal ----------------------------------
     // Losing focus to <body> strands a keyboard user; the sentinel prevents it.
     await page.focus('[data-vecto-id="btn-submit"]');

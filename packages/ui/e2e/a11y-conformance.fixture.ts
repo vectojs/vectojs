@@ -43,7 +43,7 @@ declare global {
       /** Announce text into the live region, to test aria-live delivery. */
       announce(message: string): void;
       openModal(): void;
-      closeModal(): void;
+      closeModal(): Promise<void>;
     };
   }
 }
@@ -238,11 +238,15 @@ window.__a11yFixture = {
     ok.y = 100;
     ok.on('click', () => log('modal-ok', 'click'));
     modal.add(ok);
-    scene.add(modal);
+    // showOverlay, not add: Modal's own close() calls hideOverlay, so mounting it
+    // into the main tree would leave open/close asymmetric and never exercise the
+    // real path.
+    scene.showOverlay(modal);
   },
-  closeModal() {
+  async closeModal() {
     if (!modal) return;
-    scene.remove(modal);
+    // Drive the component's own close(), which is what restores focus.
+    await modal.close();
     modal = null;
   },
 };
