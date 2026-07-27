@@ -382,6 +382,62 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] ArrowDown must keep focus on a treeitem`,
     );
 
+    // ---- Virtualized list: focus across row recycling ----------------------
+    // The fragile boundary: a row holding focus is recycled out as the viewport
+    // moves. Dropping focus to <body> there strands a keyboard user at the top of
+    // the page with no indication of what happened.
+    const mountedRows = await page.evaluate(
+      () => document.querySelectorAll('[data-vecto-id^="vrow-"]').length,
+    );
+    assert.ok(mountedRows > 0, `[${engine}] virtualized list projected no rows`);
+    assert.ok(
+      mountedRows < 100,
+      `[${engine}] expected only the visible window to be projected, got ${mountedRows} of 400`,
+    );
+
+    // Each row must state its REAL position: only the mounted window exists in
+    // the DOM, so without this the list is announced as "item 3 of 12".
+    const rowSet = await page.evaluate(() => {
+      const row = document.querySelector('[data-vecto-id^="vrow-"]');
+      return {
+        posInSet: row?.getAttribute('aria-posinset') ?? null,
+        setSize: row?.getAttribute('aria-setsize') ?? null,
+      };
+    });
+    assert.equal(rowSet.setSize, '400', `[${engine}] row must report the full set size`);
+    assert.ok(
+      rowSet.posInSet !== null && Number(rowSet.posInSet) >= 1,
+      `[${engine}] row must report its position in the set`,
+    );
+
+    const focusedRow = await page.evaluate(() => {
+      const row = document.querySelector('[data-vecto-id^="vrow-"]') as HTMLElement | null;
+      row?.focus();
+      return document.activeElement === row;
+    });
+    assert.ok(focusedRow, `[${engine}] a virtualized row must be focusable`);
+
+    await page.evaluate(() => window.__a11yFixture.recycleRows());
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+
+    const afterRecycle = await page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null;
+      return {
+        strandedOnBody: active === document.body,
+        onSentinel: !!active?.hasAttribute?.('data-vecto-focus-sentinel'),
+      };
+    });
+    assert.ok(
+      !afterRecycle.strandedOnBody,
+      `[${engine}] recycling a focused row must not drop focus to <body>`,
+    );
+    assert.ok(
+      afterRecycle.onSentinel,
+      `[${engine}] focus should land on the sentinel after its row is recycled`,
+    );
+
     // ---- Context menu ------------------------------------------------------
     await page.evaluate(() => window.__a11yFixture.openMenu());
     await page.waitForFunction(() => !!document.querySelector('[role="menu"]'), { timeout: 5000 });

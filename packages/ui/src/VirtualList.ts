@@ -324,11 +324,11 @@ export class VirtualList<T = unknown> extends UIComponent {
     return {
       role: 'list',
       label: `Virtual list with ${this._items.length} items`,
-      // The DOM only ever holds the mounted window, so the container states the
-      // real total. Rows come from the caller's `renderItem`, which is where
-      // `posInSet`/`setSize` belong per row — see the class doc: without them a
-      // list showing rows 40-52 of 10,000 is announced as "item 3 of 12".
-      setSize: this._items.length,
+      // NOT `setSize`: `aria-setsize` is defined on set MEMBERS, not on the set
+      // itself, so putting it on the `role="list"` container is a disallowed
+      // attribute (axe `aria-allowed-attr`, critical). The count belongs in the
+      // container's accessible name, which the label above already carries, and on
+      // each row — see the class doc.
     };
   }
 
