@@ -1,5 +1,43 @@
 # @vectojs/markdown
 
+## 0.1.2
+
+### Patch Changes
+
+- 9d42b01: Make a streaming code block ~3x cheaper per chunk.
+
+  Two changes, only the second of which mattered:
+
+  `CodeBlock` is now reused in place during streaming (via the `setCode()` that
+  already existed but the reconciler never called), instead of being destroyed and
+  rebuilt on every chunk. An unclosed fenced block is the second most common shape an
+  LLM streams, so this looked like the win — **measured, it changed nothing.**
+
+  The actual cost was inside `buildLines`, which re-highlighted **every line** on
+  every call. Streaming appends to the end, so all but the last line are
+  byte-identical to the previous build; re-tokenizing them made an append O(N) and a
+  whole stream O(N²). It now reuses the highlight of the unchanged line prefix.
+
+  Measured over 300 appends to a growing block: **34.07ms → 11.55ms (2.95x)**,
+  0.114ms → 0.038ms per append. The lexer's share of the remaining time rose from 7%
+  to 23%, which is the cross-check that the removed work was real.
+
+  The previous last line is deliberately not reused, since a chunk usually lands
+  mid-line and changes it.
+
+- 8b3c548: Stop re-deriving the token prefix the worker already computed.
+
+  The worker calculates the raw-equal prefix length to decide which token tail to
+  send, then `updateTokens` re-scanned every token's `raw` string on the main thread
+  to compute the same number. It now takes the worker's value.
+
+  Validated rather than trusted: a value outside either token array would make the
+  prefix slice reuse entities that do not correspond to the new tokens, so an
+  out-of-range hint falls back to scanning.
+
+  Token counts are far below character counts, so this is a small saving — but it was
+  duplicated work on every streamed chunk.
+
 ## 0.1.1
 
 ### Patch Changes
