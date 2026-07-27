@@ -19,13 +19,16 @@ import {
   Dropdown,
   Input,
   Link,
+  ContextMenu,
   Modal,
   RadioGroup,
   Slider,
   Tabs,
   Text,
   TextArea,
+  Table,
   Toggle,
+  TreeView,
 } from '@vectojs/ui';
 
 /** Records what each control reported, so the test can assert on behaviour. */
@@ -42,6 +45,8 @@ declare global {
       events: EventLog[];
       /** Announce text into the live region, to test aria-live delivery. */
       announce(message: string): void;
+      openMenu(): void;
+      closeMenu(): void;
       openModal(): void;
       closeModal(): Promise<void>;
     };
@@ -175,6 +180,51 @@ tabs.y = 20;
 tabs.on('change', () => log('tabs-main', 'change'));
 scene.add(tabs);
 
+// --- Composite widgets with roving tabindex + arrow navigation -------------
+// These three carry the patterns unit tests cannot verify: roving tabindex, arrow
+// keys, and the grid/tree role structure assistive tech requires. Their behaviour
+// was asserted only in jsdom before, which has no accessibility tree.
+
+const tree = new TreeView({
+  nodes: [
+    {
+      id: 'src',
+      label: 'src',
+      children: [
+        { id: 'index', label: 'index.ts' },
+        { id: 'scene', label: 'Scene.ts' },
+      ],
+    },
+    { id: 'readme', label: 'README.md' },
+  ],
+  width: 220,
+  height: 130,
+});
+tree.id = 'tree-files';
+tree.x = 700;
+tree.y = 160;
+tree.on('change', () => log('tree-files', 'change'));
+scene.add(tree);
+
+const table = new Table({
+  headers: ['Name', 'Size'],
+  rows: [
+    ['index.ts', '1.2 kB'],
+    ['Scene.ts', '48 kB'],
+    ['README.md', '3 kB'],
+  ],
+  width: 260,
+  rowHeight: 30,
+});
+table.id = 'table-files';
+table.x = 20;
+table.y = 380;
+scene.add(table);
+
+// Opened on demand: a context menu that is always visible is not the pattern
+// under test, and it would overlap the controls above.
+let menu: ContextMenu | null = null;
+
 // --- Static text: readable, searchable, selectable -------------------------
 
 const caption = new Text(
@@ -227,6 +277,25 @@ window.__a11yFixture = {
   announce(message: string) {
     live.message = message;
     scene.markDirty();
+  },
+  openMenu() {
+    if (menu) return;
+    menu = new ContextMenu({
+      items: [
+        { label: 'Cut', shortcut: 'Ctrl+X', onClick: () => log('menu-cut', 'click') },
+        { label: 'Copy', shortcut: 'Ctrl+C', onClick: () => log('menu-copy', 'click') },
+        { separator: true },
+        { label: 'Paste', disabled: true },
+      ],
+      width: 200,
+    });
+    menu.id = 'menu-edit';
+    menu.showAtPoint(420, 300, scene);
+  },
+  closeMenu() {
+    if (!menu) return;
+    scene.hideOverlay(menu);
+    menu = null;
   },
   openModal() {
     if (modal) return;

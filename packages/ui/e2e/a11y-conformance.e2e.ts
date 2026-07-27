@@ -245,6 +245,80 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] radiogroup must have exactly one tab stop`,
     );
 
+    // ---- Composite widgets: role structure + roving tabindex ---------------
+    // Structure first: assistive tech requires these exact nestings, and a
+    // missing intermediate role (grid without row, say) breaks navigation even
+    // though every individual cell looks correct.
+    assert.equal(byRole(nodes, 'tree').length, 1, `[${engine}] expected one tree`);
+    assert.ok(byRole(nodes, 'treeitem').length >= 2, `[${engine}] tree needs treeitems`);
+    assert.equal(byRole(nodes, 'grid').length, 1, `[${engine}] expected one grid`);
+    assert.ok(byRole(nodes, 'row').length >= 3, `[${engine}] grid needs rows`);
+    assert.equal(
+      byRole(nodes, 'columnheader').length,
+      2,
+      `[${engine}] grid needs a columnheader per column`,
+    );
+    assert.ok(byRole(nodes, 'gridcell').length >= 6, `[${engine}] grid needs gridcells`);
+
+    // Each composite exposes exactly ONE tab stop, so Tab enters and leaves the
+    // widget rather than walking every row/cell.
+    //
+    // The grid's stop can sit on a `columnheader` rather than a `gridcell`: the
+    // active cell starts at row -1 (the header). Counting only gridcells reports
+    // zero stops and looks like a keyboard-unreachable table — it isn't.
+    const stopsIn = (roles: string[]): ProjectedNode[] =>
+      nodes.filter((n) => n.role !== null && roles.includes(n.role) && n.tabIndex === 0);
+    assert.equal(stopsIn(['treeitem']).length, 1, `[${engine}] tree needs exactly one tab stop`);
+    assert.equal(
+      stopsIn(['gridcell', 'columnheader']).length,
+      1,
+      `[${engine}] grid needs exactly one tab stop`,
+    );
+
+    // `aria-expanded` must be present on a parent treeitem and absent on a leaf —
+    // announcing a leaf as collapsed tells a screen-reader user there is content
+    // to open that does not exist.
+    const treeitems = byRole(nodes, 'treeitem');
+    assert.ok(
+      treeitems.some((t) => t.expanded === 'false' || t.expanded === 'true'),
+      `[${engine}] a parent treeitem must expose aria-expanded`,
+    );
+
+    // Arrow keys move the focus within the tree while preserving the single stop.
+    const treeStop = stopsIn(['treeitem'])[0]!;
+    await page.focus(`[data-vecto-id="${treeStop.id}"]`);
+    await page.keyboard.press('ArrowDown');
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    const afterTreeArrow = await readProjection(page);
+    assert.equal(
+      afterTreeArrow.filter((n) => n.role === 'treeitem' && n.tabIndex === 0).length,
+      1,
+      `[${engine}] tree must still expose exactly one tab stop after ArrowDown`,
+    );
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.getAttribute('role')),
+      'treeitem',
+      `[${engine}] ArrowDown must keep focus on a treeitem`,
+    );
+
+    // ---- Context menu ------------------------------------------------------
+    await page.evaluate(() => window.__a11yFixture.openMenu());
+    await page.waitForFunction(() => !!document.querySelector('[role="menu"]'), { timeout: 5000 });
+    const menuNodes = await readProjection(page);
+    assert.equal(byRole(menuNodes, 'menu').length, 1, `[${engine}] expected one menu`);
+    const menuItems = byRole(menuNodes, 'menuitem');
+    assert.ok(menuItems.length >= 3, `[${engine}] menu needs menuitems`);
+    // A separator must not be projected as a menuitem, or it becomes a focusable
+    // stop that announces nothing.
+    assert.ok(
+      menuItems.every((m) => m.label !== null && m.label.trim() !== ''),
+      `[${engine}] every menuitem needs an accessible name`,
+    );
+    await page.evaluate(() => window.__a11yFixture.closeMenu());
+    await page.waitForFunction(() => !document.querySelector('[role="menu"]'), { timeout: 5000 });
+
     // ---- Live region --------------------------------------------------------
     const live = byId(nodes, 'live-status');
     assert.equal(live.live, 'polite', `[${engine}] status region must be aria-live=polite`);
