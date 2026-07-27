@@ -249,6 +249,54 @@ export interface A11yAttributes {
   /** `aria-invalid`: the field's current value fails validation. */
   invalid?: boolean;
   /** `aria-level`: hierarchical level (headings, tree items, etc.). */
+  /**
+   * Position within a set, 1-based — projected as `aria-posinset`.
+   *
+   * Required whenever the DOM contains only part of the set, which is exactly
+   * what virtualization produces: a list rendering rows 40-52 of 10,000 otherwise
+   * announces "item 3 of 12", because that is all the accessibility tree can see.
+   * Pair with {@link setSize}.
+   */
+  posInSet?: number;
+
+  /**
+   * Total size of the set the element belongs to — projected as `aria-setsize`.
+   *
+   * `-1` is the ARIA-defined value for "unknown but non-empty", appropriate for a
+   * lazily loaded set whose total is not yet known.
+   */
+  setSize?: number;
+
+  /**
+   * Total row count of a grid whose DOM holds only the visible rows — projected
+   * as `aria-rowcount`. Same rationale as {@link posInSet}: a virtualized table
+   * needs to state the real total, not the rendered one.
+   */
+  rowCount?: number;
+
+  /** 1-based row index within the full grid — projected as `aria-rowindex`. */
+  rowIndex?: number;
+
+  /**
+   * Human-readable form of a range widget's current value — projected as
+   * `aria-valuetext`.
+   *
+   * A bare `aria-valuenow` is announced as a number out of context: "40" rather
+   * than "40 percent" or "Medium". Only set this when the number alone is
+   * genuinely ambiguous; a redundant valuetext makes announcements longer for no
+   * gain.
+   */
+  valueText?: string;
+
+  /**
+   * Orientation of a composite widget — projected as `aria-orientation`.
+   *
+   * Worth setting when it differs from the role's default (`slider` and
+   * `separator` default horizontal; `listbox`, `menu`, `tree` default vertical),
+   * because it tells assistive technology which arrow keys to expect.
+   */
+  orientation?: 'horizontal' | 'vertical';
+
   level?: number;
   /** `aria-modal`: marks a `role="dialog"` as modal so assistive tech confines
    *  reading to it. Set on a modal dialog's shell. */

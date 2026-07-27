@@ -3155,6 +3155,32 @@ export class Scene {
         'aria-level',
         attrs.level === undefined ? undefined : String(attrs.level),
       );
+      // Set position/size and grid extent. These matter specifically because a
+      // virtualized widget projects only its visible rows: without them the
+      // accessibility tree can only report what is mounted, so a list showing
+      // rows 40-52 of 10,000 announces "item 3 of 12".
+      this.syncOptionalAttribute(
+        el,
+        'aria-posinset',
+        attrs.posInSet === undefined ? undefined : String(attrs.posInSet),
+      );
+      this.syncOptionalAttribute(
+        el,
+        'aria-setsize',
+        attrs.setSize === undefined ? undefined : String(attrs.setSize),
+      );
+      this.syncOptionalAttribute(
+        el,
+        'aria-rowcount',
+        attrs.rowCount === undefined ? undefined : String(attrs.rowCount),
+      );
+      this.syncOptionalAttribute(
+        el,
+        'aria-rowindex',
+        attrs.rowIndex === undefined ? undefined : String(attrs.rowIndex),
+      );
+      this.syncOptionalAttribute(el, 'aria-valuetext', attrs.valueText);
+      this.syncOptionalAttribute(el, 'aria-orientation', attrs.orientation);
 
       if (attrs.value !== undefined) {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {

@@ -120,6 +120,15 @@ export interface VirtualListOptions<T> {
  *   height: 600,
  * });
  * scene.add(list.setPosition(20, 20));
+ *
+ * Accessibility: the container projects `aria-setsize` with the real item count,
+ * because only the mounted window exists in the DOM. Rows are yours — give each
+ * one `posInSet` (1-based) and `setSize` in its `getA11yAttributes()`, or a screen
+ * reader announces the mounted window's size instead of the list's:
+ *
+ * ```ts
+ * renderItem: (item, i) => new Row(item, { posInSet: i + 1, setSize: total })
+ * ```
  */
 export class VirtualList<T = unknown> extends UIComponent {
   private _items: T[];
@@ -315,6 +324,11 @@ export class VirtualList<T = unknown> extends UIComponent {
     return {
       role: 'list',
       label: `Virtual list with ${this._items.length} items`,
+      // The DOM only ever holds the mounted window, so the container states the
+      // real total. Rows come from the caller's `renderItem`, which is where
+      // `posInSet`/`setSize` belong per row — see the class doc: without them a
+      // list showing rows 40-52 of 10,000 is announced as "item 3 of 12".
+      setSize: this._items.length,
     };
   }
 
