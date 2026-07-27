@@ -245,6 +245,85 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] radiogroup must have exactly one tab stop`,
     );
 
+    // ---- Per-role keyboard protocol (ARIA APG) -----------------------------
+    // Each role has its own contract, and "has a role" does not imply "obeys it".
+    // These pin the contracts that are NOT free from native semantics.
+
+    // switch: Space AND Enter both activate. `role="switch"` is projected onto a
+    // div, which is not natively activatable, so the Scene synthesises a click
+    // from either key for the interactive ARIA roles.
+    //
+    // Assert the component's own `change` event rather than the projected
+    // `aria-checked` value. Two earlier attempts here compared against a
+    // pre-read attribute and failed while the component was working correctly:
+    // writing `aria-checked` into the DOM is overwritten by the next sync from
+    // component state, and reading it before the keypress can be stale by the
+    // time the key lands. The event is the contract; the attribute is a mirror
+    // of it.
+    for (const key of [SPACE_KEY, 'Enter']) {
+      await clearEvents(page);
+      await page.focus('[role="switch"]');
+      await page.keyboard.press(key);
+      await page.evaluate(
+        () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+      );
+      const fired = (await readEvents(page)).filter((e) => e.id === 'toggle-notify');
+      assert.ok(
+        fired.length > 0,
+        `[${engine}] switch must fire change on ${key === SPACE_KEY ? 'Space' : 'Enter'}`,
+      );
+    }
+
+    // radiogroup: Home/End jump to the first/last option. Arrow keys already
+    // worked; Home/End did not move at all, which the APG requires.
+    const radioIndex = async (): Promise<number> =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('[role="radio"]')].findIndex(
+          (el) => el === document.activeElement,
+        ),
+      );
+    await page.focus('[role="radio"][tabindex="0"]');
+    await page.keyboard.press('End');
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    const lastRadio = await radioIndex();
+    assert.ok(lastRadio > 0, `[${engine}] End must move to the last radio (index ${lastRadio})`);
+    await page.keyboard.press('Home');
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    assert.equal(await radioIndex(), 0, `[${engine}] Home must move to the first radio`);
+
+    // combobox: Escape closes the popup (APG). Verified through aria-expanded
+    // rather than pixels, since that is what assistive tech reads.
+    await page.focus('[role="combobox"]');
+    await page.keyboard.press('Enter');
+    await waitForAttr(
+      page,
+      'dropdown-size',
+      'aria-expanded',
+      (v) => v === 'true',
+      `[${engine}] Enter must open the combobox`,
+    );
+    await page.keyboard.press('Escape');
+    await waitForAttr(
+      page,
+      'dropdown-size',
+      'aria-expanded',
+      (v) => v === 'false',
+      `[${engine}] Escape must close the combobox`,
+    );
+
+    // link: must be a native <a> with an href, so Enter activates and Space does
+    // NOT — that asymmetry is part of the link contract and comes free only from
+    // the native element.
+    assert.equal(
+      byId(await readProjection(page), 'link-docs').tag,
+      'a',
+      `[${engine}] a link must project a native <a>`,
+    );
+
     // ---- Composite widgets: role structure + roving tabindex ---------------
     // Structure first: assistive tech requires these exact nestings, and a
     // missing intermediate role (grid without row, say) breaks navigation even

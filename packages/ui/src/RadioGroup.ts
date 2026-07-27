@@ -156,14 +156,39 @@ export class RadioGroup extends UIComponent {
   }
 
   /** Arrow-key navigation within the group (WCAG radio pattern): Up/Left → prev,
-   *  Down/Right → next (wrapping, skipping disabled), selecting on move; Space
-   *  selects the focused option. */
+   *  Down/Right → next (wrapping, skipping disabled), selecting on move;
+   *  Home/End → first/last enabled option; Space selects the focused option. */
   public handleRadioKey(e: KeyboardEvent, fromValue: string): void {
-    const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'Spacebar'];
+    const keys = [
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      'Home',
+      'End',
+      ' ',
+      'Spacebar',
+    ];
     if (!keys.includes(e.key)) return;
     e.preventDefault();
     if (e.key === ' ' || e.key === 'Spacebar') {
       this.selectByValue(fromValue, true);
+      return;
+    }
+    // Home/End jump to the first/last option, which the ARIA radiogroup pattern
+    // requires and `Tabs` already implements. Scan inward so a disabled option at
+    // either edge does not swallow the key — landing on a disabled radio would be
+    // worse than not moving.
+    if (e.key === 'Home' || e.key === 'End') {
+      const n = this.options.length;
+      for (let i = 0; i < n; i++) {
+        const idx = e.key === 'Home' ? i : n - 1 - i;
+        const opt = this.options[idx];
+        if (opt && !opt.disabled) {
+          this.selectByValue(opt.value, true);
+          return;
+        }
+      }
       return;
     }
     const forward = e.key === 'ArrowDown' || e.key === 'ArrowRight';
