@@ -78,7 +78,11 @@ function layout(cells: number): Array<{ x: number; y: number; glyph: string; col
       // grid run off the bottom would let the rasteriser reject most of it.
       y: 18 + ((row * LINE_H) % (VH - 36)) + LINE_H * 0.75,
       glyph: GLYPHS[i % GLYPHS.length]!,
-      color: COLORS[(i * 7) % COLORS.length]!,
+      // Colour changes every ~7 cells, not every cell: real highlighted code is
+      // runs of same-coloured token text, and the renderer's fillStyle cache only
+      // pays off across such runs. Cycling per cell would defeat it and flatter
+      // the atlas.
+      color: COLORS[Math.floor(i / 7) % COLORS.length]!,
     });
   }
   return out;
@@ -235,6 +239,32 @@ async function main(): Promise<void> {
         push('fillText', performance.now() - t0);
       }
 
+      // --- fillTextCached: what CanvasRenderer actually does ---
+      //
+      // `CanvasRenderer.fillText` caches `font` and `fillStyle` and only assigns
+      // them on change (`CanvasRenderer.ts:347`). The `fillText` arm above sets
+      // `fillStyle` unconditionally per cell, which overstates the baseline —
+      // and therefore overstates the atlas win. This arm mirrors the real
+      // renderer, so it is the honest comparison for deciding the integration.
+      {
+        const t0 = performance.now();
+        for (let f = 0; f < FRAMES; f++) {
+          ctx.fillStyle = '#0b0f19';
+          ctx.fillRect(0, 0, VW, VH);
+          ctx.font = FONT;
+          ctx.textBaseline = 'alphabetic';
+          let cachedFill = '#0b0f19';
+          for (const c of cellList) {
+            if (cachedFill !== c.color) {
+              ctx.fillStyle = c.color;
+              cachedFill = c.color;
+            }
+            ctx.fillText(c.glyph, c.x, c.y);
+          }
+        }
+        push('fillTextCached', performance.now() - t0);
+      }
+
       // --- atlas: one source canvas, blit sub-rects ---
       //
       // `TextRasterCache` allocates one canvas PER cached run, so a warm cache
@@ -288,7 +318,7 @@ async function main(): Promise<void> {
     const stats = cache.stats;
     const hitRate = stats.hits / Math.max(1, stats.hits + stats.misses);
 
-    for (const mode of ['fillText', 'drawImage', 'atlas'] as const) {
+    for (const mode of ['fillText', 'fillTextCached', 'drawImage', 'atlas'] as const) {
       const s = samplesFor.get(mode)!;
       const msTotal = bestOf(s);
       const sorted = [...s].sort((a, b) => a - b);
@@ -324,9 +354,13 @@ async function main(): Promise<void> {
     const ft = rows.find((r) => r.mode === 'fillText' && r.cells === cells)!;
     const di = rows.find((r) => r.mode === 'drawImage' && r.cells === cells)!;
     const at = rows.find((r) => r.mode === 'atlas' && r.cells === cells)!;
+    const fc = rows.find((r) => r.mode === 'fillTextCached' && r.cells === cells)!;
     return {
       cells,
       fillTextMsPerFrame: ft.msPerFrame,
+      fillTextCachedMsPerFrame: fc.msPerFrame,
+      // The honest number: atlas versus what CanvasRenderer actually does.
+      atlasVsCachedSpeedup: +(fc.msPerFrame / at.msPerFrame).toFixed(2),
       drawImageMsPerFrame: di.msPerFrame,
       atlasMsPerFrame: at.msPerFrame,
       // >1 means the cache WINS; <1 means drawImage is slower than fillText and
