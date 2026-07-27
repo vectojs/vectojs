@@ -102,6 +102,30 @@ export type RenderPhase =
    * phase alone.
    */
   | 'gridMaterialize'
+  /**
+   * Whole of {@link Scene.syncContentProjection}, nested inside `a11ySync`.
+   *
+   * Measured at 99.8-99.9% of `a11ySync` for a streaming code block, so per-node
+   * a11y attribute and geometry work is not where that phase's cost lives.
+   */
+  | 'contentProjection'
+  /** Per-node a11y attribute/geometry work, excluding content projection and descendants. */
+  | 'a11yNodes'
+  /** Whole of `syncContentGridProjection`, of which `gridMaterialize` is one part. */
+  | 'gridSync'
+  /**
+   * Synchronous part of `scheduleContentGridCalibration` — building the probe DOM.
+   *
+   * The measurement itself is deferred to a rAF, but the probe is constructed
+   * here. Measured at 77-80% of `gridSync` on Chrome (3.7-4.5 ms per frame, i.e.
+   * the entire 240Hz budget) against about 1 ms on Firefox, making it the largest
+   * remaining cost of projecting a streaming code block once carrier reuse landed.
+   */
+  | 'gridCalibrateSchedule'
+  /** The `querySelectorAll` + per-cell scan inside calibration scheduling. */
+  | 'calibScan'
+  /** Probe DOM construction and insertion inside calibration scheduling. */
+  | 'calibProbeBuild'
   | 'a11yOrder'
   /** Sum of every entity's own render(), nested inside drawWalk. */
   | 'entityPaint';
@@ -3047,6 +3071,7 @@ export class Scene {
       this.pruneA11ySubtree(node);
       return;
     }
+    const nodeStart = this._phaseTiming ? performance.now() : 0;
     if (this.shouldProjectA11y(node)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
@@ -3466,7 +3491,17 @@ export class Scene {
       }
     }
 
-    this.syncContentProjection(node);
+    // Charge content projection and the per-node work separately, to the calling
+    // node only — children recurse below and record their own — so totals are
+    // additive across the walk rather than nested.
+    if (this._phaseTiming) {
+      const projectionStart = performance.now();
+      this.syncContentProjection(node);
+      this._recordPhase('contentProjection', performance.now() - projectionStart);
+      this._recordPhase('a11yNodes', projectionStart - nodeStart);
+    } else {
+      this.syncContentProjection(node);
+    }
 
     for (const child of node.children) this.syncA11y(child);
     if (node === this.root) {
@@ -3626,7 +3661,9 @@ export class Scene {
       this.clearContentGridState(node.id, el);
     }
     if (projection.grid) {
+      const gridSyncStart = this._phaseTiming ? performance.now() : 0;
       this.syncContentGridProjection(node, el, projection, projection.grid);
+      if (this._phaseTiming) this._recordPhase('gridSync', performance.now() - gridSyncStart);
     } else if (lines && lines.length > 0) {
       const signature = JSON.stringify({
         lines,
@@ -3897,6 +3934,11 @@ export class Scene {
             cellElement.style.font = lineFont;
             cellElement.style.lineHeight = `${lineHeight}px`;
             cellElement.style.transformOrigin = '0 50%';
+            // Mirror the font onto data attributes so calibration can read it back
+            // without touching `style.font`, whose shorthand getter Chrome
+            // re-serializes on every access (measured 99.3% of the calibration pass).
+            cellElement.dataset.vectoGridFont = lineFont;
+            cellElement.dataset.vectoGridLineHeight = `${lineHeight}px`;
             lineElement.appendChild(cellElement);
             logicalX += cell.advance;
           }
@@ -3953,7 +3995,11 @@ export class Scene {
     const pageScaleX = this.getContentMetricScaleX();
     const calibrationKey = `${signature}:${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
     if (el.dataset.vectoGridCalibration !== calibrationKey) {
+      const calibStart = this._phaseTiming ? performance.now() : 0;
       this.scheduleContentGridCalibration(node.id, el, calibrationKey, pageScaleX);
+      if (this._phaseTiming) {
+        this._recordPhase('gridCalibrateSchedule', performance.now() - calibStart);
+      }
     }
   }
 
@@ -4014,18 +4060,25 @@ export class Scene {
       source: Text;
     }> = [];
     const measurementsByKey = new Map<string, (typeof measurements)[number]>();
+    const scanStart = this._phaseTiming ? performance.now() : 0;
     for (const target of el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')) {
       const sourceLength = Number(target.dataset.vectoGridSourceLength ?? 0);
       const targetWidth = Number(target.dataset.vectoGridAdvance ?? 0);
       if (sourceLength <= 0 || targetWidth <= 0) continue;
       const sourceText = target.textContent?.slice(0, sourceLength) ?? '';
       if (!sourceText) continue;
-      const measurementKey = JSON.stringify([
-        target.style.font,
-        target.style.lineHeight,
-        targetWidth,
-        sourceText,
-      ]);
+      // Read the font from a data attribute, not `target.style.font`.
+      //
+      // `style.font` is a shorthand getter: Chrome re-serializes it from every font
+      // longhand on each read. Done once per cell per frame that made the scan
+      // 288 ms of a 290 ms calibration pass — 99.3% — while Firefox, whose getter
+      // is cheap, spent 0.6 ms on the identical loop. A 480x cross-engine gap on
+      // the same code is the signal that the cost is the property access itself,
+      // not the work around it. The carrier already knows its font (the projection
+      // just assigned it), so it records it as a plain string for reading back.
+      const cellFont = target.dataset.vectoGridFont ?? '';
+      const cellLineHeight = target.dataset.vectoGridLineHeight ?? '';
+      const measurementKey = JSON.stringify([cellFont, cellLineHeight, targetWidth, sourceText]);
       const shared = measurementsByKey.get(measurementKey);
       if (shared) {
         shared.targets.push(target);
@@ -4037,8 +4090,8 @@ export class Scene {
       carrier.style.left = '0';
       carrier.style.top = '0';
       carrier.style.whiteSpace = 'pre';
-      carrier.style.font = target.style.font;
-      carrier.style.lineHeight = target.style.lineHeight;
+      carrier.style.font = cellFont;
+      carrier.style.lineHeight = cellLineHeight;
       carrier.style.fontVariantLigatures = 'none';
       carrier.style.fontKerning = 'none';
       const source = document.createTextNode(sourceText);
@@ -4057,7 +4110,10 @@ export class Scene {
     // substitution match the live carriers. Gecko may still return an
     // unzoomed Range width for a missing-glyph fallback; pageScaleX below
     // compensates that engine behavior without special-casing the font.
+    if (this._phaseTiming) this._recordPhase('calibScan', performance.now() - scanStart);
+    const appendStart = this._phaseTiming ? performance.now() : 0;
     (this.a11yRoot ?? document.body ?? document.documentElement).appendChild(probe);
+    if (this._phaseTiming) this._recordPhase('calibProbeBuild', performance.now() - appendStart);
     el.dataset.vectoGridCalibrationSamples = `${measurements.length}`;
     this.contentGridCalibrationProbes.set(entityId, probe);
     el.dataset.vectoGridCalibrationPending = calibrationKey;
