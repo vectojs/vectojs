@@ -2786,6 +2786,26 @@ export class Scene {
     return this.overlayRoot;
   }
 
+  /**
+   * Advance and render exactly one frame, synchronously.
+   *
+   * This renders UNCONDITIONALLY: it consults neither {@link renderMode} nor
+   * {@link dirty}, and it does not apply the `always`-mode idle auto-throttle.
+   * That is deliberate — a deterministic driver (video export, a test, a
+   * fixed-step benchmark) asks for a frame because it wants that frame, not a
+   * scheduler opinion about whether it is needed.
+   *
+   * The consequence is a measurement footgun worth stating explicitly: a
+   * benchmark that drives frames through `step()` CANNOT observe frame skipping,
+   * so `always` and `onDemand` produce byte-identical draw counts through this
+   * path. An investigation into whether `onDemand` skips redundant repaints once
+   * concluded "it does not" on exactly that basis; on the real rAF loop the same
+   * workload rendered ~1.0 frames per content change. To measure anything about
+   * scheduling, use {@link start} and let `requestAnimationFrame` drive.
+   *
+   * @param dt Seconds to advance. Not clamped by `MAX_FRAME_DT` — the caller
+   *   chooses the step, since determinism is the point.
+   */
   public step(dt: number): void {
     const time = this.lastTime + dt;
     this.lastTime = time;
