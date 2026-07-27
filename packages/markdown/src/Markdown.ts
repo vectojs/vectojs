@@ -1,6 +1,7 @@
 import {
   BidiResolver,
   Entity,
+  type DevtoolsDescriptor,
   GlyphRasterAtlas,
   type GlyphRasterAtlasStats,
   IRenderer,
@@ -1027,6 +1028,23 @@ export class Markdown extends UIComponent {
   // with the latest accumulated text once it resolves.
   private appendInFlight = false;
   private appendPending = false;
+  /**
+   * Streaming counters for the DevTools inspector.
+   *
+   * Cheap enough to keep always-on (four integer increments per append) and the
+   * only way to see, from outside, whether incremental reuse is actually working:
+   * a stable-prefix ratio near 1 means the worker is matching almost everything
+   * and only the tail is re-lexed, while a ratio near 0 means every chunk is
+   * re-parsing the whole document.
+   */
+  private streamStats = {
+    appends: 0,
+    workerResponses: 0,
+    /** Sum of `matchLen` across responses, i.e. tokens reused rather than re-lexed. */
+    tokensReused: 0,
+    /** Sum of returned tail lengths, i.e. tokens the worker had to re-lex. */
+    tokensRelexed: 0,
+  };
   // Worker request ids dispatched by *this* instance that haven't resolved yet.
   // The module-level `workerCallbacks` map holds a closure capturing `this`, so
   // destroying a Markdown mid-stream would pin the whole entity (and its subtree)
@@ -1135,6 +1153,87 @@ export class Markdown extends UIComponent {
     super.destroy();
   }
 
+  /**
+   * Streaming and parse state — the markdown streaming inspector.
+   *
+   * Source length, chunk count, worker in-flight state, and the stable-prefix
+   * versus re-lexed-tail split. That last ratio is the one worth watching: it is
+   * how you tell incremental reuse is working from outside, and nothing else
+   * surfaces it. A ratio near 1 means the worker matched almost the whole prefix
+   * and only re-lexed the tail; near 0 means every chunk re-parses the document.
+   */
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    const s = this.streamStats;
+    const lexed = s.tokensReused + s.tokensRelexed;
+    const reuseRatio = lexed > 0 ? s.tokensReused / lexed : 0;
+    return {
+      kind: 'Markdown',
+      groups: [
+        {
+          label: 'Source',
+          fields: [
+            { label: 'sourceLength', value: this.rawMarkdown.length, readOnly: true },
+            { label: 'topLevelTokens', value: this.tokens.length, readOnly: true },
+            { label: 'childEntities', value: this.content.children.length, readOnly: true },
+            { label: 'selectable', value: this.selectable },
+          ],
+        },
+        {
+          label: 'Streaming',
+          fields: [
+            { label: 'appends', value: s.appends, readOnly: true },
+            {
+              label: 'workerResponses',
+              value: s.workerResponses,
+              hint: 'Fewer than appends means chunks were coalesced while a request was in flight',
+              readOnly: true,
+            },
+            {
+              label: 'appendInFlight',
+              value: this.appendInFlight,
+              hint: 'One lex request at a time; the delta protocol requires it',
+              readOnly: true,
+            },
+            { label: 'appendPending', value: this.appendPending, readOnly: true },
+          ],
+        },
+        {
+          label: 'Incremental reuse',
+          fields: [
+            {
+              label: 'tokensReused',
+              value: s.tokensReused,
+              hint: 'Sum of matchLen: prefix tokens the worker matched and did not re-lex',
+              readOnly: true,
+            },
+            {
+              label: 'tokensRelexed',
+              value: s.tokensRelexed,
+              hint: 'Sum of returned tail lengths: tokens the worker had to re-lex',
+              readOnly: true,
+            },
+            {
+              label: 'reuseRatio',
+              value: Math.round(reuseRatio * 1000) / 1000,
+              hint: 'reused / (reused + relexed). Near 1 is healthy; near 0 means no reuse',
+              readOnly: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        s.workerResponses === 0 && s.appends > 0
+          ? [
+              'No worker responses yet: either the worker is unavailable and parsing ran synchronously on the main thread, or the first request is still in flight.',
+            ]
+          : reuseRatio > 0 && reuseRatio < 0.5
+            ? [
+                `Only ${Math.round(reuseRatio * 100)}% of lexed tokens were reused, so most of the document is being re-lexed per chunk. Expect O(document) work per append.`,
+              ]
+            : undefined,
+    };
+  }
+
   /** Enable or disable native selection for existing and future Markdown text. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
@@ -1153,6 +1252,7 @@ export class Markdown extends UIComponent {
   /** Append a markdown chunk incrementally. Reuses unchanged prefix entities. */
   public appendMarkdown(chunk: string): this {
     this.rawMarkdown += chunk;
+    this.streamStats.appends++;
 
     if (!markdownWorker) {
       const newTokens = marked.lexer(this.rawMarkdown);
@@ -1196,6 +1296,9 @@ export class Markdown extends UIComponent {
     workerCallbacks.set(id, {
       cb: (matchLen, tail) => {
         this.pendingWorkerIds.delete(id);
+        this.streamStats.workerResponses++;
+        this.streamStats.tokensReused += matchLen;
+        this.streamStats.tokensRelexed += tail.length;
         this.appendInFlight = false;
         const newTokens = [...oldTokensSnapshot.slice(0, matchLen), ...tail] as TokensList;
         // The worker's matchLen is exactly the prefix it kept, and `newTokens` is

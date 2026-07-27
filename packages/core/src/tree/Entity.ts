@@ -187,6 +187,100 @@ export interface TextInputStyle {
  * to create and label the shadow DOM node (e.g. a real `<button>` or `<a href>`)
  * so the canvas stays accessible and clickable by automation/agents.
  */
+/**
+ * One value in a {@link DevtoolsDescriptor} group.
+ *
+ * JSON-safe by construction: DevTools serializes descriptors to render a panel,
+ * to write a snapshot, and to cross a `postMessage` bridge, so a value that
+ * cannot survive `structuredClone` is a bug rather than a limitation.
+ */
+export interface DevtoolsField {
+  /** Field name as shown in the inspector, e.g. `'scrollTop'`. */
+  label: string;
+  /** Current value. Keep to primitives, or short arrays/records of primitives. */
+  value:
+    | string
+    | number
+    | boolean
+    | null
+    | ReadonlyArray<string | number>
+    | Record<string, string | number | boolean>;
+  /**
+   * Optional one-line explanation, shown as a tooltip.
+   *
+   * Worth spending: a reader looking at `visibleRange: [12, 34]` cannot tell
+   * whether the bounds are inclusive without being told.
+   */
+  hint?: string;
+  /**
+   * Mark a value that reflects derived or externally-owned state, so the panel
+   * can show it as read-only rather than inviting an edit that will be silently
+   * reverted. A `Stack`-laid-out child's `x` is the canonical example.
+   */
+  readOnly?: boolean;
+}
+
+/**
+ * A component's self-description for DevTools.
+ *
+ * Without this, the inspector can only show generic `Entity` properties —
+ * position, size, opacity — so everything that makes a component a component is
+ * invisible: `Input.value`, `Slider.min`/`max`, `ScrollView.scrollTop`,
+ * `VirtualList.visibleRange`, a `Markdown` block's token counts. The alternative
+ * is DevTools carrying a table of component types, which inverts the dependency
+ * (a debug tool would gate every new component) and breaks under minified builds
+ * where `constructor.name` is unreliable.
+ *
+ * Implement {@link Entity.getDevtoolsDescriptor} to opt in. Cost is paid only
+ * when a panel actually inspects the entity, so a descriptor may compute values
+ * it would not compute per frame.
+ *
+ * @example
+ * ```ts
+ * public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+ *   return {
+ *     kind: 'ScrollView',
+ *     groups: [{
+ *       label: 'Scroll',
+ *       fields: [
+ *         { label: 'scrollTop', value: this.scrollTop },
+ *         { label: 'contentHeight', value: this.contentHeight, readOnly: true },
+ *       ],
+ *     }],
+ *   };
+ * }
+ * ```
+ */
+export interface DevtoolsDescriptor {
+  /**
+   * Component kind for display, e.g. `'VirtualList'`.
+   *
+   * Provided explicitly rather than read from `constructor.name`, which minifies
+   * to something meaningless in a production bundle.
+   */
+  kind: string;
+  /** Grouped fields, rendered as sections in the order given. */
+  groups: ReadonlyArray<{
+    label: string;
+    fields: ReadonlyArray<DevtoolsField>;
+  }>;
+  /**
+   * Free-form notes: a caveat, a known-slow path, a link to a doc section.
+   * Rendered under the groups.
+   */
+  notes?: ReadonlyArray<string>;
+  /**
+   * Stable identity for snapshot diffing, independent of tree position.
+   *
+   * Snapshot paths are structural indices (`root > Card[0] > Text[2]`), so
+   * inserting at the head of a list renames every sibling and cascades into a
+   * large diff. A key that survives reordering — a row id, a message id — keeps
+   * the diff proportional to what actually changed. Most relevant to
+   * `VirtualList` and `Table`, where recycling moves entities constantly.
+   */
+  devtoolsKey?: string;
+}
+
 export interface A11yAttributes {
   /** Shadow element tag to create. Defaults to `'div'`. */
   tag?: 'div' | 'a' | 'button' | 'img' | 'input' | 'textarea';
@@ -1492,6 +1586,22 @@ export abstract class Entity {
    *
    * @returns The {@link A11yAttributes} for this entity's shadow node.
    */
+  /**
+   * Describe this entity's own debug surface for DevTools.
+   *
+   * Returns `null` by default, meaning "nothing beyond the generic `Entity`
+   * fields the inspector already shows". Override in a component to expose the
+   * state that makes it inspectable — see {@link DevtoolsDescriptor}.
+   *
+   * Called only while a panel is inspecting this entity, never per frame, so it
+   * may compute values that would be too expensive to track continuously.
+   *
+   * @returns A descriptor, or `null` to opt out.
+   */
+  public getDevtoolsDescriptor(): DevtoolsDescriptor | null {
+    return null;
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {};
   }

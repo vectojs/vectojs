@@ -40,6 +40,14 @@ const PANEL_BG = 'rgba(13, 17, 28, 0.82)';
 const CARD_BG = 'rgba(23, 30, 46, 0.72)';
 const CARD_BORDER = 'rgba(80, 100, 140, 0.28)';
 const PANEL_FG = '#cbd5e1';
+/**
+ * Readout rows in the Inspect tab.
+ *
+ * Six carry generic Entity properties; the rest carry the selected entity's own
+ * `getDevtoolsDescriptor()` output, which is capped to a matching budget in
+ * `describeEntity` so the two cannot disagree about how much fits.
+ */
+const INSPECT_ROWS = 20;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -308,8 +316,14 @@ export class DevtoolsPanel {
     treeContent.add(this.tree);
 
     // Inspect tab: readout lines + inline editors + copy actions.
+    //
+    // 20 rows, not 8: `describeEntity` now appends a component's own
+    // `getDevtoolsDescriptor()` output after the six generic Entity lines, and
+    // that is the part worth reading — a `VirtualList` contributes its visible
+    // range, mounted count and measurement state. Rows are cheap (one Text each,
+    // created once) and unused ones render as empty strings.
     const inspectContent = new Container();
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < INSPECT_ROWS; i++) {
       const line = new Text('', { font: '12px monospace', color: i === 0 ? '#e8eefc' : PANEL_FG });
       line.setPosition(10, 18 + i * 17);
       this.detailLines.push(line);
@@ -317,7 +331,7 @@ export class DevtoolsPanel {
     }
     // Labeled inline editors. Each field is `label + Input`, laid out in a
     // three-column row with generous, readable inputs (13px, high contrast).
-    const editTop = 18 + 8 * 17 + 10;
+    const editTop = 18 + INSPECT_ROWS * 17 + 10;
     const fieldW = Math.floor((contentW - 16 - 2 * 8) / 3);
     const editorInput = (placeholder: string, x: number, prop: 'x' | 'y' | 'opacity'): Input => {
       inspectContent.add(

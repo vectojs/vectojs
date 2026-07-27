@@ -1,5 +1,5 @@
 import { UIComponent } from './UIComponent';
-import { type IRenderer, type A11yAttributes } from '@vectojs/core';
+import { type IRenderer, type A11yAttributes, type DevtoolsDescriptor } from '@vectojs/core';
 
 export class Slider extends UIComponent {
   public min: number;
@@ -109,6 +109,41 @@ export class Slider extends UIComponent {
       value: String(this.value),
       valuemin: String(this.min),
       valuemax: String(this.max),
+    };
+  }
+
+  /**
+   * Range, step and the normalised position, plus whether `value` actually lands
+   * on a step boundary — an off-step value is a real defect that renders fine.
+   */
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    const span = this.max - this.min;
+    const normalized = span > 0 ? (this.value - this.min) / span : 0;
+    const offStep = this.step > 0 && Math.abs((this.value - this.min) % this.step) > 1e-9;
+    return {
+      kind: 'Slider',
+      groups: [
+        {
+          label: 'Value',
+          fields: [
+            { label: 'value', value: this.value },
+            { label: 'min', value: this.min },
+            { label: 'max', value: this.max },
+            { label: 'step', value: this.step },
+            {
+              label: 'normalized',
+              value: Math.round(normalized * 1000) / 1000,
+              hint: '0..1 position of the thumb, what the renderer actually uses',
+              readOnly: true,
+            },
+          ],
+        },
+      ],
+      notes: offStep
+        ? [
+            `value ${this.value} is not on a step boundary (min ${this.min}, step ${this.step}); keyboard and drag will snap it on next interaction.`,
+          ]
+        : undefined,
     };
   }
 

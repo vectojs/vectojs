@@ -1,4 +1,10 @@
-import { A11yAttributes, cssLineBoxBaseline, IRenderer, LayoutEngine } from '@vectojs/core';
+import {
+  A11yAttributes,
+  cssLineBoxBaseline,
+  type DevtoolsDescriptor,
+  IRenderer,
+  LayoutEngine,
+} from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText, fontSizePx } from './measure';
 
@@ -288,6 +294,66 @@ export class Input extends UIComponent {
   /** Caret blink "on" phase (500ms cadence). */
   private caretOn(): boolean {
     return Math.floor(Date.now() / 500) % 2 === 0;
+  }
+
+  /**
+   * Caret and selection offsets, focus, and validation state.
+   *
+   * Selection offsets are the field a generic inspector cannot show and the one
+   * most often wrong: a caret at the right pixel but the wrong UTF-16 offset looks
+   * correct until the next edit lands in the wrong place.
+   */
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    const collapsed = this.selectionStart === this.selectionEnd;
+    return {
+      kind: 'Input',
+      groups: [
+        {
+          label: 'Value',
+          fields: [
+            { label: 'value', value: this.value },
+            { label: 'length', value: this.value.length, readOnly: true },
+            { label: 'placeholder', value: this.placeholder },
+          ],
+        },
+        {
+          label: 'Selection',
+          fields: [
+            {
+              label: 'selection',
+              value: [this.selectionStart, this.selectionEnd],
+              hint: 'UTF-16 offsets into value; equal offsets mean a collapsed caret',
+              readOnly: true,
+            },
+            {
+              label: 'selectedText',
+              value: collapsed ? '' : this.value.slice(this.selectionStart, this.selectionEnd),
+              readOnly: true,
+            },
+            { label: 'focused', value: this.focused, readOnly: true },
+          ],
+        },
+        {
+          label: 'Validation',
+          fields: [
+            {
+              label: 'required',
+              value: this.required,
+              hint: 'Projected as the native required attribute, preferred over aria-required',
+            },
+            {
+              label: 'invalid',
+              value: this.invalid,
+              hint: 'Projected as aria-invalid; also drawn as an error border, never colour alone',
+            },
+          ],
+        },
+      ],
+      notes:
+        this.required && this.value.length === 0
+          ? ['Required and empty: assistive tech reports this field as invalid on submit.']
+          : undefined,
+    };
   }
 
   public render(r: IRenderer): void {
