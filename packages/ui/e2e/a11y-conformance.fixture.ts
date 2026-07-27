@@ -29,6 +29,7 @@ import {
   Table,
   Toggle,
   TreeView,
+  VirtualList,
 } from '@vectojs/ui';
 
 /** Records what each control reported, so the test can assert on behaviour. */
@@ -45,6 +46,8 @@ declare global {
       events: EventLog[];
       /** Announce text into the live region, to test aria-live delivery. */
       announce(message: string): void;
+      /** Scroll the virtualized list far enough to recycle every mounted row. */
+      recycleRows(): void;
       openMenu(): void;
       closeMenu(): void;
       openModal(): void;
@@ -225,6 +228,53 @@ scene.add(table);
 // under test, and it would overlap the controls above.
 let menu: ContextMenu | null = null;
 
+// --- Virtualized list: focus across row recycling ---------------------------
+// The fragile boundary here is recycling WHILE a row holds focus. Row entities
+// are recycled out as the viewport moves, and if the focused one is torn down
+// without preserving focus, a keyboard user is dropped to <body> and loses their
+// position entirely. Rows are focusable so the case is reachable at all.
+
+class ListRow extends Entity {
+  constructor(
+    private readonly labelText: string,
+    private readonly index: number,
+    private readonly total: number,
+  ) {
+    super(`vrow-${index}`);
+    this.interactive = true;
+    this.width = 240;
+    this.height = 26;
+  }
+  isPointInside(): boolean {
+    return false;
+  }
+  render(): void {}
+  override getA11yAttributes() {
+    return {
+      role: 'listitem',
+      label: this.labelText,
+      tabIndex: 0,
+      // Only the mounted window exists in the DOM, so each row states its real
+      // position — otherwise this is announced as "item 3 of 12".
+      posInSet: this.index + 1,
+      setSize: this.total,
+    };
+  }
+}
+
+const ROW_COUNT = 400;
+const vlist = new VirtualList<{ id: number }>({
+  items: Array.from({ length: ROW_COUNT }, (_, i) => ({ id: i })),
+  estimatedRowHeight: 26,
+  width: 240,
+  height: 130,
+  renderItem: (item, index) => new ListRow(`Row ${item.id}`, index, ROW_COUNT),
+});
+vlist.id = 'vlist-rows';
+vlist.x = 700;
+vlist.y = 300;
+scene.add(vlist);
+
 // --- Static text: readable, searchable, selectable -------------------------
 
 const caption = new Text(
@@ -277,6 +327,9 @@ window.__a11yFixture = {
   announce(message: string) {
     live.message = message;
     scene.markDirty();
+  },
+  recycleRows() {
+    vlist.scrollToIndex(ROW_COUNT - 1);
   },
   openMenu() {
     if (menu) return;
