@@ -4,4 +4,5 @@ export * from './WebGLPointRenderer';
 export * from './WebGPUParticleSystemManager';
 export * from './IRenderer';
 export * from './colorParse';
+export * from './GlyphRasterAtlas';
 export * from './TextRasterCache';

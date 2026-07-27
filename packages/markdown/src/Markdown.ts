@@ -1,6 +1,8 @@
 import {
   BidiResolver,
   Entity,
+  GlyphRasterAtlas,
+  type GlyphRasterAtlasStats,
   IRenderer,
   prepareContentGrid,
   type ContentProjection,
@@ -709,6 +711,16 @@ export class CodeBlock extends UIComponent {
     // the one engine that needs it — doesn't implement it). Wide CJK/emoji
     // clusters advance two cells, terminal wcwidth-style, so following
     // tokens no longer overlap them.
+    // Where the renderer can blit a source rect, draw each cluster from a shared
+    // glyph atlas instead. Identical call count and geometry, but ~2x cheaper per
+    // call on both engines because the source texture never changes. A
+    // per-run-canvas cache was measured *slower* than fillText on Chrome at scale
+    // (0.87x at 40k cells) for exactly that reason — see
+    // `forge/baselines/raster-cache-findings.md`.
+    const atlas = codeGlyphAtlas(r);
+    const atlasSource = atlas?.source ?? null;
+    const blit = atlas ? r.drawImageRect : undefined;
+
     for (let row = 0; row < grid.lines.length; row++) {
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       const segments = this.lines[row];
@@ -723,16 +735,91 @@ export class CodeBlock extends UIComponent {
         }
         const sourceText = this.source.slice(cell.sourceStart, cell.sourceEnd);
         if (cell.advance <= 0 || sourceText === ' ' || sourceText === '\t') continue;
-        r.fillText(
-          cell.glyph,
-          this.pad + cell.x,
-          yBaseline,
-          this.codeFont,
-          segments[segmentIndex]?.color ?? this.theme.codeColor,
-        );
+        const color = segments[segmentIndex]?.color ?? this.theme.codeColor;
+        const x = this.pad + cell.x;
+
+        if (blit && atlas) {
+          const slot = atlas.get(this.codeFont, color, cell.glyph);
+          // `atlas.source` is null until the first successful rasterization, so
+          // it is read per cell rather than hoisted — the first cell of the first
+          // frame is what creates it.
+          const src = atlasSource ?? atlas.source;
+          if (slot && src) {
+            // Destination offsets mirror the fillText baseline convention, so the
+            // blit lands exactly where the glyph would have been drawn.
+            blit.call(
+              r,
+              src,
+              slot.sx,
+              slot.sy,
+              slot.sw,
+              slot.sh,
+              x - slot.offsetX,
+              yBaseline - slot.offsetY,
+              slot.w,
+              slot.h,
+            );
+            continue;
+          }
+          // Anything the atlas declined (a cluster too large to pack, a headless
+          // context) falls through to fillText below.
+        }
+        r.fillText(cell.glyph, x, yBaseline, this.codeFont, color);
       }
     }
   }
+}
+
+/**
+ * The process-wide glyph atlas for code blocks, created on first use.
+ *
+ * Shared rather than per-`CodeBlock` so a document's glyph set is rasterized once:
+ * streamed markdown creates many code blocks over the same font and theme, and a
+ * per-instance atlas would re-rasterize for each, discarding the reuse the whole
+ * approach depends on. Slots carry `(font, colour, glyph)`, so multiple themes or
+ * font sizes coexist correctly and merely occupy more slots.
+ *
+ * Returns `undefined` when the renderer cannot blit a sub-rect (`SVGRenderer`, or
+ * any renderer omitting the optional method), leaving the caller on `fillText` —
+ * which is also the correct output for a vector export.
+ */
+let sharedCodeAtlas: GlyphRasterAtlas | null = null;
+function codeGlyphAtlas(r: IRenderer): GlyphRasterAtlas | undefined {
+  if (typeof r.drawImageRect !== 'function') return undefined;
+  if (typeof document === 'undefined') return undefined;
+  sharedCodeAtlas ??= new GlyphRasterAtlas({
+    // Match the display so a HiDPI blit stays crisp. Capped at 3 because atlas
+    // area grows with dpr² and a 4x display would otherwise blow the size cap
+    // with a few hundred glyphs.
+    dpr: typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 3) : 1,
+    maxSize: 2048,
+  });
+  return sharedCodeAtlas;
+}
+
+/**
+ * Instrumentation for the shared code-block glyph atlas, or `null` before first
+ * use.
+ *
+ * Exposed so an app or benchmark can confirm the atlas is actually active and
+ * reusing slots. Watch `resets`: a steadily climbing count means the glyph set is
+ * unbounded for the atlas size, so every reset re-rasterizes everything and the
+ * atlas is doing net harm rather than saving work.
+ */
+export function codeAtlasStats(): GlyphRasterAtlasStats | null {
+  return sharedCodeAtlas ? sharedCodeAtlas.stats : null;
+}
+
+/**
+ * The shared code-block atlas itself, or `null` before first use.
+ *
+ * For instrumentation that must map a traced `drawImage` back to the glyph it
+ * painted — a blit carries only a source rect, so `slotAt()` is the only way to
+ * recover the cluster and its metrics. Used by `e2e/text-projection.e2e.ts` to
+ * keep the code-grid positioning assertions working on the blit path.
+ */
+export function codeAtlas(): GlyphRasterAtlas | null {
+  return sharedCodeAtlas;
 }
 
 // ── Inline token → RichText entities ─────────────────────────────────────────

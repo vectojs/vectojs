@@ -129,6 +129,48 @@ export interface IRenderer {
   drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void;
 
   /**
+   * Draw a sub-rectangle of an image source — the 9-argument `drawImage`.
+   *
+   * **Optional.** Callers must feature-detect and keep a fallback path:
+   *
+   * ```ts
+   * if (r.drawImageRect) r.drawImageRect(atlas, sx, sy, sw, sh, dx, dy, dw, dh);
+   * else r.fillText(glyph, x, baselineY, font, color);
+   * ```
+   *
+   * This exists for texture atlases (see `GlyphRasterAtlas`), where selecting one slot
+   * out of a shared canvas is what makes the blit cheap: a per-source-canvas
+   * cache re-binds a different texture almost every call and measured *slower*
+   * than the `fillText` it replaced on Chrome at scale, while atlas blits stay
+   * flat and run ~2x faster on both engines.
+   *
+   * `SVGRenderer` deliberately omits it: an SVG image embeds its source as a data
+   * URL, so a per-cell sub-rect would inline the entire atlas once per cell —
+   * and vector text is the correct output for a vector export regardless.
+   *
+   * @param source - The image source.
+   * @param sx - Source X, in source-image pixels.
+   * @param sy - Source Y, in source-image pixels.
+   * @param sw - Source width, in source-image pixels.
+   * @param sh - Source height, in source-image pixels.
+   * @param dx - Destination X.
+   * @param dy - Destination Y.
+   * @param dw - Destination width.
+   * @param dh - Destination height.
+   */
+  drawImageRect?(
+    source: CanvasImageSource,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+  ): void;
+
+  /**
    * Fill the current path with the given color or gradient.
    *
    * @param colorOrGradient - CSS color string or a gradient object.

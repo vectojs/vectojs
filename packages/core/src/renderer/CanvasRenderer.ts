@@ -275,6 +275,24 @@ export class CanvasRenderer implements IRenderer {
   }
 
   /** @inheritdoc */
+  drawImageRect(
+    source: CanvasImageSource,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+  ): void {
+    // Flush for the same reason `drawImage` does: a pending batch must not paint
+    // over a blit that was issued before it.
+    this.flush();
+    this.ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
+  }
+
+  /** @inheritdoc */
   fillCircle(cx: number, cy: number, radius: number, color: string, alpha: number = 1): void {
     if (this.batchActive && (color !== this.batchColor || alpha !== this.batchAlpha)) {
       this.flush();

@@ -1,5 +1,5 @@
 import { cssLineBoxBaseline, Entity, type IRenderer, Scene } from '../../core/src/index';
-import { CodeBlock, Markdown } from '../../markdown/src/Markdown';
+import { codeAtlas, CodeBlock, Markdown } from '../../markdown/src/Markdown';
 import { RichText } from '../../ui/src/RichText';
 import { Table } from '../../ui/src/Table';
 import { Text } from '../../ui/src/Text';
@@ -179,6 +179,20 @@ function lineBaseline(root: HTMLElement, lineIndex: number): number {
   const scale = lineHeight > 0 ? rect.height / lineHeight : 1;
   return rect.top + cssLineBoxBaseline(style.font, lineHeight) * scale;
 }
+
+// Let the canvas instrumentation in `text-projection.e2e.ts` resolve a traced
+// atlas blit back to the glyph it drew. `CodeBlock` blits its grid via the
+// 9-argument `drawImage`, so a fillText-only trace sees nothing for code and the
+// grid assertions quietly stop testing anything.
+(
+  window as unknown as {
+    __vectoAtlasSlotAt: (source: unknown, sx: number, sy: number) => unknown;
+  }
+).__vectoAtlasSlotAt = (source, sx, sy) => {
+  const atlas = codeAtlas();
+  if (!atlas || atlas.source !== source) return null;
+  return atlas.slotAt(sx, sy);
+};
 
 (window as unknown as { __vecto: unknown; __ready: boolean }).__vecto = {
   scene,

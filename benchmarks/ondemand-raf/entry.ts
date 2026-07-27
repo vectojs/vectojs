@@ -91,9 +91,11 @@ async function main(): Promise<void> {
       renderPhases: Array<{ phase: string; totalMs: number }>;
     };
   };
-  const { Markdown } = (await import('@vectojs/markdown')) as unknown as {
+  const md0 = (await import('@vectojs/markdown')) as unknown as {
     Markdown: MarkdownCtor;
+    codeAtlasStats: () => { hits: number; misses: number; size: number; resets: number } | null;
   };
+  const { Markdown, codeAtlasStats } = md0;
 
   const rows: Array<Record<string, unknown>> = [];
 
@@ -163,6 +165,19 @@ async function main(): Promise<void> {
           framesPerChunk: injected > 0 ? +(streamRendered / injected).toFixed(2) : 0,
           renderMs: +phase('render').toFixed(1),
           entityPaintMs: +phase('entityPaint').toFixed(1),
+          // Every phase, not just paint: on Chrome/always, paint turned out to be
+          // only 26% of render, so 3/4 of the cost was somewhere this benchmark
+          // was not looking. Reporting two of seven phases invites optimising the
+          // wrong one.
+          drawWalkMs: +phase('drawWalk').toFixed(1),
+          transformMs: +phase('transform').toFixed(1),
+          flushMs: +phase('flush').toFixed(1),
+          a11ySyncMs: +phase('a11ySync').toFixed(1),
+          a11yOrderMs: +phase('a11yOrder').toFixed(1),
+          // Atlas instrumentation: confirms the blit path is actually active and
+          // reusing slots. A climbing 'resets' means the glyph set overflows the
+          // atlas, so every reset re-rasterizes and the atlas is net harmful.
+          atlas: codeAtlasStats(),
         });
 
         scene.setPhaseTiming(false);
