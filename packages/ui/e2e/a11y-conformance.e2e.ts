@@ -522,11 +522,21 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
 
     await page.keyboard.press('Enter');
     await page.keyboard.press(SPACE_KEY);
-    const buttonEvents = (await readEvents(page)).filter((e) => e.id === 'btn-submit');
-    assert.ok(
-      buttonEvents.length >= 2,
-      `[${engine}] button must activate on BOTH Enter and Space, saw ${buttonEvents.length}`,
-    );
+    // Poll for both activations: a native <button>'s click is dispatched
+    // asynchronously, so an immediate read is a race the slower CI host loses.
+    let buttonEvents: Array<{ id: string; type: string }> = [];
+    try {
+      await page.waitForFunction(
+        () => window.__a11yFixture.events.filter((e) => e.id === 'btn-submit').length >= 2,
+        { timeout: 5000 },
+      );
+      buttonEvents = (await readEvents(page)).filter((e) => e.id === 'btn-submit');
+    } catch {
+      buttonEvents = (await readEvents(page)).filter((e) => e.id === 'btn-submit');
+      assert.fail(
+        `[${engine}] button must activate on BOTH Enter and Space, saw ${buttonEvents.length}`,
+      );
+    }
 
     // Disabled control: must not activate, and must not be a tab stop.
     await clearEvents(page);
@@ -540,13 +550,24 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
     );
 
     // Checkbox: Space toggles.
+    //
+    // Waits for the event rather than reading immediately after the keypress. The
+    // immediate read passed locally and failed on CI's Firefox: a native
+    // `<input type=checkbox>` dispatches its click/change asynchronously, so
+    // whether the event has landed by the next statement is a race that a slower
+    // machine loses. Polling makes the assertion depend on the behaviour rather
+    // than on the host's speed.
     await clearEvents(page);
     await page.focus('[data-vecto-id="checkbox-terms"]');
     await page.keyboard.press(SPACE_KEY);
-    assert.ok(
-      (await readEvents(page)).some((e) => e.id === 'checkbox-terms'),
-      `[${engine}] checkbox must toggle on Space`,
-    );
+    try {
+      await page.waitForFunction(
+        () => window.__a11yFixture.events.some((e) => e.id === 'checkbox-terms'),
+        { timeout: 5000 },
+      );
+    } catch {
+      assert.fail(`[${engine}] checkbox must toggle on Space`);
+    }
 
     // Slider: arrows move the value, Home/End jump to the bounds.
     await clearEvents(page);
