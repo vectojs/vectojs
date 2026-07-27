@@ -125,6 +125,16 @@ function softWrap(
 
 /** Construction options for {@link TextArea}. */
 export interface TextAreaOptions {
+  /**
+   * Mark the field as required. Projected as `required`, so a screen reader
+   * announces the constraint instead of the user discovering it on submit.
+   */
+  required?: boolean;
+  /**
+   * Mark the field as failing validation. Projected as `aria-invalid` and drawn
+   * with an error border — a red outline alone is invisible to assistive tech.
+   */
+  invalid?: boolean;
   /** Box width in pixels. */
   width: number;
   /** Box height in pixels. Default `120`. */
@@ -166,8 +176,14 @@ export interface TextAreaOptions {
  *
  * @example new TextArea({ width: 320, height: 160, placeholder: 'Notes…' });
  */
+/** Error border for an invalid field. Colour alone is never the only signal —
+ *  `aria-invalid` carries it to assistive tech (WCAG 1.4.1). */
+const INVALID_BORDER = '#ef4444';
+
 export class TextArea extends UIComponent {
   public value: string;
+  private _required = false;
+  private _invalid = false;
   public placeholder: string;
   public font: string;
   public lineHeightFactor: number;
@@ -194,6 +210,8 @@ export class TextArea extends UIComponent {
     this.width = opts.width;
     this.height = opts.height ?? 120;
     this.value = opts.value ?? '';
+    this._required = opts.required ?? false;
+    this._invalid = opts.invalid ?? false;
     this.placeholder = opts.placeholder ?? '';
     this.font = opts.font ?? '16px sans-serif';
     this.lineHeightFactor = opts.lineHeight ?? 1.4;
@@ -233,12 +251,42 @@ export class TextArea extends UIComponent {
     });
   }
 
+  /**
+   * Whether the field is required. Kept as accessors so the drawn state and the
+   * projected constraint cannot drift apart.
+   */
+  public get required(): boolean {
+    return this._required;
+  }
+
+  public set required(value: boolean) {
+    if (this._required === value) return;
+    this._required = value;
+    this.scene?.markDirty();
+  }
+
+  /** Whether the field currently fails validation. */
+  public get invalid(): boolean {
+    return this._invalid;
+  }
+
+  public set invalid(value: boolean) {
+    if (this._invalid === value) return;
+    this._invalid = value;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'textarea',
       placeholder: this.placeholder,
       value: this.value,
       label: this.placeholder,
+      // `undefined` when not set, not `false`: the projection removes an
+      // undefined attribute, whereas `aria-invalid="false"` means "explicitly
+      // valid" and is deliberately preserved — so only emit these when they hold.
+      required: this._required ? true : undefined,
+      invalid: this._invalid ? true : undefined,
       textInputStyle: {
         font: this.font,
         lineHeight: this.lineHeight(),
@@ -429,7 +477,13 @@ export class TextArea extends UIComponent {
     r.fill(this.bg);
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, this.radius);
-    r.stroke(this.border, 1);
+    // An invalid field gets a heavier error border. Under forced colors the OS
+    // owns contrast, so defer to its system colour rather than a themed red.
+    if (this._invalid) {
+      r.stroke(this.scene?.forcedColors ? 'LinkText' : INVALID_BORDER, 2);
+    } else {
+      r.stroke(this.border, 1);
+    }
 
     const lines = this.computeLines();
     const lh = this.lineHeight();
