@@ -281,6 +281,28 @@ export interface DevtoolsDescriptor {
   devtoolsKey?: string;
 }
 
+/**
+ * Entity properties a parent computes for its children.
+ *
+ * Editing one of these on a child is silently reverted by the next layout pass,
+ * which looks like the editor being broken rather than the value being owned
+ * elsewhere. A container declares what it controls so a tool can say so up front
+ * instead of letting a user discover it by watching their change disappear.
+ *
+ * Declared by the parent rather than detected by the tool: only the container
+ * knows whether it writes `x` unconditionally, and a table of container types
+ * inside DevTools would gate every new layout component on a debug-tool change.
+ */
+export type LayoutControlledProperty =
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
+  | 'scaleX'
+  | 'scaleY'
+  | 'rotation'
+  | 'opacity';
+
 export interface A11yAttributes {
   /** Shadow element tag to create. Defaults to `'div'`. */
   tag?: 'div' | 'a' | 'button' | 'img' | 'input' | 'textarea';
@@ -1600,6 +1622,24 @@ export abstract class Entity {
    */
   public getDevtoolsDescriptor(): DevtoolsDescriptor | null {
     return null;
+  }
+
+  /**
+   * Which of a child's properties this entity computes during layout.
+   *
+   * Returns an empty array by default, meaning "this entity does not position its
+   * children". A container that lays out children — `Stack`, `Table`, `Tabs` —
+   * overrides it so tooling can mark those values as parent-owned: editing `x` on
+   * a `Stack` child is reverted by the next layout, and knowing that in advance is
+   * the difference between a confusing tool and a correct one.
+   *
+   * @param child - The child being asked about. Containers whose control depends
+   *   on the child (a `Table` cell versus its header) can answer per child.
+   * @returns Property names this entity overwrites on that child.
+   */
+  public getLayoutControlledProperties(child: Entity): ReadonlyArray<LayoutControlledProperty> {
+    void child;
+    return [];
   }
 
   public getA11yAttributes(): A11yAttributes {

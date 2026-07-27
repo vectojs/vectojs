@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer, Entity } from '@vectojs/core';
+import { A11yAttributes, IRenderer, Entity, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { Text } from './Text';
 
@@ -46,6 +46,14 @@ class RowHotspot extends UIComponent {
     super();
     this.interactive = true;
   }
+  /**
+   * A Table computes every cell's and header's box from its column widths and row
+   * heights, so all four geometry properties are recomputed each layout.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return { role: 'row', pointerEvents: 'none' };
   }

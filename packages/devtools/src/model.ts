@@ -1,5 +1,6 @@
-import type { DevtoolsDescriptor, DevtoolsField } from '@vectojs/core';
+import type { DevtoolsDescriptor, DevtoolsField, LayoutControlledProperty } from '@vectojs/core';
 import type { Entity, Scene } from '@vectojs/core';
+import { layoutControlledProperties } from './inspect';
 /** Framework-neutral tree shape used by inspectors and serialized tooling. */
 export interface DevtoolsTreeNode {
   id: string;
@@ -79,14 +80,25 @@ const DESCRIPTOR_LINE_BUDGET = 12;
 export function describeEntity(entity: Entity): string[] {
   const { a, b, c, d, e, f } = entity.getWorldTransform();
   const r = (n: number) => Math.round(n * 100) / 100;
+  // Mark parent-owned geometry inline. Without this, editing `x` on a
+  // Stack-laid-out child looks like the editor silently failing rather than the
+  // value being computed elsewhere.
+  const controlled = layoutControlledProperties(entity);
+  const owner = entity.parent?.constructor.name;
+  const mark = (prop: LayoutControlledProperty): string => (controlled.includes(prop) ? '*' : '');
+
   const lines = [
     `${entity.constructor.name} #${entity.id}`,
-    `x ${r(entity.x)}  y ${r(entity.y)}  w ${r(entity.width)}  h ${r(entity.height)}`,
+    `x${mark('x')} ${r(entity.x)}  y${mark('y')} ${r(entity.y)}  w${mark('width')} ${r(entity.width)}  h${mark('height')} ${r(entity.height)}`,
     `scale ${r(entity.scaleX)},${r(entity.scaleY)}  rot ${r(entity.rotation)}  op ${r(entity.opacity)}`,
     `world [${r(a)} ${r(b)} ${r(c)} ${r(d)} ${r(e)} ${r(f)}]`,
     `interactive ${entity.interactive}  animating ${entity.hasPendingAnimations()}`,
     `children ${entity.children.length}`,
   ];
+
+  if (controlled.length > 0) {
+    lines.push(`* ${controlled.join('/')} set by ${owner ?? 'parent'} layout — edits revert`);
+  }
 
   // Append the entity's own description of its debug surface, when it has one.
   // Everything above is a generic Entity property, so this is the only part that

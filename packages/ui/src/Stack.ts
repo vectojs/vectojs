@@ -1,4 +1,4 @@
-import { Entity, IRenderer } from '@vectojs/core';
+import { Entity, IRenderer, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 /** Construction options for {@link Stack}. */
@@ -85,6 +85,14 @@ export class Stack extends UIComponent {
    * prior one would shift their centered/end-aligned offset), or right
    * after a `remove()` (positions/size may be stale until resynchronized).
    */
+  /**
+   * A `Stack` positions its children on both axes, so both coordinates are
+   * recomputed on every layout and an edit to either is reverted.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y'];
+  }
+
   public add(child: Entity): this {
     super.add(child);
     if (this.fastAppendDirty || this.align !== 'start') {

@@ -1,4 +1,4 @@
-import type { Bounds, DevtoolsDescriptor, Entity } from '@vectojs/core';
+import type { Bounds, DevtoolsDescriptor, Entity, LayoutControlledProperty } from '@vectojs/core';
 
 /** Structured, JSON-safe entity report — the machine-readable sibling of `describeEntity`. */
 export interface EntityInfo {
@@ -34,6 +34,15 @@ export interface EntityInfo {
    * minified builds where `constructor.name` is unreliable.
    */
   descriptor?: DevtoolsDescriptor;
+  /**
+   * Properties this entity's parent recomputes during layout.
+   *
+   * Editing one of these is silently reverted on the next layout pass, which looks
+   * like the editor being broken rather than the value being owned elsewhere. The
+   * parent declares them (`Entity.getLayoutControlledProperties`), so DevTools
+   * needs no table of container types.
+   */
+  layoutControlled?: ReadonlyArray<LayoutControlledProperty>;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -122,5 +131,30 @@ export function inspectEntity(entity: Entity): EntityInfo {
   } catch {
     /* ignore a broken descriptor */
   }
+  const controlled = layoutControlledProperties(entity);
+  if (controlled.length > 0) info.layoutControlled = controlled;
   return info;
+}
+
+/**
+ * Which of `entity`'s own properties its parent recomputes during layout.
+ *
+ * Asks the parent, because only a container knows whether it writes `x`
+ * unconditionally — and answering per child lets a container distinguish cases,
+ * as `ScrollView` does between its internal content wrapper and the children a
+ * caller adds inside it.
+ *
+ * Returns an empty array for a root entity or a parent that positions nothing.
+ */
+export function layoutControlledProperties(
+  entity: Entity,
+): ReadonlyArray<LayoutControlledProperty> {
+  const parent = entity.parent;
+  if (!parent) return [];
+  try {
+    return parent.getLayoutControlledProperties?.(entity) ?? [];
+  } catch {
+    // An app-supplied container must not break the inspector.
+    return [];
+  }
 }

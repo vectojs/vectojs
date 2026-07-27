@@ -1,4 +1,4 @@
-import { A11yAttributes, IRenderer } from '@vectojs/core';
+import { A11yAttributes, IRenderer, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
 
@@ -19,6 +19,13 @@ class RadioHotspot extends UIComponent {
     this.on('click', () => this.group.selectByValue(this.optionValue, true));
     this.on('keydown', (e: KeyboardEvent) => this.group.handleRadioKey(e, this.optionValue));
   }
+  /**
+   * RadioGroup positions and sizes its focus hotspots, one per visible option.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public setMeta(label: string): void {
     this.label = label;
   }
