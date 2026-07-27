@@ -11,7 +11,7 @@ import {
   type TextStyle,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { fontSizePx } from './measure';
+import { fontSizePx, measureText } from './measure';
 
 /** Construction options for {@link RichText}. */
 export interface RichTextOptions {
@@ -134,6 +134,14 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
  *   { text: 'fox', style: { italic: true } },
  * ], { maxWidth: 240 });
  */
+/**
+ * Slack when comparing a coalesced run's measured width against the summed
+ * per-glyph advances, and when testing glyph adjacency. Sub-pixel: large enough to
+ * absorb float accumulation over a line, small enough that real kerning (which
+ * moves glyphs by a meaningful fraction of an em) always fails the test.
+ */
+const COALESCE_TOLERANCE_PX = 0.5;
+
 export class RichText extends UIComponent {
   public spans: StyledSpan[];
   public font: string;
@@ -479,22 +487,97 @@ export class RichText extends UIComponent {
 
   public render(r: IRenderer): void {
     for (const { nodes, projection: line } of this.visualLineGroups()) {
+      const baseline = line.y + line.baseline;
+      let runStart = -1;
+      let runText = '';
+      let runFont = '';
+      let runColor = '';
+      let runWidth = 0;
+
+      /**
+       * Emit the pending run as ONE `fillText`, or fall back to per-character
+       * draws when coalescing would move a glyph.
+       *
+       * Why the check exists: layout measures and positions each character
+       * individually (`measure.ts` calls `ctx.measureText(char)` per glyph), so a
+       * node's `x` is a sum of isolated advances with no kerning. Drawing the same
+       * characters as one string lets the browser apply kerning and ligatures, so
+       * for a font/script where that changes the total the glyphs would no longer
+       * sit where layout put them — visible as text that drifts from its
+       * selection overlay and its hit box.
+       *
+       * So a run is only coalesced when its measured width equals the summed
+       * per-glyph advances. That is true for the ASCII-with-default-kerning
+       * majority and false exactly where it must be, and it is one `measureText`
+       * per run (memoized) against what was one `fillText` per character.
+       */
+      const flushRun = (): void => {
+        if (runStart < 0) return;
+        if (runText.length === 1) {
+          r.fillText(runText, runStart, baseline, runFont, runColor);
+        } else {
+          const shaped = measureText(runText, runFont);
+          if (Math.abs(shaped - runWidth) <= COALESCE_TOLERANCE_PX) {
+            r.fillText(runText, runStart, baseline, runFont, runColor);
+          } else {
+            // Kerning/ligatures would shift glyphs: draw them where layout said.
+            let x = runStart;
+            for (const ch of runText) {
+              r.fillText(ch, x, baseline, runFont, runColor);
+              x += measureText(ch, runFont);
+            }
+          }
+        }
+        runStart = -1;
+        runText = '';
+        runWidth = 0;
+      };
+
       for (const node of nodes) {
-        if (node.char.trim().length === 0) continue;
+        if (node.char.trim().length === 0) {
+          // Whitespace is not painted, but it DOES advance the pen, so a run
+          // cannot span it — the next glyph's x is not `runStart + runWidth`.
+          flushRun();
+          continue;
+        }
         const size = node.height;
         const font = this.nodeFont(node.style, size);
         const isLink = !!node.style?.href;
         const color = node.style?.color ?? (isLink ? this.linkColor : this.color);
-        const baseline = line.y + line.baseline;
-        r.fillText(node.char, node.x, baseline, font, color);
+
+        // Links keep their per-glyph path: each needs its own underline segment,
+        // so there is nothing to coalesce.
         if (isLink) {
+          flushRun();
+          r.fillText(node.char, node.x, baseline, font, color);
           const uy = baseline + 2;
           r.beginPath();
           r.moveTo(node.x, uy);
           r.lineTo(node.x + node.width, uy);
           r.stroke(color, 1);
+          continue;
         }
+
+        // Extend the run only if style matches AND this glyph starts exactly
+        // where the previous one ended. A positional gap means layout moved it
+        // (justification, a tab, a bidi reorder), and concatenating would close
+        // the gap.
+        const contiguous =
+          runStart >= 0 &&
+          font === runFont &&
+          color === runColor &&
+          Math.abs(node.x - (runStart + runWidth)) <= COALESCE_TOLERANCE_PX;
+
+        if (!contiguous) {
+          flushRun();
+          runStart = node.x;
+          runFont = font;
+          runColor = color;
+        }
+        runText += node.char;
+        runWidth = node.x + node.width - runStart;
       }
+      flushRun();
     }
   }
 }

@@ -11,6 +11,20 @@ interface DrawCall {
 }
 
 /** A renderer that records every fillText call (ignores everything else). */
+/**
+ * Right edge of the lowest-y line in `calls`.
+ *
+ * Derives the extent from each call's TEXT LENGTH rather than assuming one glyph
+ * per call: `RichText` coalesces adjacent same-style glyphs into a single
+ * `fillText`, so a call can carry a whole run. The stub measurer used by these
+ * tests reports 8px per character, which is what makes `8 * length` exact here.
+ */
+function lineRightEdge(calls: DrawCall[]): number {
+  const y0 = Math.min(...calls.map((c) => c.y));
+  const line0 = calls.filter((c) => c.y === y0 && c.text.trim());
+  return Math.max(...line0.map((c) => c.x + 8 * c.text.length));
+}
+
 function recordingRenderer(): { r: IRenderer; calls: DrawCall[] } {
   const calls: DrawCall[] = [];
   const r = new Proxy(
@@ -173,9 +187,7 @@ describe('RichText', () => {
     const firstLineRight = (rt: RichText): number => {
       const { r, calls } = recordingRenderer();
       rt.render(r);
-      const y0 = Math.min(...calls.map((c) => c.y));
-      const line0 = calls.filter((c) => c.y === y0 && c.text.trim());
-      return Math.max(...line0.map((c) => c.x + 8));
+      return lineRightEdge(calls);
     };
 
     const leftRight = firstLineRight(left);
@@ -225,10 +237,7 @@ describe('RichText', () => {
     // The projected run x/width match the canvas glyph extent (selection overlap).
     const { r, calls } = recordingRenderer();
     rt.render(r);
-    const y0 = Math.min(...calls.map((c) => c.y));
-    const canvasRight = Math.max(
-      ...calls.filter((c) => c.y === y0 && c.text.trim()).map((c) => c.x + 8),
-    );
+    const canvasRight = lineRightEdge(calls);
     expect(right).toBeCloseTo(canvasRight, 0);
   });
 
