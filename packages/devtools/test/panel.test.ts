@@ -428,3 +428,55 @@ describe('DevtoolsPanel — modern features', () => {
     vi.useRealTimers();
   });
 });
+
+describe('A11y tab', () => {
+  it('renders the selected entity readout and the scene audit', () => {
+    const host = makeHost();
+    // Focusable with no accessible name: the defect class #212 found.
+    const nameless = new Button('', { width: 80, height: 24 });
+    nameless.interactive = true;
+    host.add(nameless);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(nameless);
+
+    const rows = ((panel as any).a11yLines as Array<{ text: string }>).map((l) => l.text);
+    const joined = rows.join('\n');
+    // The readout, then the scene-wide audit. Audits run over the whole scene
+    // because the most useful findings are relationships between entities.
+    expect(joined).toContain('name');
+    expect(joined).toContain('canvas');
+    expect(joined).toContain('audit:');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('marks a finding that belongs to the selected entity', () => {
+    const host = makeHost();
+    const a = new Button('Delete', { width: 60, height: 24 });
+    const b = new Button('Delete', { width: 60, height: 24 });
+    b.setPosition(0, 40);
+    host.add(a);
+    host.add(b);
+
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    panel.select(b);
+
+    const rows = ((panel as any).a11yLines as Array<{ text: string }>).map((l) => l.text);
+    // Duplicate names are reported against the second onward, so selecting `b`
+    // should show a marked row.
+    expect(rows.some((r) => r.startsWith('▸') && r.includes('duplicate-label'))).toBe(true);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('exposes an a11y tab id', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'a11y' });
+    expect((panel as any).tabs.value).toBe('a11y');
+    panel.detach();
+    host.destroy();
+  });
+});

@@ -13,6 +13,7 @@ import {
 } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
 import { auditScene, type AuditFinding } from './audit';
+import { auditA11y, inspectA11y } from './a11yInspect';
 import { entityPath, inspectEntity } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
 
@@ -48,6 +49,8 @@ const PANEL_FG = '#cbd5e1';
  * `describeEntity` so the two cannot disagree about how much fits.
  */
 const INSPECT_ROWS = 20;
+/** Readout rows in the A11y tab: one entity readout plus scene audit findings. */
+const A11Y_ROWS = 22;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -101,6 +104,7 @@ export class DevtoolsPanel {
   private tree: TreeView;
   private auditTree: TreeView;
   private detailLines: Text[] = [];
+  private a11yLines: Text[] = [];
   private traceLines: Text[] = [];
   private perfLines: Text[] = [];
   private eventTrace: EventTrace | null = null;
@@ -401,10 +405,28 @@ export class DevtoolsPanel {
     this.auditInner = this.auditTree;
     auditContent.add(this.auditTree);
 
+    // A11y tab: the selected entity's accessibility readout plus scene-wide audits.
+    //
+    // Worth its own tab rather than a few lines in Info, because the question it
+    // answers is specific to a zero-DOM UI: the canvas can look perfect while the
+    // projected accessibility tree is wrong, and no browser DevTools will show
+    // that divergence.
+    const a11yContent = new Container();
+    for (let i = 0; i < A11Y_ROWS; i++) {
+      const line = new Text('', {
+        font: '11px monospace',
+        color: i === 0 ? '#e8eefc' : PANEL_FG,
+      });
+      line.setPosition(10, 16 + i * 16);
+      this.a11yLines.push(line);
+      a11yContent.add(line);
+    }
+
     const tabItems: TabItem[] = [
       { id: 'tree', label: 'Tree', content: treeContent },
       { id: 'inspect', label: 'Info', content: inspectContent },
       { id: 'audit', label: 'Audit', content: auditContent },
+      { id: 'a11y', label: 'A11y', content: a11yContent },
     ];
 
     // Events tab (opt-in).
@@ -781,6 +803,70 @@ export class DevtoolsPanel {
     const lines = describeEntity(entity);
     for (let i = 0; i < this.detailLines.length; i++) {
       this.detailLines[i].setText(lines[i] ?? '');
+    }
+    this.writeA11y(entity);
+  }
+
+  /**
+   * Fill the A11y tab: the selected entity's readout, then scene-wide findings.
+   *
+   * Audits run over the whole scene rather than the selection, because the two
+   * most useful findings — a duplicate accessible name and a focusable node
+   * clipped out of view — are relationships between entities and are invisible
+   * when looking at one node at a time.
+   */
+  private writeA11y(entity: Entity): void {
+    if (this.a11yLines.length === 0) return;
+    const rows: string[] = [];
+    try {
+      const info = inspectA11y(this.host, entity);
+      rows.push(
+        info.projected
+          ? `${info.tag ?? 'div'}${info.role ? ` role=${info.role}` : ''}`
+          : 'not projected to the a11y tree',
+      );
+      if (info.accessibleName !== undefined) {
+        rows.push(`name "${info.accessibleName}" (from ${info.nameSource})`);
+      } else {
+        rows.push('name — none —');
+      }
+      const flags: string[] = [];
+      if (info.tabIndex !== undefined) flags.push(`tabIndex ${info.tabIndex}`);
+      if (info.disabled !== undefined) flags.push(`disabled ${info.disabled}`);
+      if (info.focused !== undefined) flags.push(`focused ${info.focused}`);
+      if (info.readingOrder !== undefined) flags.push(`order #${info.readingOrder}`);
+      if (flags.length > 0) rows.push(flags.join('  '));
+      const cb = info.canvasBounds;
+      rows.push(`canvas ${cb.x},${cb.y} ${cb.width}x${cb.height}`);
+      if (info.domBounds) {
+        const db = info.domBounds;
+        rows.push(`dom    ${db.x},${db.y} ${db.width}x${db.height}`);
+        // Assistive tech takes its geometry from the DOM node, so a divergence
+        // means the focus ring lands where the user is not looking.
+        const drift =
+          Math.abs(db.width - cb.width) > 1 || Math.abs(db.height - cb.height) > 1
+            ? ' ← diverges from canvas'
+            : '';
+        if (drift) rows.push(`!${drift}`);
+      }
+
+      const findings = auditA11y(this.host);
+      rows.push('');
+      rows.push(
+        findings.length === 0 ? 'audit: no findings' : `audit: ${findings.length} finding(s)`,
+      );
+      for (const finding of findings) {
+        if (rows.length >= this.a11yLines.length) break;
+        const marker = finding.entityId === entity.id ? '▸' : ' ';
+        rows.push(`${marker} ${finding.kind}: ${finding.message.slice(0, 68)}`);
+      }
+    } catch (error) {
+      // The audits walk app-supplied `getA11yAttributes()`; a throwing
+      // implementation must not blank the panel.
+      rows.push(`a11y readout failed: ${String(error).slice(0, 60)}`);
+    }
+    for (let i = 0; i < this.a11yLines.length; i++) {
+      this.a11yLines[i].setText(rows[i] ?? '');
     }
   }
 
