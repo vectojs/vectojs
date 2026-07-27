@@ -22,3 +22,9 @@ export function attachDevtools(
   panel.detach = () => panel.destroy();
   return panel;
 }
+export {
+  diagnoseDirty,
+  type DirtyCause,
+  type DirtyDiagnosis,
+  type DirtyDiagnosisOptions,
+} from './dirtyDiagnosis';
