@@ -3013,11 +3013,28 @@ export class Scene {
       this.syncOptionalAttribute(el, 'aria-modal', attrs.ariaModal);
       this.syncOptionalAttribute(el, 'aria-labelledby', attrs.labelledby);
       this.syncOptionalAttribute(el, 'aria-describedby', attrs.describedby);
-      this.syncOptionalAttribute(
-        el,
-        'aria-required',
-        attrs.required === undefined ? undefined : String(attrs.required),
-      );
+      // Prefer the NATIVE `required` on a form control and fall back to
+      // `aria-required` elsewhere. Native validity participates in form
+      // submission and `:invalid` styling, which the ARIA attribute only
+      // describes; on a `<div role="textbox">` there is no native attribute to
+      // set, so both paths are needed.
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement
+      ) {
+        const wantRequired = attrs.required === true;
+        if (el.required !== wantRequired) el.required = wantRequired;
+        // Don't also emit aria-required: duplicating native state is redundant
+        // and can drift.
+        this.syncOptionalAttribute(el, 'aria-required', undefined);
+      } else {
+        this.syncOptionalAttribute(
+          el,
+          'aria-required',
+          attrs.required === undefined ? undefined : String(attrs.required),
+        );
+      }
       this.syncOptionalAttribute(
         el,
         'aria-invalid',

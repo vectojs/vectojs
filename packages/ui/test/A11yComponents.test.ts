@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Scene } from '@vectojs/core';
-import { Slider, Dropdown } from '../src';
+import { Slider, Dropdown, Button, Input, TextArea } from '../src';
 
 function fakeCtx(): CanvasRenderingContext2D {
   return new Proxy(
@@ -45,6 +45,96 @@ describe('UI component accessibility contract', () => {
     expect(sliderEl.getAttribute('aria-valuenow')).toBe('30');
     expect(sliderEl.getAttribute('aria-valuemin')).toBe('10');
     expect(sliderEl.getAttribute('aria-valuemax')).toBe('50');
+  });
+
+  describe('disabled and validation state', () => {
+    // The invariant: whatever the canvas draws as unavailable or failing must
+    // project the same thing, or sighted and screen-reader users are told
+    // opposite things. Neither Button nor Input could express these at all
+    // before, despite A11yAttributes supporting them.
+    it('Button projects disabled and blocks activation from both paths', () => {
+      const { scene, root, tick } = makeScene();
+      let clicks = 0;
+      const button = new Button('Save', { disabled: true, onClick: () => clicks++ }).setPosition(
+        0,
+        0,
+      );
+      scene.add(button);
+      tick();
+
+      const el = root.querySelector('button')!;
+      expect(el.hasAttribute('disabled')).toBe(true);
+
+      // The DOM click is suppressed by the browser for a disabled button, but the
+      // canvas hit-test dispatches independently — so the component must gate it
+      // too, or a disabled button still fires when clicked on the canvas.
+      button.emit('click', {} as never);
+      expect(clicks).toBe(0);
+
+      button.disabled = false;
+      tick();
+      expect(root.querySelector('button')!.hasAttribute('disabled')).toBe(false);
+      button.emit('click', {} as never);
+      expect(clicks).toBe(1);
+    });
+
+    it('Button omits the attribute when enabled rather than writing disabled=false', () => {
+      const { scene, root, tick } = makeScene();
+      scene.add(new Button('Go').setPosition(0, 0));
+      tick();
+      // `disabled="false"` on a native button still disables it, so emitting the
+      // attribute unconditionally would be a functional bug, not just noise.
+      expect(root.querySelector('button')!.hasAttribute('disabled')).toBe(false);
+    });
+
+    it('Input projects required and aria-invalid', () => {
+      const { scene, root, tick } = makeScene();
+      const field = new Input({
+        width: 200,
+        placeholder: 'Email',
+        required: true,
+        invalid: true,
+      }).setPosition(0, 0);
+      scene.add(field);
+      tick();
+
+      const el = root.querySelector('input')!;
+      expect(el.hasAttribute('required')).toBe(true);
+      expect(el.getAttribute('aria-invalid')).toBe('true');
+
+      // Clearing invalid must remove the attribute, not set it to "false":
+      // aria-invalid="false" means "explicitly valid", which is a different
+      // statement from having no validation state.
+      field.invalid = false;
+      tick();
+      expect(root.querySelector('input')!.hasAttribute('aria-invalid')).toBe(false);
+    });
+
+    it('TextArea projects required and aria-invalid', () => {
+      const { scene, root, tick } = makeScene();
+      const field = new TextArea({
+        width: 200,
+        height: 80,
+        placeholder: 'Notes',
+        required: true,
+        invalid: true,
+      }).setPosition(0, 0);
+      scene.add(field);
+      tick();
+
+      const el = root.querySelector('textarea')!;
+      expect(el.hasAttribute('required')).toBe(true);
+      expect(el.getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('a field with no validation state projects neither attribute', () => {
+      const { scene, root, tick } = makeScene();
+      scene.add(new Input({ width: 200, placeholder: 'Name' }).setPosition(0, 0));
+      tick();
+      const el = root.querySelector('input')!;
+      expect(el.hasAttribute('required')).toBe(false);
+      expect(el.hasAttribute('aria-invalid')).toBe(false);
+    });
   });
 
   it('projects an accessible name for Slider and Dropdown', () => {

@@ -12,7 +12,7 @@
  * `[data-vecto-id]` rather than by DOM position (position is what
  * `enforceA11yDomOrder` is free to change).
  */
-import { Scene, Entity, type A11yAttributes, type IRenderer } from '@vectojs/core';
+import { Scene, Entity } from '@vectojs/core';
 import {
   Button,
   Checkbox,
@@ -66,39 +66,12 @@ submit.y = 20;
 submit.on('click', () => log('btn-submit', 'click'));
 scene.add(submit);
 
-/**
- * A disabled button.
- *
- * `@vectojs/ui`'s `Button` has **no** disabled state — not visually and not
- * semantically — even though `A11yAttributes` supports `disabled`. So this is a
- * local entity rather than a component, and the e2e asserts the invariant that
- * matters regardless of who implements it: whatever is drawn as unavailable must
- * project `disabled`, or sighted and screen-reader users are told opposite
- * things. Replace this with a component-level disabled state once Button grows one.
- */
-class DisabledButton extends Entity {
-  public isDisabled = true;
-  constructor() {
-    super('btn-disabled');
-    this.interactive = true;
-    this.width = 140;
-    this.height = 40;
-  }
-  isPointInside(gx: number, gy: number): boolean {
-    const p = this.worldToLocal(gx, gy);
-    return !!p && p.x >= 0 && p.y >= 0 && p.x <= this.width && p.y <= this.height;
-  }
-  render(r: IRenderer): void {
-    r.beginPath();
-    r.roundRect(0, 0, this.width, this.height, 6);
-    r.fill(this.isDisabled ? '#334155' : '#2563eb');
-    r.fillText('Disabled', 16, 26, '15px sans-serif', this.isDisabled ? '#64748b' : '#f8fafc');
-  }
-  override getA11yAttributes(): A11yAttributes {
-    return { tag: 'button', label: 'Disabled', disabled: this.isDisabled };
-  }
-}
-const disabled = new DisabledButton();
+// A disabled Button. This used to be a local entity because `Button` had no
+// disabled state at all — not visually and not semantically — which the
+// conformance suite surfaced. The component now owns it, so the fixture exercises
+// the real thing.
+const disabled = new Button('Disabled', { width: 140, height: 40, disabled: true });
+disabled.id = 'btn-disabled';
 disabled.x = 20;
 disabled.y = 76;
 disabled.on('click', () => log('btn-disabled', 'click'));
@@ -163,41 +136,17 @@ input.y = 20;
 input.on('change', () => log('input-name', 'change'));
 scene.add(input);
 
-/**
- * A required field in an invalid state.
- *
- * `Input` does not expose `required`/`invalid` either, though `A11yAttributes`
- * carries both. Constraint state has to reach the accessibility tree — a red
- * border alone is invisible to a screen reader.
- */
-class RequiredField extends Entity {
-  constructor() {
-    super('input-email');
-    this.interactive = true;
-    this.width = 220;
-    this.height = 40;
-  }
-  isPointInside(gx: number, gy: number): boolean {
-    const p = this.worldToLocal(gx, gy);
-    return !!p && p.x >= 0 && p.y >= 0 && p.x <= this.width && p.y <= this.height;
-  }
-  render(r: IRenderer): void {
-    r.beginPath();
-    r.roundRect(0, 0, this.width, this.height, 6);
-    r.fill('#0f172a');
-    r.fillText('Email (required)', 10, 26, '15px sans-serif', '#94a3b8');
-  }
-  override getA11yAttributes(): A11yAttributes {
-    return {
-      tag: 'input',
-      inputType: 'email',
-      label: 'Email',
-      required: true,
-      invalid: true,
-    };
-  }
-}
-const required = new RequiredField();
+// A required field in an invalid state, via the real `Input`. Also previously a
+// local stand-in: `Input` could not express either constraint even though
+// `A11yAttributes` supported both.
+const required = new Input({
+  width: 220,
+  placeholder: 'Email',
+  value: '',
+  required: true,
+  invalid: true,
+});
+required.id = 'input-email';
 required.x = 460;
 required.y = 76;
 scene.add(required);
