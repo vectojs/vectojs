@@ -310,3 +310,170 @@ describe('content grid reuse under streaming', () => {
     expect(normalize(streamed.scene, streamedEntity)).toBe(normalize(fresh.scene, freshEntity));
   });
 });
+
+describe('content grid calibration scan scope', () => {
+  /**
+   * The scan that feeds calibration was O(cells) per revision: it re-derived a
+   * measurement key for every cell in the block on every append, to produce only
+   * ~20 distinct keys. Since carrier reuse leaves an untouched line's calibrated
+   * transforms in place, a cell stamped for the current generation can be skipped.
+   *
+   * These tests use a real `requestAnimationFrame` so the calibration write pass
+   * runs, which is what applies the stamp.
+   */
+  function makeCalibratingScene(): Scene {
+    const frames: Array<() => void> = [];
+    (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = ((
+      cb: () => void,
+    ) => {
+      frames.push(cb);
+      return frames.length;
+    }) as never;
+    (globalThis as { cancelAnimationFrame?: unknown }).cancelAnimationFrame = (() => {}) as never;
+    // jsdom returns a zero-width Range, which calibration treats as invalid and
+    // bails on, so give it a plausible width keyed to the text length.
+    Range.prototype.getBoundingClientRect = function (this: Range) {
+      const length = this.endOffset - this.startOffset;
+      return { width: length * 8, height: 16, left: 0, top: 0, right: 0, bottom: 0 } as DOMRect;
+    } as never;
+    Element.prototype.getBoundingClientRect = function () {
+      return { width: 1, height: 1, left: 0, top: 0, right: 1, bottom: 1 } as DOMRect;
+    } as never;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 600;
+    canvas.height = 400;
+    (canvas as unknown as { getContext: () => unknown }).getContext = () => ({
+      measureText: (t: string) => ({ width: String(t).length * 8 }),
+      canvas,
+      save() {},
+      restore() {},
+      translate() {},
+      scale() {},
+      clearRect() {},
+      fillRect() {},
+      fillText() {},
+      beginPath() {},
+      setTransform() {},
+      getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+    });
+    document.body.appendChild(canvas);
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    scene.resize(600, 400);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames = () => {
+      // Two frames: calibration reads in one and writes in the next.
+      for (let i = 0; i < 4 && frames.length > 0; i++) {
+        const batch = frames.splice(0, frames.length);
+        for (const cb of batch) cb();
+      }
+    };
+    return scene;
+  }
+
+  function stampedCount(scene: Scene, entity: Entity): { stamped: number; total: number } {
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    const cells = [...el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+    return {
+      stamped: cells.filter((c) => c.dataset.vectoGridCalib !== undefined).length,
+      total: cells.length,
+    };
+  }
+
+  it('stamps every cell after a calibration pass', () => {
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc\ndef');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+
+    const { stamped, total } = stampedCount(scene, entity);
+    expect(total).toBeGreaterThan(0);
+    expect(stamped).toBe(total);
+  });
+
+  it('leaves only new cells unstamped after an append', () => {
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc\ndef');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+    const before = stampedCount(scene, entity);
+    expect(before.stamped).toBe(before.total);
+
+    entity.text += '\nghi';
+    syncProjection(scene);
+
+    // Immediately after the sync, before calibration runs: reused lines keep their
+    // stamps, so only the rebuilt tail is pending. That difference is the whole
+    // optimisation — an O(cells) scan becomes O(new cells).
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    const pending = el.querySelectorAll('[data-vecto-grid-cell]:not([data-vecto-grid-calib])');
+    const all = el.querySelectorAll('[data-vecto-grid-cell]');
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.length).toBeLessThan(all.length);
+  });
+
+  it('invalidates every stamp when the font epoch changes', () => {
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc\ndef');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    const firstGeneration = [...el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')][0]!
+      .dataset.vectoGridCalib;
+
+    // A font-availability change makes every measured width wrong, so trusting an
+    // existing stamp would apply a stale scaleX rather than merely a suboptimal one.
+    (scene as unknown as { contentFontEpoch: number }).contentFontEpoch++;
+    entity.text += '\nghi';
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+
+    const cells = [...el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+    expect(cells.every((c) => c.dataset.vectoGridCalib !== firstGeneration)).toBe(true);
+  });
+
+  it('publishes gridReady from a frame callback, never synchronously', () => {
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    delete el.dataset.vectoGridCalibration;
+    delete el.dataset.vectoGridReady;
+    syncProjection(scene);
+
+    // `vectoGridReady` means "geometry is settled and safe to measure", which is a
+    // stronger claim than "calibration found nothing to do". Consumers act on it by
+    // immediately calling getBoundingClientRect, and carriers created earlier in the
+    // same task have not been laid out yet. Setting it synchronously handed out a
+    // zero-width rect and made a Table cell drag select nothing.
+    expect(el.dataset.vectoGridReady).toBeUndefined();
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+    expect(el.dataset.vectoGridReady).toBe('true');
+  });
+
+  it('completes without a probe when nothing is pending', () => {
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    // Force a fresh calibration key without changing any cell, mimicking a
+    // revision bump that touched nothing this block cares about.
+    delete el.dataset.vectoGridCalibration;
+    syncProjection(scene);
+
+    // Zero samples: no probe was built and no measurement was taken. Ready arrives
+    // one frame later (see the test above), not synchronously.
+    expect(el.dataset.vectoGridCalibrationSamples).toBe('0');
+    expect(el.dataset.vectoGridCalibrationPending).toBeUndefined();
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+    expect(el.dataset.vectoGridReady).toBe('true');
+  });
+});

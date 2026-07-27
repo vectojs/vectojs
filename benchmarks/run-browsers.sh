@@ -215,4 +215,38 @@ echo "serving $BENCH on $URL"
 trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 
 for b in "${BROWSERS[@]}"; do run_one "$b" || true; done
+# Warn loudly when a run was starved of animation frames.
+#
+# A benchmark driving requestAnimationFrame only gets frames while its window is
+# visible. Switching workspace or letting another window raise itself mid-run
+# leaves an arm with almost no frames, and per-frame figures computed from that
+# denominator look like a large win. Rows carry a `starved` flag; surface it here
+# so a bad run is obvious at the point of collection rather than after someone
+# has quoted it.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$RESULTS" <<'PY'
+import glob, json, sys, os
+
+starved = []
+for path in glob.glob(os.path.join(sys.argv[1], '*.json')):
+    try:
+        data = json.load(open(path))
+    except Exception:
+        continue
+    for row in data.get('rows', []):
+        if row.get('starved'):
+            starved.append(
+                f"  {data.get('engine','?')} {row.get('shape','?')}"
+                f" {row.get('chunkRate','?')}/s {row.get('mode','?')}:"
+                f" offered {row.get('streamOffered')} of ~{row.get('expectedFrames')}"
+            )
+if starved:
+    print('')
+    print('WARNING: rAF was starved in these arms — their per-frame numbers are NOT usable:')
+    print('\n'.join(starved))
+    print('  Keep the benchmark window focused and visible for the whole run')
+    print('  (no workspace switching, no other browser raising itself).')
+PY
+fi
+
 echo "results in $RESULTS/"
