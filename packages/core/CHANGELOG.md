@@ -1,5 +1,48 @@
 # @vectojs/core
 
+## 1.20.0
+
+### Minor Changes
+
+- 8c05163: Hiding an `Overlay` now hides its children from assistive technology too.
+
+  `Overlay.hide()` dropped its own `interactive` and pruned its a11y subtree, which
+  looked sufficient. It was not: the projection walk still descended into the hidden
+  overlay, so any still-interactive **child** was re-created on the very next frame.
+  Measured in a real browser — after `Popover.hide()` the popover's own element was
+  gone while its button remained projected with `tabIndex: 0` and a live box, so a
+  keyboard user could Tab into a hidden popover and activate it.
+
+  `Entity.a11yHidden` is the new opt-out: it removes an entity **and its whole
+  subtree** from projection regardless of each node's own `interactive` flag, for a
+  container that is logically closed while still mounted. `Overlay.hide()` sets it and
+  `show*()` clears it.
+
+  Deliberately not inferred from `opacity`. `Overlay.hide()` springs opacity toward 0
+  rather than assigning it, so mid-transition it reads nonzero (~0.26 when measured)
+  and an `=== 0` test never fires — and a threshold would silently un-project a
+  faint-but-live control.
+
+- 54e85fb: Add opt-in per-phase render timing.
+
+  A frame total cannot say where the time went, which is the position that produced
+  two wrong optimisation guesses earlier (a `CodeBlock` reuse and a hit-grid fusion,
+  both of which measured as no change). `scene.setPhaseTiming(true)` records
+  `render`, `transform`, `drawWalk`, `entityPaint`, `flush`, `a11ySync` and
+  `a11yOrder`; read `scene.renderPhases` for totals, averages, worst samples and each
+  phase's share.
+
+  Off by default, and the probes are a single boolean test when disabled — they sit on
+  the frame path, so the disabled cost has to be nothing.
+
+  Nesting is handled explicitly: `render` encloses `transform`/`drawWalk`/`flush`, and
+  `drawWalk` encloses `entityPaint`, so both enclosing phases report a `null` share
+  rather than double-counting their children.
+
+  First result, on the Markdown streaming workload in both engines: render is
+  94-99% `drawWalk`, and `drawWalk` is 92-99.6% `entityPaint`. Transform, flush and
+  a11y sync are each under 0.05%.
+
 ## 1.19.0
 
 ### Minor Changes

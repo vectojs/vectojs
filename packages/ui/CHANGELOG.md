@@ -1,5 +1,67 @@
 # @vectojs/ui
 
+## 2.3.4
+
+### Patch Changes
+
+- 8c05163: Hiding an `Overlay` now hides its children from assistive technology too.
+
+  `Overlay.hide()` dropped its own `interactive` and pruned its a11y subtree, which
+  looked sufficient. It was not: the projection walk still descended into the hidden
+  overlay, so any still-interactive **child** was re-created on the very next frame.
+  Measured in a real browser — after `Popover.hide()` the popover's own element was
+  gone while its button remained projected with `tabIndex: 0` and a live box, so a
+  keyboard user could Tab into a hidden popover and activate it.
+
+  `Entity.a11yHidden` is the new opt-out: it removes an entity **and its whole
+  subtree** from projection regardless of each node's own `interactive` flag, for a
+  container that is logically closed while still mounted. `Overlay.hide()` sets it and
+  `show*()` clears it.
+
+  Deliberately not inferred from `opacity`. `Overlay.hide()` springs opacity toward 0
+  rather than assigning it, so mid-transition it reads nonzero (~0.26 when measured)
+  and an `=== 0` test never fires — and a threshold would silently un-project a
+  faint-but-live control.
+
+- 06b2c73: Coalesce adjacent same-style glyphs into one `fillText`.
+
+  `RichText.render` issued one `fillText` **per character**. Measured on a Markdown
+  streaming workload, that was 369,324 calls over 400 appends — and `fillText`
+  accounted for 71-84% of all entity painting, which itself was 92-99% of render.
+  Shaping was not the problem: `measureText` was 0-5.7%.
+
+  Runs of adjacent glyphs sharing font and colour are now drawn in a single call:
+
+  | shape | `fillText` calls  | render (Chrome)     | render (Firefox)    |
+  | ----- | ----------------- | ------------------- | ------------------- |
+  | prose | 369,324 → 176,112 | 382 → 226ms (1.69x) | 346 → 228ms (1.52x) |
+  | mixed | 142,728 → 30,798  | 142 → 61ms (2.33x)  | 144 → 58ms (2.50x)  |
+
+  A run is only coalesced when its measured width equals the summed per-glyph
+  advances. Layout positions each character from an isolated `measureText(char)`, so
+  drawing them as one string would let the browser apply kerning and ligatures and move
+  glyphs away from where layout put them — visible as text drifting from its selection
+  overlay and hit box. The check costs one memoized `measureText` per run against what
+  was one `fillText` per character.
+
+  Whitespace, links and any positional gap (justification, tabs, bidi reordering) end a
+  run, so those paths are unchanged.
+
+  `CodeBlock` is unaffected — it self-draws a character grid rather than using
+  `RichText`, so a code-heavy stream sees no change (247,380 calls before and after).
+
+- 1620b74: Stop projecting `aria-setsize` on the `VirtualList` container.
+
+  `aria-setsize` is defined on set **members**, not on the set itself, so putting it
+  on the `role="list"` container is a disallowed attribute — axe reports it as a
+  critical `aria-allowed-attr` violation. The count already reaches assistive
+  technology through the container's accessible name, and per-row `posInSet`/`setSize`
+  carry the position, which is what actually prevents a virtualized list being
+  announced as "item 3 of 12".
+
+  Introduced one release earlier alongside the new attributes, and caught by the axe
+  suite when a virtualized list was added to the conformance fixture.
+
 ## 2.3.3
 
 ### Patch Changes
