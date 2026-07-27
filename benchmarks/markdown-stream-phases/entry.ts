@@ -122,6 +122,16 @@ async function main(): Promise<void> {
       step: (dt: number) => void;
       resize: (w: number, h: number) => void;
       destroy: () => void;
+      setPhaseTiming: (on: boolean) => void;
+      clearRenderPhases: () => void;
+      renderPhases: Array<{
+        phase: string;
+        totalMs: number;
+        calls: number;
+        avgMs: number;
+        maxMs: number;
+        share: number | null;
+      }>;
     };
   };
   // Import `marked` AFTER @vectojs/markdown so both resolve to the same module
@@ -136,6 +146,7 @@ async function main(): Promise<void> {
 
   for (const [shape, chunkOf] of Object.entries(SHAPES)) {
     const perTrial: PhaseTotals[] = [];
+    const renderPhaseSamples: Array<Record<string, number>> = [];
 
     for (let t = 0; t < TRIALS; t++) {
       const scene = new Scene(canvas, { disableWindowResize: true });
@@ -149,6 +160,10 @@ async function main(): Promise<void> {
         reconcile: 0,
         render: 0,
       };
+      // Decompose the render term. #234 established render is 85-99% of an append
+      // but could not say what is inside it, which is the gap this closes.
+      scene.setPhaseTiming(true);
+      scene.clearRenderPhases();
 
       // Attribute by PATCHING the two functions an append actually calls, rather
       // than estimating one term and subtracting it. `appendMarkdown` on the
@@ -185,6 +200,13 @@ async function main(): Promise<void> {
       totals.parse = parseMs;
       totals.reconcile = reconcileMs;
 
+      renderPhaseSamples.push(
+        Object.fromEntries(scene.renderPhases.map((p) => [p.phase, p.totalMs])) as Record<
+          string,
+          number
+        >,
+      );
+      scene.setPhaseTiming(false);
       perTrial.push(totals);
       md.destroy();
       scene.destroy();
@@ -198,8 +220,33 @@ async function main(): Promise<void> {
     const total = parse + reconcile + render;
     const share = (v: number): number => +((100 * v) / total).toFixed(1);
 
+    // Median each render sub-phase across trials, and express as a share of the
+    // render total — the share is what decides whether a phase is worth attacking.
+    const subPhase = (name: string): number => median(renderPhaseSamples.map((x) => x[name] ?? 0));
+    const renderTotal = subPhase('render');
+    const subShare = (name: string): number =>
+      renderTotal > 0 ? +((100 * subPhase(name)) / renderTotal).toFixed(1) : 0;
+
     rows.push({
       shape,
+      renderBreakdown: {
+        renderMs: +renderTotal.toFixed(2),
+        transformMs: +subPhase('transform').toFixed(2),
+        drawWalkMs: +subPhase('drawWalk').toFixed(2),
+        flushMs: +subPhase('flush').toFixed(2),
+        a11ySyncMs: +subPhase('a11ySync').toFixed(2),
+        a11yOrderMs: +subPhase('a11yOrder').toFixed(2),
+        entityPaintMs: +subPhase('entityPaint').toFixed(2),
+        // entityPaint is nested INSIDE drawWalk, so its share is of drawWalk —
+        // that ratio says whether the cost is painting or the traversal.
+        entityPaintOfDrawWalk:
+          subPhase('drawWalk') > 0
+            ? +((100 * subPhase('entityPaint')) / subPhase('drawWalk')).toFixed(1)
+            : 0,
+        transformShare: subShare('transform'),
+        drawWalkShare: subShare('drawWalk'),
+        flushShare: subShare('flush'),
+      },
       chunks: CHUNKS,
       parseMs: +parse.toFixed(2),
       reconcileMs: +reconcile.toFixed(2),
