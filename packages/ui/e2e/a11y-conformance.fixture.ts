@@ -28,6 +28,7 @@ import {
   TextArea,
   Table,
   Toggle,
+  Popover,
   TreeView,
   VirtualList,
 } from '@vectojs/ui';
@@ -46,6 +47,12 @@ declare global {
       events: EventLog[];
       /** Announce text into the live region, to test aria-live delivery. */
       announce(message: string): void;
+      /** Show a popover containing a focusable button. */
+      openPopover(): void;
+      /** Hide it via Overlay.hide(), the path that detaches its a11y subtree. */
+      closePopover(): void;
+      /** Collapse the tree's expanded parent, destroying descendant hotspots. */
+      collapseTree(): void;
       /** Scroll the virtualized list far enough to recycle every mounted row. */
       recycleRows(): void;
       openMenu(): void;
@@ -227,6 +234,7 @@ scene.add(table);
 // Opened on demand: a context menu that is always visible is not the pattern
 // under test, and it would overlap the controls above.
 let menu: ContextMenu | null = null;
+let popover: Popover | null = null;
 
 // --- Virtualized list: focus across row recycling ---------------------------
 // The fragile boundary here is recycling WHILE a row holds focus. Row entities
@@ -327,6 +335,41 @@ window.__a11yFixture = {
   announce(message: string) {
     live.message = message;
     scene.markDirty();
+  },
+  openPopover() {
+    if (popover) return;
+    // Popover is target-driven: it toggles on the target's click and positions
+    // itself relative to it, so it needs a real trigger rather than a point.
+    popover = new Popover({ target: submit, width: 200, height: 90 });
+    popover.id = 'popover-menu';
+    const act = new Button('Popover action', { width: 170, height: 34 });
+    act.id = 'popover-action';
+    act.x = 15;
+    act.y = 28;
+    act.on('click', () => log('popover-action', 'click'));
+    popover.add(act);
+    scene.showOverlay(popover);
+    popover.showAt(submit);
+  },
+  closePopover() {
+    // Overlay.hide() is the interesting path: it drops `interactive` and calls
+    // detachA11y on the whole subtree, so a focused child's element disappears.
+    popover?.hide();
+  },
+  collapseTree() {
+    // Collapsing destroys the descendant hotspots, which is the TreeView analogue
+    // of recycling a focused row.
+    tree.setNodes([
+      {
+        id: 'src',
+        label: 'src',
+        children: [
+          { id: 'index', label: 'index.ts' },
+          { id: 'scene', label: 'Scene.ts' },
+        ],
+      },
+      { id: 'readme', label: 'README.md' },
+    ]);
   },
   recycleRows() {
     vlist.scrollToIndex(ROW_COUNT - 1);

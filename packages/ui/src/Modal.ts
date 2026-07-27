@@ -69,8 +69,14 @@ export class Modal extends UIComponent {
     // Block underlying events
     this.on('click', (e: VectoJSEvent) => e.stopPropagation());
     this.on('pointerdown', (e: VectoJSEvent) => e.stopPropagation());
-    // Esc closes the dialog (WAI-ARIA dialog pattern). The keydown reaches the
-    // modal's shadow element once it holds focus (set in onMounted).
+    // Esc closes the dialog (WAI-ARIA dialog pattern).
+    //
+    // This entity-level handler only fires while the modal's OWN shadow element
+    // holds focus. That is not the contract: the pattern requires Escape to close
+    // from anywhere inside the dialog, and as soon as the user Tabs to a button
+    // inside it — the normal thing to do — focus is on a child and this never
+    // runs. Kept for the focused-surface case; the document-level handler
+    // installed with the focus trap covers focus being anywhere in the subtree.
     this.on('keydown', (e: VectoJSEvent<KeyboardEvent>) => {
       if (e.nativeEvent?.key === 'Escape') {
         e.stopPropagation();
@@ -164,6 +170,17 @@ export class Modal extends UIComponent {
   private installFocusTrap(): void {
     if (typeof document === 'undefined' || this._trapHandler) return;
     const handler = (event: KeyboardEvent): void => {
+      // Escape from anywhere inside the dialog. The entity-level handler above
+      // only sees it when the modal surface itself is focused, so once focus moves
+      // to a child control Escape stopped working — the dialog pattern requires it
+      // to close regardless of which descendant holds focus.
+      if (event.key === 'Escape') {
+        if (!this.ownsElement(document.activeElement)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void this.close();
+        return;
+      }
       if (event.key !== 'Tab') return;
       const focusable = this.focusableInside();
       const surface = this.scene?.getA11yElement(this.id) ?? null;

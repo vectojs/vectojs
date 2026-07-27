@@ -2378,6 +2378,21 @@ export class Scene {
     this.releaseContentSelectionForRebuild(el);
   }
 
+  /**
+   * Drop any projected elements under `node` without touching the entity tree.
+   *
+   * Used when the walk reaches an invisible subtree: the entities stay put (a
+   * later `show()` re-projects them), but nothing under here may remain
+   * focusable or announced while hidden.
+   */
+  private pruneA11ySubtree(node: Entity): void {
+    if (this.a11yElements.has(node.id) || this.contentElements.has(node.id)) {
+      this.removeA11yRecursively(node);
+      return;
+    }
+    for (const child of node.children) this.pruneA11ySubtree(child);
+  }
+
   private removeA11yRecursively(node: Entity) {
     if (node.isDOMPortal) {
       // Release the portal's ResizeObserver + DOM listeners, not just its
@@ -2940,6 +2955,29 @@ export class Scene {
   private syncA11y(node: Entity) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
+      return;
+    }
+    // A fully transparent subtree must not project — for itself OR its
+    // descendants. `Overlay.hide()` sets `opacity = 0`, drops its own
+    // `interactive`, and calls `detachA11y`, which correctly prunes the subtree;
+    // but the walk then descended into the hidden overlay's children anyway, and
+    // any still-interactive child was re-created on the very next frame. Measured
+    // in a real browser: after `Popover.hide()` the popover's own element was gone
+    // while its button stayed projected with `tabIndex: 0` and a live box, so a
+    // keyboard user could Tab into a hidden popover.
+    //
+    // The condition is `a11yHidden`, an explicit opt-out, NOT `opacity === 0`.
+    // Opacity looked like the natural signal and is wrong: `Overlay.hide()` springs
+    // opacity toward 0 rather than setting it, so mid-transition it reads ~0.26 and
+    // the check never fires — measured. Nor is a threshold right, since a
+    // deliberately faint-but-live control would be silently removed from the
+    // accessibility tree.
+    //
+    // Checked here rather than inside `shouldProjectA11y` because this has to stop
+    // the RECURSION, not just skip one node: that gate is also consulted for
+    // pruning and reading order, where per-node semantics are what matter.
+    if (node.a11yHidden) {
+      this.pruneA11ySubtree(node);
       return;
     }
     if (this.shouldProjectA11y(node)) {

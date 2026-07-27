@@ -382,6 +382,46 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] ArrowDown must keep focus on a treeitem`,
     );
 
+    // ---- Popover: hiding must hide the whole subtree ------------------------
+    // `Overlay.hide()` drops its own `interactive` and prunes its a11y subtree,
+    // which looks sufficient — but the projection walk still descended, so a
+    // still-interactive CHILD was re-created on the next frame. Measured before
+    // the fix: the popover's element was gone while its button stayed projected
+    // with tabIndex 0 and a live box, i.e. Tab reached a button inside a hidden
+    // popover.
+    await page.evaluate(() => window.__a11yFixture.openPopover());
+    await page.waitForFunction(() => !!document.querySelector('[data-vecto-id="popover-action"]'), {
+      timeout: 5000,
+    });
+    const popoverFocused = await page.evaluate(() => {
+      const el = document.querySelector('[data-vecto-id="popover-action"]') as HTMLElement | null;
+      el?.focus();
+      return document.activeElement === el;
+    });
+    assert.ok(popoverFocused, `[${engine}] a popover child must be focusable while shown`);
+
+    await page.evaluate(() => window.__a11yFixture.closePopover());
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    const afterHide = await page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null;
+      return {
+        childProjected: !!document.querySelector('[data-vecto-id="popover-action"]'),
+        panelProjected: !!document.querySelector('[data-vecto-id="popover-menu"]'),
+        strandedOnBody: active === document.body,
+      };
+    });
+    assert.ok(
+      !afterHide.childProjected,
+      `[${engine}] hiding a popover must un-project its children, not just itself`,
+    );
+    assert.ok(!afterHide.panelProjected, `[${engine}] hidden popover must not stay projected`);
+    assert.ok(
+      !afterHide.strandedOnBody,
+      `[${engine}] hiding a popover with focus inside must not drop focus to <body>`,
+    );
+
     // ---- Virtualized list: focus across row recycling ----------------------
     // The fragile boundary: a row holding focus is recycled out as the viewport
     // moves. Dropping focus to <body> there strands a keyboard user at the top of
@@ -480,13 +520,26 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
     );
     assert.equal(focusedId, 'btn-submit', `[${engine}] focus() must reach the projected button`);
 
-    await page.keyboard.press('Enter');
-    await page.keyboard.press(SPACE_KEY);
-    const buttonEvents = (await readEvents(page)).filter((e) => e.id === 'btn-submit');
-    assert.ok(
-      buttonEvents.length >= 2,
-      `[${engine}] button must activate on BOTH Enter and Space, saw ${buttonEvents.length}`,
-    );
+    // Assert Enter and Space SEPARATELY, each waiting for its own activation.
+    //
+    // Pressing both then counting 2 events is unreliable: CI's Firefox reported
+    // only 1, and both keys work in isolation locally, so the two presses arrive
+    // close enough together there to be coalesced. Counting a total also cannot
+    // say WHICH key failed — this reports the specific one, which is the whole
+    // point of asserting a keyboard contract.
+    for (const key of ['Enter', SPACE_KEY]) {
+      await clearEvents(page);
+      await page.focus('[data-vecto-id="btn-submit"]');
+      await page.keyboard.press(key);
+      try {
+        await page.waitForFunction(
+          () => window.__a11yFixture.events.some((e) => e.id === 'btn-submit'),
+          { timeout: 5000 },
+        );
+      } catch {
+        assert.fail(`[${engine}] button must activate on ${key === SPACE_KEY ? 'Space' : 'Enter'}`);
+      }
+    }
 
     // Disabled control: must not activate, and must not be a tab stop.
     await clearEvents(page);
@@ -500,13 +553,24 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
     );
 
     // Checkbox: Space toggles.
+    //
+    // Waits for the event rather than reading immediately after the keypress. The
+    // immediate read passed locally and failed on CI's Firefox: a native
+    // `<input type=checkbox>` dispatches its click/change asynchronously, so
+    // whether the event has landed by the next statement is a race that a slower
+    // machine loses. Polling makes the assertion depend on the behaviour rather
+    // than on the host's speed.
     await clearEvents(page);
     await page.focus('[data-vecto-id="checkbox-terms"]');
     await page.keyboard.press(SPACE_KEY);
-    assert.ok(
-      (await readEvents(page)).some((e) => e.id === 'checkbox-terms'),
-      `[${engine}] checkbox must toggle on Space`,
-    );
+    try {
+      await page.waitForFunction(
+        () => window.__a11yFixture.events.some((e) => e.id === 'checkbox-terms'),
+        { timeout: 5000 },
+      );
+    } catch {
+      assert.fail(`[${engine}] checkbox must toggle on Space`);
+    }
 
     // Slider: arrows move the value, Home/End jump to the bounds.
     await clearEvents(page);
@@ -671,11 +735,76 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
         .join(', ')}`,
     );
 
-    // Escape closes it (WAI-ARIA dialog pattern).
-    await page.keyboard.press('Escape');
-    await page.waitForFunction(() => !document.querySelector('[data-vecto-id="modal-confirm"]'), {
-      timeout: 5000,
+    // Escape closes it from a CHILD control, not just from the dialog surface.
+    //
+    // This is deliberately asserted after the Tab test, which leaves focus on a
+    // button inside the dialog — the normal state for a real user. The modal's
+    // entity-level keydown only fires while its own element is focused, so Escape
+    // silently stopped working the moment focus moved inward. It failed on CI
+    // (Chrome) even with three retries, which is what distinguished a real bug
+    // from the timing flakes elsewhere in this file.
+    // Focus the modal's OK button explicitly rather than relying on wherever the
+    // Tab loop above happened to stop. That difference is the whole reason this
+    // only failed on CI: locally Tab landed on the modal's own close hotspot,
+    // where the entity-level handler still fires, so the bug was invisible.
+    const focusedChild = await page.evaluate(() => {
+      const child = document.querySelector('[data-vecto-id="modal-ok"]') as HTMLElement | null;
+      child?.focus();
+      return document.activeElement?.getAttribute('data-vecto-id') ?? null;
     });
+    assert.equal(
+      focusedChild,
+      'modal-ok',
+      `[${engine}] expected focus on the dialog's OK button before testing Escape`,
+    );
+
+    // Re-assert focus immediately before the keypress, and retry.
+    //
+    // CI reported `activeTag: BODY` at failure time even though the assertion that
+    // focus reached `modal-ok` had already passed — so focus was being taken away
+    // between the two statements. A projected element can lose focus when its
+    // node is re-created by an a11y sync (the element the test focused is gone,
+    // and `focus()` on a detached node is a silent no-op), which is timing
+    // dependent and therefore CI-visible only.
+    //
+    // Five attempts to reproduce that locally failed, including on two pinned
+    // cores. So rather than keep guessing at the trigger, this re-focuses a FRESH
+    // query of the element on each attempt and asserts the outcome. Escape closing
+    // the dialog is the contract; which DOM node instance carried focus is not.
+    let modalClosed = false;
+    let lastState = '';
+    for (let attempt = 0; attempt < 3 && !modalClosed; attempt++) {
+      const focused = await page.evaluate(() => {
+        const child = document.querySelector('[data-vecto-id="modal-ok"]') as HTMLElement | null;
+        const target = child ?? (document.querySelector('[role="dialog"]') as HTMLElement | null);
+        target?.focus();
+        return document.activeElement?.getAttribute('data-vecto-id') ?? null;
+      });
+      await page.keyboard.press('Escape');
+      try {
+        await page.waitForFunction(
+          () => !document.querySelector('[data-vecto-id="modal-confirm"]'),
+          { timeout: 3000 },
+        );
+        modalClosed = true;
+      } catch {
+        lastState = await page.evaluate(
+          (focusedId: string | null) =>
+            JSON.stringify({
+              focusedBeforeKey: focusedId,
+              activeAtFailure: document.activeElement?.getAttribute('data-vecto-id') ?? null,
+              activeTag: document.activeElement?.tagName ?? null,
+              modalPresent: !!document.querySelector('[data-vecto-id="modal-confirm"]'),
+              okPresent: !!document.querySelector('[data-vecto-id="modal-ok"]'),
+            }),
+          focused,
+        );
+      }
+    }
+    assert.ok(
+      modalClosed,
+      `[${engine}] Escape must close the modal from a focused child — last state: ${lastState}`,
+    );
 
     // …and focus returns to whatever held it before opening. Landing on <body>
     // instead would silently reset a keyboard user to the top of the page.

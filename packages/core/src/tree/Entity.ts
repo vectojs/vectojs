@@ -649,6 +649,25 @@ export abstract class Entity {
    * nodes, so on-top components stay clickable.
    */
   public a11yFullViewport: boolean = false;
+
+  /**
+   * Hide this entity AND its whole subtree from the accessibility/automation
+   * projection, regardless of each node's own `interactive` flag.
+   *
+   * For a container that is logically closed while still mounted — an `Overlay`
+   * after `hide()`, a collapsed panel kept in the tree for its transition. Setting
+   * `interactive = false` on the container alone is not enough: the projection walk
+   * still descends, and any still-interactive child is re-created on the next
+   * frame. Measured before this existed: after `Popover.hide()` the popover's own
+   * element was gone while its button stayed projected with `tabIndex: 0` and a
+   * live box, so a keyboard user could Tab into a hidden popover.
+   *
+   * Deliberately NOT inferred from `opacity`: `Overlay.hide()` springs opacity
+   * toward 0, so mid-transition it reads nonzero (~0.26 when measured) and an
+   * `=== 0` test never fires; a threshold would instead silently un-project a
+   * faint-but-live control.
+   */
+  public a11yHidden: boolean = false;
   /**
    * Clip this node's children to its local box (`[0,0]–[width,height]`) while
    * rendering. Combined with translating a content child, this is how
