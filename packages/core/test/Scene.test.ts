@@ -507,7 +507,12 @@ describe('Scene', () => {
     expect(optionElement.getAttribute('aria-activedescendant')).toBe('active');
     expect(optionElement.getAttribute('aria-valuemin')).toBe('0');
     expect(optionElement.getAttribute('aria-valuemax')).toBe('10');
-    expect(optionElement.getAttribute('aria-valuenow')).toBe('4');
+    // `aria-valuenow` is deliberately NOT set here: this element is role=option,
+    // and the attribute is numeric and valid only on range roles (slider,
+    // spinbutton, progressbar, scrollbar, meter). Emitting it for every non-input
+    // element made a combobox report a text value, which axe flags as a disallowed
+    // attribute AND an invalid value. Range-role coverage is asserted below.
+    expect(optionElement.hasAttribute('aria-valuenow')).toBe(false);
 
     enabled = true;
     detailed = false;

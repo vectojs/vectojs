@@ -178,7 +178,11 @@ describe('UI component accessibility contract', () => {
     const comboboxEl = root.querySelector('[role="combobox"]')!;
     expect(comboboxEl).not.toBeNull();
     expect(comboboxEl.getAttribute('aria-expanded')).toBe('false');
-    expect(comboboxEl.getAttribute('aria-valuenow')).toBe('Banana');
+    // NOT aria-valuenow: that attribute is numeric and only valid on range roles
+    // (slider, spinbutton, progressbar, scrollbar, meter). Emitting it here made a
+    // combobox report aria-valuenow="Banana", which axe flags as both a disallowed
+    // attribute and an invalid value. A combobox's value is its accessible text.
+    expect(comboboxEl.hasAttribute('aria-valuenow')).toBe(false);
 
     // Simulate clicking to open the menu
     comboboxEl.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -208,6 +212,10 @@ describe('UI component accessibility contract', () => {
 
     // Dropdown should close and selected value update to Cherry
     expect(comboboxEl.getAttribute('aria-expanded')).toBe('false');
-    expect(comboboxEl.getAttribute('aria-valuenow')).toBe('Cherry');
+    // Same reason as above: a combobox does not carry aria-valuenow. The
+    // selection change is observable through the component's own value.
+    expect(dropdown.selectedValue).toBe('Cherry');
+    // change is observable through the component's own value.
+    expect(dropdown.selectedValue).toBe('Cherry');
   });
 });

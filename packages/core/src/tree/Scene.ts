@@ -48,6 +48,13 @@ import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid } from '@vectojs/text';
 
+/**
+ * Roles for which `aria-valuenow` is valid. It is defined as a NUMBER on range
+ * widgets only; setting it elsewhere is both a disallowed attribute and an
+ * invalid value.
+ */
+const RANGE_VALUE_ROLES = new Set(['slider', 'spinbutton', 'progressbar', 'scrollbar', 'meter']);
+
 const INTERACTIVE_A11Y_ROLES = new Set([
   'button',
   'switch',
@@ -3055,8 +3062,16 @@ export class Scene {
               (el as any)._lastSyncedValue = attrs.value;
             }
           }
-        } else {
+        } else if (RANGE_VALUE_ROLES.has(attrs.role ?? '')) {
+          // `aria-valuenow` is NUMERIC and only valid on range roles (slider,
+          // spinbutton, progressbar, scrollbar, meter). Emitting it for every
+          // non-input element made a combobox report
+          // `aria-valuenow="Small"` — an invalid value on a disallowed
+          // attribute, which axe flags as two separate critical violations.
           this.syncOptionalAttribute(el, 'aria-valuenow', attrs.value);
+        } else {
+          // A non-range role's "value" is its accessible text, not a number.
+          this.syncOptionalAttribute(el, 'aria-valuenow', undefined);
         }
       } else if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
         this.syncOptionalAttribute(el, 'aria-valuenow', undefined);
