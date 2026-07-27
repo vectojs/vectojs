@@ -440,6 +440,77 @@ describe('Scene', () => {
     expect((scene as any).a11yElements.size).toBe(1);
   });
 
+  it('projects set position, grid extent, value text and orientation', () => {
+    // These exist for virtualization specifically: a widget that mounts only its
+    // visible window cannot let the accessibility tree infer the real totals, so a
+    // list showing rows 40-52 of 10,000 would announce "item 3 of 12".
+    const scene = new Scene(mockCanvas as any);
+    class Row extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      override getA11yAttributes() {
+        return {
+          role: 'listitem',
+          label: 'Row 41',
+          posInSet: 41,
+          setSize: 10000,
+          rowCount: 10000,
+          rowIndex: 41,
+          valueText: '40 percent',
+          orientation: 'vertical' as const,
+        };
+      }
+    }
+    const row = new Row('row-41');
+    row.interactive = true;
+    row.width = 100;
+    row.height = 20;
+    scene.add(row);
+    (scene as any).syncA11y((scene as any).root);
+
+    const el = (scene as any).a11yElements.get('row-41') as HTMLElement;
+    expect(el.getAttribute('aria-posinset')).toBe('41');
+    expect(el.getAttribute('aria-setsize')).toBe('10000');
+    expect(el.getAttribute('aria-rowcount')).toBe('10000');
+    expect(el.getAttribute('aria-rowindex')).toBe('41');
+    expect(el.getAttribute('aria-valuetext')).toBe('40 percent');
+    expect(el.getAttribute('aria-orientation')).toBe('vertical');
+  });
+
+  it('omits the new attributes when unset rather than emitting empty values', () => {
+    const scene = new Scene(mockCanvas as any);
+    class Plain extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      override getA11yAttributes() {
+        return { role: 'listitem', label: 'plain' };
+      }
+    }
+    const plain = new Plain('plain');
+    plain.interactive = true;
+    plain.width = 50;
+    plain.height = 20;
+    scene.add(plain);
+    (scene as any).syncA11y((scene as any).root);
+
+    const el = (scene as any).a11yElements.get('plain') as HTMLElement;
+    // An `aria-setsize=""` is not "no set size" — it is invalid, which axe flags.
+    for (const attr of [
+      'aria-posinset',
+      'aria-setsize',
+      'aria-rowcount',
+      'aria-rowindex',
+      'aria-valuetext',
+      'aria-orientation',
+    ]) {
+      expect(el.hasAttribute(attr)).toBe(false);
+    }
+  });
+
   it('syncA11y clears optional native and ARIA state when attributes become undefined', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
