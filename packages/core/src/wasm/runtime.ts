@@ -47,11 +47,29 @@ function cacheKey(source: CoreModuleSource): string | null {
   return null;
 }
 
-async function compile(source: CoreModuleSource): Promise<WebAssembly.Module> {
-  if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
-    return new WebAssembly.Module(source);
-  }
+/**
+ * Compile from raw bytes. Kept as its own function, taking `BufferSource` only,
+ * so byte data has no syntactic path to the `fetch` in {@link compileRemote}.
+ *
+ * The separation is deliberate rather than stylistic: one `compile()` spanning
+ * the whole `CoreModuleSource` union let CodeQL trace file bytes (a test's
+ * `readFileSync`, or a bundler-emitted asset) into an outbound request and report
+ * `js/file-access-to-http` — "file data in outbound network request", CWE-200.
+ * The flow was not a real exfiltration, but a loader whose types cannot express
+ * it is better than one that needs the alert dismissed. The per-backend loaders
+ * were already split this way; the shared runtime should not have re-merged them.
+ */
+function compileBytes(bytes: BufferSource): WebAssembly.Module {
+  return new WebAssembly.Module(bytes);
+}
 
+/**
+ * Compile from a URL, path, or already-issued `Response`. Never receives raw
+ * bytes — see {@link compileBytes}.
+ */
+async function compileRemote(
+  source: string | URL | Response | Promise<Response>,
+): Promise<WebAssembly.Module> {
   const response =
     typeof source === 'string' || source instanceof URL
       ? await fetch(String(source))
@@ -95,7 +113,12 @@ export async function loadCoreWasmModule(
     }
   }
 
-  const pending = compile(source);
+  // Dispatch on source kind here so each helper receives a narrow type and the
+  // bytes path stays disjoint from the network path.
+  const pending =
+    source instanceof ArrayBuffer || ArrayBuffer.isView(source)
+      ? Promise.resolve().then(() => compileBytes(source))
+      : compileRemote(source);
   if (key !== null) moduleCache.set(key, pending);
   try {
     return await pending;
