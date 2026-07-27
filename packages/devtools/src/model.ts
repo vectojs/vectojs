@@ -56,7 +56,6 @@ export function findEntityAt(root: Entity, x: number, y: number): Entity | null 
   return null;
 }
 
-/** Human-readable state lines for the detail readout. */
 /** Compact one-line rendering of a descriptor field value. */
 function formatFieldValue(value: DevtoolsField['value']): string {
   if (value === null) return 'null';
