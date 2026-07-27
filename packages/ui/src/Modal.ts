@@ -11,9 +11,12 @@ export class Modal extends UIComponent {
   private _restoreFocusEl: HTMLElement | null = null;
   /** Document-level keydown that keeps Tab inside the dialog while open. */
   private _trapHandler: ((event: KeyboardEvent) => void) | null = null;
+  /** Dialog title, kept so it can be projected as the accessible name. */
+  private readonly _title: string;
 
   constructor(title: string, props: any = {}) {
     super();
+    this._title = title;
     // The backdrop is the full-viewport focus-catching dialog surface.
     this.a11yFullViewport = true;
     this.width = props.width ?? (typeof window !== 'undefined' ? window.innerWidth : 800);
@@ -80,7 +83,15 @@ export class Modal extends UIComponent {
    *  trap their reading context. `a11yFullViewport` makes the backdrop the
    *  focus-catching surface. */
   public override getA11yAttributes(): A11yAttributes {
-    return { role: 'dialog', ariaModal: 'true', tabIndex: -1 };
+    return {
+      role: 'dialog',
+      ariaModal: 'true',
+      tabIndex: -1,
+      // The title is drawn on canvas, so it never reached the semantic layer:
+      // a screen reader announced a bare "dialog" with no indication of what it
+      // was for (WCAG 4.1.2, and axe's aria-dialog-name rule). Project it.
+      label: this._title,
+    };
   }
 
   /**
