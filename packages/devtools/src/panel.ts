@@ -51,6 +51,13 @@ const PANEL_FG = '#cbd5e1';
 const INSPECT_ROWS = 20;
 /** Readout rows in the A11y tab: one entity readout plus scene audit findings. */
 const A11Y_ROWS = 22;
+/**
+ * How often to rebuild the tree model regardless of the structure version.
+ *
+ * Bounds how long a missed structure bump can leave the panel stale, without
+ * giving back the per-tick saving the version check buys.
+ */
+const RECONCILE_INTERVAL_MS = 3000;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -105,6 +112,9 @@ export class DevtoolsPanel {
   private auditTree: TreeView;
   private detailLines: Text[] = [];
   private a11yLines: Text[] = [];
+  /** Host structure version the current tree model was built from. */
+  private treeVersion = -1;
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private traceLines: Text[] = [];
   private perfLines: Text[] = [];
   private eventTrace: EventTrace | null = null;
@@ -490,6 +500,15 @@ export class DevtoolsPanel {
     const interval = options.refreshInterval ?? 500;
     if (interval > 0) {
       this.refreshTimer = setInterval(() => this.refresh(), interval);
+      // Periodic forced reconcile as a consistency check.
+      //
+      // The version check makes the common tick cheap, but it trusts that every
+      // shape change bumps the counter. Anything that mutates `children` directly,
+      // bypassing `add`/`remove`, would leave the panel showing a stale tree with
+      // no way for a user to tell. A full rebuild every few seconds bounds how long
+      // such a divergence can persist, at a cost of roughly one walk per 3 s
+      // instead of six.
+      this.reconcileTimer = setInterval(() => this.refresh(true), RECONCILE_INTERVAL_MS);
     }
 
     this.layout();
@@ -601,8 +620,34 @@ export class DevtoolsPanel {
   }
 
   /** Rebuild the tree model from the host scene. */
-  public refresh(): void {
+  /**
+   * Rebuild the tree model and re-render the panel.
+   *
+   * @param force - Rebuild even when the tree's shape is unchanged. Used by the
+   *   periodic reconcile and by explicit user refreshes.
+   */
+  public refresh(force = false): void {
     if (this.destroyed) return;
+
+    // Skip the walk when the tree's shape has not changed.
+    //
+    // This ran unconditionally on a fixed interval, so a large scene paid a
+    // constant CPU cost to rebuild a model that was usually identical. The scene
+    // already maintains a structure version for its WASM transform store, bumped
+    // by `Entity.add`/`remove`, so staleness is an integer comparison.
+    //
+    // Selection details are still rewritten every tick: an entity's properties
+    // change without the tree's shape changing, and a stale readout is the whole
+    // reason to look at the panel.
+    const version = this.host.structureVersion;
+    if (!force && version === this.treeVersion && this.allNodes.length > 0) {
+      if (this.selected) this.writeDetails(this.selected);
+      this.writeCounts();
+      this.panelScene.markDirty();
+      return;
+    }
+    this.treeVersion = version;
+
     const { nodes, index } = buildTreeModel(this.host.rootEntity);
     const overlay = buildTreeModel(this.host.overlayRootEntity);
     for (const [id, entity] of overlay.index) index.set(id, entity);
@@ -748,13 +793,22 @@ export class DevtoolsPanel {
     }
   }
 
-  /** Change the auto-refresh cadence (ms; 0 disables). */
+  /** Change the auto-refresh cadence (ms; 0 disables). Also gates the reconcile. */
   public setRefreshInterval(ms: number): void {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
     }
-    if (ms > 0) this.refreshTimer = setInterval(() => this.refresh(), ms);
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
+    if (ms > 0) {
+      this.refreshTimer = setInterval(() => this.refresh(), ms);
+      // Disabling auto-refresh must disable the reconcile too, or `interval = 0`
+      // would still leave a timer walking the tree every few seconds.
+      this.reconcileTimer = setInterval(() => this.refresh(true), RECONCILE_INTERVAL_MS);
+    }
   }
 
   /** Move the dock to the given edge. */
@@ -889,6 +943,7 @@ export class DevtoolsPanel {
     if (this.destroyed) return;
     this.destroyed = true;
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.perfTimer) clearInterval(this.perfTimer);
     this.eventTrace?.destroy();
     document.removeEventListener('click', this.onHostPick, true);

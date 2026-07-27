@@ -2929,6 +2929,25 @@ export class Scene {
   }
 
   /**
+   * Increments whenever the tree's shape changes: add, remove or reparent.
+   *
+   * Already maintained for the resident WASM transform store (see
+   * {@link markStructureChanged}, called from `Entity.add`/`remove`), and exposed
+   * here because a cache of the tree's shape — a DevTools tree model, a serialized
+   * snapshot — is valid exactly as long as this value is unchanged. Comparing it is
+   * O(1) against re-walking the tree, which is what it replaces: DevTools rebuilt
+   * both trees on a fixed 500 ms interval, a constant cost proportional to entity
+   * count, purely because it had no way to ask whether the shape had changed.
+   *
+   * Property changes do NOT bump it. Moving or restyling an entity leaves the
+   * shape intact, so a consumer that also cares about values must read those
+   * directly rather than rebuilding a tree.
+   */
+  public get structureVersion(): number {
+    return this._structureVersion;
+  }
+
+  /**
    * Record who marked the scene dirty and why.
    *
    * Kept separate from {@link markDirty} so the hot path is not a function call
