@@ -735,27 +735,56 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
         .join(', ')}`,
     );
 
-    // Escape closes it (WAI-ARIA dialog pattern).
+    // Escape closes it from a CHILD control, not just from the dialog surface.
     //
-    // Modal.close() awaits a spring animation before removing itself, so the
-    // element can outlive the keypress by several frames. Retry the key rather
-    // than assume one press within the timeout: a single press plus a wait makes
-    // the test fail when the animation is merely slow, which is not the contract
-    // under test. (Observed intermittently on CI's Firefox.)
-    let modalClosed = false;
-    for (let attempt = 0; attempt < 3 && !modalClosed; attempt++) {
-      await page.keyboard.press('Escape');
-      try {
-        await page.waitForFunction(
-          () => !document.querySelector('[data-vecto-id="modal-confirm"]'),
-          { timeout: 4000 },
-        );
-        modalClosed = true;
-      } catch {
-        // fall through and press again
-      }
+    // This is deliberately asserted after the Tab test, which leaves focus on a
+    // button inside the dialog — the normal state for a real user. The modal's
+    // entity-level keydown only fires while its own element is focused, so Escape
+    // silently stopped working the moment focus moved inward. It failed on CI
+    // (Chrome) even with three retries, which is what distinguished a real bug
+    // from the timing flakes elsewhere in this file.
+    // Focus the modal's OK button explicitly rather than relying on wherever the
+    // Tab loop above happened to stop. That difference is the whole reason this
+    // only failed on CI: locally Tab landed on the modal's own close hotspot,
+    // where the entity-level handler still fires, so the bug was invisible.
+    const focusedChild = await page.evaluate(() => {
+      const child = document.querySelector('[data-vecto-id="modal-ok"]') as HTMLElement | null;
+      child?.focus();
+      return document.activeElement?.getAttribute('data-vecto-id') ?? null;
+    });
+    assert.equal(
+      focusedChild,
+      'modal-ok',
+      `[${engine}] expected focus on the dialog's OK button before testing Escape`,
+    );
+
+    await page.keyboard.press('Escape');
+    try {
+      await page.waitForFunction(() => !document.querySelector('[data-vecto-id="modal-confirm"]'), {
+        timeout: 5000,
+      });
+    } catch {
+      // Print the actual state rather than only the expectation: this assertion
+      // has failed on CI in three different ways now, and each theory about why
+      // was wrong when tested locally.
+      const diag = await page.evaluate(() => {
+        const active = document.activeElement as HTMLElement | null;
+        return {
+          activeId: active?.getAttribute('data-vecto-id') ?? null,
+          activeTag: active?.tagName ?? null,
+          modalPresent: !!document.querySelector('[data-vecto-id="modal-confirm"]'),
+          modalOpacity: document.querySelector<HTMLElement>('[data-vecto-id="modal-confirm"]')
+            ?.style.opacity,
+          dialogCount: document.querySelectorAll('[role="dialog"]').length,
+          projectedIds: [...document.querySelectorAll('[data-vecto-id]')]
+            .map((e) => e.getAttribute('data-vecto-id'))
+            .filter((id) => id?.startsWith('modal')),
+        };
+      });
+      assert.fail(
+        `[${engine}] Escape must close the modal from a focused child — state: ${JSON.stringify(diag)}`,
+      );
     }
-    assert.ok(modalClosed, `[${engine}] Escape must close the modal`);
 
     // …and focus returns to whatever held it before opening. Landing on <body>
     // instead would silently reset a keyboard user to the top of the page.
