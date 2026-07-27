@@ -585,7 +585,7 @@ export abstract class Entity {
       const s = this.scene;
       if (s) {
         s.a11yNeedsReorder = true;
-        s.markDirty();
+        s.markDirty({ entity: this.id, reason: 'a11y-reorder' });
       }
     }
   }
@@ -653,7 +653,7 @@ export abstract class Entity {
     if (s) {
       s.a11yNeedsReorder = true;
       s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
-      s.markDirty();
+      s.markDirty({ entity: this.id, reason: 'child-added' });
       child._notifyMounted(); // fire onMounted for the newly-live subtree
     }
   }
@@ -685,7 +685,7 @@ export abstract class Entity {
         s.detachA11y(child);
         s.a11yNeedsReorder = true;
         s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
-        s.markDirty();
+        s.markDirty({ entity: this.id, reason: 'child-removed' });
       }
     }
     return this;
@@ -744,7 +744,7 @@ export abstract class Entity {
     });
     // Wake an idle scene: the loop's animation flags are collected during the
     // render walk, so a sleeping onDemand scene needs the dirty signal.
-    this.scene?.markDirty();
+    this.scene?.markDirty({ entity: this.id, reason: 'animation-start' });
     return this;
   }
 
@@ -830,7 +830,7 @@ export abstract class Entity {
       ? new TweenDriver(from, to, cfg)
       : new SpringDriver(from, to, cfg === 'spring' ? {} : (cfg as SpringConfig));
     (this._drivers ??= new Map()).set(prop, driver);
-    this.scene?.markDirty();
+    this.scene?.markDirty({ entity: this.id, reason: 'driver-added' });
     // Register with Scene's batched-driver candidate set (cheap, self-pruning
     // O(1) add — see Scene._registerActiveDriverEntity) so the WASM batch pass
     // can find active drivers without walking the whole tree every frame.
@@ -912,7 +912,9 @@ export abstract class Entity {
         this._applyAnimated(prop, driver.value);
       }
     }
-    this.scene?.markDirty();
+    // The per-frame driver tick: this is the single most common reason an
+    // `onDemand` scene never sleeps, so it is worth attributing precisely.
+    this.scene?.markDirty({ entity: this.id, reason: 'driver-tick' });
   }
 
   /**

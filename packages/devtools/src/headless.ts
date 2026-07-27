@@ -35,3 +35,9 @@ export {
   type SelectionAuditFinding,
   type SelectionAuditOptions,
 } from './selectionAudit';
+export {
+  diagnoseDirty,
+  type DirtyCause,
+  type DirtyDiagnosis,
+  type DirtyDiagnosisOptions,
+} from './dirtyDiagnosis';

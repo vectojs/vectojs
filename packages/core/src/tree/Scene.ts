@@ -71,6 +71,33 @@ function isNativelyFocusable(element: HTMLElement): boolean {
 }
 
 /**
+ * Who marked the scene dirty, and why.
+ *
+ * Every field is optional except `reason` so a call site can be as specific as it
+ * cheaply can — an entity id costs nothing to pass, a property name is often
+ * already in scope.
+ */
+export interface DirtySource {
+  /** Entity id responsible, when one is. Omitted for scene-level invalidation. */
+  entity?: string;
+  /** Short, stable category — e.g. `'text-changed'`, `'animation'`, `'resize'`. */
+  reason: string;
+  /** Property that changed, when the reason alone is ambiguous. */
+  property?: string;
+}
+
+/** An aggregated dirty attribution. */
+export interface DirtyReasonEntry {
+  entity?: string;
+  reason: string;
+  property?: string;
+  /** How many times this exact attribution was recorded. */
+  count: number;
+  firstFrame: number;
+  lastFrame: number;
+}
+
+/**
  * Options for {@link Scene}.
  */
 export interface SceneOptions {
@@ -677,6 +704,11 @@ export class Scene {
    *   event-driven UIs where idle frames should cost ~0.
    */
   public renderMode: 'always' | 'onDemand' = 'always';
+
+  /** Cap on distinct recorded dirty reasons (see `recordDirtyReason`). */
+  private static readonly MAX_DIRTY_REASONS = 200;
+  private _dirtyTracking = false;
+  private _dirtyReasons = new Map<string, DirtyReasonEntry>();
   private dirty: boolean = true;
   /** Whether to throttle rendering to 2 FPS when the scene is static to save power. */
   public autoThrottle: boolean = true;
@@ -2639,8 +2671,79 @@ export class Scene {
    * Only meaningful in `onDemand` {@link renderMode}: call it after mutating
    * entity state outside of {@link Entity.animate} so the change is rendered.
    */
-  public markDirty(): void {
+  public markDirty(source?: DirtySource): void {
     this.dirty = true;
+    // Attribution is opt-in and costs nothing when off: `markDirty` is called
+    // from dozens of sites, several of them per-frame, so the common path must
+    // stay a single field write.
+    if (this._dirtyTracking && source) this.recordDirtyReason(source);
+  }
+
+  /**
+   * Record who marked the scene dirty and why.
+   *
+   * Kept separate from {@link markDirty} so the hot path is not a function call
+   * with a branch — V8 inlines the one-field version reliably.
+   */
+  private recordDirtyReason(source: DirtySource): void {
+    const key = `${source.entity ?? 'scene'}:${source.reason}${
+      source.property ? `.${source.property}` : ''
+    }`;
+    const existing = this._dirtyReasons.get(key);
+    if (existing) {
+      existing.count++;
+      existing.lastFrame = this.currentFrame;
+      return;
+    }
+    // Bounded: a scene that mints a unique reason per frame (an id in the key,
+    // say) must not grow this map forever. FIFO eviction — the same rationale as
+    // the color cache, and for the same reason true LRU is not worth the
+    // bookkeeping here.
+    if (this._dirtyReasons.size >= Scene.MAX_DIRTY_REASONS) {
+      const oldest = this._dirtyReasons.keys().next().value;
+      if (oldest !== undefined) this._dirtyReasons.delete(oldest);
+    }
+    this._dirtyReasons.set(key, {
+      entity: source.entity,
+      reason: source.reason,
+      property: source.property,
+      count: 1,
+      firstFrame: this.currentFrame,
+      lastFrame: this.currentFrame,
+    });
+  }
+
+  /**
+   * Start or stop recording dirty attributions.
+   *
+   * Off by default. `renderMode: 'onDemand'` silently degrades to always-on when
+   * something marks the scene dirty every frame, and until now there was no way
+   * to find out what — `dirty === true` said nothing about the cause. Enable
+   * this, run the scene, then read {@link dirtyReasons}.
+   */
+  public setDirtyTracking(enabled: boolean): void {
+    this._dirtyTracking = enabled;
+    if (!enabled) this._dirtyReasons.clear();
+  }
+
+  /** Whether dirty attribution is currently being recorded. */
+  public get dirtyTracking(): boolean {
+    return this._dirtyTracking;
+  }
+
+  /**
+   * Recorded dirty attributions, most frequent first.
+   *
+   * `count` is what matters for the `onDemand` diagnosis: a reason appearing once
+   * per frame over hundreds of frames is the thing keeping the scene awake.
+   */
+  public get dirtyReasons(): DirtyReasonEntry[] {
+    return [...this._dirtyReasons.values()].sort((a, b) => b.count - a.count);
+  }
+
+  /** Drop recorded attributions, keeping tracking enabled. */
+  public clearDirtyReasons(): void {
+    this._dirtyReasons.clear();
   }
 
   /**
