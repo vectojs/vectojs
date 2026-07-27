@@ -78,6 +78,35 @@ function isNativelyFocusable(element: HTMLElement): boolean {
 }
 
 /**
+ * A timed phase of a frame.
+ *
+ * `render` is the ENCLOSING phase — it contains `transform`, `drawWalk` and
+ * `flush` — so it is reported without a share to avoid double-counting.
+ * `a11ySync` and `a11yOrder` run after `render` in the frame loop, so they are
+ * siblings of it, not children.
+ */
+export type RenderPhase =
+  | 'render'
+  | 'transform'
+  | 'drawWalk'
+  | 'flush'
+  | 'a11ySync'
+  | 'a11yOrder'
+  /** Sum of every entity's own render(), nested inside drawWalk. */
+  | 'entityPaint';
+
+export interface RenderPhaseEntry {
+  phase: RenderPhase;
+  totalMs: number;
+  calls: number;
+  avgMs: number;
+  /** Worst single sample — a spiky phase is a different problem from a slow one. */
+  maxMs: number;
+  /** Percent of the measured total, or `null` for the enclosing `render` phase. */
+  share: number | null;
+}
+
+/**
  * Who marked the scene dirty, and why.
  *
  * Every field is optional except `reason` so a call site can be as specific as it
@@ -714,6 +743,83 @@ export class Scene {
 
   /** Cap on distinct recorded dirty reasons (see `recordDirtyReason`). */
   private static readonly MAX_DIRTY_REASONS = 200;
+  private _phaseTiming = false;
+  private _phaseTotals = new Map<RenderPhase, { totalMs: number; calls: number; maxMs: number }>();
+
+  /**
+   * Start or stop per-phase render timing.
+   *
+   * Off by default, and the probes compile to a single boolean test when off:
+   * these sit on the frame path, so the disabled cost has to be nothing. Enable,
+   * run the scene, then read {@link renderPhases}.
+   *
+   * Exists because a frame total cannot tell you where the time went. The
+   * markdown streaming benchmark put render at 85-99% of an append's cost, and
+   * there was no way to decompose that number further — which is exactly the
+   * position that led to two wrong optimisation guesses earlier
+   * (`CodeBlock` reuse, hit-grid fusion), both of which measured as no change.
+   */
+  public setPhaseTiming(enabled: boolean): void {
+    this._phaseTiming = enabled;
+    if (!enabled) this.clearRenderPhases();
+  }
+
+  /** Whether per-phase render timing is being recorded. */
+  public get phaseTiming(): boolean {
+    return this._phaseTiming;
+  }
+
+  /**
+   * Accumulate one phase sample.
+   *
+   * Totals rather than a per-frame log: the question is always "which phase owns
+   * the frame", and a log of thousands of samples answers it less directly while
+   * costing far more memory. `maxMs` is kept because a phase that is cheap on
+   * average but spikes is a different problem from one that is uniformly slow.
+   */
+  private _recordPhase(phase: RenderPhase, ms: number): void {
+    const existing = this._phaseTotals.get(phase);
+    if (existing) {
+      existing.totalMs += ms;
+      existing.calls++;
+      if (ms > existing.maxMs) existing.maxMs = ms;
+      return;
+    }
+    this._phaseTotals.set(phase, { totalMs: ms, calls: 1, maxMs: ms });
+  }
+
+  /**
+   * Recorded phase timings, most expensive first, with each phase's share of the
+   * measured total.
+   *
+   * `share` is the number that matters: a phase at 4% cannot be worth optimising
+   * however inefficient it looks in isolation.
+   */
+  public get renderPhases(): RenderPhaseEntry[] {
+    const entries = [...this._phaseTotals.entries()];
+    // `render` is the enclosing phase for transform/drawWalk/flush, so counting
+    // it in the denominator would double-count and halve every share.
+    const denominator = entries
+      .filter(([phase]) => phase !== 'render')
+      .reduce((sum, [, v]) => sum + v.totalMs, 0);
+    return entries
+      .map(([phase, v]) => ({
+        phase,
+        totalMs: +v.totalMs.toFixed(3),
+        calls: v.calls,
+        avgMs: +(v.totalMs / Math.max(1, v.calls)).toFixed(4),
+        maxMs: +v.maxMs.toFixed(3),
+        share:
+          phase === 'render' ? null : +((100 * v.totalMs) / Math.max(1e-9, denominator)).toFixed(1),
+      }))
+      .sort((a, b) => b.totalMs - a.totalMs);
+  }
+
+  /** Drop recorded phase timings, keeping timing enabled. */
+  public clearRenderPhases(): void {
+    this._phaseTotals.clear();
+  }
+
   private _dirtyTracking = false;
   private _dirtyReasons = new Map<string, DirtyReasonEntry>();
   private dirty: boolean = true;
@@ -2683,7 +2789,14 @@ export class Scene {
   public step(dt: number): void {
     const time = this.lastTime + dt;
     this.lastTime = time;
+    // Time the render phase here too: the loop-level probe only covers the rAF
+    // path, so a benchmark or a deterministic export driving frames through
+    // `step()` reported `render` as exactly 0 while its sub-phases were nonzero —
+    // internally inconsistent, and the kind of result that makes a reader distrust
+    // the whole table.
+    const t0 = this._phaseTiming ? performance.now() : 0;
     this.render(this.renderer, dt, time);
+    if (this._phaseTiming) this._recordPhase('render', performance.now() - t0);
     this.dirty = false;
   }
 
@@ -4326,7 +4439,9 @@ export class Scene {
     this._lastRenderTick = time;
     this._lastDt = dt;
 
+    const phaseClock = this._phaseTiming ? performance.now() : 0;
     this.render(this.renderer, dt, time);
+    if (this._phaseTiming) this._recordPhase('render', performance.now() - phaseClock);
 
     this._lastFrameMs = (typeof performance !== 'undefined' ? performance.now() : time) - now;
     this._renderedFrames++;
@@ -4351,9 +4466,13 @@ export class Scene {
     ) {
       this.lastA11ySync = time;
       if (hasInteractive || wantsContentSync) {
+        const t0 = this._phaseTiming ? performance.now() : 0;
         this.syncA11y(this.root);
+        if (this._phaseTiming) this._recordPhase('a11ySync', performance.now() - t0);
       }
+      const t1 = this._phaseTiming ? performance.now() : 0;
       this.enforceA11yDomOrder();
+      if (this._phaseTiming) this._recordPhase('a11yOrder', performance.now() - t1);
       this.a11yPendingSyncAfterAnimation = hasActiveAnimation;
     } else if (hasActiveAnimation) {
       this.a11yPendingSyncAfterAnimation = true;
@@ -4620,7 +4739,9 @@ export class Scene {
       for (const overlay of this.overlayRoot.children) updateWalk(overlay);
     }
 
+    const wasmT0 = this._phaseTiming ? performance.now() : 0;
     const wasmWorld = wasmMain ? this._syncWasmStore() : null;
+    if (this._phaseTiming) this._recordPhase('transform', performance.now() - wasmT0);
     const wasmSlotEntity = this._slotEntity;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
@@ -4818,7 +4939,17 @@ export class Scene {
             );
           }
         } else {
-          node.render(renderer);
+          // Split the entity's own paint from the walk that visits it. drawWalk
+          // measured 100% of render, which makes it the only opaque block left —
+          // and "the draw walk is expensive" is not actionable without knowing
+          // whether the cost is per-entity painting or the traversal around it.
+          if (this._phaseTiming) {
+            const t0 = performance.now();
+            node.render(renderer);
+            this._recordPhase('entityPaint', performance.now() - t0);
+          } else {
+            node.render(renderer);
+          }
         }
       }
 
@@ -4834,21 +4965,25 @@ export class Scene {
       renderer.restore();
     };
 
+    const drawT0 = this._phaseTiming ? performance.now() : 0;
     renderNode(this.root, 1, 0, 0, 1, 0, 0, 1);
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
+    if (this._phaseTiming) this._recordPhase('drawWalk', performance.now() - drawT0);
     if (isMainRenderer) {
       this.frameHadAnimation = walkHadAnimation;
       this.frameHadInteractive = walkHadInteractive;
       this.reconcilePortals();
     }
+    const flushT0 = this._phaseTiming ? performance.now() : 0;
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
     }
     // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
     renderer.present?.();
+    if (this._phaseTiming) this._recordPhase('flush', performance.now() - flushT0);
     if (this._devActive) {
       this._devFrameCount++;
       this._devRunChecks();
