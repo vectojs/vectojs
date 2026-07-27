@@ -122,6 +122,16 @@ async function main(): Promise<void> {
       step: (dt: number) => void;
       resize: (w: number, h: number) => void;
       destroy: () => void;
+      setPhaseTiming: (on: boolean) => void;
+      clearRenderPhases: () => void;
+      renderPhases: Array<{
+        phase: string;
+        totalMs: number;
+        calls: number;
+        avgMs: number;
+        maxMs: number;
+        share: number | null;
+      }>;
     };
   };
   // Import `marked` AFTER @vectojs/markdown so both resolve to the same module
@@ -136,6 +146,13 @@ async function main(): Promise<void> {
 
   for (const [shape, chunkOf] of Object.entries(SHAPES)) {
     const perTrial: PhaseTotals[] = [];
+    const renderPhaseSamples: Array<Record<string, number>> = [];
+    const textSamples: Array<{
+      measureMs: number;
+      measureCalls: number;
+      fillMs: number;
+      fillCalls: number;
+    }> = [];
 
     for (let t = 0; t < TRIALS; t++) {
       const scene = new Scene(canvas, { disableWindowResize: true });
@@ -148,6 +165,50 @@ async function main(): Promise<void> {
         parse: 0,
         reconcile: 0,
         render: 0,
+      };
+      // Decompose the render term. #234 established render is 85-99% of an append
+      // but could not say what is inside it, which is the gap this closes.
+      scene.setPhaseTiming(true);
+      scene.clearRenderPhases();
+
+      // Split entityPaint into text SHAPING vs RASTERIZATION by timing the two
+      // canvas calls directly. Patching the prototype is the same technique used
+      // for the lexer above, and is more precise than reading a DevTools profile:
+      // Chrome does not always give Canvas2D calls their own stack frame.
+      //
+      // Caveat worth stating: `fillText`'s JS-visible time can UNDERSTATE real
+      // raster cost, because the browser may defer rasterization (the same reason
+      // GPU submit needs gl.finish() to attribute). `measureText` is synchronous
+      // and fully attributable, so a large measureText share is trustworthy while
+      // a small fillText share is a lower bound.
+      const proto = CanvasRenderingContext2D.prototype as unknown as {
+        measureText: (t: string) => TextMetrics;
+        fillText: (t: string, x: number, y: number, mw?: number) => void;
+      };
+      const originalMeasure = proto.measureText;
+      const originalFill = proto.fillText;
+      let measureMs = 0;
+      let measureCalls = 0;
+      let fillMs = 0;
+      let fillCalls = 0;
+      proto.measureText = function (this: CanvasRenderingContext2D, text: string) {
+        const t0 = performance.now();
+        const out = originalMeasure.call(this, text);
+        measureMs += performance.now() - t0;
+        measureCalls++;
+        return out;
+      };
+      proto.fillText = function (
+        this: CanvasRenderingContext2D,
+        text: string,
+        x: number,
+        y: number,
+        mw?: number,
+      ) {
+        const t0 = performance.now();
+        originalFill.call(this, text, x, y, mw);
+        fillMs += performance.now() - t0;
+        fillCalls++;
       };
 
       // Attribute by PATCHING the two functions an append actually calls, rather
@@ -185,6 +246,16 @@ async function main(): Promise<void> {
       totals.parse = parseMs;
       totals.reconcile = reconcileMs;
 
+      proto.measureText = originalMeasure;
+      proto.fillText = originalFill;
+      textSamples.push({ measureMs, measureCalls, fillMs, fillCalls });
+      renderPhaseSamples.push(
+        Object.fromEntries(scene.renderPhases.map((p) => [p.phase, p.totalMs])) as Record<
+          string,
+          number
+        >,
+      );
+      scene.setPhaseTiming(false);
       perTrial.push(totals);
       md.destroy();
       scene.destroy();
@@ -198,8 +269,37 @@ async function main(): Promise<void> {
     const total = parse + reconcile + render;
     const share = (v: number): number => +((100 * v) / total).toFixed(1);
 
+    // Median each render sub-phase across trials, and express as a share of the
+    // render total — the share is what decides whether a phase is worth attacking.
+    const subPhase = (name: string): number => median(renderPhaseSamples.map((x) => x[name] ?? 0));
+    const renderTotal = subPhase('render');
+    const subShare = (name: string): number =>
+      renderTotal > 0 ? +((100 * subPhase(name)) / renderTotal).toFixed(1) : 0;
+
     rows.push({
       shape,
+      renderBreakdown: {
+        renderMs: +renderTotal.toFixed(2),
+        transformMs: +subPhase('transform').toFixed(2),
+        drawWalkMs: +subPhase('drawWalk').toFixed(2),
+        flushMs: +subPhase('flush').toFixed(2),
+        a11ySyncMs: +subPhase('a11ySync').toFixed(2),
+        a11yOrderMs: +subPhase('a11yOrder').toFixed(2),
+        entityPaintMs: +subPhase('entityPaint').toFixed(2),
+        // entityPaint is nested INSIDE drawWalk, so its share is of drawWalk —
+        // that ratio says whether the cost is painting or the traversal.
+        measureTextMs: +median(textSamples.map((x) => x.measureMs)).toFixed(2),
+        measureTextCalls: Math.round(median(textSamples.map((x) => x.measureCalls))),
+        fillTextMs: +median(textSamples.map((x) => x.fillMs)).toFixed(2),
+        fillTextCalls: Math.round(median(textSamples.map((x) => x.fillCalls))),
+        entityPaintOfDrawWalk:
+          subPhase('drawWalk') > 0
+            ? +((100 * subPhase('entityPaint')) / subPhase('drawWalk')).toFixed(1)
+            : 0,
+        transformShare: subShare('transform'),
+        drawWalkShare: subShare('drawWalk'),
+        flushShare: subShare('flush'),
+      },
       chunks: CHUNKS,
       parseMs: +parse.toFixed(2),
       reconcileMs: +reconcile.toFixed(2),
