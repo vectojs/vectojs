@@ -71,6 +71,23 @@ export interface GlyphSlot {
   offsetX: number;
   /** Distance (CSS px) from the slot top down to the text baseline. */
   offsetY: number;
+  /** The cluster these pixels represent. */
+  glyph: string;
+  /** The CSS font shorthand these pixels were rasterized with. */
+  font: string;
+  /** Advance width (CSS px) of the cluster, i.e. `measureText().width`. */
+  advance: number;
+  /**
+   * Ink extent left of the glyph origin (CSS px), from `actualBoundingBoxLeft`.
+   *
+   * Carried on the slot so a blit can be mapped back to the same geometry a
+   * `fillText` would have produced. Without it, instrumentation that traces draw
+   * calls to verify grid positioning (`e2e/text-projection.e2e.ts`) can see only
+   * a destination rect and cannot recover where the glyph origin sat inside it.
+   */
+  left: number;
+  /** Ink extent right of the glyph origin (CSS px), from `actualBoundingBoxRight`. */
+  right: number;
 }
 
 /** Instrumentation counters, e.g. to surface a HUD hit rate. */
@@ -275,9 +292,39 @@ export class GlyphRasterAtlas {
     this.penX += dw + PAD;
     if (dh > this.rowHeight) this.rowHeight = dh;
 
-    const slot: GlyphSlot = { sx, sy, sw: dw, sh: dh, w, h, offsetX, offsetY };
+    const slot: GlyphSlot = {
+      sx,
+      sy,
+      sw: dw,
+      sh: dh,
+      w,
+      h,
+      offsetX,
+      offsetY,
+      glyph,
+      font,
+      advance,
+      left,
+      right,
+    };
     this.slots.set(key, slot);
     return slot;
+  }
+
+  /**
+   * Find the slot occupying a source position, or `null`.
+   *
+   * The inverse of {@link get}: it maps a blit back to the glyph it drew. Exists
+   * for instrumentation — a test or devtool that traces `drawImage` calls sees
+   * only a source rect, and needs this to recover which cluster was painted and
+   * with what metrics. Linear over resident slots, so it is a diagnostic, not a
+   * per-frame call.
+   */
+  slotAt(sx: number, sy: number): GlyphSlot | null {
+    for (const slot of this.slots.values()) {
+      if (slot && slot.sx === sx && slot.sy === sy) return slot;
+    }
+    return null;
   }
 
   /**

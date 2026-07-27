@@ -61,6 +61,74 @@ async function instrumentCanvas(page: Page): Promise<void> {
         ? original.call(this, text, x, y)
         : original.call(this, text, x, y, maxWidth);
     };
+    // Trace atlas blits into the SAME buffer as fillText.
+    //
+    // `CodeBlock` draws its grid with the 9-argument `drawImage` from a
+    // `GlyphRasterAtlas` where the renderer supports it, so a fillText-only hook
+    // sees an empty trace for code and every grid assertion below silently stops
+    // testing anything — which is how it was first noticed: the check did not
+    // fail, it crashed on an empty array.
+    //
+    // A blit exposes only a destination rect, so the glyph and its ink metrics
+    // come from the atlas via `slotAt(sx, sy)`. The recorded shape is identical to
+    // the fillText entries, letting the existing overlap and cell-width
+    // assertions work on either draw path unchanged.
+    const originalDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function (
+      this: CanvasRenderingContext2D,
+      ...args: unknown[]
+    ) {
+      if (args.length === 9) {
+        const [source, sx, sy, , , dx, dy] = args as [
+          CanvasImageSource,
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+          number,
+        ];
+        const lookup = (
+          window as unknown as {
+            __vectoAtlasSlotAt?: (
+              s: CanvasImageSource,
+              x: number,
+              y: number,
+            ) => {
+              glyph: string;
+              advance: number;
+              left: number;
+              right: number;
+              offsetX: number;
+              offsetY: number;
+              font?: string;
+            } | null;
+          }
+        ).__vectoAtlasSlotAt;
+        const slot = lookup ? lookup(source, sx, sy) : null;
+        if (slot) {
+          const transform = this.getTransform();
+          trace.push({
+            text: slot.glyph,
+            // Undo the blit offsets to recover the glyph origin and baseline that
+            // an equivalent fillText would have been given.
+            x: dx + slot.offsetX,
+            y: dy + slot.offsetY,
+            font: slot.font ?? this.font,
+            width: slot.advance,
+            left: slot.left,
+            right: slot.right,
+            a: transform.a,
+            b: transform.b,
+            c: transform.c,
+            d: transform.d,
+          });
+        }
+      }
+      return (originalDrawImage as (...a: unknown[]) => void).apply(this, args);
+    } as typeof CanvasRenderingContext2D.prototype.drawImage;
     const rangeGeometryReads = { bounding: 0, clientRects: 0 };
     Object.defineProperty(window, '__vectoRangeGeometryReads', {
       value: rangeGeometryReads,

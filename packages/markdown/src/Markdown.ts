@@ -810,6 +810,18 @@ export function codeAtlasStats(): GlyphRasterAtlasStats | null {
   return sharedCodeAtlas ? sharedCodeAtlas.stats : null;
 }
 
+/**
+ * The shared code-block atlas itself, or `null` before first use.
+ *
+ * For instrumentation that must map a traced `drawImage` back to the glyph it
+ * painted — a blit carries only a source rect, so `slotAt()` is the only way to
+ * recover the cluster and its metrics. Used by `e2e/text-projection.e2e.ts` to
+ * keep the code-grid positioning assertions working on the blit path.
+ */
+export function codeAtlas(): GlyphRasterAtlas | null {
+  return sharedCodeAtlas;
+}
+
 // ── Inline token → RichText entities ─────────────────────────────────────────
 
 /** Decode basic HTML entities that `marked` emits in token text. */
