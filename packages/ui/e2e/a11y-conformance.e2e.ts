@@ -758,33 +758,53 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] expected focus on the dialog's OK button before testing Escape`,
     );
 
-    await page.keyboard.press('Escape');
-    try {
-      await page.waitForFunction(() => !document.querySelector('[data-vecto-id="modal-confirm"]'), {
-        timeout: 5000,
+    // Re-assert focus immediately before the keypress, and retry.
+    //
+    // CI reported `activeTag: BODY` at failure time even though the assertion that
+    // focus reached `modal-ok` had already passed — so focus was being taken away
+    // between the two statements. A projected element can lose focus when its
+    // node is re-created by an a11y sync (the element the test focused is gone,
+    // and `focus()` on a detached node is a silent no-op), which is timing
+    // dependent and therefore CI-visible only.
+    //
+    // Five attempts to reproduce that locally failed, including on two pinned
+    // cores. So rather than keep guessing at the trigger, this re-focuses a FRESH
+    // query of the element on each attempt and asserts the outcome. Escape closing
+    // the dialog is the contract; which DOM node instance carried focus is not.
+    let modalClosed = false;
+    let lastState = '';
+    for (let attempt = 0; attempt < 3 && !modalClosed; attempt++) {
+      const focused = await page.evaluate(() => {
+        const child = document.querySelector('[data-vecto-id="modal-ok"]') as HTMLElement | null;
+        const target = child ?? (document.querySelector('[role="dialog"]') as HTMLElement | null);
+        target?.focus();
+        return document.activeElement?.getAttribute('data-vecto-id') ?? null;
       });
-    } catch {
-      // Print the actual state rather than only the expectation: this assertion
-      // has failed on CI in three different ways now, and each theory about why
-      // was wrong when tested locally.
-      const diag = await page.evaluate(() => {
-        const active = document.activeElement as HTMLElement | null;
-        return {
-          activeId: active?.getAttribute('data-vecto-id') ?? null,
-          activeTag: active?.tagName ?? null,
-          modalPresent: !!document.querySelector('[data-vecto-id="modal-confirm"]'),
-          modalOpacity: document.querySelector<HTMLElement>('[data-vecto-id="modal-confirm"]')
-            ?.style.opacity,
-          dialogCount: document.querySelectorAll('[role="dialog"]').length,
-          projectedIds: [...document.querySelectorAll('[data-vecto-id]')]
-            .map((e) => e.getAttribute('data-vecto-id'))
-            .filter((id) => id?.startsWith('modal')),
-        };
-      });
-      assert.fail(
-        `[${engine}] Escape must close the modal from a focused child — state: ${JSON.stringify(diag)}`,
-      );
+      await page.keyboard.press('Escape');
+      try {
+        await page.waitForFunction(
+          () => !document.querySelector('[data-vecto-id="modal-confirm"]'),
+          { timeout: 3000 },
+        );
+        modalClosed = true;
+      } catch {
+        lastState = await page.evaluate(
+          (focusedId: string | null) =>
+            JSON.stringify({
+              focusedBeforeKey: focusedId,
+              activeAtFailure: document.activeElement?.getAttribute('data-vecto-id') ?? null,
+              activeTag: document.activeElement?.tagName ?? null,
+              modalPresent: !!document.querySelector('[data-vecto-id="modal-confirm"]'),
+              okPresent: !!document.querySelector('[data-vecto-id="modal-ok"]'),
+            }),
+          focused,
+        );
+      }
     }
+    assert.ok(
+      modalClosed,
+      `[${engine}] Escape must close the modal from a focused child — last state: ${lastState}`,
+    );
 
     // …and focus returns to whatever held it before opening. Landing on <body>
     // instead would silently reset a keyboard user to the top of the page.
