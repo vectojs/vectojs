@@ -1,55 +1,15 @@
-// Bundle entry.ts (with @vectojs/* resolved to workspace SOURCE, so it reflects
-// the real rAF loop via scene.start()) and inline it into
-// page/index.html. Run before ../run-browsers.sh ondemand-raf <port>.
-//   bun run benchmarks/ondemand-raf/build.ts
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Bundles entry.ts with @vectojs/* resolved to workspace SOURCE and writes
+// page/index.html. All of the actual work lives in ../_shared/build.ts — this file
+// was 55 lines of which 47 were identical across 24 benchmarks.
+//
+//   bun run benchmarks/ondemand-raf/build.ts [--external]
+//
+// `--external` emits benchmark.js plus a source map instead of inlining, which a
+// performance profile needs to attribute frames to real files.
+import { buildBenchmark } from '../_shared/build';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PKGS = resolve(HERE, '../../packages');
-
-const out = await Bun.build({
-  entrypoints: [join(HERE, 'entry.ts')],
-  target: 'browser',
-  minify: true,
-  plugins: [
-    {
-      name: 'vecto-src',
-      setup(b) {
-        b.onResolve(
-          {
-            filter: /^@vectojs\/(core|text|layout|math|animation|ui|markdown)$/,
-          },
-          (a) => ({
-            path: join(PKGS, a.path.replace('@vectojs/', ''), 'src/index.ts'),
-          }),
-        );
-        // `marked` is a dependency of @vectojs/markdown, not of benchmarks/, so a
-        // bare specifier does not resolve from here. This bench imports it
-        // directly to time the lexer, hence the explicit resolution.
-        b.onResolve({ filter: /^marked$/ }, () => ({
-          path: Bun.resolveSync('marked', join(PKGS, 'markdown')),
-        }));
-      },
-    },
-  ],
+await buildBenchmark({
+  benchRoot: new URL('.', import.meta.url).pathname,
+  title: 'vectojs ondemand-raf gate bench',
+  external: process.argv.includes('--external'),
 });
-if (!out.success) {
-  console.error('bundle failed:\n' + out.logs.map(String).join('\n'));
-  process.exit(1);
-}
-
-const js = await out.outputs[0]!.text();
-const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>vectojs ondemand-raf gate bench</title>
-  </head>
-  <body>
-    <script type="module">${js}</script>
-  </body>
-</html>
-`;
-await Bun.write(join(HERE, 'page', 'index.html'), html);
-console.log('built page/index.html (inline)');

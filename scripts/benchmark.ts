@@ -1,5 +1,14 @@
 /**
- * VectoJS rendering benchmark driver.
+ * VectoJS Canvas2D CI smoke benchmark.
+ *
+ * NOT a source of quotable performance numbers. This runs HEADLESS with
+ * `--disable-gpu`, so it measures software rasterization in a throttled,
+ * invisible tab: useful as a same-environment regression tripwire in CI, useless
+ * as a statement about what a user's machine does.
+ *
+ * Every figure quoted anywhere must come from `benchmarks/run-browsers.sh`, which
+ * drives a real headed browser on a dedicated Hyprland workspace with a focused
+ * window and the real GPU.
  *
  * Bundles the demo `bench.ts` entry with Bun.build (resolving `@vectojs/core`
  * to its TS source), serves it from an in-process Bun.serve, opens it in a
@@ -36,6 +45,18 @@ const WORLD = args.get('world') ?? '1';
 const RENDER = args.get('render') ?? 'always';
 const BATCH = args.get('batch') ?? '0';
 const BACKEND = args.get('backend') ?? 'canvas';
+// A GPU backend cannot be measured with the GPU disabled. This accepted
+// `--backend=webgl` while launching with `--disable-gpu`, so the WebGL path either
+// fell back to software or failed to initialize, and either way the number it
+// printed was not a WebGL number. Refuse rather than produce it.
+if (BACKEND !== 'canvas') {
+  console.error(
+    `--backend=${BACKEND} cannot be measured here: this runner is headless with ` +
+      '--disable-gpu, so a GPU backend would be software-rasterized or absent.\n' +
+      'Use benchmarks/run-browsers.sh for any GPU-backed measurement.',
+  );
+  process.exit(2);
+}
 const SHAPE = args.get('shape') ?? 'circle';
 // `--uncapped` removes the browser's vsync cap to read true sub-16 ms per-frame
 // cost (the methodology behind the README table). It pegs a CPU core, so it can

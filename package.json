@@ -19,14 +19,17 @@
     "lint:md": "markdownlint-cli2 \"**/*.md\"",
     "lint:actions": "command -v actionlint >/dev/null 2>&1 && actionlint || echo 'actionlint not installed locally; CI enforces it (rhysd/actionlint action). Skipping.'",
     "lint:biome": "biome lint",
-    "check": "bun run format:check && bun run lint && bun run lint:md && bun run lint:actions",
+    "check": "bun run format:check && bun run format:shell:check && bun run lint && bun run lint:shell && bun run lint:md && bun run lint:actions",
     "knip": "knip",
     "benchmark": "bun run scripts/benchmark.ts",
     "compare": "bun run scripts/compare-pretext.ts",
     "compare:dom": "bun run scripts/compare-dom.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install",
+    "lint:shell": "command -v shellcheck >/dev/null 2>&1 && shellcheck -S warning benchmarks/*.sh comparisons/*.sh crates/*/*.sh scripts/*/*.sh || echo 'shellcheck not installed locally; CI enforces it. Skipping.'",
+    "format:shell:check": "command -v shfmt >/dev/null 2>&1 && shfmt -d benchmarks/*.sh comparisons/*.sh crates/*/*.sh scripts/*/*.sh || echo 'shfmt not installed locally; CI enforces it. Skipping.'",
+    "format:shell": "shfmt -w benchmarks/*.sh comparisons/*.sh crates/*/*.sh scripts/*/*.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",
