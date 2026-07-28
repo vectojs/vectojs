@@ -101,15 +101,59 @@ export interface VirtualListOptions<T> {
   height: number;
   /** Extra rows to render above & below the visible window. Default `3`. */
   overscan?: number;
+  /**
+   * Stable identity for an item, enabling three things that index identity cannot
+   * express: measured heights that survive {@link VirtualList.setItems}, a scroll
+   * anchor that stays attached to a row while rows above it resize, and
+   * append/prepend without discarding the cache.
+   *
+   * Without it the list behaves exactly as before — `setItems` clears every
+   * measurement and jumps to the top, which is correct for a replaced list and
+   * wrong for a growing one.
+   *
+   * Keys must be unique within the list; a duplicate makes two rows share one
+   * cached height. For a chat transcript the message id is the natural key.
+   */
+  keyForItem?: (item: T, index: number) => string;
+  /**
+   * Distance from the bottom, in pixels, within which the list counts as
+   * "following" and re-pins itself to the bottom after rows resize. Default `48`.
+   *
+   * Only consulted when {@link keyForItem} is set, since re-pinning is part of the
+   * anchoring behaviour.
+   */
+  stickToBottomThreshold?: number;
 }
+
+/**
+ * Where the viewport was before a size change, so it can be put back afterwards.
+ *
+ * Two variants because "keep the view still" means different things depending on
+ * where the user is. At the bottom of a growing transcript it means *follow* the
+ * new content; anywhere else it means keep the row under the viewport's top edge
+ * exactly where it was, even though every row above it may have changed height.
+ *
+ * The item variant is keyed rather than indexed: an index is not stable across a
+ * prepend, and the whole point is to survive geometry changes.
+ */
+type ScrollAnchor =
+  | { kind: 'bottom'; distanceFromBottom: number }
+  | { kind: 'item'; key: string; offsetWithin: number };
 
 /**
  * High-performance virtual scrolling list.
  *
  * Only renders rows inside the visible viewport plus `overscan` rows above/below.
  * Supports both **fixed-height** rows (set `estimatedRowHeight` to the exact value)
- * and **variable-height** rows (the measured `entity.height` of each rendered row
- * is cached automatically per index).
+ * and **variable-height** rows, including rows that keep RESIZING after they mount:
+ * every mounted row's `height` is re-read each frame and any change is applied to
+ * the Fenwick tree as an O(log n) point update.
+ *
+ * For a growing transcript, pass `keyForItem`. It makes measured heights survive
+ * `setItems`, keeps the scroll position anchored while rows above it resize, and
+ * re-pins to the bottom when the viewport was already following. `jumpToBottom()`
+ * is the instant counterpart to `scrollToBottom()` and is what streaming content
+ * should call.
  *
  * @example
  * const list = new VirtualList({
@@ -121,10 +165,12 @@ export interface VirtualListOptions<T> {
  * });
  * scene.add(list.setPosition(20, 20));
  *
- * Accessibility: the container projects `aria-setsize` with the real item count,
- * because only the mounted window exists in the DOM. Rows are yours — give each
- * one `posInSet` (1-based) and `setSize` in its `getA11yAttributes()`, or a screen
- * reader announces the mounted window's size instead of the list's:
+ * Accessibility: the container carries the real item count in its accessible NAME,
+ * not in `aria-setsize` — that attribute is defined on set members, so on a
+ * `role="list"` container it is a disallowed attribute (see `getA11yAttributes`).
+ * Rows are yours — give each one `posInSet` (1-based) and `setSize` in its
+ * `getA11yAttributes()`, or a screen reader announces the mounted window's size
+ * instead of the list's:
  *
  * ```ts
  * renderItem: (item, i) => new Row(item, { posInSet: i + 1, setSize: total })
@@ -136,10 +182,23 @@ export class VirtualList<T = unknown> extends UIComponent {
   private _estH: number;
   private _overscan: number;
 
+  private _keyForItem?: (item: T, index: number) => string;
+  private _stickThreshold: number;
+
   /** Fenwick prefix-sum over row heights (O(log n) scroll math). */
   private _heights: RowHeights;
   /** Which indices have a *measured* (not estimated) height. */
   private _measured: Set<number> = new Set();
+  /**
+   * Measured height per item key, surviving `setItems` and re-measurement.
+   *
+   * Keyed rather than indexed so an append or prepend does not invalidate it:
+   * the Fenwick tree is index-addressed and gets rebuilt, but the heights it is
+   * rebuilt *from* live here. Empty when no `keyForItem` was supplied.
+   */
+  private _heightByKey: Map<string, number> = new Map();
+  /** Key -> current index, rebuilt whenever the item list changes. */
+  private _indexByKey: Map<string, number> = new Map();
   /** Currently rendered row entities keyed by item index. */
   private _pool: Map<number, Entity> = new Map();
 
@@ -148,6 +207,16 @@ export class VirtualList<T = unknown> extends UIComponent {
   private _velY = 0;
   private _drag = false;
   private _lastPY = 0;
+  /**
+   * Whether the viewport was within `stickToBottomThreshold` of the bottom as of the
+   * last *user* scroll — i.e. whether the list is currently "following".
+   *
+   * Latched at the scroll event rather than derived when a row resizes, because the
+   * two answer different questions: a resize changes the distance to the bottom
+   * without the user having moved, and following should survive that. Scrolling away
+   * is the only thing that stops it.
+   */
+  private _nearBottom = true;
 
   constructor(opts: VirtualListOptions<T>) {
     super();
@@ -155,7 +224,10 @@ export class VirtualList<T = unknown> extends UIComponent {
     this._renderItem = opts.renderItem;
     this._estH = opts.estimatedRowHeight;
     this._overscan = opts.overscan ?? 3;
+    this._keyForItem = opts.keyForItem;
+    this._stickThreshold = opts.stickToBottomThreshold ?? 48;
     this._heights = new RowHeights(opts.items.length, opts.estimatedRowHeight);
+    this._rebuildKeyIndex();
     this.width = opts.width;
     this.height = opts.height;
     this.interactive = true;
@@ -166,32 +238,205 @@ export class VirtualList<T = unknown> extends UIComponent {
 
   /**
    * Replace the full item list.
-   * Clears the height cache and resets scroll position to top.
+   *
+   * Without `keyForItem` this clears the height cache and jumps to the top, which
+   * is right for a list that was genuinely replaced. With `keyForItem` the cached
+   * height of every surviving key is carried over and the scroll position is
+   * anchored, so appending to a transcript neither re-measures nor jumps —
+   * `setItems` becomes usable as the incremental append path.
    */
   public setItems(items: T[]): void {
+    const keyed = this._keyForItem !== undefined;
+    const anchor = keyed ? this._captureAnchor() : null;
+    // Which key each pooled entity currently represents, read against the OLD list.
+    const prevKeyByIndex = keyed ? new Map<number, string>() : null;
+    if (prevKeyByIndex) {
+      for (const i of this._pool.keys()) {
+        const k = this._keyAt(i);
+        if (k !== undefined) prevKeyByIndex.set(i, k);
+      }
+    }
     this._items = items;
+    this._rebuildKeyIndex();
     this._heights = new RowHeights(items.length, this._estH);
     this._measured.clear();
-    this._targetY = 0;
-    this._scrollY = 0;
+    if (keyed) {
+      // Rekey the pool BEFORE anything reads it. `_pool` is index-addressed, so
+      // after a prepend entry 0 still holds the old row 0's entity while index 0 now
+      // names a different item. Measuring in that state writes each entity's height
+      // into the next key's cache slot — every entry wrong, and plausibly so.
+      this._rekeyPool(prevKeyByIndex);
+      // Reseed from the keyed cache: the tree is index-addressed and had to be
+      // rebuilt, but a row's measured height is a property of the row, not of
+      // where it currently sits.
+      for (let i = 0; i < items.length; i++) {
+        const h = this._heightByKey.get(this._keyAt(i)!);
+        if (h !== undefined) {
+          this._heights.set(i, h);
+          this._measured.add(i);
+        }
+      }
+      this._restoreAnchor(anchor);
+    } else {
+      this._targetY = 0;
+      this._scrollY = 0;
+    }
     this._reconcile();
-    this.scene?.markDirty();
+    this.scene?.markDirty({ entity: this.id, reason: 'items-changed' });
+  }
+
+  /** The key of item `index`, or `undefined` when no `keyForItem` was supplied. */
+  private _keyAt(index: number): string | undefined {
+    if (!this._keyForItem) return undefined;
+    const item = this._items[index];
+    return item === undefined ? undefined : this._keyForItem(item, index);
+  }
+
+  /**
+   * Move each pooled entity to the index its item now occupies, and drop entities
+   * whose item is gone.
+   *
+   * Without this a prepend leaves the pool describing the previous ordering while
+   * every other structure describes the new one, so the row that renders at index 0
+   * is the entity built for whatever used to be there.
+   */
+  private _rekeyPool(prevKeyByIndex: Map<number, string> | null): void {
+    if (!prevKeyByIndex) return;
+    const moved = new Map<number, Entity>();
+    for (const [oldIndex, ent] of this._pool) {
+      const key = prevKeyByIndex.get(oldIndex);
+      const newIndex = key === undefined ? undefined : this._indexByKey.get(key);
+      if (newIndex === undefined) {
+        // The item is gone; so is its row.
+        super.remove(ent);
+        continue;
+      }
+      moved.set(newIndex, ent);
+    }
+    this._pool = moved;
+  }
+
+  private _rebuildKeyIndex(): void {
+    if (!this._keyForItem) return;
+    this._indexByKey.clear();
+    for (let i = 0; i < this._items.length; i++) {
+      const k = this._keyAt(i);
+      if (k !== undefined) this._indexByKey.set(k, i);
+    }
   }
 
   /** Scroll to make the row at `index` visible. */
   public scrollToIndex(index: number): void {
-    this._targetY = Math.min(this._rowTop(index), Math.max(0, this._totalH() - this.height));
+    this._targetY = Math.min(this._rowTop(index), this._maxScroll());
+    this._latchBottom();
     this.scene?.markDirty();
   }
 
   public scrollToTop(): void {
     this._targetY = 0;
+    this._latchBottom();
     this.scene?.markDirty();
   }
 
   public scrollToBottom(): void {
-    this._targetY = Math.max(0, this._totalH() - this.height);
+    this._targetY = this._maxScroll();
+    this._latchBottom();
     this.scene?.markDirty();
+  }
+
+  /**
+   * Jump to the bottom immediately, without the scroll animation.
+   *
+   * For content that grows while being followed — a streaming transcript — this is
+   * the correct call and {@link scrollToBottom} is not. Retargeting the integrator
+   * on every chunk never lets it settle, so the viewport chases the content instead
+   * of tracking it; `ScrollView.scrollToBottom` snaps for the same reason.
+   */
+  public jumpToBottom(): void {
+    this._targetY = this._maxScroll();
+    this._scrollY = this._targetY;
+    this._velY = 0;
+    this._latchBottom();
+    this._reconcile();
+    this.scene?.markDirty({ entity: this.id, reason: 'jump-to-bottom' });
+  }
+
+  private _maxScroll(): number {
+    return Math.max(0, this._totalH() - this.height);
+  }
+
+  /**
+   * Record how close the viewport is to the bottom, as of a user scroll.
+   *
+   * Measured against `_targetY` rather than `_scrollY` because the target is where
+   * the user asked to be; mid-animation the current position lags and would read as
+   * "not at the bottom" for the whole settle.
+   */
+  private _latchBottom(): void {
+    this._nearBottom = Math.max(0, this._maxScroll() - this._targetY) <= this._stickThreshold;
+  }
+
+  /**
+   * Where the viewport is now, expressed so it can be re-derived after row heights
+   * change. Returns `null` when there is nothing to anchor to.
+   */
+  private _captureAnchor(): ScrollAnchor | null {
+    if (this._nearBottom) {
+      // Preserve the gap the user chose, so "following from 30px up" stays 30px up
+      // rather than snapping flush to the bottom.
+      //
+      // The distance is read here, before any height is written, so it is measured
+      // against the OLD geometry — which is the point. markstream-vue needs a
+      // separately latched exact-bottom flag because it mutates heights eagerly and
+      // reconciles scroll in a later frame, letting several resizes land in between;
+      // this list captures, mutates and restores as one synchronous unit per frame,
+      // so no such window exists. Verified by mutation: replacing `_nearBottom` with
+      // a live re-measurement here changes no observable behaviour.
+      return {
+        kind: 'bottom',
+        distanceFromBottom: Math.max(0, this._maxScroll() - this._targetY),
+      };
+    }
+    if (!this._keyForItem) return null;
+    const top = this._targetY;
+    const index = this._heights.indexAt(top);
+    const key = this._keyAt(index);
+    if (key === undefined) return null;
+    return { kind: 'item', key, offsetWithin: top - this._heights.prefix(index) };
+  }
+
+  /**
+   * Put the viewport back where {@link _captureAnchor} found it, against the NEW
+   * geometry — the item branch is a fresh `prefix()`, so the anchored row stays
+   * visually still however much the rows above it changed.
+   */
+  private _restoreAnchor(anchor: ScrollAnchor | null): void {
+    if (!anchor) {
+      this._clamp();
+      if (this._scrollY > this._targetY) this._scrollY = this._targetY;
+      return;
+    }
+    if (anchor.kind === 'bottom') {
+      this._targetY = Math.max(0, this._maxScroll() - anchor.distanceFromBottom);
+    } else {
+      const index = this._indexByKey.get(anchor.key);
+      if (index === undefined) {
+        // The anchored row is gone; the best available answer is the clamp.
+        this._clamp();
+        return;
+      }
+      const rowTop = this._heights.prefix(index);
+      // Clamp the intra-row offset: the anchored row may itself have shrunk below
+      // the offset that was captured inside it.
+      const within = Math.min(anchor.offsetWithin, Math.max(0, this._heights.heightOf(index)));
+      this._targetY = rowTop + within;
+    }
+    this._clamp();
+    // Follow with the current position too. Leaving `_scrollY` behind would make
+    // every resize spawn a scroll animation, so a steadily growing transcript would
+    // animate continuously and never idle.
+    this._scrollY = this._targetY;
+    this._velY = 0;
   }
 
   private _totalH(): number {
@@ -235,26 +480,69 @@ export class VirtualList<T = unknown> extends UIComponent {
       }
     }
 
-    // Mount/update visible rows
-    let ry = this._rowTop(s);
+    // Mount rows first, then measure, then position. Measuring before positioning
+    // matters: reading `heightOf(i)` up front and advancing by it meant a row
+    // measured on its mount frame positioned every row below it against the stale
+    // estimate, so a freshly mounted variable-height row visibly settled one frame
+    // late.
     for (let i = s; i <= e; i++) {
-      const h = this._heights.heightOf(i);
       if (!this._pool.has(i)) {
         const ent = this._renderItem(this._items[i], i);
         ent.x = 0;
-        ent.y = ry - this._scrollY;
         ent.width = ent.width || this.width;
         super.add(ent);
         this._pool.set(i, ent);
-        if (!this._measured.has(i) && ent.height > 0) {
-          this._measured.add(i);
-          this._heights.set(i, ent.height);
-        }
-      } else {
-        this._pool.get(i)!.y = ry - this._scrollY;
       }
-      ry += h;
     }
+    this._measureMountedRows();
+
+    let ry = this._rowTop(s);
+    for (let i = s; i <= e; i++) {
+      this._pool.get(i)!.y = ry - this._scrollY;
+      ry += this._heights.heightOf(i);
+    }
+  }
+
+  /**
+   * Re-read the height of every mounted row and push any change into the Fenwick
+   * tree, anchoring the viewport across the change.
+   *
+   * Polling rather than a notification: `Entity.width`/`height` are plain fields
+   * with no setter and no dirty flag, so there is nothing to subscribe to, and
+   * reading `ent.height` costs exactly what reading a version counter would — the
+   * check *is* the work. It is also strictly more general, catching a height change
+   * by any mechanism (a streaming Markdown reflow, a caller assigning `height`
+   * directly) rather than only the ones that remembered to announce themselves.
+   *
+   * The no-change path is one Map lookup and one float compare per mounted row
+   * (~10-16 of them) and deliberately does NOT mark the scene dirty; a per-frame
+   * unconditional `markDirty()` here would defeat the idle throttle exactly as
+   * ScrollView's `update()` documents.
+   */
+  private _measureMountedRows(): void {
+    let changed = false;
+    let anchor: ScrollAnchor | null = null;
+    for (const [i, ent] of this._pool) {
+      // `> 0` because an unmeasured row reports 0, and treating that as a
+      // measurement would collapse the list to zero height.
+      if (ent.height <= 0) continue;
+      if (this._heights.heightOf(i) === ent.height) {
+        this._measured.add(i);
+        continue;
+      }
+      // Capture the anchor before the first mutation, against the old geometry.
+      if (!changed) {
+        anchor = this._captureAnchor();
+        changed = true;
+      }
+      this._measured.add(i);
+      this._heights.set(i, ent.height);
+      const k = this._keyAt(i);
+      if (k !== undefined) this._heightByKey.set(k, ent.height);
+    }
+    if (!changed) return;
+    this._restoreAnchor(anchor);
+    this.scene?.markDirty({ entity: this.id, reason: 'row-resize' });
   }
 
   private _clamp(): void {
@@ -268,6 +556,7 @@ export class VirtualList<T = unknown> extends UIComponent {
       e.preventDefault();
       this._targetY += e.deltaY;
       this._clamp();
+      this._latchBottom();
       this.scene?.markDirty();
     });
     this.on('pointerdown', (e: { localY?: number }) => {
@@ -281,6 +570,7 @@ export class VirtualList<T = unknown> extends UIComponent {
       this._targetY -= y - this._lastPY;
       this._lastPY = y;
       this._clamp();
+      this._latchBottom();
       this.scene?.markDirty();
     });
     const end = () => {
@@ -292,6 +582,10 @@ export class VirtualList<T = unknown> extends UIComponent {
 
   public override update(dt: number, time: number): void {
     super.update(dt, time);
+    // Poll unconditionally, not only while scrolling: a row growing under a
+    // stationary viewport is the streaming case, and it is exactly the one a
+    // scroll-gated measurement would never see.
+    this._measureMountedRows();
     const diff = this._targetY - this._scrollY;
     this._velY += diff * 0.12;
     this._velY *= 0.82;
@@ -387,6 +681,29 @@ export class VirtualList<T = unknown> extends UIComponent {
               label: 'totalHeight',
               value: Math.round(this._heights.total()),
               hint: 'Sum over the Fenwick tree, mixing measured and estimated rows',
+              readOnly: true,
+            },
+            {
+              label: 'cachedHeights',
+              value: this._heightByKey.size,
+              hint: 'Keyed heights surviving setItems; 0 when no keyForItem was given',
+              readOnly: true,
+            },
+          ],
+        },
+        {
+          label: 'Following',
+          fields: [
+            {
+              label: 'keyed',
+              value: this._keyForItem !== undefined,
+              hint: 'Whether keyForItem was supplied — required for anchoring',
+              readOnly: true,
+            },
+            {
+              label: 'nearBottom',
+              value: this._nearBottom,
+              hint: `Latched at the last scroll: within ${this._stickThreshold}px of the bottom`,
               readOnly: true,
             },
           ],
