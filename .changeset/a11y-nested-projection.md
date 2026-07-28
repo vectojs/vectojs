@@ -14,11 +14,11 @@ attributes were, and axe's `aria-required-children` / `aria-required-parent` had
 to be disabled.
 
 The projection now nests exactly the role pairs ARIA requires to be
-DOM-contained, derived from axe-core's own role table: `grid`/`table`/`treegrid`
-
-> `row` > `gridcell`, `tablist` > `tab`, `tree` > `treeitem`, `menu` >
-> `menuitem`, `listbox` > `option`, `list` > `listitem`. Both rules are now
-> enabled and asserted in CI against real Chrome and Firefox.
+DOM-contained, derived from axe-core's own role table:
+`grid`/`table`/`treegrid` → `row` → `gridcell`, `tablist` → `tab`,
+`tree` → `treeitem`, `menu` → `menuitem`, `listbox` → `option`,
+`list` → `listitem`. Both rules are now enabled and asserted in CI against
+real Chrome and Firefox.
 
 Deliberately narrow. `radiogroup`/`radio` is absent from ARIA's containment
 requirements, so `RadioGroup` stays flat, and a role a container may not own is
