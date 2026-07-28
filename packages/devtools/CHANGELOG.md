@@ -1,5 +1,177 @@
 # @vectojs/devtools
 
+## 0.9.0
+
+### Minor Changes
+
+- dcb8a75: Add a page-backend / frontend bridge protocol.
+
+  `createDevtoolsBackend(scene, transport)` serves 21 methods over a transport:
+  tree, entity inspection and picking, highlight geometry, layout and a11y audits,
+  snapshot and diff, hit explanation, text, Markdown streaming, GPU counters, plus
+  plugin inspectors, audits and commands. `createDevtoolsClient(transport)` issues
+  requests and correlates responses, with a timeout so a dead backend cannot hang a
+  caller.
+
+  Protocol only. The in-page panel is untouched and still calls the headless
+  functions directly. Defining the protocol first and validating it against one real
+  consumer is worth more than rebuilding the UI around an unvalidated protocol, and
+  the same backend then serves an extension, Playwright and an agent without four
+  implementations of the same queries drifting apart.
+
+  **Origin enforcement has no permissive default.** A backend answers questions
+  about the whole scene — text content, accessible names, geometry — so one that
+  replies to any sender is an information-disclosure vector reachable by any frame
+  that can post to the window. Requests carrying an origin are refused unless that
+  origin is in `allowedOrigins`, and omitting the option refuses all of them.
+  In-process callers carry no origin and are served, which is the panel and agent
+  case. `createWindowTransport` forwards the sender's origin specifically so the
+  check is possible.
+
+  Results are round-tripped through JSON in the backend, so a handler that leaked a
+  live entity reference fails in the backend's own tests rather than as a
+  structured-clone error inside somebody's extension. `tree.get` is capped and
+  reports `truncated` rather than silently returning part of a tree.
+
+- dcb8a75: Add a GPU inspector with per-backend render counters.
+
+  `IRenderer` gains a `kind` discriminator and optional `setDrawCounters` /
+  `getDrawCounters` / `clearDrawCounters`. `kind` exists because `constructor.name`
+  minifies away, and a debug tool that cannot name the backend in a production build
+  is not much use. `CanvasRenderer` implements the counters: fills, strokes, text,
+  images, circles, batch commits, save/restore, clips, and style switches that were
+  not elided. Off by default, so the guard is one null test per op.
+
+  `WebGLPointRenderer` exposes `stats()`: per-frame and cumulative draw calls, MSDF
+  atlas switches, and the split between circles on the `gl.POINTS` fast path and
+  those falling back to quads. Batching there is per primitive type, so draw calls
+  and batches are the same number. `Scene` gains `webglDrawStats` and
+  `webgpuActive`; both GPU backends were entirely private before, so no reading was
+  possible at all.
+
+  `inspectGpu(scene)` aggregates all three sources plus existing phase timings and
+  frame telemetry, and `auditGpu` reports `batch-not-amortising`,
+  `unbalanced-save-restore`, `high-overdraw` and `circle-quad-fallback`.
+
+  Three capabilities are named as unavailable rather than approximated. GPU timestamp
+  queries need a `requiredFeatures` device request, query sets, resolve and staging
+  buffers, and out-of-band async readback that cannot share the synchronous phase
+  shape. Exact overdraw needs pixel-coverage readback Canvas2D does not offer, so
+  `overdrawRatio` is submitted-area over surface-area, labelled a proxy that
+  overstates, and its audit finding is `info` rather than `warn` for that reason.
+  Deep WebGL frame capture points at Spector.js rather than vendoring it.
+
+  Inactive and idle are reported differently throughout: `null` means the backend is
+  not running, zero means it ran and did nothing.
+
+- b027513: Draw the selection highlight as geometry layers instead of one bounding box.
+
+  The panel drew only the world AABB, so a rotated entity showed its bounding box
+  rather than its true edges, and every other box it carries was invisible. Those
+  boxes diverging from each other is the bug class the highlight exists to reveal.
+
+  `highlightGeometry()` returns the layout quad, `getBounds()` render box, nearest
+  clipping ancestor, projected content bounds and accessibility bounds, each as a
+  true polygon in scene coordinates and each flagged when it drifts from the layout
+  box. `setHighlightLayers()` chooses what the panel draws; the default stays the
+  single AABB so an existing screenshot reads the same.
+
+  `sampleHitRegion()` covers the one layer that has no retrievable geometry:
+  `isPointInside` is a predicate, so the region is approximated by probing a grid
+  and emitting one span per scanline. It is off by default because cost is
+  quadratic in the entity's size, and it compares by area coverage rather than
+  extent — a circle inscribed in its box has exactly the box's extent while
+  accepting ~79% of its points, so an extent check reports the most common
+  divergence as none.
+
+- dcb8a75: Add a Markdown streaming inspector.
+
+  The component's descriptor already carried appends, worker responses and token
+  reuse. Three things the item asked for were missing and are now recorded: worker
+  round-trip time (mean and worst), the stable-prefix and changed-tail lengths in
+  **characters**, and reused vs rebuilt vs updated-in-place child entity counts.
+
+  `inspectMarkdownStream(entity)` reads those and derives the two quantities worth
+  watching. Characters matter because token counts do not answer the question: a
+  stream can reuse 95% of its tokens while still re-reading 60% of its characters
+  every chunk, and only the character ratio shows the O(document)-per-chunk shape.
+  Coalescing is derived as appends minus responses, but reported as zero when the
+  worker never answered — otherwise a main-thread parse claims every append was
+  coalesced when none were.
+
+  `auditMarkdownStreaming(scene)` reports five classes: `tail-not-a-delta`,
+  `low-token-reuse`, `slow-worker-roundtrip`, `no-worker` and
+  `entities-mostly-rebuilt`. The first two fire independently, since they fail
+  independently.
+
+  The inspector reads the descriptor rather than importing `@vectojs/markdown`,
+  keeping the dependency pointing the right way and the module out of the headless
+  bundle's forbidden-import set.
+
+- b027513: Add a plugin protocol so other packages can contribute DevTools panels.
+
+  `registerDevtoolsPlugin({ inspectors, audits, commands })` returns a deregister
+  function. Each inspector becomes a tab, filled from the current selection on
+  refresh; audits merge into the existing audit list with their kind namespaced by
+  plugin id; commands are addressable as `<pluginId>/<commandId>` and runnable via
+  `panel.runCommand()`.
+
+  The point is dependency direction: `markdown`, `text`, `graph3d` and `three` can
+  contribute panels without `@vectojs/devtools` importing any of them, where a
+  hardcoded tab per package would invert the graph and put a debug tool in the way
+  of every new component.
+
+  Also fixes the tab bar, which divided its width by the tab count — six built-in
+  tabs at a 320px dock already sat near 51px each, and plugins pushed that to 27px.
+  Tabs now keep a preferred width and the bar scrolls horizontally once they
+  overflow: measured with 8 plugins, 13 tabs hold at 48px across a 624px bar that
+  scrolls 320px, and selecting the last tab scrolls it into view.
+
+  Every call into plugin code is wrapped. A throwing `appliesTo` excludes just that
+  inspector, a throwing `rows` renders the error in its own tab, and a throwing
+  audit becomes an `audit-failed` finding, so one broken plugin cannot take the
+  panel down with it.
+
+- b027513: Pair snapshot siblings by a stable key instead of by child index.
+
+  `captureSnapshot` now records a position-independent `key` per node, preferring
+  the component's declared `devtoolsKey` and falling back to its accessible label.
+  `diffSnapshots` pairs by that key when every key on a level is unique, and
+  addresses keyed nodes as `root > Row{k:row-42}` so the path survives reordering.
+
+  The gain is attribution, not diff size. Measured on a 200-row list with distinct
+  row text, a head insertion produces 201 diffs either way — the rows really did
+  move — but unkeyed, all 200 additionally claim their text was rewritten, because
+  each row is compared against its neighbour, and the inserted row is reported at
+  the tail index rather than the head.
+
+  Drawn text is deliberately not a key candidate: keying on content would turn a
+  text edit into a removal plus an addition and lose the from/to. Colliding keys on
+  a level fall back to index pairing rather than pairing arbitrarily, and the path
+  falls back with them so a node is never addressed ambiguously.
+
+- dcb8a75: Add a text inspector, the first consumer of the plugin protocol.
+
+  `inspectText(entity)` reports what VectoJS's own shaping knows and a DOM inspector
+  cannot: the UAX #9 base direction, per-character bidi levels collapsed into level
+  runs, the L2 reversal segments the algorithm actually performs, the visual order
+  permutation, grapheme clusters, and per-glyph visual x, advance and level read
+  from a prepared content grid or prepared text. `shapeProbe(text)` runs an
+  arbitrary string through the real pipeline, so a bidi or cluster question can be
+  settled without editing the app.
+
+  `auditTextShaping(scene)` reports entities with glyphs absent from the atlas,
+  naming the offending characters — those are the ones paying for a canvas
+  `measureText` per glyph.
+
+  Four of the nine capabilities originally asked for are reported as unavailable
+  with a reason rather than approximated, since a debug tool that invents a
+  plausible number is worse than one that admits ignorance. Glyph ids do not exist
+  in this engine at all — the atlas is keyed by codepoint. No script itemizer
+  exists, only a whole-string boolean. No API names the font actually used for a
+  run, so per-glyph atlas misses are reported instead. Prepared text carries
+  advances but not placed positions, and `LayoutResult` has no line index.
+
 ## 0.8.0
 
 ### Minor Changes

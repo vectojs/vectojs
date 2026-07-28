@@ -1,5 +1,63 @@
 # @vectojs/core
 
+## 1.22.0
+
+### Minor Changes
+
+- dcb8a75: Add a GPU inspector with per-backend render counters.
+
+  `IRenderer` gains a `kind` discriminator and optional `setDrawCounters` /
+  `getDrawCounters` / `clearDrawCounters`. `kind` exists because `constructor.name`
+  minifies away, and a debug tool that cannot name the backend in a production build
+  is not much use. `CanvasRenderer` implements the counters: fills, strokes, text,
+  images, circles, batch commits, save/restore, clips, and style switches that were
+  not elided. Off by default, so the guard is one null test per op.
+
+  `WebGLPointRenderer` exposes `stats()`: per-frame and cumulative draw calls, MSDF
+  atlas switches, and the split between circles on the `gl.POINTS` fast path and
+  those falling back to quads. Batching there is per primitive type, so draw calls
+  and batches are the same number. `Scene` gains `webglDrawStats` and
+  `webgpuActive`; both GPU backends were entirely private before, so no reading was
+  possible at all.
+
+  `inspectGpu(scene)` aggregates all three sources plus existing phase timings and
+  frame telemetry, and `auditGpu` reports `batch-not-amortising`,
+  `unbalanced-save-restore`, `high-overdraw` and `circle-quad-fallback`.
+
+  Three capabilities are named as unavailable rather than approximated. GPU timestamp
+  queries need a `requiredFeatures` device request, query sets, resolve and staging
+  buffers, and out-of-band async readback that cannot share the synchronous phase
+  shape. Exact overdraw needs pixel-coverage readback Canvas2D does not offer, so
+  `overdrawRatio` is submitted-area over surface-area, labelled a proxy that
+  overstates, and its audit finding is `info` rather than `warn` for that reason.
+  Deep WebGL frame capture points at Spector.js rather than vendoring it.
+
+  Inactive and idle are reported differently throughout: `null` means the backend is
+  not running, zero means it ran and did nothing.
+
+### Patch Changes
+
+- b027513: Pair snapshot siblings by a stable key instead of by child index.
+
+  `captureSnapshot` now records a position-independent `key` per node, preferring
+  the component's declared `devtoolsKey` and falling back to its accessible label.
+  `diffSnapshots` pairs by that key when every key on a level is unique, and
+  addresses keyed nodes as `root > Row{k:row-42}` so the path survives reordering.
+
+  The gain is attribution, not diff size. Measured on a 200-row list with distinct
+  row text, a head insertion produces 201 diffs either way — the rows really did
+  move — but unkeyed, all 200 additionally claim their text was rewritten, because
+  each row is compared against its neighbour, and the inserted row is reported at
+  the tail index rather than the head.
+
+  Drawn text is deliberately not a key candidate: keying on content would turn a
+  text edit into a removal plus an addition and lose the from/to. Colliding keys on
+  a level fall back to index pairing rather than pairing arbitrarily, and the path
+  falls back with them so a node is never addressed ambiguously.
+
+- Updated dependencies [dcb8a75]
+  - @vectojs/layout@0.4.0
+
 ## 1.21.0
 
 ### Minor Changes
