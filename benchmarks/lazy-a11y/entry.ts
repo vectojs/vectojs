@@ -34,6 +34,13 @@
 //
 // Posts JSON to /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const COUNTS = (p.get('counts') ?? '1000,5000,20000').split(',').map(Number);
@@ -119,31 +126,28 @@ function makeScene(count: number, cfg: Config): { scene: Scene; canvas: HTMLCanv
   return { scene, canvas };
 }
 
-const median = (xs: number[]): number => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
-};
 const yieldToBrowser = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 /**
  * POST the results, then close the window so the run ends the moment the data
  * lands rather than depending on the harness noticing.
+ *
+ * The POST itself now goes through the shared client, which builds the full
+ * envelope; `render` runs before the close because nothing after
+ * `window.close()` is guaranteed to run.
  */
-async function postResults(payload: unknown): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* payload is already rendered into the page as a fallback */
-  }
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+): Promise<void> {
+  const result = await reportResult(input);
+  render(result);
   window.close();
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const pre = document.createElement('pre');
   pre.style.cssText = 'font:12px monospace';
   document.body.appendChild(pre);
@@ -228,21 +232,24 @@ async function main(): Promise<void> {
     }
   }
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
-  const payload = {
-    name: 'lazy-a11y',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      frames: FRAMES,
-      trials: TRIALS,
-      dpr: devicePixelRatio,
-      note: "lazy-simulated models a lazy mode's steady state (1 projected element) using existing primitives; it is not an implementation",
+  await postResults(
+    {
+      name: 'lazy-a11y',
+      // `dpr` stays in params as deliberate duplication of the envelope's own
+      // field, so the params shape stays comparable.
+      params: {
+        frames: FRAMES,
+        trials: TRIALS,
+        dpr: devicePixelRatio,
+        note: "lazy-simulated models a lazy mode's steady state (1 projected element) using existing primitives; it is not an implementation",
+      },
+      rows,
+      durationMs: +(performance.now() - startedAt).toFixed(1),
     },
-    rows,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
-  await postResults(payload);
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+  );
 }
 
-void main();
+main().catch((error) => reportFailure('lazy-a11y', error));

@@ -26,6 +26,13 @@
 // A cell grid stands in for the real thing rather than mounting CodeBlock, so the
 // comparison isolates the primitives from parse/highlight/grid work.
 import { TextRasterCache } from '@vectojs/core';
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 interface Row {
   mode: string;
@@ -56,14 +63,23 @@ const GLYPHS =
 const CELL_W = 9;
 const LINE_H = 24;
 
-function reportFailure(msg: string): void {
+/**
+ * Report failures to the server's /log endpoint.
+ *
+ * Renamed from `reportFailure` to make room for the shared client's
+ * `reportFailure`, which posts a failed *result envelope*. The two are
+ * complementary, not redundant: this one surfaces a message in the server log
+ * (including for the window-level handler below, which fires for errors thrown
+ * outside `main()`), the other records the failure in the results file.
+ */
+function logFailure(msg: string): void {
   void fetch('/log', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ level: 'error', msg }),
   }).catch(() => {});
 }
-addEventListener('error', (e) => reportFailure(`uncaught: ${e.message}`));
+addEventListener('error', (e) => logFailure(`uncaught: ${e.message}`));
 
 /** Deterministic cell layout so every mode draws the identical geometry. */
 function layout(cells: number): Array<{ x: number; y: number; glyph: string; color: string }> {
@@ -88,22 +104,18 @@ function layout(cells: number): Array<{ x: number; y: number; glyph: string; col
   return out;
 }
 
-async function postResults(payload: unknown): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* page renders the payload as a fallback */
-  }
+/**
+ * The result POST now goes through the shared client, which builds the full
+ * envelope. `render` runs before the close because nothing after
+ * `window.close()` is guaranteed to run.
+ */
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+): Promise<void> {
+  const result = await reportResult(input);
+  render(result);
   window.close();
-}
-
-function median(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
 }
 
 /**
@@ -126,6 +138,8 @@ function bestOf(xs: number[]): number {
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const canvas = document.createElement('canvas');
   canvas.width = VW;
   canvas.height = VH;
@@ -375,25 +389,28 @@ async function main(): Promise<void> {
     };
   });
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
-  const payload = {
-    name: 'raster-cache-primitive',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      frames: FRAMES,
-      repeats: REPEATS,
-      cells: CELL_COUNTS,
-      dpr: devicePixelRatio,
-      font: FONT,
-      distinctRuns: GLYPHS.length * COLORS.length,
-      note: 'Primitive-level A/B, modes interleaved: one fillText per cell vs one drawImage per cell from a fully warm TextRasterCache. The cache does NOT reduce call count, so the whole question is the per-call cost ratio at small sizes.',
+  await postResults(
+    {
+      name: 'raster-cache-primitive',
+      // `dpr` stays in params as deliberate duplication of the envelope's own
+      // field, so the params shape stays comparable.
+      params: {
+        frames: FRAMES,
+        repeats: REPEATS,
+        cells: CELL_COUNTS,
+        dpr: devicePixelRatio,
+        font: FONT,
+        distinctRuns: GLYPHS.length * COLORS.length,
+        note: 'Primitive-level A/B, modes interleaved: one fillText per cell vs one drawImage per cell from a fully warm TextRasterCache. The cache does NOT reduce call count, so the whole question is the per-call cost ratio at small sizes.',
+      },
+      summary,
+      rows,
+      durationMs: +(performance.now() - startedAt).toFixed(1),
     },
-    summary,
-    rows,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
-  await postResults(payload);
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+  );
 }
 
 // A throw here must still POST and close the window. Reporting the error without
@@ -401,13 +418,13 @@ async function main(): Promise<void> {
 // every measurement had already completed — left the page open, so the runner
 // waited out its whole timeout on an idle browser with the results sitting in the
 // DOM. That reads exactly like a hung benchmark.
+//
+// The failed-result POST is now the shared client's `reportFailure`, which posts
+// a complete envelope instead of the four bare fields this used to send; the
+// close still happens here, after it.
 void main().catch(async (e) => {
   const msg = String(e instanceof Error ? (e.stack ?? e.message) : e);
-  reportFailure(`main() threw: ${msg}`);
-  await postResults({
-    name: 'raster-cache-primitive',
-    engine: /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome',
-    failed: true,
-    error: msg,
-  });
+  logFailure(`main() threw: ${msg}`);
+  await reportFailure('raster-cache-primitive', e);
+  window.close();
 });

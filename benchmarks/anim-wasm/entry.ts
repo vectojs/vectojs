@@ -9,6 +9,7 @@
 // by writing in place. So the real wasm cost is (kernel + scatter); this spike
 // isolates the compute to find where offloading is even in the running.
 import { SpringDriver, TweenDriver, type EasingName } from '@vectojs/animation';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 const params = new URLSearchParams(location.search);
 const NS = (params.get('ns') ?? '100,1000,10000,100000').split(',').map(Number);
@@ -60,14 +61,6 @@ function beacon(level: string, msg: string): void {
     /* best effort */
   }
 }
-function engineTag(): string {
-  const ua = navigator.userAgent;
-  const ff = /Firefox\/(\d+)/.exec(ua);
-  if (ff) return `Firefox${ff[1]}`;
-  const cr = /Chrome\/(\d+)/.exec(ua);
-  if (cr) return `Chrome${cr[1]}`;
-  return 'unknown';
-}
 
 const status = document.createElement('h2');
 status.id = 'status';
@@ -79,6 +72,8 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {});
   const ex = instance.exports as unknown as AnimExports;
@@ -181,26 +176,29 @@ async function run(): Promise<void> {
     }
   }
 
-  const report = {
+  // `iters`/`trials`/`note` were top-level fields of the hand-rolled payload;
+  // the shared envelope reserves the top level for host/browser/validation facts,
+  // so they move into `params` where the workload description belongs.
+  const report = await reportResult({
     name: 'anim-wasm',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    crossOriginIsolated: self.crossOriginIsolated,
-    iters: ITERS,
-    trials: TRIALS,
-    note: 'wasm figure is kernel-only (excludes per-frame scatter of output values)',
+    params: {
+      iters: ITERS,
+      trials: TRIALS,
+      note: 'wasm figure is kernel-only (excludes per-frame scatter of output values)',
+    },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('anim-wasm', error);
 });

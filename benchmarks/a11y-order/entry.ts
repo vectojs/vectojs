@@ -9,6 +9,8 @@
 // fallback full-tree collect (the pre-fusion second walk). Posts JSON to
 // /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const COUNTS = (p.get('counts') ?? '500,2000,5000,10000').split(',').map(Number);
@@ -52,11 +54,6 @@ function makeScene(count: number): Scene {
   return scene;
 }
 
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
-}
-
 const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
 
 async function bench(scene: Scene, forceSecondWalk: boolean): Promise<number> {
@@ -86,7 +83,8 @@ async function bench(scene: Scene, forceSecondWalk: boolean): Promise<number> {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const progress = document.createElement('pre');
   document.body.appendChild(progress);
   const rows: any[] = [];
@@ -103,25 +101,15 @@ async function main() {
       speedup: +(oldMs / fusedMs).toFixed(2),
     });
   }
-  const payload = {
+  const result = await reportResult({
     name: 'a11y-order',
-    engine,
-    userAgent: navigator.userAgent,
     params: { COUNTS, FRAMES, TRIALS },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('a11y-order', error));

@@ -19,6 +19,7 @@ import {
   type TransformStore,
 } from '@core/soa';
 import { instantiateAsync, type WasmTransformBackend } from '@core/backend';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 type Topo = 'flat' | 'chain' | 'bushy' | 'mixed';
 
@@ -187,6 +188,8 @@ function beacon(level: string, msg: string): void {
 }
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   beacon('info', `start ${engineTag()} topos=${TOPOS} ns=${NS}`);
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const backend = await instantiateAsync(bytes);
@@ -201,23 +204,21 @@ async function run(): Promise<void> {
     }
   }
 
-  const report = {
+  // `iters`/`trials` move into `params` (workload dimensions); `wasmAvailable` is
+  // a validation fact about the run, so it goes in `summary`. `hardwareConcurrency`
+  // and `crossOriginIsolated` are dropped here because the envelope's `browser`
+  // block already carries both.
+  const report = await reportResult({
     name: 'core-wasm',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    wasmAvailable: !!backend,
-    hardwareConcurrency: navigator.hardwareConcurrency,
-    crossOriginIsolated: self.crossOriginIsolated,
-    iters: ITERS,
-    trials: TRIALS,
+    params: { iters: ITERS, trials: TRIALS },
+    summary: { wasmAvailable: !!backend },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown; __BENCH_DONE__?: boolean }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+    // Without the backend the wasm columns are all NaN, so the run cannot answer
+    // the question it exists to answer.
+    issues: backend ? [] : ['wasm backend unavailable: every wasm column is NaN'],
   });
+  (window as unknown as { __BENCH__?: unknown; __BENCH_DONE__?: boolean }).__BENCH__ = report;
   (window as unknown as { __BENCH_DONE__?: boolean }).__BENCH_DONE__ = true;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
@@ -234,7 +235,12 @@ window.addEventListener('unhandledrejection', (e) =>
   beacon('error', `reject: ${String(e.reason)}`),
 );
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('core-wasm', error);
 });

@@ -17,6 +17,8 @@
 // sit outside the viewport (the realistic long-document shape). Posts JSON to
 // /results (browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const NODE_COUNTS = (p.get('nodes') ?? '500,1000,2000,4000,8000,16000').split(',').map(Number);
@@ -64,11 +66,6 @@ function buildTree(scene: Scene, n: number): void {
     leaf.setPosition((i % perRow) * 44, 0);
     row!.add(leaf);
   }
-}
-
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
 }
 
 // Cost of ONE collectComputeEntities pass. We time both the cached call
@@ -121,7 +118,8 @@ function measureSyncA11y(scene: Scene): number {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const rows: any[] = [];
   for (const n of NODE_COUNTS) {
     const scene = makeScene();
@@ -137,25 +135,15 @@ async function main() {
       syncA11yWalkRefMs: +syncA11y.toFixed(4),
     });
   }
-  const payload = {
+  const result = await reportResult({
     name: 'per-frame-walk',
-    engine,
-    userAgent: navigator.userAgent,
     params: { NODE_COUNTS, TRIALS, VIEW_W, VIEW_H },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — the page still shows the table below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('per-frame-walk', error));

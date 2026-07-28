@@ -16,14 +16,12 @@ import { Entity } from '@vectojs/core';
 import { RowHeights } from '@vectojs/ui';
 import { auditTree } from '@vectojs/devtools/headless';
 import { MSDFFont, type MSDFFontData } from '@vectojs/text';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const TRIALS = Number(p.get('trials') ?? 7);
 
-const median = (xs: number[]): number => {
-  xs.sort((a, b) => a - b);
-  return xs[xs.length >> 1]!;
-};
 const time = (f: () => void): number => {
   const t0 = performance.now();
   f();
@@ -196,7 +194,8 @@ function msdfThroughput(reps: number) {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const virtualList: unknown[] = [];
   for (const n of [1000, 10000, 100000]) {
     virtualList.push(virtualListRows(n));
@@ -213,27 +212,19 @@ async function main() {
     await yieldToPaint();
   }
 
-  const payload = {
+  const result = await reportResult({
     name: 'hero-metrics',
-    engine,
-    userAgent: navigator.userAgent,
     params: { TRIALS },
-    virtualList,
-    audit,
-    msdf,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* page still shows the table below */
-  }
+    // This benchmark has no rows: it hangs three named sub-objects off the
+    // envelope instead, which is exactly what the `summary` slot is for. Their
+    // key names are unchanged.
+    rows: [],
+    summary: { virtualList, audit, msdf },
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('hero-metrics', error));

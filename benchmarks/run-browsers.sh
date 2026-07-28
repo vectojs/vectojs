@@ -14,18 +14,42 @@
 #   * The page POSTs its own results to the local server as JSON on completion,
 #     so nothing has to be read off the screen and no screenshot is involved.
 #
-# Usage: ./run-browsers.sh <bench-dir> <port> [--workspace N] [chrome|firefox ...]
+# Usage: ./run-browsers.sh <bench-dir> <port> [options] [chrome|firefox ...]
 #   ./run-browsers.sh wasm-core 8178 chrome firefox
+#   ./run-browsers.sh ondemand-raf 8178 --iterations 5 chrome firefox
+#   ./run-browsers.sh ondemand-raf 8178 --mode profile chrome
+#
+# Options:
+#   --workspace N   dedicated Hyprland workspace (default 3)
+#   --keep-going    try every browser even after one fails
+#   --viewport WxH  fix the window size so raster pixel count is comparable
+#   --iterations N  launch the browser N times and aggregate across processes
+#   --warm          reuse one profile across iterations instead of a fresh one
+#   --mode M        measure (default) or profile
 set -euo pipefail
 cd "$(dirname "$0")"
 
-BENCH="${1:?usage: run-browsers.sh <bench-dir> <port> [--workspace N] [browsers...]}"
+BENCH="${1:?usage: run-browsers.sh <bench-dir> <port> [options] [browsers...]}"
 PORT="${2:?missing port}"
 shift 2
 
 WORKSPACE=3
 KEEP_GOING=0
 VIEWPORT=""
+# One browser process per iteration. Page-internal trials cover algorithm jitter;
+# only relaunching the process covers JIT tiering, GC, GPU cache and kernel
+# scheduling, which is what a 652/945/954 ms spread across three invocations of the
+# same benchmark actually was.
+ITERATIONS=1
+# Cold by default, which is what this runner has always done: a fresh profile per
+# process isolates well, at the cost of re-creating cache and font state every run.
+# --warm keeps one profile across a browser's iterations so steady-state numbers
+# can be compared against the cold ones.
+PROFILE_STATE=cold
+# measure: the page starts on load, as before. profile: the page waits for
+# window.__VECTO_BENCH__.start() so a tracer can attach first, and the bundle is
+# built with --external so a flame chart maps back to Scene.ts.
+MODE=measure
 while true; do
   case "${1:-}" in
   --workspace)
@@ -36,6 +60,18 @@ while true; do
   --keep-going)
     KEEP_GOING=1
     shift
+    ;;
+  --iterations)
+    ITERATIONS="$2"
+    shift 2
+    ;;
+  --warm)
+    PROFILE_STATE=warm
+    shift
+    ;;
+  --mode)
+    MODE="$2"
+    shift 2
     ;;
   # Fix the window size so raster pixel count is comparable between runs: a
   # default-sized window varies with monitor, DPR and browser chrome height, and
@@ -48,6 +84,28 @@ while true; do
   esac
 done
 BROWSERS=("${@:-chrome}")
+
+# Validate before launching anything: a typo'd mode must not silently produce
+# measure-mode numbers under a profile label, or vice versa.
+case "$MODE" in
+measure | profile) ;;
+*)
+  echo "unknown --mode '$MODE' (expected measure or profile)" >&2
+  exit 1
+  ;;
+esac
+if ! [[ $ITERATIONS =~ ^[0-9]+$ ]] || [ "$ITERATIONS" -lt 1 ]; then
+  echo "--iterations must be a positive integer, got '$ITERATIONS'" >&2
+  exit 1
+fi
+# Profiler overhead makes these timings incomparable to measure-mode ones, so
+# aggregating several of them into a median invites quoting the result as a
+# measurement. One process per profile run.
+if [ "$MODE" = profile ] && [ "$ITERATIONS" -gt 1 ]; then
+  echo "--mode profile does not support --iterations > 1: profiler overhead makes" >&2
+  echo "  these runs unquotable as measurements, so aggregating them is misleading" >&2
+  exit 1
+fi
 
 BASE_URL="http://127.0.0.1:${PORT}/"
 RESULTS="${BENCH}/results"
@@ -68,6 +126,11 @@ PIDFILE="/tmp/vecto-bench-${BENCH//\//-}-server.pid"
 # days-old starved run kept re-warning on every future invocation.
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 COMMIT="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Warm profile directories, keyed by browser, when --warm is in effect. Reused
+# across a browser's iterations and removed once its last one finishes.
+declare -A WARM_PROFILES=()
+# The profile dir of the run currently in flight, read by the EXIT trap.
+CURRENT_PROFILE_DIR=""
 
 start_server() {
   local pid
@@ -129,26 +192,82 @@ start_server() {
 
 # Address of a window of $1 on the dedicated workspace. Scoping the lookup to
 # the workspace is what disambiguates our window from the user's own browser.
+# Address of the benchmark window on the dedicated workspace.
+#
+# Class alone is not enough to identify it. A fresh Firefox profile can map a
+# first-run/privacy-notice window alongside the benchmark, and this function used
+# to `break` on the first class match — so focus could land on the wrong window
+# while the benchmark ran unfocused, which throttles rAF and quietly collapses the
+# frame count every per-frame figure divides by. Prefer a window whose title
+# contains the benchmark's page title; fall back to class only when no titled
+# match exists, so a page that has not set its title yet still resolves.
 window_on_workspace() {
   hyprctl clients -j | python3 -c "
 import json,sys
-cls, ws = '$1', $WORKSPACE
+cls, ws, want = '$1', $WORKSPACE, '$2'.lower()
+titled, any_match = None, None
 for c in json.load(sys.stdin):
-    if cls in c.get('class','').lower() and c['workspace']['id'] == ws:
-        print(c['address']); break
+    if cls not in c.get('class','').lower() or c['workspace']['id'] != ws:
+        continue
+    if any_match is None:
+        any_match = c['address']
+    if want and want in c.get('title','').lower():
+        titled = c['address']; break
+print(titled or any_match or '')
 " 2>/dev/null || true
 }
 
-# Close the benchmark window and hop back to the caller's workspace, so the
-# terminal is foreground again the moment a run ends.
-close_and_return() {
-  hyprctl dispatch closewindow "address:$1" >/dev/null 2>&1 || true
-  sleep 0.5
+# Close the benchmark window, confirm the browser process is really gone, and hop
+# back to the caller's workspace so the terminal is foreground again.
+#
+# Closing the window is not the same as ending the process, and asking the page to
+# close itself is not either. Firefox ignores `window.close()` for a window the
+# page did not open (`dom.allow_scripts_to_close_windows` defaults to false), and
+# closing its last window does not necessarily end the process. So a *successful*
+# run left a whole Firefox behind holding its private-profile temp dir, and each
+# further iteration added another — an 8-iteration two-engine suite ends with 8
+# stray Firefoxes competing for CPU with the very runs being measured, which
+# corrupts later iterations rather than merely wasting memory. Chrome happens to
+# exit on its own, which is why this went unnoticed.
+#
+# The process is identified by its per-run profile directory: unique (`mktemp -d`)
+# and present verbatim in the browser's argv. That is what makes this safe next to
+# the user's own browser — no pattern like "firefox" is ever matched, only this
+# run's private profile path.
+terminate_browser() {
+  local addr="$1" profile_dir="$2" waited=0
+
+  if [ -n "$addr" ]; then
+    hyprctl dispatch closewindow "address:$addr" >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
+
+  if [ -n "$profile_dir" ] && pgrep -f -- "$profile_dir" >/dev/null 2>&1; then
+    # SIGTERM first: a clean exit lets the browser release its profile lock,
+    # which is what allows the profile dir to be removed on RETURN.
+    pkill -TERM -f -- "$profile_dir" 2>/dev/null || true
+    # Up to 10s in half-second steps.
+    while [ "$waited" -lt 20 ]; do
+      pgrep -f -- "$profile_dir" >/dev/null 2>&1 || break
+      sleep 0.5
+      waited=$((waited + 1))
+    done
+    if pgrep -f -- "$profile_dir" >/dev/null 2>&1; then
+      pkill -KILL -f -- "$profile_dir" 2>/dev/null || true
+      sleep 0.5
+    fi
+    # Report rather than fail: the results are already collected by this point,
+    # and a surviving process is a cleanup problem, not a bad measurement.
+    if pgrep -f -- "$profile_dir" >/dev/null 2>&1; then
+      echo "  warning: browser processes for $profile_dir survived SIGKILL" >&2
+    fi
+  fi
+
   hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true
 }
 
 run_one() {
-  local browser="$1" bin class cmd addr waited out profile_dir
+  local browser="$1" iteration="${2:-1}" bin class cmd addr waited out profile_dir
   local timeout=$RUN_TIMEOUT extend=$RUN_EXTEND
   # A fresh, disposable profile/user-data dir per run — not just for a clean
   # slate, but for correctness: both browsers default to a SINGLE-INSTANCE
@@ -165,12 +284,39 @@ run_one() {
   # (a single window, workspace 1, running since before any benchmark) while
   # `ps` showed a dozen+ freshly-spawned Firefox content processes under that
   # SAME long-lived parent PID, timed to match the benchmark runs.
-  profile_dir=$(mktemp -d)
-  trap 'rm -rf "$profile_dir"' RETURN
-  # One runId per (suite run, browser): the page echoes it back in its POST, so
-  # completion is "the result for THIS run landed", not "some json got newer".
-  local run_id="${RUN_ID}-${browser}"
-  local URL="${BASE_URL}?runId=${run_id}"
+  if [ "$PROFILE_STATE" = warm ]; then
+    # One profile reused across this browser's iterations, created on the first.
+    # Deliberately NOT removed on RETURN — that is the entire difference from cold:
+    # iteration 2 onward starts with the HTTP cache, the shader cache and the font
+    # cache that iteration 1 populated. Cleaned up by the caller after the last
+    # iteration.
+    profile_dir="${WARM_PROFILES[$browser]:-}"
+    if [ -z "$profile_dir" ]; then
+      profile_dir=$(mktemp -d)
+      WARM_PROFILES[$browser]="$profile_dir"
+    fi
+  else
+    profile_dir=$(mktemp -d)
+    trap 'rm -rf "$profile_dir"' RETURN
+  fi
+  # Published for the EXIT trap: an interrupt (Ctrl-C) or an unexpected death
+  # skips every path in this function, so without this the in-flight browser
+  # outlives the runner.
+  CURRENT_PROFILE_DIR="$profile_dir"
+  # One runId per (suite run, browser, iteration): the page echoes it back in its
+  # POST, so completion is "the result for THIS run landed", not "some json got
+  # newer". The iteration suffix is what keeps N processes from overwriting each
+  # other in history/.
+  #
+  # The URL is single-quoted where it is interpolated into $cmd below, and must
+  # stay that way. `hyprctl dispatch exec` hands the string to a shell, so an
+  # unquoted `&` between query parameters is a background-job separator: the
+  # browser received only `?runId=…`, everything after the first `&` was silently
+  # dropped, and the page then fell back to its defaults — suiteRunId defaulted to
+  # runId, and mode/gate/iteration never arrived at all. It looked like a working
+  # run and produced a valid-looking result file.
+  local run_id="${RUN_ID}-${browser}-i${iteration}"
+  local URL="${BASE_URL}?runId=${run_id}&suiteRunId=${RUN_ID}&iteration=${iteration}&mode=${MODE}&profileState=${PROFILE_STATE}"
   local expected="$RESULTS/history"
   case "$browser" in
   chrome)
@@ -192,7 +338,7 @@ run_one() {
     fi
     local size=""
     [ -n "$VIEWPORT" ] && size="--window-size=${VIEWPORT/x/,}"
-    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $size $URL"
+    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $size '$URL'"
     ;;
   firefox)
     bin=$(command -v firefox || true)
@@ -201,11 +347,48 @@ run_one() {
     # window in running instance" — `firefox --help`); --profile with a
     # fresh directory additionally avoids any profile-lock contention with
     # a concurrently running default-profile Firefox.
+    #
+    # A brand-new profile also opens Firefox's first-run pages, so a run mapped
+    # TWO windows: the benchmark and a private-browsing/privacy-notice window.
+    # That is not merely cosmetic. The second window competes for the compositor
+    # and, worse, `window_on_workspace` matches on window class and takes the
+    # first hit — so focus could land on the first-run window while the benchmark
+    # ran unfocused, which throttles rAF. Seeding prefs into the throwaway
+    # profile suppresses it. Every pref here only affects this temp profile.
+    cat >"$profile_dir/user.js" <<'PREFS'
+// Suppress the first-run/what's-new/privacy-notice windows and tabs.
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("startup.homepage_welcome_url", "");
+user_pref("startup.homepage_welcome_url.additional", "");
+user_pref("startup.homepage_override_url", "");
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.messaging-system.whatsNewPanel.enabled", false);
+user_pref("browser.privatebrowsing.vpnpromourl", "");
+user_pref("privacy.trackingprotection.introURL", "");
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("datareporting.policy.firstRunURL", "");
+user_pref("trailhead.firstrun.didSeeAboutWelcome", true);
+// No session restore prompt, no crash-report nag, no default-browser check —
+// each can map a window or a dialog that steals focus mid-run.
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+PREFS
     local size=""
     if [ -n "$VIEWPORT" ]; then
       size="--width=${VIEWPORT%x*} --height=${VIEWPORT#*x}"
     fi
-    cmd="$bin --private-window --new-instance --profile $profile_dir $size $URL"
+    # The URL must be the ARGUMENT of --private-window, not a trailing positional.
+    # `firefox --help` documents `--private-window [<url>]`, so the detached form
+    #     --private-window … 'URL'
+    # asked for an empty private window AND opened the URL separately: two mapped
+    # windows, and the benchmark ran in the NON-private one (visible in a
+    # screenshot — the benchmark had a normal toolbar while a second window sat on
+    # "New Private Tab"). So the private-browsing isolation the flag was there for
+    # was not applied to the measured page at all, and the extra window competed
+    # for the compositor. Attaching the URL yields exactly one window, and it is
+    # the private one — verified with hyprctl + grim.
+    cmd="$bin --new-instance --profile $profile_dir $size --private-window '$URL'"
     ;;
   *)
     echo "unknown browser: $browser" >&2
@@ -240,11 +423,17 @@ run_one() {
   # observes the window, so treat "results already landed" as success rather than
   # as a missing window.
   for _ in $(seq 1 60); do
-    addr=$(window_on_workspace "$class")
+    # Every benchmark page title starts with "vectojs" (see _shared/build.ts), which
+    # no Firefox first-run window does — enough to tell them apart without the
+    # runner needing to know each benchmark's exact title.
+    addr=$(window_on_workspace "$class" vectojs)
     [ -n "$addr" ] && break
     out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out (finished before its window was seen)"
+      # No window address to close, but the process is still running and must
+      # still be reaped — this early return used to leak it unconditionally.
+      terminate_browser "" "$profile_dir"
       return 0
     fi
     sleep 0.5
@@ -253,9 +442,13 @@ run_one() {
     out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out"
+      terminate_browser "" "$profile_dir"
       return 0
     fi
     echo "  $browser: no window appeared on workspace $WORKSPACE" >&2
+    # It may have launched without ever mapping a window on this workspace; a
+    # failed run must not leak a process either.
+    terminate_browser "" "$profile_dir"
     return 1
   fi
   # Focus still matters even though nothing is captured: an unfocused window
@@ -268,7 +461,7 @@ run_one() {
     out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out"
-      close_and_return "$addr"
+      terminate_browser "$addr" "$profile_dir"
       return 0
     fi
     sleep 2
@@ -286,7 +479,7 @@ run_one() {
     fi
   done
   echo "  $browser timed out after ${timeout}s" >&2
-  close_and_return "$addr"
+  terminate_browser "$addr" "$profile_dir"
   return 1
 }
 
@@ -298,8 +491,9 @@ if ! start_server; then
   exit 1
 fi
 echo "serving $BENCH on $BASE_URL (runId $RUN_ID)"
-# Return to the caller's workspace even if a run dies unexpectedly.
-trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
+# Return to the caller's workspace even if a run dies unexpectedly, and reap an
+# in-flight browser: Ctrl-C during a run skips every cleanup path inside run_one.
+trap 'terminate_browser "" "${CURRENT_PROFILE_DIR:-}"; hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 
 # A failed browser must fail the script. `|| true` here meant a timeout or a
 # browser that never launched still exited 0, so CI recorded a pass and any
@@ -307,12 +501,25 @@ trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 # terminal log.
 status=0
 for b in "${BROWSERS[@]}"; do
-  if ! run_one "$b"; then
-    status=1
-    if [ "$KEEP_GOING" != 1 ]; then
-      echo "  aborting after $b failed (pass --keep-going to try the rest)" >&2
-      break
+  for i in $(seq 1 "$ITERATIONS"); do
+    [ "$ITERATIONS" -gt 1 ] && echo "  iteration $i/$ITERATIONS ($PROFILE_STATE)"
+    if ! run_one "$b" "$i"; then
+      status=1
+      # A single failed iteration does not condemn the rest: the aggregate counts
+      # invalid iterations separately, so 4 of 5 is still a usable median with an
+      # explicit exclusion. Without --keep-going, though, a failure still stops the
+      # suite as it always has.
+      if [ "$KEEP_GOING" != 1 ]; then
+        echo "  aborting after $b iteration $i failed (pass --keep-going to try the rest)" >&2
+        break 2
+      fi
     fi
+  done
+  # Drop the warm profile once this browser's iterations are done, so the next
+  # browser starts from the same state this one did.
+  if [ -n "${WARM_PROFILES[$b]:-}" ]; then
+    rm -rf "${WARM_PROFILES[$b]}"
+    unset "WARM_PROFILES[$b]"
   fi
 done
 # Warn loudly when a run was starved of animation frames.
@@ -352,6 +559,19 @@ if starved:
 PY
 fi
 
+# Aggregate across processes. Only meaningful with more than one iteration, and
+# deliberately skipped in profile mode, where the numbers are not quotable.
+if [ "$ITERATIONS" -gt 1 ] && [ "$MODE" = measure ]; then
+  echo ""
+  echo "aggregating $ITERATIONS iteration(s) per browser:"
+  # Never aggregates across engines — V8 and SpiderMonkey diverge enough that one
+  # median over both describes no browser that exists.
+  bun run _shared/aggregate.ts "$BENCH" "$RUN_ID" || status=1
+fi
+
 echo "results in $RESULTS/ (history/ keyed by runId, latest/ for the stable path)"
-echo "runId $RUN_ID  commit $COMMIT"
+if [ "$ITERATIONS" -gt 1 ]; then
+  echo "aggregate in $RESULTS/aggregate/ (median/p90/p95/MAD across processes)"
+fi
+echo "runId $RUN_ID  commit $COMMIT  mode $MODE  profile $PROFILE_STATE"
 exit "$status"

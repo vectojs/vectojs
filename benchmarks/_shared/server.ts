@@ -87,6 +87,76 @@ async function gpuInfo(): Promise<Record<string, unknown> | null> {
   }
 }
 
+/**
+ * Static host facts, gathered once per server lifetime.
+ *
+ * These are the fields that make a number comparable across machines, and the
+ * page cannot see any of them: `navigator` exposes neither the CPU model nor the
+ * GPU nor the driver version. `/metrics` already shells out for live GPU
+ * utilization; this is the immutable counterpart, cached because a CPU model does
+ * not change between two arms of a run.
+ *
+ * The commit is included here rather than passed in the URL because the runner
+ * already computed it, printed it to the terminal and then dropped it — every
+ * result file was anonymous as to which build produced it. Reading it server-side
+ * also means a hand-opened page records the right commit without anyone
+ * remembering a query parameter.
+ */
+let hostCache: Promise<Record<string, unknown>> | null = null;
+
+async function firstLine(command: string[]): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(command, { stderr: 'ignore' });
+    const text = (await new Response(proc.stdout).text()).trim();
+    return text.split('\n')[0]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function readHostInfo(benchRoot: string): Promise<Record<string, unknown>> {
+  const cpuinfo = await Bun.file('/proc/cpuinfo')
+    .text()
+    .catch(() => '');
+  const modelLine = /^model name\s*:\s*(.+)$/m.exec(cpuinfo);
+  const cores = (cpuinfo.match(/^processor\s*:/gm) ?? []).length;
+
+  // nvidia-smi first, then the DRM device name, so an AMD or Intel GPU is still
+  // identified rather than reported as null.
+  let gpu = await firstLine(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader']);
+  let driver = await firstLine([
+    'nvidia-smi',
+    '--query-gpu=driver_version',
+    '--format=csv,noheader',
+  ]);
+  if (gpu === null) {
+    gpu = await Bun.file('/sys/class/drm/card0/device/label')
+      .text()
+      .then((t) => t.trim() || null)
+      .catch(() => null);
+  }
+  if (driver === null) {
+    driver = await firstLine(['glxinfo', '-B']);
+  }
+
+  const commit = await firstLine(['git', '-C', benchRoot, 'rev-parse', '--short', 'HEAD']);
+
+  const osRelease = await Bun.file('/etc/os-release')
+    .text()
+    .catch(() => '');
+  const prettyName = /^PRETTY_NAME="?([^"\n]+)"?$/m.exec(osRelease);
+
+  return {
+    cpu: modelLine?.[1]?.trim() ?? null,
+    cores: cores > 0 ? cores : null,
+    gpu,
+    driver,
+    kernel: await firstLine(['uname', '-r']),
+    os: prettyName?.[1] ?? null,
+    commit,
+  };
+}
+
 const sanitize = (value: unknown, fallback: string): string =>
   String(value ?? fallback)
     .replace(/[^a-zA-Z0-9._-]/g, '-')
@@ -148,6 +218,14 @@ export async function startBenchmarkServer(
         written.push(historyFile);
         console.log(`wrote results/history/${name}-${engine}-${runId}.json`);
         return Response.json({ ok: true, runId: body.runId }, { headers: ISOLATION });
+      }
+
+      // Static host identity: CPU, GPU, driver, kernel and the commit that built
+      // the bundle. Cached for the server's lifetime, since none of it changes
+      // between two arms of a run.
+      if (url.pathname === '/host') {
+        hostCache ??= readHostInfo(benchRoot);
+        return Response.json(await hostCache, { headers: ISOLATION });
       }
 
       if (url.pathname === '/log' && req.method === 'POST') {

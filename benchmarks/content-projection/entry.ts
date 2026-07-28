@@ -15,6 +15,8 @@
 // O(visible glyphs) when gated. Posts JSON to /results (browser-bench
 // contract) so the run needs no screenshot.
 import { Scene, Entity } from '@vectojs/core';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const BLOCK_COUNTS = (p.get('blocks') ?? '50,100,200,400,800,1600').split(',').map(Number);
@@ -112,12 +114,12 @@ function measure(margin: number, n: number): number {
     times.push(performance.now() - t0);
   }
   scene.destroy();
-  times.sort((a, b) => a - b);
-  return times[Math.floor(times.length / 2)]!; // median
+  return median(times);
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const rows: any[] = [];
   for (const n of BLOCK_COUNTS) {
     const gated = measure(VIEW_H, n); // finite margin = fix
@@ -130,25 +132,15 @@ async function main() {
       speedup: +(ungated / gated).toFixed(2),
     });
   }
-  const payload = {
+  const result = await reportResult({
     name: 'content-projection-gate',
-    engine,
-    userAgent: navigator.userAgent,
     params: { BLOCK_COUNTS, GLYPHS_PER_BLOCK, BLOCK_H, TRIALS, VIEW_W, VIEW_H },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — the page still shows the table below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('content-projection-gate', error));

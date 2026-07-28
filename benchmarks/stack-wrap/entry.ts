@@ -5,8 +5,10 @@
 // append O(1) → O(N) total. We A/B the real add() (fast path) against a
 // reference that forces a full layout() after each push (the pre-fix behavior),
 // swept over child count. Posts JSON to /results (browser-bench contract).
-import { Stack } from '@vectojs/ui';
 import { Entity } from '@vectojs/core';
+import { Stack } from '@vectojs/ui';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const COUNTS = (p.get('counts') ?? '200,500,1000,2000,4000').split(',').map(Number);
@@ -36,11 +38,6 @@ function sizes(n: number): Array<[number, number]> {
     12 + Math.floor(rand() * 24),
   ]);
 }
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
-}
-
 const opts = {
   direction: 'horizontal' as const,
   gap: 6,
@@ -78,7 +75,8 @@ function benchFullLayout(profile: Array<[number, number]>): number {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const rows = COUNTS.map((n) => {
     const profile = sizes(n);
     const fastMs = benchFast(profile);
@@ -90,25 +88,15 @@ async function main() {
       speedup: +(fullMs / fastMs).toFixed(1),
     };
   });
-  const payload = {
+  const result = await reportResult({
     name: 'stack-wrap',
-    engine,
-    userAgent: navigator.userAgent,
     params: { COUNTS, TRIALS, WRAP_LIMIT },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('stack-wrap', error));

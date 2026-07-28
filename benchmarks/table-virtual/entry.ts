@@ -5,6 +5,8 @@
 // mounted cells), swept over row count. Posts JSON to /results.
 import { Scene } from '@vectojs/core';
 import { Table } from '@vectojs/ui';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 // Classic mode mounts EVERY cell (rows × cols entities), so keep the sweep
@@ -17,11 +19,6 @@ const TRIALS = Number(p.get('trials') ?? 5);
 const VIEWPORT = 600;
 
 const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
-
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
-}
 
 function makeRows(n: number): string[][] {
   return Array.from({ length: n }, (_, i) => [
@@ -65,7 +62,8 @@ function bench(rows: string[][], virtualized: boolean): number {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const progress = document.createElement('pre');
   document.body.appendChild(progress);
   const rowsRows: Array<Record<string, number>> = [];
@@ -83,26 +81,16 @@ async function main() {
       speedup: +(classicMs / virtualMs).toFixed(1),
     });
   }
-  const payload = {
+  const result = await reportResult({
     name: 'table-virtual',
-    engine,
-    userAgent: navigator.userAgent,
     params: { ROWS, TRIALS, VIEWPORT },
     rows: rowsRows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   progress.textContent = 'done';
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('table-virtual', error));

@@ -29,6 +29,13 @@
 // WASM path still has to call it to gather bounds (see `_ensureWasmAabbs`,
 // which documents declining to pay exactly this per frame).
 import { Entity, Scene } from '@vectojs/core';
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 interface Row {
   placement: 'onscreen' | 'offscreen';
@@ -124,8 +131,14 @@ function build(
  * out its timeout, and the console output is unreachable — indistinguishable
  * from "the benchmark is slow". Surfacing the message in the server log turns a
  * silent hang into a one-line diagnosis.
+ *
+ * Renamed from `reportFailure` to make room for the shared client's
+ * `reportFailure`, which posts a failed *result envelope*. The two are
+ * complementary, not redundant: this one surfaces a message in the server log
+ * (including for the window-level handlers below, which fire for errors thrown
+ * outside `main()`), the other records the failure in the results file.
  */
-function reportFailure(msg: string): void {
+function logFailure(msg: string): void {
   void fetch('/log', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -133,25 +146,30 @@ function reportFailure(msg: string): void {
   }).catch(() => {});
 }
 
-addEventListener('error', (e) => reportFailure(`uncaught: ${e.message}`));
+addEventListener('error', (e) => logFailure(`uncaught: ${e.message}`));
 addEventListener('unhandledrejection', (e) =>
-  reportFailure(`unhandled rejection: ${String((e as PromiseRejectionEvent).reason)}`),
+  logFailure(`unhandled rejection: ${String((e as PromiseRejectionEvent).reason)}`),
 );
 
-async function postResults(payload: unknown): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* the page also renders the payload as a fallback */
-  }
+/**
+ * The result POST now goes through the shared client, which builds the full
+ * envelope. Closing the window afterwards is preserved: the runner relies on the
+ * page closing itself to end the run.
+ */
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+): Promise<void> {
+  const result = await reportResult(input);
+  // Render before closing: the original set the on-page dump first so it stays
+  // the visible fallback, and nothing after window.close() is guaranteed to run.
+  render(result);
   window.close();
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const canvas = document.createElement('canvas');
   canvas.width = VW;
   canvas.height = VH;
@@ -205,7 +223,7 @@ async function main(): Promise<void> {
         // Median over repeats: one GC pause in a single run should not decide the
         // comparison this whole benchmark exists to make.
         const sorted = [...samples].sort((a, b) => a - b);
-        const msTotal = sorted[Math.floor(sorted.length / 2)]!;
+        const msTotal = median(sorted);
         // Spread is reported so a reader can see whether a delta clears the
         // noise. The 20k cull-cost figure did not, and looked negative.
         const spreadPct = +((100 * (sorted.at(-1)! - sorted[0]!)) / msTotal).toFixed(1);
@@ -243,26 +261,34 @@ async function main(): Promise<void> {
     };
   });
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
-  const payload = {
-    name: 'cull-cost',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      frames: FRAMES,
-      repeats: REPEATS,
-      counts: COUNTS,
-      viewport: [VW, VH],
-      dpr: devicePixelRatio,
-      note: 'A/B on getBounds() returning a box vs null. onscreen delta = pure cull overhead (nothing cullable); offscreen delta = cull benefit. Median of repeats.',
+  await postResults(
+    {
+      name: 'cull-cost',
+      // `summary` rides along in params because the shared envelope has no
+      // top-level slot for a derived summary and dropping it would lose the two
+      // numbers this benchmark exists to produce. The pre-existing params keys
+      // are unchanged. `viewport`/`dpr` are kept here as duplication of the
+      // envelope's own fields, deliberately, so the params shape stays
+      // comparable.
+      params: {
+        frames: FRAMES,
+        repeats: REPEATS,
+        counts: COUNTS,
+        viewport: [VW, VH],
+        dpr: devicePixelRatio,
+        note: 'A/B on getBounds() returning a box vs null. onscreen delta = pure cull overhead (nothing cullable); offscreen delta = cull benefit. Median of repeats.',
+        summary,
+      },
+      rows,
+      durationMs: +(performance.now() - startedAt).toFixed(1),
     },
-    summary,
-    rows,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
-  await postResults(payload);
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+  );
 }
 
 void main().catch((e) => {
-  reportFailure(`main() threw: ${String(e && (e as Error).stack ? (e as Error).stack : e)}`);
+  logFailure(`main() threw: ${String(e && (e as Error).stack ? (e as Error).stack : e)}`);
+  void reportFailure('cull-cost', e);
 });

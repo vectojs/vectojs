@@ -11,6 +11,8 @@ import {
   ParticleBackend,
   type ParticleStepParams,
 } from '../../packages/core/src/wasm/particle-backend';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const COUNTS = (p.get('counts') ?? '1000,10000,50000,100000').split(',').map(Number);
@@ -22,11 +24,6 @@ const H = 1200;
 function rng(seed: number): () => number {
   let s = seed >>> 0;
   return () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0x100000000);
-}
-
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
 }
 
 function makeEntity(count: number): ComputeParticleEntity {
@@ -84,7 +81,8 @@ function benchWasm(count: number, backend: ParticleBackend): number {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   let backend: ParticleBackend | null = null;
   try {
     const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
@@ -109,26 +107,29 @@ async function main() {
     });
   }
 
-  const payload = {
+  // `params` keeps its existing contents verbatim. `haveWasm` is a wasm-availability
+  // fact rather than a workload dimension, so it moves to `summary`. `engine` and
+  // `userAgent` are dropped: the envelope supplies both. The try/catch around the
+  // POST is gone because `reportResult` never throws — it swallows a failed POST
+  // internally so the page always reaches the code after it.
+  const report = await reportResult({
     name: 'particle-wasm',
-    engine,
-    userAgent: navigator.userAgent,
-    haveWasm: !!backend,
     params: { COUNTS, FRAMES, TRIALS, W, H },
+    summary: { haveWasm: !!backend },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+    // Without the backend every wasm column is NaN, so the JS-vs-wasm comparison
+    // this benchmark exists to make did not happen.
+    issues: backend ? [] : ['wasm backend unavailable: wasmF32MsPerFrame is NaN'],
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(report, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => {
+  // This entry had no failure path at all: a throw left the page open with no
+  // POST, which the runner can only resolve by timing out. `reportFailure` posts
+  // a complete `failed: true` envelope instead.
+  void reportFailure('particle-wasm', error);
+});

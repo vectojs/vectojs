@@ -28,6 +28,7 @@
 // seed. Posts JSON to /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
 import { instantiateSync, type AnimBackend } from '../../packages/core/src/wasm/anim-backend';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 const p = new URLSearchParams(location.search);
 const NS = (p.get('ns') ?? '8,16,32,64,128,256,512,1024,4096,16384').split(',').map(Number);
@@ -116,14 +117,6 @@ function beacon(level: string, msg: string): void {
     /* best effort */
   }
 }
-function engineTag(): string {
-  const ua = navigator.userAgent;
-  const ff = /Firefox\/(\d+)/.exec(ua);
-  if (ff) return `Firefox${ff[1]}`;
-  const cr = /Chrome\/(\d+)/.exec(ua);
-  if (cr) return `Chrome${cr[1]}`;
-  return 'unknown';
-}
 
 const status = document.createElement('h2');
 status.id = 'status';
@@ -135,6 +128,8 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const rows: Record<string, unknown>[] = [];
   let seedCounter = 0x1000;
@@ -231,27 +226,38 @@ async function run(): Promise<void> {
     }
   }
 
-  const report = {
+  // `iters`/`trials`/`note` were top-level fields of the hand-rolled payload and
+  // move into `params`, which is where the shared envelope keeps workload
+  // dimensions. `correctnessMismatches` is a validation figure, not a workload
+  // dimension, so it goes in `summary` — the envelope's slot for a benchmark's
+  // own derived findings.
+  const report = await reportResult({
     name: 'anim-wasm-scene',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    crossOriginIsolated: self.crossOriginIsolated,
-    iters: ITERS,
-    trials: TRIALS,
-    correctnessMismatches: totalMismatches,
-    note: 'INTEGRATED cost via Entity.update()/Scene._tickBatchedDrivers directly (bypasses render()/loop() drawing cost) — includes gather+scatter, unlike benchmarks/anim-wasm which is kernel-only',
+    params: {
+      iters: ITERS,
+      trials: TRIALS,
+      note: 'INTEGRATED cost via Entity.update()/Scene._tickBatchedDrivers directly (bypasses render()/loop() drawing cost) — includes gather+scatter, unlike benchmarks/anim-wasm which is kernel-only',
+    },
+    summary: { correctnessMismatches: totalMismatches },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+    // A wasm/js divergence is a reason not to trust the paired figures, so it is
+    // surfaced as a validation issue rather than left for a reader to notice.
+    issues:
+      totalMismatches > 0
+        ? [`${totalMismatches} wasm/js correctness mismatches across the correctness sweep`]
+        : [],
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('anim-wasm-scene', error);
 });

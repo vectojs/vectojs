@@ -7,6 +7,7 @@
 // (the per-frame index cost) for the two grids, so amortization is visible. Real
 // browser/GPU; posts JSON to /results (hyprland-browser-bench).
 import { SpatialHashGrid } from '@vectojs/math';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 const params = new URLSearchParams(location.search);
 const NS = (params.get('ns') ?? '1000,10000,100000').split(',').map(Number);
@@ -39,14 +40,6 @@ function beacon(level: string, msg: string): void {
     /* best effort */
   }
 }
-function engineTag(): string {
-  const ua = navigator.userAgent;
-  const ff = /Firefox\/(\d+)/.exec(ua);
-  if (ff) return `Firefox${ff[1]}`;
-  const cr = /Chrome\/(\d+)/.exec(ua);
-  if (cr) return `Chrome${cr[1]}`;
-  return 'unknown';
-}
 function minOf(fn: () => number): number {
   let best = Infinity;
   for (let t = 0; t < TRIALS; t++) {
@@ -66,6 +59,8 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {});
   const ex = instance.exports as unknown as HitExports;
@@ -196,27 +191,34 @@ async function run(): Promise<void> {
     status.textContent = `done ${rows.length}/${NS.length}…`;
   }
 
-  const report = {
+  // `queries`/`trials`/`note` move into `params` (workload dimensions).
+  //
+  // The old top-level `viewport: {vw, vh, cellSize}` is renamed to `params.grid`:
+  // it is the grid the hit index is built over, NOT a browser viewport, and the
+  // envelope's own `viewport` is the CSS viewport plus DPR. Two different meanings
+  // under one key is how a reader gets misled into comparing a workload dimension
+  // against a rasterization one.
+  const report = await reportResult({
     name: 'hit-wasm',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    crossOriginIsolated: self.crossOriginIsolated,
-    viewport: { vw: VW, vh: VH, cellSize: CS },
-    queries: QUERIES,
-    trials: TRIALS,
-    note: 'walk/shg/wasm = per-query ns; build = per-frame ms to index all N',
+    params: {
+      grid: { vw: VW, vh: VH, cellSize: CS },
+      queries: QUERIES,
+      trials: TRIALS,
+      note: 'walk/shg/wasm = per-query ns; build = per-frame ms to index all N',
+    },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('hit-wasm', error);
 });

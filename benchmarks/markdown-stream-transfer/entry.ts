@@ -19,6 +19,8 @@
 // NOTE: `@vectojs/markdown` creates its shared Worker at MODULE LOAD time, so
 // the stub must be installed BEFORE the module is imported — hence the dynamic
 // import in main() rather than a static import here.
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+
 type MarkdownCtor = new (text: string) => {
   appendMarkdown(chunk: string): unknown;
   destroy(): void;
@@ -102,8 +104,13 @@ function measure(
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   // Imported only now, so the stub Worker above is the one it picks up.
+  //
+  // The stub itself is installed at module top level, before this runs, because
+  // @vectojs/markdown creates its shared Worker at module load time — the start
+  // gate does not move that, it only delays the measurement.
   const { Markdown } = (await import('@vectojs/markdown')) as unknown as {
     Markdown: MarkdownCtor;
   };
@@ -118,25 +125,19 @@ async function main() {
       reduction: +(oldBytes / Math.max(newBytes, 1)).toFixed(2),
     });
   }
-  const payload = {
+  // `engine` and `userAgent` are gone from here: the shared envelope supplies both.
+  // The POST's own try/catch is gone too — the shared client never throws on a
+  // failed post, for the same reason this file swallowed it: the page must still
+  // render its fallback table.
+  const result = await reportResult({
     name: 'markdown-stream-transfer',
-    engine,
-    userAgent: navigator.userAgent,
     params: { CHUNK_COUNTS, sentenceLen: SENTENCE.length },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — the page still shows the table below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('markdown-stream-transfer', error));
