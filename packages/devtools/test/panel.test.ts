@@ -360,6 +360,56 @@ describe('DevtoolsPanel — modern features', () => {
     host.destroy();
   });
 
+  it('setHighlightLayers drives what the overlay highlight draws', () => {
+    const host = makeHost();
+    const clipper = new Box('clip', 200, 100);
+    clipper.clipChildren = true;
+    const target = new Box('sel', 60, 30);
+    host.add(clipper);
+    clipper.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(target);
+
+    // Default is the single AABB the panel drew before layers existed.
+    const highlight = host.overlayRootEntity.children[0] as unknown as {
+      render(r: unknown): void;
+      layers: ReadonlyArray<{ kind: string }>;
+    };
+    const recorder = {
+      save() {},
+      restore() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      closePath() {},
+      roundRect() {},
+      stroke() {},
+      fill() {},
+    };
+    highlight.render(recorder);
+    expect(highlight.layers.map((l) => l.kind)).toEqual(['aabb']);
+
+    panel.setHighlightLayers(['layout', 'clip']);
+    highlight.render(recorder);
+    expect(highlight.layers.map((l) => l.kind)).toEqual(['layout', 'clip']);
+    expect(panel.getHighlightLayers().map((l) => l.kind)).toEqual(['layout', 'clip']);
+    // The clip layer resolved to the clipping ancestor, not the target.
+    const clip = panel.getHighlightLayers().find((l) => l.kind === 'clip');
+    expect(clip?.polygons[0]?.points[2]).toEqual({ x: 200, y: 100 });
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('getHighlightLayers is empty when no highlight exists', () => {
+    const host = makeHost();
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    expect(panel.getHighlightLayers()).toEqual([]);
+    panel.detach();
+    host.destroy();
+  });
+
   it('setHighlightEnabled(false) removes the host overlay highlight', () => {
     const host = makeHost();
     const target = new Box('h');

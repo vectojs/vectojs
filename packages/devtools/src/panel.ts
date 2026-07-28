@@ -13,6 +13,20 @@ import {
 } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
 import { auditScene, type AuditFinding } from './audit';
+import {
+  highlightGeometry,
+  type HighlightLayer,
+  type HighlightLayerKind,
+} from './highlightGeometry';
+import {
+  pluginInspectors,
+  runPluginAudits,
+  runPluginCommand,
+  runPluginInspector,
+  type PluginFinding,
+  type PluginInspector,
+  type PluginRow,
+} from './plugin';
 import { auditA11y, inspectA11y } from './a11yInspect';
 import { entityPath, inspectEntity, layoutControlledProperties } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
@@ -58,6 +72,15 @@ const A11Y_ROWS = 22;
  * giving back the per-tick saving the version check buys.
  */
 const RECONCILE_INTERVAL_MS = 3000;
+/**
+ * Preferred tab width. `Tabs` scrolls the bar horizontally past this rather than
+ * shrinking tabs, so the count can grow without the labels becoming slivers.
+ */
+const PLUGIN_TAB_WIDTH = 64;
+/** Floor the preferred width collapses to before the bar starts scrolling. */
+const PLUGIN_TAB_MIN_WIDTH = 48;
+/** Readout rows per plugin inspector tab. */
+const PLUGIN_ROWS = 18;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -126,6 +149,12 @@ export class DevtoolsPanel {
   private selected: Entity | null = null;
   private highlight: HighlightEntity | null = null;
   private highlightEnabled = true;
+  private highlightLayers: HighlightLayerKind[] = ['aabb'];
+  private hitSampleStep: number | undefined;
+  /** Plugin inspector id → its tab's readout rows. */
+  private pluginTabs = new Map<string, { inspector: PluginInspector; lines: Text[] }>();
+  /** Findings from the last audit that came from plugins, kept for `pluginFindings()`. */
+  private pluginFindings: PluginFinding[] = [];
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private perfTimer: ReturnType<typeof setInterval> | null = null;
   private pickArmed = false;
@@ -459,14 +488,26 @@ export class DevtoolsPanel {
       this.writeTrace();
     }
 
+    // One tab per registered plugin inspector, before Settings so the gear stays
+    // last. Read at mount; `syncPluginTabs` picks up later registrations.
+    for (const inspector of pluginInspectors()) {
+      tabItems.push(this.buildPluginTab(inspector));
+    }
+
     // Settings tab.
     tabItems.push({ id: 'settings', label: '⚙', content: this.buildSettings(contentW, options) });
 
     this.tabs = new Tabs({
+      // Deliberately NOT `contentW / tabItems.length`: dividing the bar by the
+      // count shrank every tab as tabs were added, so six already sat at ~51px
+      // and a plugin or two made the labels unreadable. `Tabs` keeps a preferred
+      // width and scrolls the bar horizontally once they overflow, which is the
+      // behaviour that survives an unbounded number of plugins.
       width: contentW,
       height: tabsHeight,
       tabHeight: barH,
-      tabWidth: Math.floor(contentW / tabItems.length),
+      tabWidth: PLUGIN_TAB_WIDTH,
+      minTabWidth: PLUGIN_TAB_MIN_WIDTH,
       value: options.defaultTab ?? 'tree',
       tabs: tabItems,
     });
@@ -641,9 +682,17 @@ export class DevtoolsPanel {
     // Selection details are still rewritten every tick: an entity's properties
     // change without the tree's shape changing, and a stale readout is the whole
     // reason to look at the panel.
+    // Plugins can be registered after this panel mounted, so pick up new ones
+    // before the version check: a newly imported plugin has no reason to wait for
+    // the next structural change to become visible.
+    this.syncPluginTabs();
+
     const version = this.host.structureVersion;
     if (!force && version === this.treeVersion && this.allNodes.length > 0) {
       if (this.selected) this.writeDetails(this.selected);
+      // Plugin readouts follow the same rule as the selection details: component
+      // state changes without the tree's shape changing.
+      this.writePluginTabs();
       this.writeCounts();
       this.panelScene.markDirty();
       return;
@@ -658,6 +707,7 @@ export class DevtoolsPanel {
     this.applyFilterToTree();
     this.writeCounts();
     if (this.selected) this.writeDetails(this.selected);
+    this.writePluginTabs();
     this.panelScene.markDirty();
   }
 
@@ -729,15 +779,24 @@ export class DevtoolsPanel {
     this.index = index;
 
     this.findings = auditScene(this.host);
+    // Plugin audits are appended as ordinary findings, so `selectFinding` and the
+    // audit tree need no knowledge of where a finding came from. `runPluginAudits`
+    // namespaces the kind with the plugin id, which is what distinguishes them.
+    this.pluginFindings = runPluginAudits({
+      scene: this.host,
+      selection: this.selected ?? null,
+    });
+    const rows = [
+      ...this.findings.map((f) => ({ kind: f.kind, message: f.message })),
+      ...this.pluginFindings.map((f) => ({ kind: f.kind, message: f.message })),
+    ];
     this.auditTree.setNodes(
-      this.findings.map((f, i) => ({
+      rows.map((f, i) => ({
         id: `finding:${i}`,
         label: `⚠ ${f.kind}: ${f.message}`,
       })),
     );
-    this.detailLines[0]?.setText(
-      this.findings.length === 0 ? 'audit clean' : `${this.findings.length} finding(s)`,
-    );
+    this.detailLines[0]?.setText(rows.length === 0 ? 'audit clean' : `${rows.length} finding(s)`);
     this.writeCounts();
     this.showTab('audit');
     this.panelScene.markDirty();
@@ -763,11 +822,13 @@ export class DevtoolsPanel {
         this.highlight = new HighlightEntity();
         this.host.showOverlay(this.highlight);
       }
+      this.highlight.setLayers(this.highlightLayers, this.hitSampleStep);
       this.highlight.track(entity);
       this.host.markDirty();
     }
     this.writeDetails(entity);
     this.syncInspector(entity);
+    this.writePluginTabs();
     this.showTab('inspect');
     this.panelScene.markDirty();
   }
@@ -797,6 +858,127 @@ export class DevtoolsPanel {
     } else if (enabled && this.selected) {
       this.select(this.selected);
     }
+  }
+
+  /**
+   * Choose which geometry layers the selection highlight draws.
+   *
+   * Defaults to `['aabb']`, matching what the panel drew before layers existed.
+   * `'hit'` samples `isPointInside` on a grid and is quadratic in the entity's
+   * size, so it is never enabled implicitly — pass it explicitly, and raise
+   * `hitSampleStep` on a large entity.
+   */
+  public setHighlightLayers(
+    kinds: ReadonlyArray<HighlightLayerKind>,
+    hitSampleStep?: number,
+  ): void {
+    this.highlightLayers = [...kinds];
+    this.hitSampleStep = hitSampleStep;
+    if (this.highlight) {
+      this.highlight.setLayers(this.highlightLayers, hitSampleStep);
+      this.host.markDirty();
+    }
+  }
+
+  /** The layers computed on the most recent highlight draw. */
+  public getHighlightLayers(): ReadonlyArray<HighlightLayer> {
+    return this.highlight?.layers ?? [];
+  }
+
+  /**
+   * Build a tab body for one plugin inspector: a fixed row budget, written into
+   * on refresh. Rows are pre-allocated for the same reason the built-in tabs
+   * pre-allocate — the panel scene is `onDemand`, so churning entities every
+   * refresh would dirty it continuously.
+   */
+  private buildPluginTab(inspector: PluginInspector): TabItem {
+    const content = new Container();
+    const lines: Text[] = [];
+    for (let i = 0; i < PLUGIN_ROWS; i++) {
+      const line = new Text('', {
+        font: i === 0 ? 'bold 11px monospace' : '11px monospace',
+        color: i === 0 ? '#e8eefc' : PANEL_FG,
+      });
+      line.setPosition(10, 16 + i * 16);
+      lines.push(line);
+      content.add(line);
+    }
+    this.pluginTabs.set(inspector.id, { inspector, lines });
+    return { id: `plugin:${inspector.id}`, label: inspector.label, content };
+  }
+
+  /**
+   * Refresh every plugin tab from the current selection.
+   *
+   * Runs for all plugin tabs rather than only the visible one: the panel does not
+   * track which tab is active (that state lives in `Tabs`), and a plugin readout
+   * is a handful of string writes, so the saving would not pay for the coupling.
+   */
+  private writePluginTabs(): void {
+    const context = { scene: this.host, selection: this.selected ?? null };
+    for (const { inspector, lines } of this.pluginTabs.values()) {
+      let rows: PluginRow[];
+      if (!this.selected) rows = [{ label: '—', value: 'no selection' }];
+      else if (inspector.appliesTo && !appliesToSafely(inspector, this.selected)) {
+        rows = [{ label: '—', value: 'does not apply to this entity' }];
+      } else {
+        rows = runPluginInspector(inspector, context);
+        if (rows.length === 0) rows = [{ label: '—', value: 'nothing to report' }];
+      }
+      lines.forEach((line, i) => {
+        const row = rows[i];
+        line.setText(
+          row ? `${row.label}  ${row.value}${row.note ? `  (${row.note})` : ''}`.trim() : '',
+        );
+      });
+    }
+  }
+
+  /**
+   * Add tabs for plugins registered after this panel mounted.
+   *
+   * Called from `refresh()`, so importing a package that registers a plugin makes
+   * its tab appear without remounting the panel.
+   */
+  private syncPluginTabs(): void {
+    const known = new Set(this.pluginTabs.keys());
+    const added = pluginInspectors().filter((i) => !known.has(i.id));
+    if (added.length === 0) return;
+    const settingsIdx = this.tabs.tabs.findIndex((t) => t.id === 'settings');
+    const items = added.map((i) => this.buildPluginTab(i));
+    // Keep Settings last: it is the only tab that is not a readout, and having it
+    // move as plugins load would shift a target the user aims at by habit.
+    if (settingsIdx >= 0) this.tabs.tabs.splice(settingsIdx, 0, ...items);
+    else this.tabs.tabs.push(...items);
+    // No explicit `add` of the content: `Tabs.update()` re-derives content
+    // geometry and attaches or detaches each body every frame based on the
+    // active id, so adding it here would fight that and double-parent it.
+    this.panelScene.markDirty();
+  }
+
+  /** Findings contributed by plugin audits during the last {@link audit} run. */
+  public getPluginFindings(): ReadonlyArray<PluginFinding> {
+    return this.pluginFindings;
+  }
+
+  /** Rows a plugin inspector currently shows, by inspector id. For tests and agents. */
+  public getPluginRows(inspectorId: string): PluginRow[] {
+    const entry = this.pluginTabs.get(inspectorId);
+    if (!entry) return [];
+    if (!this.selected) return [];
+    if (!appliesToSafely(entry.inspector, this.selected)) return [];
+    return runPluginInspector(entry.inspector, {
+      scene: this.host,
+      selection: this.selected,
+    });
+  }
+
+  /** Run a plugin command by `<pluginId>/<commandId>` against the current selection. */
+  public runCommand(qualifiedId: string): unknown {
+    return runPluginCommand(qualifiedId, {
+      scene: this.host,
+      selection: this.selected ?? null,
+    });
   }
 
   /** Change the auto-refresh cadence (ms; 0 disables). Also gates the reconcile. */
@@ -985,6 +1167,18 @@ export class DevtoolsPanel {
   }
 }
 
+/**
+ * Whether an inspector claims this entity, treating a throwing `appliesTo` as
+ * "does not apply" so one broken plugin cannot blank the whole panel.
+ */
+function appliesToSafely(inspector: PluginInspector, entity: Entity): boolean {
+  try {
+    return !inspector.appliesTo || inspector.appliesTo(entity) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** A bare layout container: no paint, no projection, holds tab children. */
 class Container extends Entity {
   public isPointInside(_x?: number, _y?: number): boolean {
@@ -997,14 +1191,51 @@ class Container extends Entity {
 }
 
 /**
- * Selection outline drawn on the HOST scene's overlay layer: the tracked
- * entity's world-space AABB with an accent border.
+ * Per-layer stroke colors.
+ *
+ * The renderer has no dash support, so layers can only be told apart by hue.
+ * `aabb` keeps the original accent so an existing screenshot still reads the
+ * same, and the rest run cool to warm roughly by how often a divergence in them
+ * turns out to be the bug.
+ */
+const LAYER_COLORS: Record<HighlightLayerKind, string> = {
+  aabb: ACCENT,
+  layout: '#a78bfa',
+  render: '#34d399',
+  clip: '#fbbf24',
+  content: '#f472b6',
+  a11y: '#fb923c',
+  hit: '#f87171',
+};
+
+/**
+ * Selection outline drawn on the HOST scene's overlay layer.
+ *
+ * Draws each enabled geometry layer as a true polygon rather than a bounding
+ * box, so a rotated entity shows its real edges and a box that has drifted from
+ * the layout quad appears as its own outline instead of being averaged into one
+ * rectangle.
  */
 class HighlightEntity extends Entity {
   private target: Entity | null = null;
+  private layerKinds: ReadonlyArray<HighlightLayerKind> = ['aabb'];
+  private hitSampleStep: number | undefined;
+  private cached: HighlightLayer[] = [];
 
   public track(target: Entity): void {
     this.target = target;
+    this.cached = [];
+  }
+
+  public setLayers(kinds: ReadonlyArray<HighlightLayerKind>, hitSampleStep?: number): void {
+    this.layerKinds = kinds;
+    this.hitSampleStep = hitSampleStep;
+    this.cached = [];
+  }
+
+  /** The layers computed on the most recent draw, for tests and the readout. */
+  public get layers(): ReadonlyArray<HighlightLayer> {
+    return this.cached;
   }
 
   public isPointInside(_x?: number, _y?: number): boolean {
@@ -1019,34 +1250,40 @@ class HighlightEntity extends Entity {
     save(): void;
     restore(): void;
     beginPath(): void;
+    moveTo(x: number, y: number): void;
+    lineTo(x: number, y: number): void;
+    closePath(): void;
     roundRect(x: number, y: number, w: number, h: number, radius: number): void;
     stroke(color: string, width?: number): void;
     fill(color: string): void;
   }): void {
     const t = this.target;
     if (!t) return;
-    const { a, b, c, d, e, f } = t.getWorldTransform();
-    const w = t.width || 8;
-    const h = t.height || 8;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let i = 0; i < 4; i++) {
-      const lx = i & 1 ? w : 0;
-      const ly = i & 2 ? h : 0;
-      const wx = a * lx + c * ly + e;
-      const wy = b * lx + d * ly + f;
-      if (wx < minX) minX = wx;
-      if (wx > maxX) maxX = wx;
-      if (wy < minY) minY = wy;
-      if (wy > maxY) maxY = wy;
+    const scene = t.scene as Scene | null;
+    if (!scene) return;
+
+    // Recomputed every draw rather than cached across frames: a dragged or
+    // animated entity moves between frames, and an outline pointing at where it
+    // used to be is worse than no outline.
+    this.cached = highlightGeometry(scene, t, {
+      layers: this.layerKinds,
+      hitSampleStep: this.hitSampleStep,
+    });
+
+    for (const layer of this.cached) {
+      const color = LAYER_COLORS[layer.kind];
+      for (const polygon of layer.polygons) {
+        const points = polygon.points;
+        if (points.length < 2) continue;
+        r.beginPath();
+        r.moveTo(points[0]!.x, points[0]!.y);
+        for (let i = 1; i < points.length; i++) r.lineTo(points[i]!.x, points[i]!.y);
+        r.closePath();
+        // Only the primary box gets a fill; washing every layer would stack
+        // translucency until the entity underneath is unreadable.
+        if (layer.kind === 'aabb' || layer.kind === 'layout') r.fill('rgba(56, 189, 248, 0.10)');
+        r.stroke(color, layer.divergesFromLayout ? 2 : 1);
+      }
     }
-    r.beginPath();
-    r.roundRect(minX - 1, minY - 1, maxX - minX + 2, maxY - minY + 2, 3);
-    r.fill('rgba(56, 189, 248, 0.10)');
-    r.beginPath();
-    r.roundRect(minX - 1, minY - 1, maxX - minX + 2, maxY - minY + 2, 3);
-    r.stroke(ACCENT, 2);
   }
 }

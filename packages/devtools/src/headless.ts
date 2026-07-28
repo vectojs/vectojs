@@ -57,3 +57,30 @@ export {
   type A11yFinding,
   type A11yInfo,
 } from './a11yInspect';
+export {
+  clearDevtoolsPlugins,
+  devtoolsPlugins,
+  pluginCommands,
+  pluginInspectors,
+  pluginInspectorsFor,
+  registerDevtoolsPlugin,
+  runPluginAudits,
+  runPluginCommand,
+  runPluginInspector,
+  type DevtoolsPlugin,
+  type PluginAudit,
+  type PluginCommand,
+  type PluginContext,
+  type PluginFinding,
+  type PluginInspector,
+  type PluginRow,
+} from './plugin';
+export {
+  formatHighlightGeometry,
+  highlightGeometry,
+  sampleHitRegion,
+  type HighlightGeometryOptions,
+  type HighlightLayer,
+  type HighlightLayerKind,
+  type HighlightPolygon,
+} from './highlightGeometry';

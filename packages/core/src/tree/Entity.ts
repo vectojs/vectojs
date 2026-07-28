@@ -273,10 +273,12 @@ export interface DevtoolsDescriptor {
    * Stable identity for snapshot diffing, independent of tree position.
    *
    * Snapshot paths are structural indices (`root > Card[0] > Text[2]`), so
-   * inserting at the head of a list renames every sibling and cascades into a
-   * large diff. A key that survives reordering — a row id, a message id — keeps
-   * the diff proportional to what actually changed. Most relevant to
-   * `VirtualList` and `Table`, where recycling moves entities constantly.
+    * inserting at the head of a list renames every sibling, so the diff describes
+ * different nodes than the ones that changed. A key that survives reordering — a
+ * row id, a message id — keeps each entry attributed to the node it belongs to.
+ * Most relevant to `VirtualList` and `Table`, where recycling moves entities
+ * constantly.
+
    */
   devtoolsKey?: string;
 }
