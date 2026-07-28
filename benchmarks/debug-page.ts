@@ -16,6 +16,7 @@
  *   bun run benchmarks/debug-page.ts <bench-dir> <port> [--timeout 120]
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Resolved through @vectojs/core's node_modules: puppeteer-core is that
@@ -34,10 +35,19 @@ if (!bench || !port) {
 const tIdx = process.argv.indexOf('--timeout');
 const timeoutSec = tIdx > 0 ? Number(process.argv[tIdx + 1]) : 120;
 
-const CHROME = process.env.PUPPETEER_EXECUTABLE_PATH ?? '/usr/bin/chromium';
+// Whatever Chromium-family binary exists, rather than assuming /usr/bin/chromium.
+// A machine with only google-chrome-stable would otherwise fail with ENOENT.
+const CHROME =
+  process.env.PUPPETEER_EXECUTABLE_PATH ??
+  ['/usr/bin/chromium', '/usr/bin/google-chrome-stable', '/usr/bin/google-chrome'].find((p) =>
+    existsSync(p),
+  ) ??
+  '/usr/bin/chromium';
 
-const server = spawn('bun', ['run', 'serve.ts'], {
-  cwd: join(HERE, bench),
+// The shared server, with the benchmark directory as its argument: the 24
+// per-benchmark `serve.ts` copies are gone.
+const server = spawn('bun', ['run', join(HERE, '_shared', 'server.ts'), bench], {
+  cwd: HERE,
   env: { ...process.env, PORT: port },
   stdio: ['ignore', 'pipe', 'pipe'],
 });

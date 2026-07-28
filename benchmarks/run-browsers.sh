@@ -24,13 +24,32 @@ PORT="${2:?missing port}"
 shift 2
 
 WORKSPACE=3
-if [ "${1:-}" = "--workspace" ]; then
-  WORKSPACE="$2"
-  shift 2
-fi
+KEEP_GOING=0
+VIEWPORT=""
+while true; do
+  case "${1:-}" in
+  --workspace)
+    WORKSPACE="$2"
+    shift 2
+    ;;
+  # Try every browser even after one fails, but still exit non-zero at the end.
+  --keep-going)
+    KEEP_GOING=1
+    shift
+    ;;
+  # Fix the window size so raster pixel count is comparable between runs: a
+  # default-sized window varies with monitor, DPR and browser chrome height, and
+  # 900x700 at DPR 2 is four times the pixels of DPR 1.
+  --viewport)
+    VIEWPORT="$2"
+    shift 2
+    ;;
+  *) break ;;
+  esac
+done
 BROWSERS=("${@:-chrome}")
 
-URL="http://127.0.0.1:${PORT}/"
+BASE_URL="http://127.0.0.1:${PORT}/"
 RESULTS="${BENCH}/results"
 # Remember where the caller was (their terminal) so every exit path lands back
 # there instead of stranding them on the benchmark workspace.
@@ -41,14 +60,42 @@ HOME_WORKSPACE=$(hyprctl activeworkspace -j | python3 -c 'import json,sys; print
 # working. The deliverable is the JSON the page POSTs, not anything on screen.
 RUN_TIMEOUT=${RUN_TIMEOUT:-60} # per-browser budget before the one extension
 RUN_EXTEND=${RUN_EXTEND:-180}  # one-shot extension if still working at the deadline
-LOG="/tmp/${BENCH}-server.log"
+LOG="/tmp/vecto-bench-${BENCH//\//-}-server.log"
+PIDFILE="/tmp/vecto-bench-${BENCH//\//-}-server.pid"
+# Correlates the browser, the page, and the result file for THIS invocation.
+# Without it, completion was "any *.json newer than a stamp", which could pick up
+# an unrelated write, and the starvation check scanned every historical result so a
+# days-old starved run kept re-warning on every future invocation.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+COMMIT="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 start_server() {
   local pid
-  pid=$(ss -ltnp 2>/dev/null | grep -oP "${PORT}.*pid=\K[0-9]+" | head -1 || true)
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null && sleep 1
-  # `serve.ts` never exits on its own (it's a long-running HTTP server, by
-  # design — left running so a later invocation can reuse it). `setsid --fork`
+  # Only ever kill a server THIS SCRIPT started, recorded in a pidfile beside the
+  # log. The previous lookup was `ss -ltnp | grep -oP "${PORT}.*pid=\K[0-9]+"`,
+  # which matched the port number anywhere on the line — including inside another
+  # socket's `pid=` field — and then killed it. That could terminate an unrelated
+  # dev server, and the comment claiming the server was left running for reuse
+  # contradicted the code, which killed and restarted it every invocation.
+  if [ -f "$PIDFILE" ]; then
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    # Confirm identity before signalling: a recycled PID could be anything.
+    if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] &&
+      tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'serve\|server.ts'; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$PIDFILE"
+  fi
+  # Anything else already holding the port is left alone and reported, rather
+  # than killed on this script's assumption that it must be stale.
+  if ss -ltnH "sport = :${PORT}" 2>/dev/null | grep -q .; then
+    echo "port ${PORT} is already in use by a process this script did not start;" >&2
+    echo "  stop it yourself or pass a different port" >&2
+    return 1
+  fi
+  # `_shared/server.ts` never exits on its own (it's a long-running HTTP server,
+  # by design). `setsid --fork`
   # (not bare `setsid`, and `disown` alone does NOT substitute for this) is
   # required here: bash waits for the async children of a subshell/pipeline
   # component before it will actually exit, REGARDLESS of `disown` — this is
@@ -63,13 +110,20 @@ start_server() {
   # the driver script itself (not a stray child) over an hour after a run had
   # visibly completed, then confirmed with a minimal standalone repro outside
   # any of this script's other logic.
-  (cd "$BENCH" && PORT="$PORT" setsid --fork bun run serve.ts >"/tmp/${BENCH}-server.log" 2>&1 </dev/null) &
+  (cd "$BENCH" && PORT="$PORT" setsid --fork bun run ../_shared/server.ts . >"$LOG" 2>&1 </dev/null) &
   disown
+  # Record the server's PID so the next invocation can stop exactly this process
+  # instead of guessing from the port.
   for _ in $(seq 1 20); do
-    curl -sf -o /dev/null "$URL" && return 0
+    pid=$(ss -ltnpH "sport = :${PORT}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+    [ -n "$pid" ] && echo "$pid" >"$PIDFILE" && break
+    sleep 0.2
+  done
+  for _ in $(seq 1 20); do
+    curl -sf -o /dev/null "$BASE_URL" && return 0
     sleep 0.3
   done
-  echo "server failed to start; see /tmp/${BENCH}-server.log" >&2
+  echo "server failed to start; see $LOG" >&2
   return 1
 }
 
@@ -113,11 +167,32 @@ run_one() {
   # SAME long-lived parent PID, timed to match the benchmark runs.
   profile_dir=$(mktemp -d)
   trap 'rm -rf "$profile_dir"' RETURN
+  # One runId per (suite run, browser): the page echoes it back in its POST, so
+  # completion is "the result for THIS run landed", not "some json got newer".
+  local run_id="${RUN_ID}-${browser}"
+  local URL="${BASE_URL}?runId=${run_id}"
+  local expected="$RESULTS/history"
   case "$browser" in
   chrome)
-    bin=$(command -v google-chrome-stable || command -v chromium || true)
-    class="chrome"
-    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
+    # The window class must be derived from the binary that was actually found.
+    # `class="chrome"` was wrong for Chromium: Hyprland reports its class as
+    # `chromium`, and the lookup below tests `"chrome" in class.lower()`, which is
+    # FALSE for "chromium" (verified in python3, not assumed). On a machine with
+    # only Chromium installed the browser launched normally and the runner then
+    # reported "no window appeared" until the timeout.
+    if bin=$(command -v google-chrome-stable 2>/dev/null); then
+      class="google-chrome"
+    elif bin=$(command -v chromium 2>/dev/null); then
+      class="chromium"
+    elif bin=$(command -v google-chrome 2>/dev/null); then
+      class="google-chrome"
+    else
+      bin=""
+      class="chrome"
+    fi
+    local size=""
+    [ -n "$VIEWPORT" ] && size="--window-size=${VIEWPORT/x/,}"
+    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $size $URL"
     ;;
   firefox)
     bin=$(command -v firefox || true)
@@ -126,7 +201,11 @@ run_one() {
     # window in running instance" — `firefox --help`); --profile with a
     # fresh directory additionally avoids any profile-lock contention with
     # a concurrently running default-profile Firefox.
-    cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
+    local size=""
+    if [ -n "$VIEWPORT" ]; then
+      size="--width=${VIEWPORT%x*} --height=${VIEWPORT#*x}"
+    fi
+    cmd="$bin --private-window --new-instance --profile $profile_dir $size $URL"
     ;;
   *)
     echo "unknown browser: $browser" >&2
@@ -143,9 +222,12 @@ run_one() {
   # result from an earlier (or aborted) run already existed: the count never
   # increased, so a finished run spun until the timeout and reported failure even
   # though its JSON had just been rewritten.
-  STAMP="$RESULTS/.stamp-$browser"
-  : >"$STAMP"
-  sleep 0.05
+  # No stamp needed any more: the result filename contains this run's id, so
+  # completion is an exact match rather than a freshness heuristic. The old
+  # freshness test could be satisfied by any concurrent write into results/.
+  find_result() {
+    find "$expected" -name "*-${run_id}.json" 2>/dev/null | head -1
+  }
 
   echo "  launching $browser on workspace $WORKSPACE (incognito)…"
   # The exec rule places the window before it maps, so it never flashes onto
@@ -160,7 +242,7 @@ run_one() {
   for _ in $(seq 1 60); do
     addr=$(window_on_workspace "$class")
     [ -n "$addr" ] && break
-    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out (finished before its window was seen)"
       return 0
@@ -168,7 +250,7 @@ run_one() {
     sleep 0.5
   done
   if [ -z "$addr" ]; then
-    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out"
       return 0
@@ -183,7 +265,7 @@ run_one() {
 
   waited=0
   while [ "$waited" -lt "$timeout" ]; do
-    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    out=$(find_result)
     if [ -n "$out" ]; then
       echo "  $browser -> $out"
       close_and_return "$addr"
@@ -209,12 +291,30 @@ run_one() {
 }
 
 : >"$LOG" 2>/dev/null || true
-start_server
-echo "serving $BENCH on $URL"
+# A server that fails to start must fail the script, not fall through to launching
+# browsers against nothing and then reporting each as "no window appeared".
+if ! start_server; then
+  echo "server failed to start; see $LOG" >&2
+  exit 1
+fi
+echo "serving $BENCH on $BASE_URL (runId $RUN_ID)"
 # Return to the caller's workspace even if a run dies unexpectedly.
 trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 
-for b in "${BROWSERS[@]}"; do run_one "$b" || true; done
+# A failed browser must fail the script. `|| true` here meant a timeout or a
+# browser that never launched still exited 0, so CI recorded a pass and any
+# wrapper went on to read incomplete results, with the failure visible only in the
+# terminal log.
+status=0
+for b in "${BROWSERS[@]}"; do
+  if ! run_one "$b"; then
+    status=1
+    if [ "$KEEP_GOING" != 1 ]; then
+      echo "  aborting after $b failed (pass --keep-going to try the rest)" >&2
+      break
+    fi
+  fi
+done
 # Warn loudly when a run was starved of animation frames.
 #
 # A benchmark driving requestAnimationFrame only gets frames while its window is
@@ -224,11 +324,14 @@ for b in "${BROWSERS[@]}"; do run_one "$b" || true; done
 # so a bad run is obvious at the point of collection rather than after someone
 # has quoted it.
 if command -v python3 >/dev/null 2>&1; then
-  python3 - "$RESULTS" <<'PY'
+  python3 - "$RESULTS/history" "$RUN_ID" <<'PY'
 import glob, json, sys, os
 
+# Scoped to THIS suite run. Globbing every result meant a starved run from days
+# ago kept printing its warning on every future invocation, which trains people to
+# ignore the warning that matters.
 starved = []
-for path in glob.glob(os.path.join(sys.argv[1], '*.json')):
+for path in glob.glob(os.path.join(sys.argv[1], f'*-{sys.argv[2]}-*.json')):
     try:
         data = json.load(open(path))
     except Exception:
@@ -249,4 +352,6 @@ if starved:
 PY
 fi
 
-echo "results in $RESULTS/"
+echo "results in $RESULTS/ (history/ keyed by runId, latest/ for the stable path)"
+echo "runId $RUN_ID  commit $COMMIT"
+exit "$status"

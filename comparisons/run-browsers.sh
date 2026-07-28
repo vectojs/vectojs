@@ -39,8 +39,8 @@ HOME_WORKSPACE=$(hyprctl activeworkspace -j | python3 -c 'import json,sys; print
 # this run's start stamp. Generic on purpose, so any benchmark page works.
 # One minute is enough for a normal run; extend once if the page is still
 # working. The deliverable is the JSON the page POSTs, not anything on screen.
-RUN_TIMEOUT=${RUN_TIMEOUT:-60}   # per-browser budget before the one extension
-RUN_EXTEND=${RUN_EXTEND:-180}    # one-shot extension if still working at the deadline
+RUN_TIMEOUT=${RUN_TIMEOUT:-60} # per-browser budget before the one extension
+RUN_EXTEND=${RUN_EXTEND:-180}  # one-shot extension if still working at the deadline
 LOG="/tmp/${BENCH}-server.log"
 
 start_server() {
@@ -114,27 +114,35 @@ run_one() {
   profile_dir=$(mktemp -d)
   trap 'rm -rf "$profile_dir"' RETURN
   case "$browser" in
-    chrome)
-      bin=$(command -v google-chrome-stable || command -v chromium || true)
-      class="chrome"
-      cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
-      ;;
-    firefox)
-      bin=$(command -v firefox || true)
-      class="firefox"
-      # --new-instance is the documented fix ("Open new instance, not a new
-      # window in running instance" — `firefox --help`); --profile with a
-      # fresh directory additionally avoids any profile-lock contention with
-      # a concurrently running default-profile Firefox.
-      cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
-      ;;
-    *) echo "unknown browser: $browser" >&2; return 1 ;;
+  chrome)
+    bin=$(command -v google-chrome-stable || command -v chromium || true)
+    class="chrome"
+    cmd="$bin --incognito --new-window --user-data-dir=$profile_dir --no-first-run --no-default-browser-check $URL"
+    ;;
+  firefox)
+    bin=$(command -v firefox || true)
+    class="firefox"
+    # --new-instance is the documented fix ("Open new instance, not a new
+    # window in running instance" — `firefox --help`); --profile with a
+    # fresh directory additionally avoids any profile-lock contention with
+    # a concurrently running default-profile Firefox.
+    cmd="$bin --private-window --new-instance --profile $profile_dir $URL"
+    ;;
+  *)
+    echo "unknown browser: $browser" >&2
+    return 1
+    ;;
   esac
-  [ -z "$bin" ] && { echo "  $browser: not installed, skipping"; return 0; }
+  [ -z "$bin" ] && {
+    echo "  $browser: not installed, skipping"
+    return 0
+  }
 
   mkdir -p "$RESULTS"
   before=$(find "$RESULTS" -name "*.json" | wc -l)
-  STAMP="$RESULTS/.stamp-$browser"; : >"$STAMP"; sleep 0.05
+  STAMP="$RESULTS/.stamp-$browser"
+  : >"$STAMP"
+  sleep 0.05
 
   echo "  launching $browser on workspace $WORKSPACE (incognito)…"
   # The exec rule places the window before it maps, so it never flashes onto

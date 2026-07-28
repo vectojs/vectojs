@@ -52,6 +52,37 @@ const SHAPES: Record<string, (i: number) => string> = {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Measure the real rAF cadence, median of sampled intervals.
+ *
+ * Median rather than mean: one long frame from a GC pause would drag a mean down,
+ * understate the display rate, understate the expected frame count, and so hide
+ * the starvation this feeds.
+ */
+function calibrateRefreshRate(durationMs: number): Promise<number> {
+  return new Promise((resolveHz) => {
+    const intervals: number[] = [];
+    let previous = performance.now();
+    const end = previous + durationMs;
+    const frame = (now: number): void => {
+      const delta = now - previous;
+      previous = now;
+      if (delta > 0.1 && delta < 200) intervals.push(delta);
+      if (now < end) {
+        requestAnimationFrame(frame);
+        return;
+      }
+      if (intervals.length === 0) {
+        resolveHz(0);
+        return;
+      }
+      intervals.sort((a, b) => a - b);
+      resolveHz(1000 / intervals[Math.floor(intervals.length / 2)]!);
+    };
+    requestAnimationFrame(frame);
+  });
+}
+
 /** POST results and close, so the run ends when the data lands. */
 async function postResults(payload: unknown): Promise<void> {
   try {
@@ -67,6 +98,9 @@ async function postResults(payload: unknown): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Measure the real rAF cadence before any work, so starvation is judged against
+  // this display rather than an assumed 60Hz.
+  const refreshHz = await calibrateRefreshRate(1000);
   const canvas = document.createElement('canvas');
   canvas.width = 900;
   canvas.height = 700;
@@ -150,11 +184,16 @@ async function main(): Promise<void> {
         // investigation twice, so the arm now records whether it was starved
         // instead of leaving it to a reader to notice `rendered=0`.
         //
-        // The threshold is deliberately loose: at 60Hz a 4 s stream offers ~240
-        // frames, so requiring a quarter of that flags real starvation without
-        // failing a merely busy machine.
-        const expectedFrames = (STREAM_MS / 1000) * 60;
-        const starved = streamOffered < expectedFrames * 0.25;
+        // The expected count comes from the MEASURED refresh rate, not a hardcoded
+        // 60. This display runs at 240Hz, where a 4 s stream offers ~960 frames, so
+        // the old 60Hz assumption put the 25% floor at 60 frames — a run starved
+        // down to 100 frames passed the check, and its per-frame figures, divided
+        // by that collapsed denominator, read as a large win. The hardcode made the
+        // guard blind to exactly the severe cases it exists to catch.
+        //
+        // The threshold stays loose so a merely busy machine does not fail.
+        const expectedFrames = (STREAM_MS / 1000) * refreshHz;
+        const starved = refreshHz > 0 && streamOffered < expectedFrames * 0.25;
         const idleOffered = idleRendered + idleSkipped;
 
         const phase = (name: string): number =>
@@ -216,9 +255,15 @@ async function main(): Promise<void> {
 
   const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
   const payload = {
+    // Echoed back so the runner can wait for THIS run's result rather than for
+    // any newer file in the directory.
+    runId: new URLSearchParams(location.search).get('runId') ?? `manual-${Date.now()}`,
     name: 'ondemand-raf',
     engine,
     userAgent: navigator.userAgent,
+    // Measured, not assumed; every `expectedFrames` above is derived from it.
+    refreshHz: Math.round(refreshHz * 100) / 100,
+    viewport: { width: window.innerWidth, height: window.innerHeight, dpr: devicePixelRatio },
     params: {
       streamMs: STREAM_MS,
       idleMs: IDLE_MS,
