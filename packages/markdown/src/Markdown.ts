@@ -1173,6 +1173,21 @@ export class Markdown extends UIComponent {
 
   /** Replace all markdown content (full rebuild). */
   public setContent(markdown: string): this {
+    // Drop any in-flight worker request. Its `matchLen` is relative to a token
+    // snapshot captured from the document being replaced, and its closure still
+    // holds that snapshot, so applying the reply would rebuild the tree from a
+    // document that no longer exists — leaving `tokens` disagreeing with
+    // `rawMarkdown`, which makes the NEXT append diff against tokens the source
+    // never had. The reply is genuinely worthless rather than merely late: the
+    // text it describes was just discarded by this call.
+    //
+    // Clearing `appendInFlight` is the other half. It gates every dispatch, so
+    // leaving it set after dropping the callback would make the next append set
+    // `appendPending` and wait forever for a reply that can no longer arrive.
+    for (const id of this.pendingWorkerIds) workerCallbacks.delete(id);
+    this.pendingWorkerIds.clear();
+    this.appendInFlight = false;
+    this.appendPending = false;
     this.rawMarkdown = markdown;
     // The worker's copy of the source now describes a document that no longer
     // exists, so the next append must resend the text rather than a delta.
