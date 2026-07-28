@@ -16,8 +16,8 @@ User asks to "update docs", "publish documentation changes", or after any edit t
 3. **Sync one-way to the website**:
 
    ```bash
-   cp -r /mnt/data/Workspace/Projects/vectojs/vectojs-docs/content/* \
-         /mnt/data/Workspace/Projects/vectojs/vectojs-website/src/content/
+   cp -r $VECTOJS_WORKSPACE/vectojs-docs/content/* \
+         $VECTOJS_WORKSPACE/vectojs-website/src/content/
    ```
 
    This is a one-way copy — never edit `vectojs-website/src/content/` directly and copy backward. If a discrepancy is found in the website copy, fix it in `vectojs-docs/` and re-sync.

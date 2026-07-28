@@ -118,7 +118,7 @@ commit time.
 
 ## 3. Agent Rules & Constraints
 
-1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `/mnt/data/Workspace/Projects/vectojs` while working.
+1. **Workspace Boundary**: Do not access locations outside the workspace; always remain within `$VECTOJS_WORKSPACE` while working.
 2. **Use locked local tooling, `just` first**: All build/lint/format tools are pinned `devDependencies`. Prefer the `just` recipes (`just --list`) — they wrap the exact `bun run <script>` / `bunx <tool>` a contributor would otherwise type, so everyone uses the same version and CI parity holds. Fall back to `bun run <script>` / `bunx <tool>` directly when no recipe fits. Do **not** rely on globally-installed tools or `bun add -g`; do not use `npx`. (`actionlint` is the sole exception — a Go binary with no npm package, enforced in CI via a pinned Docker image.)
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
