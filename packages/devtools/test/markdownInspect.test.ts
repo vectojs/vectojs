@@ -15,8 +15,10 @@ interface Stats {
   childEntities?: number;
   appends?: number;
   workerResponses?: number;
-  tokensReused?: number;
-  tokensRelexed?: number;
+  tokensPrefixMatched?: number;
+  tokensReturned?: number;
+  lexerMs?: number;
+  sourceCharsLexed?: number;
   workerMsAvg?: number;
   workerMsMax?: number;
   stablePrefixChars?: number;
@@ -72,8 +74,10 @@ class FakeMarkdown extends Entity {
         {
           label: 'Incremental reuse',
           fields: [
-            { label: 'tokensReused', value: s.tokensReused ?? 0 },
-            { label: 'tokensRelexed', value: s.tokensRelexed ?? 0 },
+            { label: 'tokensPrefixMatched', value: s.tokensPrefixMatched ?? 0 },
+            { label: 'tokensReturned', value: s.tokensReturned ?? 0 },
+            { label: 'lexerMs', value: s.lexerMs ?? 0 },
+            { label: 'sourceCharsLexed', value: s.sourceCharsLexed ?? 0 },
           ],
         },
         {
@@ -124,8 +128,8 @@ const healthy: Stats = {
   childEntities: 40,
   appends: 100,
   workerResponses: 96,
-  tokensReused: 3900,
-  tokensRelexed: 100,
+  tokensPrefixMatched: 3900,
+  tokensReturned: 100,
   workerMsAvg: 1.2,
   workerMsMax: 3.4,
   stablePrefixChars: 3960,
@@ -190,17 +194,17 @@ describe('inspectMarkdownStream', () => {
       new FakeMarkdown('md', {
         sourceLength: 1000,
         changedTailChars: 600,
-        tokensReused: 95,
-        tokensRelexed: 5,
+        tokensPrefixMatched: 95,
+        tokensReturned: 5,
       }),
     )!;
-    expect(info.reuseRatio).toBeCloseTo(0.95);
+    expect(info.tokenPrefixReuseRatio).toBeCloseTo(0.95);
     expect(info.tailFraction).toBeCloseTo(0.6);
   });
 
   it('reports a zero ratio rather than dividing by zero', () => {
     const info = inspectMarkdownStream(new FakeMarkdown('md', {}))!;
-    expect(info.reuseRatio).toBe(0);
+    expect(info.tokenPrefixReuseRatio).toBe(0);
     expect(info.tailFraction).toBe(0);
   });
 
@@ -217,10 +221,32 @@ describe('formatMarkdownStream', () => {
     expect(text).toContain('source|4000 chars');
     expect(text).toContain('4 coalesced');
     expect(text).toContain('avg 1.2ms max 3.4ms');
-    expect(text).toContain('token reuse|98%');
-    expect(text).toContain('40 chars re-lexed');
+    expect(text).toContain('token prefix reuse|98%');
+    expect(text).toContain('3900 matched / 100 returned');
+    // "changed", not "re-lexed": the lexer reads the whole source every append, so
+    // describing the delta as the amount lexed was the defect this row used to have.
+    expect(text).toContain('40 chars changed');
     expect(text).toContain('1% of document');
     expect(text).toContain('90 in-place');
+  });
+
+  it('reports lexer cost separately from token reuse', () => {
+    // The whole point of the rename: a high prefix-reuse ratio must not be readable
+    // as "the parser did less work". These are different rows with different numbers.
+    const rows = formatMarkdownStream(
+      inspectMarkdownStream(
+        new FakeMarkdown('md', {
+          ...healthy,
+          lexerMs: 12.34,
+          sourceCharsLexed: 250_000,
+        }),
+      )!,
+    );
+    const text = rows.map((r) => `${r.label}|${r.value}|${r.note ?? ''}`).join('\n');
+    expect(text).toContain('lexer|12.3ms');
+    expect(text).toContain('250000 chars lexed');
+    // Reuse is near-perfect and the lexer still read a quarter of a million chars.
+    expect(text).toContain('token prefix reuse|98%');
   });
 
   it('says so when the worker has not answered', () => {
@@ -262,8 +288,8 @@ describe('auditMarkdownStreaming', () => {
         workerResponses: 10,
         sourceLength: 5000,
         changedTailChars: 4000,
-        tokensReused: 100,
-        tokensRelexed: 5,
+        tokensPrefixMatched: 100,
+        tokensReturned: 5,
       }),
     );
     const kinds = auditMarkdownStreaming(scene).map((f) => f.kind);
@@ -296,8 +322,8 @@ describe('auditMarkdownStreaming', () => {
         workerResponses: 10,
         sourceLength: 1000,
         changedTailChars: 10,
-        tokensReused: 20,
-        tokensRelexed: 80,
+        tokensPrefixMatched: 20,
+        tokensReturned: 80,
       }),
     );
     expect(auditMarkdownStreaming(scene).map((f) => f.kind)).toContain('low-token-reuse');

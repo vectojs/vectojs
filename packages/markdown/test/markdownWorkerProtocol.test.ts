@@ -16,6 +16,8 @@ interface WorkerResponse {
   tail?: { raw: string }[];
   needResync?: boolean;
   error?: string;
+  lexerMs?: number;
+  sourceCharsLexed?: number;
 }
 
 let onmessage: ((e: { data: unknown }) => void) | null = null;
@@ -245,6 +247,41 @@ describe('MarkdownWorker delta protocol', () => {
       baseVersion: 1,
     });
     expect(res.needResync).toBe(true);
+  });
+
+  it('reports the lexer cost of the WHOLE source, not just the delta', () => {
+    // The reason the reuse counters were renamed: a delta shrinks the transfer, not
+    // the lex. `marked` has no incremental lexing API, so every append re-lexes the
+    // full accumulated document, and `sourceCharsLexed` is what makes that visible.
+    const initial = '# Title\n\nFirst paragraph.';
+    const first = request({
+      id: 1,
+      text: initial,
+      instance: 'md-0',
+      baseVersion: 0,
+      // `oldRaws` is required on a first request: without it, and with nothing
+      // cached, the worker resyncs rather than guessing and never reaches the lexer.
+      oldRaws: marked.lexer(initial).map((t) => t.raw),
+    });
+    expect(first.needResync).toBeUndefined();
+    expect(first.sourceCharsLexed).toBe(initial.length);
+    expect(typeof first.lexerMs).toBe('number');
+    expect(first.lexerMs).toBeGreaterThanOrEqual(0);
+
+    // A tiny append. The transfer is a short tail...
+    const append = '\n\nSecond.';
+    const second = request({
+      id: 2,
+      append,
+      expectedLength: initial.length + append.length,
+      instance: 'md-0',
+      baseVersion: 1,
+    });
+    expect(second.matchLen).toBeGreaterThan(0);
+    expect(second.tail!.length).toBeLessThan(4);
+    // ...but the lex covered the whole document, appended text included.
+    expect(second.sourceCharsLexed).toBe(initial.length + append.length);
+    expect(second.sourceCharsLexed).toBeGreaterThan(first.sourceCharsLexed!);
   });
 
   it('ignores a malformed message instead of driving the lexer with it', () => {
