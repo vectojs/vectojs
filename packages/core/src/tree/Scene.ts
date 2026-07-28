@@ -23,6 +23,7 @@ export interface IWebGPUParticleSystemManager {
 import {
   Entity,
   VectoJSEvent,
+  type AffineTransform,
   type Bounds,
   type ContentProjection,
   type ContentProjectionLine,
@@ -68,6 +69,49 @@ const INTERACTIVE_A11Y_ROLES = new Set([
   'combobox',
 ]);
 
+/**
+ * Container roles whose children ARIA requires to be *DOM-contained*, mapped to
+ * the child roles each one may own.
+ *
+ * The projection is otherwise flat — every mirror is a sibling under
+ * `a11yRoot`, with reading order maintained by sorting (see
+ * {@link Scene.sortNormalElementsVisually}). That is valid for most of ARIA,
+ * which relates elements by IDREF (`aria-labelledby`, `aria-controls`,
+ * `aria-activedescendant`), but a handful of composite widgets are specified in
+ * terms of ownership: a `gridcell` is only a grid cell because a `row` contains
+ * it. Flat, those widgets are structurally invalid no matter how correct their
+ * individual attributes are, which is why `aria-required-children` and
+ * `aria-required-parent` had to be disabled in the axe audit.
+ *
+ * Derived from axe-core 4.12.1's own `ariaRoles` table (`requiredOwned` /
+ * `requiredContext`) rather than hand-written, so what we nest and what axe
+ * checks cannot drift apart. Deliberately narrow — only the pairs ARIA
+ * *requires*:
+ *
+ * - `radiogroup`/`radio` appears in **neither** axe table, so `RadioGroup`
+ *   stays flat. Nesting it would be churn with no conformance gain.
+ * - `treeitem` is not itself a container here: nested tree levels convey depth
+ *   through `aria-level`, which is the flat pattern ARIA explicitly allows.
+ * - Roles absent from a container's value set are **not** nested under it.
+ *   axe's "unallowed children" branch runs *before* its empty-container
+ *   review, so nesting a role the parent may not own converts a passing tree
+ *   into a hard violation — strictly worse than leaving it flat.
+ */
+const A11Y_REQUIRED_OWNED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['grid', new Set(['row', 'rowgroup'])],
+  ['table', new Set(['row', 'rowgroup'])],
+  ['treegrid', new Set(['row', 'rowgroup'])],
+  ['rowgroup', new Set(['row'])],
+  ['row', new Set(['cell', 'columnheader', 'gridcell', 'rowheader'])],
+  ['tablist', new Set(['tab'])],
+  ['tree', new Set(['treeitem', 'group'])],
+  ['group', new Set(['treeitem', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option'])],
+  ['menu', new Set(['menuitem', 'menuitemcheckbox', 'menuitemradio', 'group', 'separator'])],
+  ['menubar', new Set(['menuitem', 'menuitemcheckbox', 'menuitemradio', 'group', 'separator'])],
+  ['listbox', new Set(['option', 'group'])],
+  ['list', new Set(['listitem'])],
+]);
+
 function isNativelyFocusable(element: HTMLElement): boolean {
   return (
     element instanceof HTMLButtonElement ||
@@ -76,6 +120,115 @@ function isNativelyFocusable(element: HTMLElement): boolean {
     element instanceof HTMLTextAreaElement ||
     (element instanceof HTMLAnchorElement && element.hasAttribute('href'))
   );
+}
+
+/**
+ * A nested mirror's box, expressed relative to its projected parent.
+ *
+ * Reused across calls rather than returned fresh: the geometry write runs for
+ * every projected node on every synced frame, and a virtualized table can
+ * nest several hundred cells, so a per-node literal here would allocate in the
+ * frame loop. The single caller consumes the fields immediately.
+ */
+interface RebasedBox {
+  left: number;
+  top: number;
+  matrix: string;
+}
+
+const REBASED_BOX: RebasedBox = { left: 0, top: 0, matrix: '' };
+
+/**
+ * The nearest ancestor mirror that nested descendants attach to, threaded down
+ * the {@link Scene.syncA11y} walk.
+ *
+ * Carries the parent's world transform and origin as they were when the parent
+ * was synced *on this same frame*, which is what {@link rebaseChildBox} needs.
+ * Reading them again at the child would be equivalent today but would silently
+ * break if a parent's geometry ever became lazier than its subtree's.
+ */
+interface A11yContainer {
+  el: HTMLElement;
+  /** The child roles this container may own, per {@link A11Y_REQUIRED_OWNED}. */
+  owned: ReadonlySet<string>;
+  transform: AffineTransform;
+  originX: number;
+  originY: number;
+}
+
+/**
+ * Re-express a child's **world** transform as a box positioned inside its
+ * projected parent's box.
+ *
+ * Mirrors are `position: absolute`, so their `left`/`top` resolve against the
+ * nearest positioned ancestor. While the projection is flat that ancestor is
+ * always `a11yRoot` and world coordinates are correct as-written. The moment a
+ * mirror is nested inside another mirror, its containing block becomes the
+ * parent — writing world coordinates then *double-offsets* every descendant,
+ * and the parent's `matrix()` compounds on top. Measured in real Chrome and
+ * Firefox: a row at world (110, 80) under a grid at (100, 50) landed at
+ * (210, 130), and a cell at (120, 90) landed at (330, 220).
+ *
+ * The correction is not a plain subtraction. `left`/`top` are applied *before*
+ * the ancestor's `transform`, so the offset has to be expressed in the parent's
+ * pre-transform space: divide the world delta by the parent's linear part
+ * rather than subtracting its translation. The linear part is likewise relative
+ * — `inv(P) · C`, which collapses to the identity when the child adds no
+ * rotation or scale of its own.
+ *
+ * Both engines reproduce the flat layout exactly under this transform,
+ * including a parent rotated 30° and scaled 1.5×. That agreement depends on
+ * `transformOrigin: '0 0'` (set on every mirror at creation); with the default
+ * `50% 50%` each nested box rotates about its own centre and the results
+ * diverge by tens of pixels.
+ *
+ * A singular parent matrix (zero width or height, or a collapsed scale) has no
+ * inverse. Rather than emit `NaN` — which reads as `left: 0` and silently
+ * relocates the element to the parent's origin, where the reading-order sort
+ * would then treat it as the top-left-most element on screen — the child is
+ * pinned to the parent's origin with an identity matrix. A zero-area parent is
+ * already invisible, and `projectionBoxVisible` hides it on the same frame.
+ */
+function rebaseChildBox(
+  parent: AffineTransform,
+  parentOriginX: number,
+  parentOriginY: number,
+  child: AffineTransform,
+  childOriginX: number,
+  childOriginY: number,
+): RebasedBox {
+  const det = parent.a * parent.d - parent.b * parent.c;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) {
+    REBASED_BOX.left = 0;
+    REBASED_BOX.top = 0;
+    REBASED_BOX.matrix = 'matrix(1, 0, 0, 1, 0, 0)';
+    return REBASED_BOX;
+  }
+
+  // inv(P) linear part
+  const ia = parent.d / det;
+  const ib = -parent.b / det;
+  const ic = -parent.c / det;
+  const id = parent.a / det;
+
+  // World translation delta, mapped back through inv(P) so it is expressed in
+  // the space `left`/`top` actually apply in. Each box's `a11yOffset` is part
+  // of its origin, so it belongs inside the delta rather than being added
+  // afterwards: added afterwards, the child's own offset would be scaled by the
+  // parent's transform and the parent's would not be subtracted at all.
+  const dx = childOriginX - parentOriginX;
+  const dy = childOriginY - parentOriginY;
+  REBASED_BOX.left = ia * dx + ic * dy;
+  REBASED_BOX.top = ib * dx + id * dy;
+
+  // inv(P) · C, i.e. the child's transform relative to the parent's.
+  const a = ia * child.a + ic * child.b;
+  const b = ib * child.a + id * child.b;
+  const c = ia * child.c + ic * child.d;
+  const d = ib * child.c + id * child.d;
+  REBASED_BOX.matrix = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+
+  return REBASED_BOX;
 }
 
 /**
@@ -1089,6 +1242,8 @@ export class Scene {
   private fullViewportElements: HTMLElement[] = [];
   private normalElements: HTMLElement[] = [];
   private activeIds: Set<string> = new Set<string>();
+  /** Per-parent insertion cursor, reused by `enforceA11yDomOrder`. */
+  private a11yOrderCursors: Map<Node, number> = new Map<Node, number>();
 
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
@@ -2243,6 +2398,11 @@ export class Scene {
     // Setup Agent / Automation Semantic Layer (only where there's a DOM).
     if (typeof document !== 'undefined') {
       this.a11yRoot = document.createElement('div');
+      // Marks the projected layer so an audit can scope to it instead of the
+      // whole document (the embedding page's own markup is not ours to fix).
+      // `packages/ui/e2e/axe-audit.e2e.ts` selects on this; before it existed
+      // that selector fell through to `body` and silently audited the harness.
+      this.a11yRoot.setAttribute('data-vecto-a11y-root', '');
       this.a11yRoot.style.position = 'absolute';
       this.a11yRoot.style.top = '0';
       this.a11yRoot.style.left = '0';
@@ -3292,7 +3452,7 @@ export class Scene {
     return node.interactive && (node.width > 0 || node.a11yFullViewport);
   }
 
-  private syncA11y(node: Entity) {
+  private syncA11y(node: Entity, container: A11yContainer | null = null) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node.isDOMPortal) {
       return;
@@ -3321,6 +3481,12 @@ export class Scene {
       return;
     }
     const nodeStart = this._phaseTiming ? performance.now() : 0;
+    // A projected node with a container role becomes the container for the
+    // subtree below it; anything else passes the inherited one straight
+    // through. Passing it through is what lets a `row` reach its `grid` across
+    // `Table`'s non-interactive `bodyClip`, which never projects and so cannot
+    // be a container itself.
+    let childContainer = container;
     if (this.shouldProjectA11y(node)) {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
@@ -3335,9 +3501,11 @@ export class Scene {
             this.caretBlinkTimer = null;
           }
         }
-        if (el.parentNode === this.a11yRoot) {
+        // Parent-agnostic for the same reason as the prune sweep: a nested
+        // mirror hangs off its container, not the root.
+        if (el.parentNode) {
           this.preserveFocusOnRemoval(el);
-          this.a11yRoot.removeChild(el);
+          el.remove();
         }
         this.a11yElements.delete(node.id);
         el = undefined;
@@ -3712,6 +3880,13 @@ export class Scene {
         if (el instanceof HTMLTextAreaElement) el.style.resize = 'none';
       }
 
+      // Nest under the inherited container only if ARIA requires this role to
+      // be DOM-contained by it. A role the container may not own is left flat:
+      // axe checks unallowed children before it reviews empty containers, so
+      // nesting one turns a passing tree into a hard violation.
+      const nestedIn =
+        container && attrs.role && container.owned.has(attrs.role) ? container : null;
+
       // Sync position mappings
       if (node.a11yFullViewport) {
         el.style.left = '0px';
@@ -3724,11 +3899,51 @@ export class Scene {
       } else {
         const worldTf = node.getWorldTransform();
         const { a, b, c, d, e, f } = worldTf;
-        el.style.left = `${e + node.a11yOffsetX}px`;
-        el.style.top = `${f + node.a11yOffsetY}px`;
+        const originX = e + node.a11yOffsetX;
+        const originY = f + node.a11yOffsetY;
+
+        // Attach to the owning container when ARIA requires containment, and
+        // rebase the box into its coordinate space. Re-checked every frame
+        // rather than only at creation: pooled hotspots migrate between parents
+        // at runtime (a Table's rows re-parent when virtualization turns on),
+        // and a mirror left under its previous container reads as a cell of the
+        // wrong row.
+        const parentEl =
+          nestedIn && nestedIn.el !== el && nestedIn.el.isConnected ? nestedIn.el : this.a11yRoot;
+        if (el.parentNode !== parentEl) {
+          parentEl.appendChild(el);
+          this.a11yNeedsReorder = true;
+        }
+
+        if (parentEl === this.a11yRoot) {
+          el.style.left = `${originX}px`;
+          el.style.top = `${originY}px`;
+          el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+        } else {
+          const box = rebaseChildBox(
+            nestedIn!.transform,
+            nestedIn!.originX,
+            nestedIn!.originY,
+            worldTf,
+            originX,
+            originY,
+          );
+          el.style.left = `${box.left}px`;
+          el.style.top = `${box.top}px`;
+          el.style.transform = box.matrix;
+        }
         el.style.width = `${node.width}px`;
         el.style.height = `${node.height}px`;
-        el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
+
+        // Hand this node down as the container for its own subtree if ARIA
+        // makes it one. Reuses the transform computed just above rather than
+        // re-deriving it, and captures it here so a descendant rebases against
+        // the geometry actually written this frame.
+        const owned = attrs.role ? A11Y_REQUIRED_OWNED.get(attrs.role) : undefined;
+        if (owned) {
+          childContainer = { el, owned, transform: worldTf, originX, originY };
+        }
+
         // Viewport/clip gate: an interactive mirror scrolled outside its
         // clipChildren ancestor (a Button in a ScrollView/VirtualList) or the
         // viewport must stop intercepting clicks, taking focus, and being
@@ -3752,9 +3967,12 @@ export class Scene {
       this.syncContentProjection(node);
     }
 
-    for (const child of node.children) this.syncA11y(child);
+    for (const child of node.children) this.syncA11y(child, childContainer);
     if (node === this.root) {
-      for (const overlay of this.overlayRoot.children) this.syncA11y(overlay);
+      // Overlays are their own stacking/containment context: a submenu mounts on
+      // `overlayRoot`, not on the menu that opened it, so it must not inherit
+      // whatever container the tree walk happened to end on.
+      for (const overlay of this.overlayRoot.children) this.syncA11y(overlay, null);
     }
   }
 
@@ -4549,9 +4767,12 @@ export class Scene {
             this.caretBlinkTimer = null;
           }
         }
-        if (el.parentNode === this.a11yRoot) {
+        // Parent-agnostic: a nested mirror's parent is its owning container,
+        // not `a11yRoot`, so an equality check against the root would skip it
+        // and leak the element (and its focus) for the lifetime of the scene.
+        if (el.parentNode) {
           this.preserveFocusOnRemoval(el);
-          this.a11yRoot.removeChild(el);
+          el.remove();
         }
         this.a11yElements.delete(id);
       }
@@ -4577,13 +4798,31 @@ export class Scene {
     const normalLen = this.normalElements.length;
     const totalLen = fullLen + normalLen;
 
-    // Reorder nodes with zero allocations (no expectedOrder array or concats)
+    // Reorder nodes with zero allocations (no expectedOrder array or concats).
+    //
+    // Position is tracked per DOM parent rather than as one index into
+    // `a11yRoot.childNodes`: composite widgets nest (a `gridcell` is a child of
+    // its `row`, not of the root), so a single running index would compare a
+    // nested element against whatever happened to sit at that offset under the
+    // root and shuffle unrelated siblings on every frame. Walking the globally
+    // sorted sequence and advancing each parent's own cursor gives every
+    // container its children in global reading order, which is what document
+    // order — and therefore Tab order — is read from.
+    //
+    // Filling each parent's indices from 0 upwards is also what keeps the focus
+    // sentinel last: it is the one child of `a11yRoot` never collected here, so
+    // every positioned element is placed before it.
+    this.a11yOrderCursors.clear();
     for (let i = 0; i < totalLen; i++) {
       const expected =
         i < fullLen ? this.fullViewportElements[i] : this.normalElements[i - fullLen];
-      const current = this.a11yRoot.childNodes[i];
+      const parent = expected.parentNode;
+      if (!parent) continue;
+      const at = this.a11yOrderCursors.get(parent) ?? 0;
+      this.a11yOrderCursors.set(parent, at + 1);
+      const current = parent.childNodes[at];
       if (current !== expected) {
-        this.a11yRoot.insertBefore(expected, current || null);
+        parent.insertBefore(expected, current || null);
       }
     }
 
@@ -4592,12 +4831,23 @@ export class Scene {
 
   /**
    * Reorder `normalElements` (in place) into visual reading order using the
-   * world positions `syncA11y` already wrote to each element's inline style
+   * positions `syncA11y` already wrote to each element's inline style
    * (`top`/`left`/`height`). Elements are grouped into rows top-to-bottom (an
    * element belongs to the current row while its top is above the row's
    * running bottom edge), then sorted within a row by `left` — ascending for
    * `'ltr'`, descending for `'rtl'`. The sort is stable, so entities at the
    * same position keep their scene-graph (collection) order as a tiebreak.
+   *
+   * Those inline values are world coordinates for a top-level mirror but
+   * PARENT-RELATIVE for a nested one, so this list mixes coordinate spaces.
+   * That is sound because the result is only ever applied per DOM parent
+   * ({@link enforceA11yDomOrder} advances a cursor per parent), and all of one
+   * parent's children share one space: a `grid`'s rows are all grid-relative, a
+   * `row`'s cells all row-relative. Comparisons ACROSS spaces do happen while
+   * banding, but they only affect the relative order of elements in different
+   * parents, which no `insertBefore` ever acts on. Normalizing everything back
+   * to world coordinates here would cost a transform per element per frame to
+   * change nothing observable.
    */
   private sortNormalElementsVisually(): void {
     const els = this.normalElements;

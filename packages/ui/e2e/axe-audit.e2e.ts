@@ -46,21 +46,14 @@ const DISABLED_RULES: Record<string, string> = {
   // pixels. Contrast here compares things that are not what the user sees.
   'color-contrast': 'projected nodes are transparent; visible pixels are canvas-drawn',
   'color-contrast-enhanced': 'same as color-contrast',
-  // The a11y projection is FLAT: every element is appended to a11yRoot as a
-  // sibling and reading order is maintained by SORTING, not DOM nesting. So
-  // `role="row"` never DOM-contains its gridcells and `role="tab"` never sits
-  // inside its tablist, even though the entity tree nests them correctly and both
-  // engines' accessibility trees resolve them. These two rules check DOM
-  // containment specifically, so they cannot pass under a flat projection.
-  //
-  // Deferred rather than dismissed: making the projection nest composite widgets
-  // is a real change with real value (it would also let `dialogEl.contains()`
-  // answer focus-containment questions, which #223 had to work around), but it
-  // touches ordering, pruning and the sort that maintains reading order. Filed in
-  // TODO.md; the hand-written conformance suite asserts the same structure via
-  // roles and roving tabindex in the meantime.
-  'aria-required-children': 'flat projection: role=row does not DOM-contain its cells',
-  'aria-required-parent': 'flat projection: role=tab is not a DOM child of its tablist',
+  // `aria-required-children` and `aria-required-parent` were disabled here while
+  // the projection was flat — `role="row"` did not DOM-contain its gridcells, so
+  // rules that check DOM containment could not pass however correct the
+  // attributes were. The projection now nests exactly the role pairs ARIA
+  // requires to be contained (`Scene.A11Y_REQUIRED_OWNED`), so both are ENABLED
+  // and asserted below: measured in real Chrome and Firefox, they went from 1 +
+  // 2 violations to 8 + 17 passing nodes with every element's
+  // getBoundingClientRect unchanged.
   // The Table projects transparent header hotspots whose text lives on the
   // canvas; the accessible name comes from aria-label, which axe's DOM-text check
   // does not consider. Same transparency caveat as color-contrast.
