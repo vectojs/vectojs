@@ -12,7 +12,73 @@
  *   r.fill('#38bdf8');
  * }
  */
+/**
+ * Per-backend draw counters, for a DevTools GPU readout.
+ *
+ * Opt-in via {@link IRenderer.setDrawCounters}: when off, counting compiles to a
+ * single boolean test per op, matching how `Scene` gates its phase timing and
+ * dirty tracking. Totals are cumulative until cleared rather than per-frame,
+ * because a per-frame log answers the question less directly at far more memory —
+ * the same reasoning `Scene.renderPhases` documents.
+ */
+export interface DrawCounters {
+  /** `fill()` calls, each committing one path. */
+  fills: number;
+  /** `stroke()` calls. */
+  strokes: number;
+  /** `fillText()` calls. */
+  texts: number;
+  /** `drawImage`/`drawImageRect` blits. */
+  images: number;
+  /** `fillCircle()` calls — batched, so this exceeds the fills they produce. */
+  circles: number;
+  /** Batch commits from {@link IRenderer.flush}. */
+  flushes: number;
+  /** `save()` calls. */
+  saves: number;
+  /** `restore()` calls. */
+  restores: number;
+  /** `clip()` calls. */
+  clips: number;
+  /**
+   * Times a font or fill style actually changed, as opposed to being re-set to
+   * the value it already had.
+   *
+   * The renderer already elides redundant sets; this counts the ones that got
+   * through, which is the number that costs anything.
+   */
+  stateSwitches: number;
+  /**
+   * Sum of drawn primitive areas divided by canvas area.
+   *
+   * A PROXY for overdraw, not a measurement: Canvas2D exposes no pixel-coverage
+   * readback, so this counts area submitted, ignoring clipping and off-screen
+   * rejection. It overstates, sometimes badly. Useful as a trend between two
+   * states of the same scene; meaningless as an absolute.
+   */
+  overdrawRatio: number;
+}
+
 export interface IRenderer {
+  /**
+   * Stable backend identifier.
+   *
+   * A discriminator rather than `constructor.name`, which minifies to something
+   * unusable in a production bundle — and a debug tool that cannot name the
+   * backend in the build where it matters is not much of a debug tool.
+   */
+  readonly kind?: 'canvas2d' | 'svg' | 'three' | string;
+
+  /**
+   * Enable or disable draw counting. Optional; a backend that cannot count omits
+   * it and a reader treats the absence as "not available".
+   */
+  setDrawCounters?(enabled: boolean): void;
+  /** Current counter totals, or null when counting is off. */
+  getDrawCounters?(): DrawCounters | null;
+  /** Zero the totals without disabling counting. */
+  clearDrawCounters?(): void;
+
   /** Clear the entire drawing surface to transparent / background color. */
   clear(): void;
   /** Push the current transform + state onto the renderer's stack. */

@@ -32,7 +32,7 @@ import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer } from '../renderer/IRenderer';
-import type { PointRenderer } from '../renderer/WebGLPointRenderer';
+import type { PointRenderer, WebGLDrawStats } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
@@ -1844,6 +1844,29 @@ export class Scene {
   private _webgpuDisabled: boolean = false;
   public get webgpuDisabled(): boolean {
     return this._webgpuDisabled || this.particleBackend === 'cpu';
+  }
+
+  /**
+   * Draw accounting for the WebGL point layer, or null when that layer is not in
+   * use.
+   *
+   * Null and all-zero mean different things: null is "this backend is not
+   * running", zero is "it ran and drew nothing". A readout that conflates them
+   * sends someone looking for a performance problem in a backend that was never
+   * active.
+   */
+  public get webglDrawStats(): WebGLDrawStats | null {
+    return this.pointRenderer?.stats?.() ?? null;
+  }
+
+  /**
+   * Whether a WebGPU device is currently live for particle compute.
+   *
+   * The WebGPU path only activates when a `ComputeParticleEntity` is present, so
+   * most scenes never touch it.
+   */
+  public get webgpuActive(): boolean {
+    return this.device !== null && !this.deviceLost;
   }
   public set webgpuDisabled(value: boolean) {
     this._webgpuDisabled = value;

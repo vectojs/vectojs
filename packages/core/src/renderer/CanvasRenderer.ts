@@ -1,4 +1,21 @@
-import { IRenderer } from './IRenderer';
+import { type DrawCounters, IRenderer } from './IRenderer';
+
+/** A zeroed counter set. `overdrawRatio` is derived on read, so it starts at 0. */
+function emptyDrawCounters(): DrawCounters {
+  return {
+    fills: 0,
+    strokes: 0,
+    texts: 0,
+    images: 0,
+    circles: 0,
+    flushes: 0,
+    saves: 0,
+    restores: 0,
+    clips: 0,
+    stateSwitches: 0,
+    overdrawRatio: 0,
+  };
+}
 
 /**
  * Canvas 2D implementation of {@link IRenderer}.
@@ -61,6 +78,19 @@ export class CanvasRenderer implements IRenderer {
 
   private _cachedFont: string = '';
   private _cachedFill: string = '';
+
+  /** Backend discriminator; see {@link IRenderer.kind}. */
+  public readonly kind = 'canvas2d';
+
+  /**
+   * Draw counters, allocated only once counting is enabled.
+   *
+   * Null when off, so the guard on every op is a single null test and an inactive
+   * renderer carries no counter object at all.
+   */
+  private counters: DrawCounters | null = null;
+  /** Accumulated primitive area, kept separately so the ratio is derived on read. */
+  private drawnArea = 0;
 
   /**
    * @param canvas - The target canvas. Its backing store is resized to the
@@ -180,19 +210,50 @@ export class CanvasRenderer implements IRenderer {
   }
 
   /** @inheritdoc */
+  /** @inheritdoc */
+  setDrawCounters(enabled: boolean): void {
+    if (!enabled) {
+      this.counters = null;
+      this.drawnArea = 0;
+      return;
+    }
+    if (!this.counters) this.counters = emptyDrawCounters();
+  }
+
+  /** @inheritdoc */
+  getDrawCounters(): DrawCounters | null {
+    if (!this.counters) return null;
+    const area = this.width * this.height;
+    return {
+      ...this.counters,
+      // Derived on read rather than maintained: the ratio is only meaningful
+      // against the current surface size, which can change under resize.
+      overdrawRatio: area > 0 ? Math.round((this.drawnArea / area) * 100) / 100 : 0,
+    };
+  }
+
+  /** @inheritdoc */
+  clearDrawCounters(): void {
+    if (this.counters) this.counters = emptyDrawCounters();
+    this.drawnArea = 0;
+  }
+
   clear(): void {
     if (this.contextLost) return; // context gone → nothing to clear/draw
     this.flush();
+    if (this.counters) this.drawnArea = 0;
     this.ctx.clearRect(0, 0, this.width, this.height);
   }
   /** @inheritdoc */
   save(): void {
     this.flush();
+    if (this.counters) this.counters.saves++;
     this.ctx.save();
   }
   /** @inheritdoc */
   restore(): void {
     this.flush();
+    if (this.counters) this.counters.restores++;
     this.ctx.restore();
     this._cachedFont = '';
     this._cachedFill = '';
@@ -217,6 +278,7 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   clip(x: number, y: number, width: number, height: number): void {
     this.flush();
+    if (this.counters) this.counters.clips++;
     this.ctx.beginPath();
     this.ctx.rect(x, y, width, height);
     this.ctx.clip();
@@ -271,6 +333,10 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void {
     this.flush();
+    if (this.counters) {
+      this.counters.images++;
+      this.drawnArea += Math.abs(dw * dh);
+    }
     this.ctx.drawImage(source, dx, dy, dw, dh);
   }
 
@@ -289,6 +355,10 @@ export class CanvasRenderer implements IRenderer {
     // Flush for the same reason `drawImage` does: a pending batch must not paint
     // over a blit that was issued before it.
     this.flush();
+    if (this.counters) {
+      this.counters.images++;
+      this.drawnArea += Math.abs(dw * dh);
+    }
     this.ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh);
   }
 
@@ -303,6 +373,10 @@ export class CanvasRenderer implements IRenderer {
       this.batchColor = color;
       this.batchAlpha = alpha;
     }
+    if (this.counters) {
+      this.counters.circles++;
+      this.drawnArea += Math.PI * radius * radius;
+    }
     // moveTo before arc starts a fresh sub-path so circles don't connect.
     this.ctx.moveTo(cx + radius, cy);
     this.ctx.arc(cx, cy, radius, 0, TWO_PI);
@@ -313,6 +387,7 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   flush(): void {
     if (!this.batchActive) return;
+    if (this.counters) this.counters.flushes++;
     this.ctx.globalAlpha = this.batchAlpha;
     this.ctx.fillStyle = this.batchColor;
     this.ctx.fill();
@@ -324,7 +399,11 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   fill(color: string | any): void {
     this.flush();
+    if (this.counters) this.counters.fills++;
     if (this._cachedFill !== color) {
+      // Counted here rather than at every assignment: this branch is exactly the
+      // set that was not elided, which is the one that costs something.
+      if (this.counters) this.counters.stateSwitches++;
       this.ctx.fillStyle = color;
       this._cachedFill = color;
     }
@@ -334,6 +413,7 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   stroke(color: string | any, lineWidth: number = 1): void {
     this.flush();
+    if (this.counters) this.counters.strokes++;
     this.ctx.strokeStyle = color;
     this.ctx.lineWidth = lineWidth;
     this.ctx.lineCap = 'round';
@@ -344,11 +424,14 @@ export class CanvasRenderer implements IRenderer {
   /** @inheritdoc */
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     this.flush();
+    if (this.counters) this.counters.texts++;
     if (this._cachedFont !== font) {
+      if (this.counters) this.counters.stateSwitches++;
       this.ctx.font = font;
       this._cachedFont = font;
     }
     if (this._cachedFill !== color) {
+      if (this.counters) this.counters.stateSwitches++;
       this.ctx.fillStyle = color;
       this._cachedFill = color;
     }
