@@ -1141,10 +1141,13 @@ export class Scene {
   }
 
   // ── WASM hit-test backend (invisible accelerator, G3) ───────────────────────
-  // A separate WASM module instance from the transform backend (each crate
-  // export lives in independent linear memory per instance, so there is no
-  // shared-state hazard in running both) that indexes the main tree's world
-  // AABBs into a dense viewport grid for findEntityAt. The JS depth-first walk
+  // Served by the same instance as every other accelerator (see
+  // `_wasmRuntime`): the crate keeps transform/anim/hit/particle in distinct
+  // statics, so one instance runs them all without aliasing. It indexes the
+  // main tree's world AABBs into a dense viewport grid for findEntityAt. Note
+  // that sharing one linear memory means an allocation here can grow it and
+  // detach views built over the old buffer, so each backend re-checks buffer
+  // identity (`revalidateViews`) before use. The JS depth-first walk
   // (findHitRecursively) is the permanent fallback: a null backend, a build
   // that overflows its item budget, or the overlay tree (never indexed — small
   // and rare, not worth accelerating) all fall through to it, so WASM can only
