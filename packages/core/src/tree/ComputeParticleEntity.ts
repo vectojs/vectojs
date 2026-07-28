@@ -372,6 +372,10 @@ export class ComputeParticleEntity extends Entity {
    * The backend holds one resident SoA store, so a Scene with multiple particle
    * entities reuses it sequentially — origin is therefore re-gathered each call
    * (not upload-once), a couple of extra f32 reads per particle.
+   *
+   * Returns `false` if the kernel declined the call and {@link updateCPU} ran
+   * instead, so the Scene can report which path actually simulated this frame
+   * rather than assuming an installed backend did the work.
    */
   public stepWithBackend(
     backend: ParticleBackend,
@@ -380,7 +384,7 @@ export class ComputeParticleEntity extends Entity {
     mouseY: number,
     width: number,
     height: number,
-  ): void {
+  ): boolean {
     const count = this.maxParticles;
     backend.ensure(count);
     backend.gather(this.particleData, count, true);
@@ -403,11 +407,12 @@ export class ComputeParticleEntity extends Entity {
       // path instead — it resets `_wasmPending` to null itself, and consumes
       // `pendingExplosion`.
       this.updateCPU(dt, mouseX, mouseY, width, height);
-      return;
+      return false;
     }
     this._wasmPending = pending;
     backend.scatter(this.particleData, count);
     this.pendingExplosion = null;
+    return true;
   }
 
   public override destroy(): void {

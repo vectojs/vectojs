@@ -175,14 +175,18 @@ export class WasmTransformBackend {
   }
 
   /** Upload only the run table + count (topology), leaving per-entity inputs to
-   *  the resident views. Call when the tree structure changes, not per frame. */
-  uploadRuns(store: TransformStore): void {
+   *  the resident views. Call when the tree structure changes, not per frame.
+   *  Returns `false` if the crate rejected the run count, in which case the
+   *  PREVIOUS topology is still published and any kernel run against it would
+   *  compose the wrong tree — the caller must not proceed. */
+  uploadRuns(store: TransformStore): boolean {
     this.ensure(store.count, store.runCount);
     const rc = store.runCount;
     this.vrp.set(store.runParent.subarray(0, rc));
     this.vrs.set(store.runStart.subarray(0, rc));
     this.vrl.set(store.runLen.subarray(0, rc));
     this.lastStatus = this.ex.set_run_count(rc);
+    return this.lastStatus === WASM_STATUS.OK;
   }
 
   /**

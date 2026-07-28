@@ -38,7 +38,7 @@ import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSyst
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { buildTreeStore } from '../wasm/scene-store';
 import type { TransformStore } from '../wasm/soa';
-import { type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
+import { WASM_STATUS, type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
 import { gatherHitAABBs } from '../wasm/hit-store';
 import { createHitGatherBuffer, gatherHitAABBsFromStore } from '../wasm/hit-store-fused';
 import { type CoreModuleSource, type CoreWasmRuntime, loadCoreWasmRuntime } from '../wasm/runtime';
@@ -279,6 +279,63 @@ export interface SceneOptions {
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
 export const REDUCED_MOTION_FPS = 30;
+
+/**
+ * Why an accelerator did or did not run on the most recent frame.
+ *
+ * `'active'` is the only value that means the accelerator ran. Everything else
+ * is a distinct decline, kept separate because they call for different actions:
+ * `'not-installed'` means enable it, `'below-gate'` means the workload is too
+ * small to be worth it (working as designed), and `'rejected'` means the kernel
+ * refused its arguments — a fault worth reporting, not a tuning outcome.
+ */
+export type AcceleratorReason =
+  /** Ran on this frame. */
+  | 'active'
+  /** No backend installed; the JS path is the permanent fallback. */
+  | 'not-installed'
+  /** Installed, but the per-frame gate chose JS (workload below threshold). */
+  | 'below-gate'
+  /** Installed and gated in, but the kernel rejected the call and wrote nothing. */
+  | 'rejected'
+  /** Not applicable to this pass (e.g. a non-main renderer, or nothing to do). */
+  | 'not-applicable';
+
+/**
+ * One accelerator's per-frame status, read from {@link Scene.accelerators}.
+ *
+ * The pair exists because `available` and `activeThisFrame` genuinely differ:
+ * before this shape, `transformBackend`/`animBackend` reported only that a
+ * backend was *installed*, which invites concluding an accelerator is doing work
+ * when its gate never opens. Read `activeThisFrame` for what actually happened
+ * and `reason` for why.
+ */
+export interface AcceleratorStatus {
+  /** A backend is installed and could run, gate permitting. */
+  available: boolean;
+  /** It ran on the most recent frame. */
+  activeThisFrame: boolean;
+  /** Why it did or did not run. */
+  reason: AcceleratorReason;
+  /** Which implementation actually did the work on the most recent frame. */
+  path: string;
+}
+
+/**
+ * Per-frame status of every invisible accelerator, read from
+ * {@link Scene.accelerators}. Each is independent: a scene can compose
+ * transforms in WASM while ticking drivers in JS.
+ */
+export interface AcceleratorReport {
+  /** World-matrix composition (`compose_simd`). */
+  transform: AcceleratorStatus;
+  /** Batched property drivers (`spring_step`/`tween_step`). */
+  animation: AcceleratorStatus;
+  /** Hit-test broad phase (`hit_build`/`hit_query`) and its gather source. */
+  hitTest: AcceleratorStatus;
+  /** Particle simulation — WebGPU compute, the WASM CPU kernel, or JS. */
+  particle: AcceleratorStatus;
+}
 
 /**
  * Live render-loop telemetry, read from {@link Scene.frameStats}. See that
@@ -1228,6 +1285,72 @@ export class Scene {
     return this._hitFusedGather ? 'fused' : 'js';
   }
 
+  /**
+   * Why the transform accelerator did or did not run on the most recent frame.
+   * Written by the render walk and `_syncWasmStore`.
+   */
+  private _transformReason: AcceleratorReason = 'not-installed';
+  /** Why the batched-driver accelerator did or did not run. */
+  private _animReason: AcceleratorReason = 'not-installed';
+  /**
+   * Why the hit-test accelerator did or did not serve the last pointer query.
+   * The grid is built lazily on demand, not every frame, so this describes the
+   * most recent BUILD. Starts at `'not-installed'` because that is the truth
+   * before a backend exists; `_ensureHitGrid` moves it to `'not-applicable'`
+   * once one is installed but nothing has queried yet.
+   */
+  private _hitReason: AcceleratorReason = 'not-installed';
+  /** Why the particle accelerator did or did not run. */
+  private _particleReason: AcceleratorReason = 'not-applicable';
+  /** Which particle implementation actually simulated the most recent frame. */
+  private _particlePath = 'none';
+
+  /**
+   * Per-frame status of every invisible accelerator: whether each is installed,
+   * whether it actually ran on the most recent frame, and why.
+   *
+   * This exists because the older per-accelerator getters
+   * ({@link transformBackend}, {@link animBackend}, {@link hitTestBackend},
+   * {@link particleBackend}) report only that a backend is INSTALLED. Reading
+   * `'wasm'` from one of those and concluding the accelerator is doing work is
+   * wrong whenever a gate never opens, a kernel rejects its arguments, or a
+   * faster backend takes the pass instead. Read {@link AcceleratorStatus.reason}
+   * for which of those happened.
+   *
+   * Reflects the most recent main-renderer frame; a secondary renderer (SVG
+   * export, offscreen snapshot) does not overwrite it.
+   */
+  public get accelerators(): AcceleratorReport {
+    return {
+      transform: {
+        available: this._wasm !== null && this._transformBackend === 'wasm',
+        activeThisFrame: this._transformReason === 'active',
+        reason: this._transformReason,
+        path: this._transformReason === 'active' ? 'wasm' : 'js',
+      },
+      animation: {
+        available: this._animWasm !== null,
+        activeThisFrame: this._animBatchedLastFrame,
+        reason: this._animReason,
+        path: this._animBatchedLastFrame ? 'wasm' : 'js',
+      },
+      hitTest: {
+        available: this._hitWasm !== null,
+        // The grid is built lazily on a pointer query, not every frame, so this
+        // describes the last BUILD rather than the last frame.
+        activeThisFrame: this._hitReason === 'active',
+        reason: this._hitReason,
+        path: this._hitReason !== 'active' ? 'js' : this._hitFusedGather ? 'wasm-fused' : 'wasm',
+      },
+      particle: {
+        available: this._particleWasm !== null || this.webgpuActive,
+        activeThisFrame: this._particleReason === 'active',
+        reason: this._particleReason,
+        path: this._particlePath,
+      },
+    };
+  }
+
   /** Which backend answers `findEntityAt` for the main tree. */
   public get hitTestBackend(): 'js' | 'wasm' {
     return this._hitWasm ? 'wasm' : 'js';
@@ -1238,6 +1361,9 @@ export class Scene {
   public setHitTestBackend(backend: HitTestBackend | null): void {
     this._hitWasm = backend;
     this._hitGridFrame = -1; // force a rebuild under the (possibly new) backend
+    // Installed but not yet queried is 'not-applicable', not 'not-installed' —
+    // the grid is built lazily, so an untouched backend has declined nothing.
+    this._hitReason = backend ? 'not-applicable' : 'not-installed';
   }
 
   /**
@@ -1266,7 +1392,10 @@ export class Scene {
    */
   private _ensureHitGrid(): boolean {
     const backend = this._hitWasm;
-    if (!backend) return false;
+    if (!backend) {
+      this._hitReason = 'not-installed';
+      return false;
+    }
     if (this._hitGridFrame === this.currentFrame) return this._hitGridOk;
 
     // Prefer the fused path: when the transform backend is active it has already
@@ -1313,6 +1442,9 @@ export class Scene {
     this._hitBoundless = gathered.boundless;
     this._hitGridFrame = this.currentFrame;
     this._hitGridOk = ok;
+    // `runBuild` returns false when the build overflowed its item budget, which
+    // makes the grid untrustworthy — a real decline, not merely "not asked".
+    this._hitReason = ok ? 'active' : 'rejected';
     return ok;
   }
 
@@ -1599,7 +1731,11 @@ export class Scene {
    * pre-pass.
    */
   private _tickBatchedDrivers(dt: number): void {
-    if (this._activeDriverEntities.size === 0) return;
+    if (this._activeDriverEntities.size === 0) {
+      // No drivers in flight, so no accelerator declined anything.
+      this._animReason = 'not-applicable';
+      return;
+    }
 
     // Pass 1 (always, cheap): prune completed entities, count batchable
     // drivers to decide the gate. O(active drivers), never O(tree size).
@@ -1631,18 +1767,27 @@ export class Scene {
     // A mixed frame uses the mixed gate: the batch is one call per kind, so its
     // economics track the combined driver count rather than either kind alone.
     this._animBatchedLastFrame = false;
-    if (!backend) return; // stay on the JS tick path
+    if (!backend) {
+      this._animReason = 'not-installed';
+      return; // stay on the JS tick path
+    }
     const gate =
       springBatchable > 0 && tweenBatchable > 0
         ? this.animGate.mixed
         : tweenBatchable > 0
           ? this.animGate.tween
           : this.animGate.spring;
-    if (batchable < gate) return;
+    if (batchable < gate) {
+      // Working as designed, not a fault: below the measured break-even the JS
+      // tick loop is genuinely faster.
+      this._animReason = 'below-gate';
+      return;
+    }
     // Record that the gate actually opened this frame. `animBackend === 'wasm'`
     // only means the backend is INSTALLED, which has misled readers into
     // assuming every frame runs through WASM.
     this._animBatchedLastFrame = true;
+    this._animReason = 'active';
 
     // Pass 2: claim every registered entity. Gather batchable drivers into the
     // reused scratch arrays; tick+finalize non-batchable ones directly in JS;
@@ -1708,6 +1853,8 @@ export class Scene {
         // tickDrivers() will skip them for the rest of the frame; tick them in
         // JS now (same dt, same math) or they lose the frame entirely.
         for (let i = 0; i < springCount; i++) sD[i].tick(dt);
+        this._animReason = 'rejected';
+        this._animBatchedLastFrame = false;
       }
     }
     if (tweenCount > 0) {
@@ -1725,6 +1872,8 @@ export class Scene {
         for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
       } else {
         for (let i = 0; i < tweenCount; i++) tD[i].tick(dt);
+        this._animReason = 'rejected';
+        this._animBatchedLastFrame = false;
       }
     }
 
@@ -1753,7 +1902,15 @@ export class Scene {
         slotEntity[slot] = entity;
         entity._storeSlot = slot;
       }
-      backend.uploadRuns(built.store); // sizes wasm memory + publishes the run table
+      // sizes wasm memory + publishes the run table
+      if (!backend.uploadRuns(built.store)) {
+        // The crate rejected the run count, so the run table still describes the
+        // PREVIOUS topology. Composing against it would lay this frame's entities
+        // out along last frame's parent links. Leave `_storeStructureVersion`
+        // untouched so the next frame retries the rebuild.
+        this._transformReason = 'rejected';
+        return null;
+      }
       this._treeStore = built.store;
       this._slotEntity = slotEntity;
       this._wasmInputs = backend.inputView(); // valid until the next capacity growth
@@ -1787,11 +1944,20 @@ export class Scene {
       inp.sin[slot] = trig.sin;
       inp.opacity[slot] = e.opacity;
     }
-    backend.runKernel('simd');
+    if (backend.runKernel('simd') !== WASM_STATUS.OK) {
+      // A rejected kernel wrote nothing, so the world views still hold the
+      // PREVIOUS frame's matrices. Returning them would render last frame's
+      // geometry as if it were current — the batch `compose()` path already
+      // guards this; the resident path did not. Returning null routes the render
+      // walk through JS composition, which is the permanent fallback.
+      this._transformReason = 'rejected';
+      return null;
+    }
     // The world matrices just changed, so any AABBs computed from the previous
     // frame's matrices are stale. They are recomputed on demand rather than every
     // frame: a pointer query happens ad-hoc, and most frames never need them.
     this._wasmAabbsFresh = false;
+    this._transformReason = 'active';
     return this._wasmWorld;
   }
 
@@ -4880,6 +5046,12 @@ export class Scene {
       // SVG export are read-only snapshots; deterministic `step()` still uses
       // the Scene's main renderer and therefore advances simulation.
       const isMainRenderPath = renderer === this.renderer;
+      // Provisional verdict for this frame, refined by whichever branch runs
+      // below. A secondary renderer leaves the main pass's verdict alone.
+      if (isMainRenderPath) {
+        this._particleReason = this._particleWasm ? 'active' : 'not-installed';
+        this._particlePath = this._particleWasm ? 'wasm' : 'js';
+      }
       // Async initialize WebGPU context on the first frame we encounter a ComputeParticleEntity
       if (
         isMainRenderPath &&
@@ -4977,6 +5149,8 @@ export class Scene {
 
           this.device.queue.submit([commandEncoder.finish()]);
           if (this.gpuContext) this.gpuHasContent = true;
+          this._particleReason = 'active';
+          this._particlePath = 'webgpu';
         } catch (e) {
           console.error('WebGPU frame execution failed. Falling back.', e);
           this.deviceLost = true;
@@ -5001,13 +5175,34 @@ export class Scene {
             }
           }
           if (this._particleWasm) {
-            entity.stepWithBackend(this._particleWasm, dt / 1000, mx, my, this.width, this.height);
+            // `stepWithBackend` silently runs updateCPU when the kernel declines,
+            // so take its verdict rather than assuming the installed backend ran.
+            // One rejecting entity downgrades the frame: the report describes what
+            // simulated the scene, and a partial WASM frame is not a WASM frame.
+            if (
+              !entity.stepWithBackend(
+                this._particleWasm,
+                dt / 1000,
+                mx,
+                my,
+                this.width,
+                this.height,
+              )
+            ) {
+              this._particleReason = 'rejected';
+              this._particlePath = 'js';
+            }
           } else {
             entity.updateCPU(dt / 1000, mx, my, this.width, this.height);
           }
         }
       }
     } else if (isMainRenderer) {
+      // No particle entities in the tree, so no accelerator was asked to do
+      // anything. Clear the verdict or a scene that once had particles keeps
+      // reporting the last frame that did.
+      this._particleReason = 'not-applicable';
+      this._particlePath = 'none';
       // The GPU canvas presents its last frame until told otherwise: once the
       // final ComputeParticleEntity leaves the tree, clear it or the particles
       // stay frozen on screen.
@@ -5069,6 +5264,16 @@ export class Scene {
     // through to the JS composition below. worldView() is read AFTER compose()
     // because a capacity-growing compose re-inits and re-views wasm memory.
     const wasmMain = isMainRenderer && this._wasm !== null && this._transformBackend === 'wasm';
+    // Classify this frame's transform path. Unlike animation and hit-test, this
+    // accelerator has no workload gate — it is installed or it is not — so when
+    // `wasmMain` holds, `_syncWasmStore` below always overwrites this with
+    // 'active' or 'rejected'. Only a non-main renderer keeps 'not-applicable'.
+    // Only the main renderer writes it: the report describes the scene's frame,
+    // and a secondary renderer running afterwards would otherwise clobber the
+    // main pass's verdict with its own 'not-applicable'.
+    if (isMainRenderer) {
+      this._transformReason = wasmMain ? 'active' : 'not-installed';
+    }
 
     // In WASM mode update() MUST run for the whole tree BEFORE the store is
     // gathered: the kernel composes every world matrix up front, so a transform

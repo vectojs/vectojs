@@ -42,6 +42,15 @@ export {
   type DirtyDiagnosisOptions,
 } from './dirtyDiagnosis';
 export {
+  acceleratorAudit,
+  acceleratorInspector,
+  auditAccelerators,
+  formatAcceleratorInspection,
+  inspectAccelerators,
+  type AcceleratorFinding,
+  type AcceleratorInspection,
+} from './acceleratorInspect';
+export {
   explainHitTest,
   formatHitExplanation,
   type HitCandidate,
