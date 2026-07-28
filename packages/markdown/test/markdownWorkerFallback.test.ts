@@ -8,11 +8,26 @@ class MockWorker {
   static instances: MockWorker[] = [];
   public onmessage: ((e: { data: unknown }) => void) | null = null;
   public onerror: ((e: unknown) => void) | null = null;
-  public posted: Array<{ id: number; text: string; oldRaws?: string[] }> = [];
+  public posted: Array<{
+    id: number;
+    text?: string;
+    append?: string;
+    expectedLength?: number;
+    oldRaws?: string[];
+    instance?: string;
+    baseVersion?: number;
+    dispose?: boolean;
+  }> = [];
   constructor(_url: string) {
     MockWorker.instances.push(this);
   }
-  postMessage(data: { id: number; text: string; oldRaws?: string[] }): void {
+  postMessage(data: {
+    id: number;
+    text?: string;
+    append?: string;
+    expectedLength?: number;
+    oldRaws?: string[];
+  }): void {
     this.posted.push(data);
   }
   terminate(): void {}
@@ -41,7 +56,7 @@ describe('Markdown worker error fallback', () => {
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toContain('streamed paragraph');
   });
 
-  it('omits oldRaws (worker caches them) and reconstructs full tokens from a (matchLen, tail) delta', async () => {
+  it('sends the full text plus oldRaws on the first request, then a chunk-sized delta', async () => {
     vi.resetModules();
     vi.stubGlobal('Worker', MockWorker);
     URL.createObjectURL = (() => 'blob:mock') as never;
@@ -58,9 +73,13 @@ describe('Markdown worker error fallback', () => {
 
     const fullText = initialText + '\n\nSecond paragraph.';
     const oldRaws = marked.lexer(initialText).map((t) => t.raw);
-    // The prior raws are NOT re-sent: the worker keeps them, keyed by this
-    // instance + its token version (that's what makes a stream O(N) not O(N²)).
-    expect(worker.posted[0].oldRaws).toBeUndefined();
+    // First request for this instance: the worker holds nothing for it, so the
+    // full text AND the prior raws go together. Sending the text alone would
+    // only earn a `needResync` and then have to send the whole document a
+    // second time — the old protocol did exactly that on every first append.
+    expect(worker.posted[0].text).toBe(fullText);
+    expect(worker.posted[0].oldRaws).toEqual(oldRaws);
+    expect(worker.posted[0].append).toBeUndefined();
     expect(typeof worker.posted[0].instance).toBe('string');
     expect(typeof worker.posted[0].baseVersion).toBe('number');
 
@@ -81,9 +100,21 @@ describe('Markdown worker error fallback', () => {
     // entity reused (matchLen covered it, so it was never removed/re-added).
     expect(md.content.children.length).toBeGreaterThan(initialChildCount);
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe(fullText);
+
+    // Now that the worker is known to hold this source, the next append ships
+    // only the chunk — this is the O(chunk) steady state the protocol exists
+    // for, and it must NOT re-send the document or the raws.
+    md.appendMarkdown('\n\nThird paragraph.');
+    expect(worker.posted.length).toBe(2);
+    expect(worker.posted[1].append).toBe('\n\nThird paragraph.');
+    expect(worker.posted[1].text).toBeUndefined();
+    expect(worker.posted[1].oldRaws).toBeUndefined();
+    // The length the worker's own source must reach once it applies the append,
+    // so a dropped or duplicated chunk is caught instead of silently lexed.
+    expect(worker.posted[1].expectedLength).toBe(fullText.length + '\n\nThird paragraph.'.length);
   });
 
-  it('re-sends oldRaws once when the worker reports its cached raws are stale', async () => {
+  it('resends the full text and raws once when the worker reports it cannot trust what it holds', async () => {
     vi.resetModules();
     vi.stubGlobal('Worker', MockWorker);
     URL.createObjectURL = (() => 'blob:mock') as never;
@@ -96,15 +127,15 @@ describe('Markdown worker error fallback', () => {
     md.appendMarkdown('\n\nSecond paragraph.');
     const worker = MockWorker.instances.at(-1)!;
     expect(worker.posted.length).toBe(1);
-    expect(worker.posted[0].oldRaws).toBeUndefined();
 
-    // Worker: "I can't trust my cache for this instance/version."
-    worker.onmessage!({ data: { id: worker.posted[0].id, needRaws: true } });
+    // Worker: "I can't trust what I hold for this instance/version."
+    worker.onmessage!({ data: { id: worker.posted[0].id, needResync: true } });
 
-    // Exactly one retry, now carrying the raws, for the same text.
+    // Exactly one retry, still the full shape, for the same text.
     expect(worker.posted.length).toBe(2);
     expect(worker.posted[1].oldRaws).toEqual(marked.lexer(initialText).map((t) => t.raw));
     expect(worker.posted[1].text).toBe(worker.posted[0].text);
+    expect(worker.posted[1].append).toBeUndefined();
 
     // The retry still reconstructs correctly.
     const fullTokens = marked.lexer(worker.posted[1].text!);
@@ -121,6 +152,106 @@ describe('Markdown worker error fallback', () => {
       },
     });
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe(worker.posted[1].text);
+  });
+
+  it('falls back to the full shape after setContent, which invalidates the worker source', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# Title');
+    md.appendMarkdown('\n\nFirst.');
+    const worker = MockWorker.instances.at(-1)!;
+    const tokens1 = marked.lexer('# Title\n\nFirst.');
+    worker.onmessage!({ data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) } });
+
+    // A steady-state append would be a delta from here.
+    md.appendMarkdown('\n\nSecond.');
+    expect(worker.posted[1].append).toBe('\n\nSecond.');
+    const tokens2 = marked.lexer('# Title\n\nFirst.\n\nSecond.');
+    worker.onmessage!({ data: { id: worker.posted[1].id, matchLen: 2, tail: tokens2.slice(2) } });
+
+    // setContent replaces the document, so the worker's copy of the source now
+    // describes something that no longer exists and the next append must resend
+    // the text.
+    //
+    // The replacement here is deliberately chosen so that it plus the following
+    // append is LONGER than the source the worker held (24 chars). A shorter
+    // replacement is already caught by the `workerSourceLen <= sentLength` guard
+    // in dispatchAppend, so it cannot distinguish a correct implementation from
+    // one that forgot to reset — this case can.
+    md.setContent('# Replaced heading');
+    md.appendMarkdown('\n\nAfter the reset arrives.');
+
+    // The post this produces must be the FULL shape. Asserting on the last post
+    // via `.at(-1)` would pass either way, and indexing a post that may not
+    // exist asserts nothing at all — `expect(undefined).toBeUndefined()` is
+    // vacuously true, which is how an earlier version of this test passed
+    // against the broken code. So: pin the count first, then the shape.
+    expect(worker.posted.length).toBe(3);
+    const afterReset = worker.posted[2];
+    expect(afterReset).toBeDefined();
+    // Without the reset this is a delta sliced from offset 24 of a 44-character
+    // document — text this instance never had. The worker's version check would
+    // reject it, but only after a wasted round trip.
+    expect(afterReset!.append).toBeUndefined();
+    expect(afterReset!.text).toBe('# Replaced heading\n\nAfter the reset arrives.');
+    expect(afterReset!.oldRaws).toEqual(marked.lexer('# Replaced heading').map((t) => t.raw));
+  });
+
+  it('stops sending deltas after a sync-fallback parse the worker never saw', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# Title');
+    md.appendMarkdown('\n\nFirst.');
+    const worker = MockWorker.instances.at(-1)!;
+    const tokens1 = marked.lexer('# Title\n\nFirst.');
+    worker.onmessage!({ data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) } });
+
+    // The worker's lexer throws for the next request, so the main thread parses
+    // it locally. The worker never saw that source, so its cached copy is now
+    // behind by this chunk: a delta against it would lex text this instance does
+    // not have and return a matchLen for tokens it never held.
+    md.appendMarkdown('\n\nSecond.');
+    expect(worker.posted[1].append).toBe('\n\nSecond.');
+    worker.onmessage!({ data: { id: worker.posted[1].id, error: 'boom' } });
+
+    md.appendMarkdown('\n\nThird.');
+    const latest = worker.posted.at(-1)!;
+    expect(latest.append).toBeUndefined();
+    expect(latest.text).toBe('# Title\n\nFirst.\n\nSecond.\n\nThird.');
+  });
+
+  it('parses locally for every pending request when the worker itself crashes', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# Title');
+    md.appendMarkdown('\n\nFirst.');
+    const worker = MockWorker.instances.at(-1)!;
+    expect(worker.posted.length).toBe(1);
+
+    // The worker process died with a request in flight. Every pending callback
+    // must still resolve — dropping one loses that chunk permanently — and the
+    // worker is dropped, so subsequent appends lex on the main thread.
+    worker.onerror!(new Error('worker died'));
+    expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe('# Title\n\nFirst.');
+    expect(md.content.children.length).toBeGreaterThan(0);
+
+    const postedAfterCrash = worker.posted.length;
+    md.appendMarkdown('\n\nSecond.');
+    // Nothing more is posted: there is no worker to post to.
+    expect(worker.posted.length).toBe(postedAfterCrash);
+    expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toContain('Second.');
   });
 
   it('tells the worker to drop its cached raws when the block is destroyed', async () => {
@@ -178,9 +309,12 @@ describe('Markdown worker error fallback', () => {
     });
 
     // Resolving the in-flight request must trigger exactly one follow-up
-    // dispatch carrying the text that accumulated in the meantime.
+    // dispatch carrying the text that accumulated in the meantime. The worker
+    // is now known to hold 'Hello world', so that follow-up is a delta and the
+    // coalesced chunk is what it carries.
     expect(worker.posted.length).toBe(2);
-    expect(worker.posted[1].text).toBe('Hello world!');
+    expect(worker.posted[1].append).toBe('!');
+    expect(worker.posted[1].expectedLength).toBe('Hello world!'.length);
 
     // Again derived locally, not echoed back in the request.
     const oldRaws2 = marked.lexer('Hello world').map((t) => t.raw);

@@ -30,31 +30,38 @@ marked.use({
 });
 
 /**
- * Per-Markdown-instance cache of the raw source of the tokens the caller is
- * currently holding, so a streaming append does NOT have to re-send them every
- * chunk (that made each request O(document) on top of the text itself, i.e.
- * O(N²) transfer + main-thread serialization over a whole stream).
+ * Per-Markdown-instance cache of what the caller is currently holding: the raw
+ * source of its tokens, and the accumulated document source itself.
+ *
+ * `raws` exists so a streaming append does NOT have to re-send every prior
+ * token's raw text each chunk. `source` exists so it does not have to re-send
+ * the DOCUMENT each chunk either — with both cached, a steady-state append ships
+ * only the new chunk, which is what takes main->worker transfer from
+ * O(document) per chunk (O(N²) over a stream) down to O(chunk).
  *
  * `version` is the caller's token-list version this cache is valid for. The
  * caller bumps its version on every token-list mutation it makes, so a mismatch
  * (first request, a `setContent()`, or a main-thread sync-fallback parse that
  * the worker never saw) means the cache cannot be trusted — the worker asks for
- * one resync rather than silently diffing against stale raws.
+ * one resync rather than silently diffing against stale raws or, worse, lexing a
+ * source that has silently diverged from the caller's.
  */
-const rawCache = new Map<string, { version: number; raws: string[] }>();
+const rawCache = new Map<string, { version: number; raws: string[]; source: string }>();
 
 self.onmessage = (e: MessageEvent) => {
   // A dedicated worker only receives messages from the script that created it
   // (there is no cross-origin `postMessage` surface — `event.origin` is always
   // "" here), so origin verification does not apply. What *is* worth doing is
   // validating the message SHAPE before acting on it: ignore anything that
-  // isn't our `{ id, text }` request so a malformed post can't drive the lexer
-  // with a non-string or crash the handler.
+  // isn't one of our request shapes (`{ id, text }` or `{ id, append }`) so a
+  // malformed post can't drive the lexer with a non-string or crash the handler.
   const data = e.data;
   if (typeof data !== 'object' || data === null) return;
-  const { id, text, oldRaws, instance, baseVersion, dispose } = data as {
+  const { id, text, append, expectedLength, oldRaws, instance, baseVersion, dispose } = data as {
     id: unknown;
-    text: unknown;
+    text?: unknown;
+    append?: unknown;
+    expectedLength?: unknown;
     oldRaws?: unknown;
     instance?: unknown;
     baseVersion?: unknown;
@@ -68,26 +75,64 @@ self.onmessage = (e: MessageEvent) => {
     return;
   }
 
-  if (typeof text !== 'string') return;
   const key = typeof instance === 'string' ? instance : null;
   const version = typeof baseVersion === 'number' ? baseVersion : null;
 
-  // Resolve which prior raws to diff against: the ones just sent (a resync or a
-  // cacheless caller) take precedence, else this instance's cached raws when
-  // they match the caller's current version.
+  // Resolve the source to lex and the prior raws to diff against.
+  //
+  // Two request shapes. A DELTA request carries only `append` and extends the
+  // cached source; a FULL request carries `text`, which is what a first request,
+  // a `setContent()`, or a resync sends. Anything the cache cannot satisfy asks
+  // for one resync rather than guessing: lexing a source that had silently
+  // diverged from the caller's would return a matchLen describing tokens the
+  // caller never held, and the reconciler would keep the wrong entities.
+  let source: string;
   let priorRaws: string[] | null = null;
-  if (Array.isArray(oldRaws)) {
-    priorRaws = oldRaws as string[];
-  } else if (key !== null && version !== null) {
-    const cached = rawCache.get(key);
-    if (cached && cached.version === version) {
-      priorRaws = cached.raws;
-    } else {
-      // Cache miss/stale — ask for the raws once instead of diffing blind (a
-      // wrong matchLen would corrupt the caller's reconciled token list).
-      self.postMessage({ id, needRaws: true });
+
+  if (typeof append === 'string') {
+    if (key === null || version === null) {
+      // A delta is meaningless without the identity and version that say which
+      // cached source it extends.
+      self.postMessage({ id, needResync: true });
       return;
     }
+    const cached = rawCache.get(key);
+    if (!cached || cached.version !== version) {
+      self.postMessage({ id, needResync: true });
+      return;
+    }
+    source = cached.source + append;
+    // The caller states what the document must total after this append. A
+    // mismatch means the two sides disagree about the source — a dropped,
+    // duplicated, or reordered chunk — and every token from here on would be
+    // lexed from text the caller does not have. One integer to check, and it
+    // converts a silent divergence into one resync.
+    if (typeof expectedLength === 'number' && source.length !== expectedLength) {
+      rawCache.delete(key);
+      self.postMessage({ id, needResync: true });
+      return;
+    }
+    priorRaws = cached.raws;
+  } else if (typeof text === 'string') {
+    source = text;
+    // The raws just sent (a resync or a cacheless caller) take precedence, else
+    // this instance's cached raws when they match the caller's current version.
+    if (Array.isArray(oldRaws)) {
+      priorRaws = oldRaws as string[];
+    } else if (key !== null && version !== null) {
+      const cached = rawCache.get(key);
+      if (cached && cached.version === version) {
+        priorRaws = cached.raws;
+      } else {
+        // Cache miss/stale — ask for the raws once instead of diffing blind (a
+        // wrong matchLen would corrupt the caller's reconciled token list).
+        self.postMessage({ id, needResync: true });
+        return;
+      }
+    }
+  } else {
+    // Neither shape — ignore, as a non-string `text` was ignored before.
+    return;
   }
 
   try {
@@ -100,7 +145,7 @@ self.onmessage = (e: MessageEvent) => {
     // The caller already knows which of ITS OWN previous tokens are still
     // valid (raw source unchanged), so diff the same way `updateTokens()`
     // does on the receiving end and send back only the changed suffix.
-    const tokens = marked.lexer(text);
+    const tokens = marked.lexer(source);
     let matchLen = 0;
     if (priorRaws) {
       const minLen = Math.min(priorRaws.length, tokens.length);
@@ -109,12 +154,14 @@ self.onmessage = (e: MessageEvent) => {
       }
     }
     // Remember what the caller will be holding after it applies this response,
-    // tagged with the version it will then be at, so the next chunk needs to
-    // send only the new text.
+    // tagged with the version it will then be at, plus the source those tokens
+    // came from — so the next chunk needs to send neither the prior raws nor the
+    // document, only the new text.
     if (key !== null && version !== null) {
       rawCache.set(key, {
         version: version + 1,
         raws: tokens.map((t) => t.raw),
+        source,
       });
     }
     self.postMessage({ id, matchLen, tail: tokens.slice(matchLen) });

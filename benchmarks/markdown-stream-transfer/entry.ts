@@ -1,21 +1,31 @@
 // CTX-0059 — Markdown streaming worker-transfer volume.
 //
-// Every streamed chunk must re-lex the whole accumulated document in the worker
-// (`marked` has no incremental lexer), so the `text` field unavoidably grows with
-// the document — that term stays O(N) per chunk / O(N²) per stream either way.
+// The request payload has been through three generations, and this bench reports
+// all three over the same stream because each one removed a different O(N) term:
 //
-// What WAS avoidable is the SECOND such term: the request also carried
-// `oldRaws`, the raw source of every token the caller already held, so each
-// chunk shipped the document TWICE. The worker now keeps that raw list itself
-// (keyed by Markdown instance + token version), so a steady-state chunk posts
-// only the text.
+//   1. `{ text: <whole document>, oldRaws: [<raw of every token held>] }`
+//      — the document went over the wire TWICE per chunk.
+//   2. (#233) `{ text: <whole document> }` — the worker keeps the raw list
+//      itself, keyed by Markdown instance + token version.
+//   3. (this change) `{ append: <chunk>, expectedLength }` — the worker keeps the
+//      SOURCE too, so a steady-state chunk posts only the new characters.
+//
+// An earlier version of this comment claimed the `text` term was unavoidable
+// because `marked` has no incremental lexer. That conflated two costs. The LEX is
+// still O(N) per chunk — nothing here changes that, and it is why `expectedLength`
+// exists rather than a subtler diff. But the lex runs on the worker thread, while
+// the transfer is a structured clone charged to the CALLER's thread, and that term
+// is what generation 3 removes: posts go from O(N) to O(chunk).
+//
+// Measured on real hardware (Chrome, per-append main-thread postMessage cost):
+// full-text 4.08µs @8KB → 34.54 @128KB → 219.68 @512KB, versus a flat 2.07–2.50µs
+// for the append shape at every size. Whole-stream main-thread time saved: ~3ms at
+// 32KB, ~68ms at 128KB, ~1.8s at 512KB.
 //
 // This bench measures the bytes actually posted per chunk (the Worker is stubbed
 // so only request payloads are observed, not the lex) and reports the cumulative
-// total for the new protocol vs the old one over the same stream. The expected
-// result is therefore a convergence toward ~2× less transfer, not a change in
-// asymptotic class — which is exactly what "stop sending the document twice"
-// should look like, and is the honest ceiling until marked can lex incrementally.
+// total for each generation. Unlike generation 2's ~2× constant-factor win, the
+// generation-3 ratio GROWS with the stream — that asymptotic change is the point.
 // NOTE: `@vectojs/markdown` creates its shared Worker at MODULE LOAD time, so
 // the stub must be installed BEFORE the module is imported — hence the dynamic
 // import in main() rather than a static import here.
@@ -37,7 +47,21 @@ function payloadBytes(v: unknown): number {
 }
 
 /** Accounting for the run currently being measured; swapped per measurement. */
-let run = { posts: 0, newBytes: 0, oldBytes: 0, raws: [] as string[] };
+let run = {
+  posts: 0,
+  deltas: 0,
+  resyncs: 0,
+  /** Generation 3: what this build actually posts. */
+  deltaBytes: 0,
+  /** Generation 2: the whole document as `text`, every chunk. */
+  fullTextBytes: 0,
+  /** Generation 1: the whole document plus the caller's raw list, every chunk. */
+  fullTextRawsBytes: 0,
+  /** The source the worker holds, mirroring the real worker's cache. */
+  source: '',
+  /** The raw list the worker holds — and therefore what generation 1 resent. */
+  raws: [] as string[],
+};
 
 /**
  * Stand-in for the shared Markdown worker. Installed BEFORE the module is
@@ -45,6 +69,10 @@ let run = { posts: 0, newBytes: 0, oldBytes: 0, raws: [] as string[] };
  * payload size and replies the way MarkdownWorker does, so the real reconcile
  * path runs. `marked` isn't bundled here, so the token split is approximated by
  * blank-line-separated blocks — enough to drive (matchLen, tail).
+ *
+ * Both request shapes are handled, including the `expectedLength` check, because
+ * the caller's delta/full decision is exactly what this bench measures: a stub
+ * that only understood `text` would silently score every post as a resync.
  */
 class StubWorker {
   public onmessage: ((e: { data: any }) => void) | null = null;
@@ -52,17 +80,40 @@ class StubWorker {
   postMessage(msg: any): void {
     if (msg?.dispose) return;
     run.posts++;
-    run.newBytes += payloadBytes(msg);
-    // What the OLD protocol would have sent for this same request: this message
-    // plus the full prior-token raw list, every single chunk.
-    run.oldBytes += payloadBytes({ ...msg, oldRaws: run.raws });
+    run.deltaBytes += payloadBytes(msg);
 
-    const blocks = String(msg.text).split(/\n\n/);
+    // Reconstruct the document the way the real worker does, and reject a delta
+    // whose result does not match the length the caller expects.
+    let source: string;
+    if (typeof msg.append === 'string') {
+      run.deltas++;
+      source = run.source + msg.append;
+      if (source.length !== msg.expectedLength) {
+        run.resyncs++;
+        run.source = '';
+        run.raws = [];
+        this.onmessage?.({ data: { id: msg.id, needResync: true } });
+        return;
+      }
+    } else if (typeof msg.text === 'string') {
+      source = msg.text;
+    } else {
+      return;
+    }
+
+    // What the two earlier generations would have posted for this same request.
+    const { append: _append, expectedLength: _expectedLength, ...rest } = msg;
+    const asFullText = { ...rest, text: source };
+    run.fullTextBytes += payloadBytes(asFullText);
+    run.fullTextRawsBytes += payloadBytes({ ...asFullText, oldRaws: run.raws });
+
+    const blocks = source.split(/\n\n/);
     let matchLen = 0;
     const minLen = Math.min(run.raws.length, blocks.length);
     for (; matchLen < minLen; matchLen++) {
       if (run.raws[matchLen] !== blocks[matchLen]) break;
     }
+    run.source = source;
     run.raws = blocks.slice();
     const tail = blocks.slice(matchLen).map((b) => ({
       type: 'paragraph',
@@ -87,12 +138,24 @@ function measure(
   Markdown: MarkdownCtor,
   chunks: number,
 ): {
-  newBytes: number;
-  oldBytes: number;
+  deltaBytes: number;
+  fullTextBytes: number;
+  fullTextRawsBytes: number;
   posts: number;
+  deltas: number;
+  resyncs: number;
 } {
   // Fresh accounting for this run; the (already-installed) stub reads these.
-  run = { posts: 0, newBytes: 0, oldBytes: 0, raws: [] };
+  run = {
+    posts: 0,
+    deltas: 0,
+    resyncs: 0,
+    deltaBytes: 0,
+    fullTextBytes: 0,
+    fullTextRawsBytes: 0,
+    source: '',
+    raws: [],
+  };
 
   const md = new Markdown('# Streamed document');
   for (let i = 0; i < chunks; i++) {
@@ -100,7 +163,14 @@ function measure(
     md.appendMarkdown(i % 8 === 7 ? `\n\n${SENTENCE}` : SENTENCE);
   }
   md.destroy();
-  return { newBytes: run.newBytes, oldBytes: run.oldBytes, posts: run.posts };
+  return {
+    deltaBytes: run.deltaBytes,
+    fullTextBytes: run.fullTextBytes,
+    fullTextRawsBytes: run.fullTextRawsBytes,
+    posts: run.posts,
+    deltas: run.deltas,
+    resyncs: run.resyncs,
+  };
 }
 
 async function main() {
@@ -116,13 +186,22 @@ async function main() {
   };
   const rows: any[] = [];
   for (const chunks of CHUNK_COUNTS) {
-    const { newBytes, oldBytes, posts } = measure(Markdown, chunks);
+    const m = measure(Markdown, chunks);
     rows.push({
       chunks,
-      posts,
-      newKB: +(newBytes / 1024).toFixed(1),
-      oldKB: +(oldBytes / 1024).toFixed(1),
-      reduction: +(oldBytes / Math.max(newBytes, 1)).toFixed(2),
+      posts: m.posts,
+      deltas: m.deltas,
+      // Non-zero means the caller's offset tracking drifted from the worker's
+      // source — a correctness signal, not a tuning knob.
+      resyncs: m.resyncs,
+      deltaKB: +(m.deltaBytes / 1024).toFixed(1),
+      fullTextKB: +(m.fullTextBytes / 1024).toFixed(1),
+      fullTextRawsKB: +(m.fullTextRawsBytes / 1024).toFixed(1),
+      // Ratios against what this build actually posts. `vsFullText` is the win
+      // from this change; it should grow with `chunks`, unlike `fullTextRaws /
+      // fullText`, which is a ~2× constant.
+      vsFullText: +(m.fullTextBytes / Math.max(m.deltaBytes, 1)).toFixed(2),
+      vsFullTextRaws: +(m.fullTextRawsBytes / Math.max(m.deltaBytes, 1)).toFixed(2),
     });
   }
   // `engine` and `userAgent` are gone from here: the shared envelope supplies both.
