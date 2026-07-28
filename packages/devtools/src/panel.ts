@@ -18,6 +18,15 @@ import {
   type HighlightLayer,
   type HighlightLayerKind,
 } from './highlightGeometry';
+import {
+  pluginInspectors,
+  runPluginAudits,
+  runPluginCommand,
+  runPluginInspector,
+  type PluginFinding,
+  type PluginInspector,
+  type PluginRow,
+} from './plugin';
 import { auditA11y, inspectA11y } from './a11yInspect';
 import { entityPath, inspectEntity, layoutControlledProperties } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
@@ -63,6 +72,15 @@ const A11Y_ROWS = 22;
  * giving back the per-tick saving the version check buys.
  */
 const RECONCILE_INTERVAL_MS = 3000;
+/**
+ * Preferred tab width. `Tabs` scrolls the bar horizontally past this rather than
+ * shrinking tabs, so the count can grow without the labels becoming slivers.
+ */
+const PLUGIN_TAB_WIDTH = 64;
+/** Floor the preferred width collapses to before the bar starts scrolling. */
+const PLUGIN_TAB_MIN_WIDTH = 48;
+/** Readout rows per plugin inspector tab. */
+const PLUGIN_ROWS = 18;
 const MUTED = '#7c8aa5';
 const ACCENT = '#38bdf8';
 const WARN = '#fbbf24';
@@ -133,6 +151,10 @@ export class DevtoolsPanel {
   private highlightEnabled = true;
   private highlightLayers: HighlightLayerKind[] = ['aabb'];
   private hitSampleStep: number | undefined;
+  /** Plugin inspector id → its tab's readout rows. */
+  private pluginTabs = new Map<string, { inspector: PluginInspector; lines: Text[] }>();
+  /** Findings from the last audit that came from plugins, kept for `pluginFindings()`. */
+  private pluginFindings: PluginFinding[] = [];
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private perfTimer: ReturnType<typeof setInterval> | null = null;
   private pickArmed = false;
@@ -466,14 +488,26 @@ export class DevtoolsPanel {
       this.writeTrace();
     }
 
+    // One tab per registered plugin inspector, before Settings so the gear stays
+    // last. Read at mount; `syncPluginTabs` picks up later registrations.
+    for (const inspector of pluginInspectors()) {
+      tabItems.push(this.buildPluginTab(inspector));
+    }
+
     // Settings tab.
     tabItems.push({ id: 'settings', label: '⚙', content: this.buildSettings(contentW, options) });
 
     this.tabs = new Tabs({
+      // Deliberately NOT `contentW / tabItems.length`: dividing the bar by the
+      // count shrank every tab as tabs were added, so six already sat at ~51px
+      // and a plugin or two made the labels unreadable. `Tabs` keeps a preferred
+      // width and scrolls the bar horizontally once they overflow, which is the
+      // behaviour that survives an unbounded number of plugins.
       width: contentW,
       height: tabsHeight,
       tabHeight: barH,
-      tabWidth: Math.floor(contentW / tabItems.length),
+      tabWidth: PLUGIN_TAB_WIDTH,
+      minTabWidth: PLUGIN_TAB_MIN_WIDTH,
       value: options.defaultTab ?? 'tree',
       tabs: tabItems,
     });
@@ -648,9 +682,17 @@ export class DevtoolsPanel {
     // Selection details are still rewritten every tick: an entity's properties
     // change without the tree's shape changing, and a stale readout is the whole
     // reason to look at the panel.
+    // Plugins can be registered after this panel mounted, so pick up new ones
+    // before the version check: a newly imported plugin has no reason to wait for
+    // the next structural change to become visible.
+    this.syncPluginTabs();
+
     const version = this.host.structureVersion;
     if (!force && version === this.treeVersion && this.allNodes.length > 0) {
       if (this.selected) this.writeDetails(this.selected);
+      // Plugin readouts follow the same rule as the selection details: component
+      // state changes without the tree's shape changing.
+      this.writePluginTabs();
       this.writeCounts();
       this.panelScene.markDirty();
       return;
@@ -665,6 +707,7 @@ export class DevtoolsPanel {
     this.applyFilterToTree();
     this.writeCounts();
     if (this.selected) this.writeDetails(this.selected);
+    this.writePluginTabs();
     this.panelScene.markDirty();
   }
 
@@ -736,15 +779,24 @@ export class DevtoolsPanel {
     this.index = index;
 
     this.findings = auditScene(this.host);
+    // Plugin audits are appended as ordinary findings, so `selectFinding` and the
+    // audit tree need no knowledge of where a finding came from. `runPluginAudits`
+    // namespaces the kind with the plugin id, which is what distinguishes them.
+    this.pluginFindings = runPluginAudits({
+      scene: this.host,
+      selection: this.selected ?? null,
+    });
+    const rows = [
+      ...this.findings.map((f) => ({ kind: f.kind, message: f.message })),
+      ...this.pluginFindings.map((f) => ({ kind: f.kind, message: f.message })),
+    ];
     this.auditTree.setNodes(
-      this.findings.map((f, i) => ({
+      rows.map((f, i) => ({
         id: `finding:${i}`,
         label: `⚠ ${f.kind}: ${f.message}`,
       })),
     );
-    this.detailLines[0]?.setText(
-      this.findings.length === 0 ? 'audit clean' : `${this.findings.length} finding(s)`,
-    );
+    this.detailLines[0]?.setText(rows.length === 0 ? 'audit clean' : `${rows.length} finding(s)`);
     this.writeCounts();
     this.showTab('audit');
     this.panelScene.markDirty();
@@ -776,6 +828,7 @@ export class DevtoolsPanel {
     }
     this.writeDetails(entity);
     this.syncInspector(entity);
+    this.writePluginTabs();
     this.showTab('inspect');
     this.panelScene.markDirty();
   }
@@ -830,6 +883,102 @@ export class DevtoolsPanel {
   /** The layers computed on the most recent highlight draw. */
   public getHighlightLayers(): ReadonlyArray<HighlightLayer> {
     return this.highlight?.layers ?? [];
+  }
+
+  /**
+   * Build a tab body for one plugin inspector: a fixed row budget, written into
+   * on refresh. Rows are pre-allocated for the same reason the built-in tabs
+   * pre-allocate — the panel scene is `onDemand`, so churning entities every
+   * refresh would dirty it continuously.
+   */
+  private buildPluginTab(inspector: PluginInspector): TabItem {
+    const content = new Container();
+    const lines: Text[] = [];
+    for (let i = 0; i < PLUGIN_ROWS; i++) {
+      const line = new Text('', {
+        font: i === 0 ? 'bold 11px monospace' : '11px monospace',
+        color: i === 0 ? '#e8eefc' : PANEL_FG,
+      });
+      line.setPosition(10, 16 + i * 16);
+      lines.push(line);
+      content.add(line);
+    }
+    this.pluginTabs.set(inspector.id, { inspector, lines });
+    return { id: `plugin:${inspector.id}`, label: inspector.label, content };
+  }
+
+  /**
+   * Refresh every plugin tab from the current selection.
+   *
+   * Runs for all plugin tabs rather than only the visible one: the panel does not
+   * track which tab is active (that state lives in `Tabs`), and a plugin readout
+   * is a handful of string writes, so the saving would not pay for the coupling.
+   */
+  private writePluginTabs(): void {
+    const context = { scene: this.host, selection: this.selected ?? null };
+    for (const { inspector, lines } of this.pluginTabs.values()) {
+      let rows: PluginRow[];
+      if (!this.selected) rows = [{ label: '—', value: 'no selection' }];
+      else if (inspector.appliesTo && !appliesToSafely(inspector, this.selected)) {
+        rows = [{ label: '—', value: 'does not apply to this entity' }];
+      } else {
+        rows = runPluginInspector(inspector, context);
+        if (rows.length === 0) rows = [{ label: '—', value: 'nothing to report' }];
+      }
+      lines.forEach((line, i) => {
+        const row = rows[i];
+        line.setText(
+          row ? `${row.label}  ${row.value}${row.note ? `  (${row.note})` : ''}`.trim() : '',
+        );
+      });
+    }
+  }
+
+  /**
+   * Add tabs for plugins registered after this panel mounted.
+   *
+   * Called from `refresh()`, so importing a package that registers a plugin makes
+   * its tab appear without remounting the panel.
+   */
+  private syncPluginTabs(): void {
+    const known = new Set(this.pluginTabs.keys());
+    const added = pluginInspectors().filter((i) => !known.has(i.id));
+    if (added.length === 0) return;
+    const settingsIdx = this.tabs.tabs.findIndex((t) => t.id === 'settings');
+    const items = added.map((i) => this.buildPluginTab(i));
+    // Keep Settings last: it is the only tab that is not a readout, and having it
+    // move as plugins load would shift a target the user aims at by habit.
+    if (settingsIdx >= 0) this.tabs.tabs.splice(settingsIdx, 0, ...items);
+    else this.tabs.tabs.push(...items);
+    // No explicit `add` of the content: `Tabs.update()` re-derives content
+    // geometry and attaches or detaches each body every frame based on the
+    // active id, so adding it here would fight that and double-parent it.
+    this.panelScene.markDirty();
+  }
+
+  /** Findings contributed by plugin audits during the last {@link audit} run. */
+  public getPluginFindings(): ReadonlyArray<PluginFinding> {
+    return this.pluginFindings;
+  }
+
+  /** Rows a plugin inspector currently shows, by inspector id. For tests and agents. */
+  public getPluginRows(inspectorId: string): PluginRow[] {
+    const entry = this.pluginTabs.get(inspectorId);
+    if (!entry) return [];
+    if (!this.selected) return [];
+    if (!appliesToSafely(entry.inspector, this.selected)) return [];
+    return runPluginInspector(entry.inspector, {
+      scene: this.host,
+      selection: this.selected,
+    });
+  }
+
+  /** Run a plugin command by `<pluginId>/<commandId>` against the current selection. */
+  public runCommand(qualifiedId: string): unknown {
+    return runPluginCommand(qualifiedId, {
+      scene: this.host,
+      selection: this.selected ?? null,
+    });
   }
 
   /** Change the auto-refresh cadence (ms; 0 disables). Also gates the reconcile. */
@@ -1015,6 +1164,18 @@ export class DevtoolsPanel {
     }
     this.panelScene.destroy();
     this.container.remove();
+  }
+}
+
+/**
+ * Whether an inspector claims this entity, treating a throwing `appliesTo` as
+ * "does not apply" so one broken plugin cannot blank the whole panel.
+ */
+function appliesToSafely(inspector: PluginInspector, entity: Entity): boolean {
+  try {
+    return !inspector.appliesTo || inspector.appliesTo(entity) === true;
+  } catch {
+    return false;
   }
 }
 
