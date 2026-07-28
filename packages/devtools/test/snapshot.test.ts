@@ -18,6 +18,32 @@ class Lbl extends Box {
   public text = 'caption';
 }
 
+/** A row that declares a stable identity, as VirtualList and Table rows do. */
+class Row extends Box {
+  constructor(
+    id: string,
+    private key: string,
+  ) {
+    super(id, 100, 20);
+  }
+  override getDevtoolsDescriptor() {
+    return { devtoolsKey: this.key, fields: [] };
+  }
+}
+
+/** A control identified by its accessible label rather than a declared key. */
+class Labelled extends Box {
+  constructor(
+    id: string,
+    private label: string,
+  ) {
+    super(id, 40, 20);
+  }
+  override getA11yAttributes() {
+    return { role: 'button', label: this.label };
+  }
+}
+
 function makeScene(): Scene {
   const parent = document.createElement('div');
   const canvas = document.createElement('canvas');
@@ -97,6 +123,154 @@ describe('diffSnapshots', () => {
     const removed = diffSnapshots(captureSnapshot(scene), before);
     expect(removed).toHaveLength(1);
     expect(removed[0].kind).toBe('removed');
+    scene.destroy();
+  });
+});
+
+describe('keyed diffing', () => {
+  it('attributes a head insertion to the right nodes', () => {
+    const scene = makeScene();
+    scene.resize(400, 600);
+    for (let i = 0; i < 20; i++) {
+      const row = new Row(`r${i}`, `row-${i}`);
+      row.text = `item ${i}`;
+      row.setPosition(0, i * 20);
+      scene.add(row);
+    }
+    const before = captureSnapshot(scene);
+
+    // Insert at the HEAD and shift everything down: what a new item at the top
+    // of a list does.
+    const head = new Row('rNew', 'row-new');
+    head.text = 'item NEW';
+    scene.rootEntity.children.unshift(head);
+    head.parent = scene.rootEntity;
+    for (let i = 0; i < 20; i++) {
+      scene.rootEntity.children[i + 1]!.setPosition(0, (i + 1) * 20);
+    }
+
+    const diffs = diffSnapshots(before, captureSnapshot(scene));
+
+    // The insertion is reported AT THE HEAD. Index alignment names it `Row[20]`
+    // — the tail — because that is the only index without a partner.
+    const added = diffs.filter((d) => d.kind === 'added');
+    expect(added).toHaveLength(1);
+    expect(added[0]!.path).toBe('root > Row{k:row-new}');
+    expect(diffs.filter((d) => d.kind === 'removed')).toHaveLength(0);
+
+    // Every surviving row is recognised as itself, so the only reported change
+    // is the 20px it actually moved. Index alignment instead pairs each row with
+    // its neighbour and reports 20 text rewrites that never happened, which is
+    // the real cost: not diff size, but a diff where every entry is wrong.
+    expect(diffs.filter((d) => d.changes?.text)).toHaveLength(0);
+    for (const d of diffs.filter((x) => x.kind === 'changed')) {
+      expect(d.path).toMatch(/^root > Row\{k:row-\d+\}$/);
+      expect(Object.keys(d.changes ?? {})).toEqual(['y', 'worldBounds']);
+    }
+    scene.destroy();
+  });
+
+  it('reports a pure reorder as no change at all', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    const a = new Row('a', 'row-a');
+    const b = new Row('b', 'row-b');
+    scene.add(a);
+    scene.add(b);
+    const before = captureSnapshot(scene);
+
+    // Swap render order without moving anything: identity is unchanged, so a
+    // keyed diff must be silent where an index diff would report two changes.
+    scene.rootEntity.children.reverse();
+    expect(diffSnapshots(before, captureSnapshot(scene))).toEqual([]);
+    scene.destroy();
+  });
+
+  it('keys on the accessible label when no devtoolsKey is declared', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    scene.add(new Labelled('x', 'Save'));
+    const snap = captureSnapshot(scene);
+    expect(snap.root[0]!.key).toBe('l:Save');
+    scene.destroy();
+  });
+
+  it('prefers devtoolsKey over the accessible label', () => {
+    class Both extends Labelled {
+      override getDevtoolsDescriptor() {
+        return { devtoolsKey: 'declared', fields: [] };
+      }
+    }
+    const scene = makeScene();
+    scene.add(new Both('x', 'Save'));
+    expect(captureSnapshot(scene).root[0]!.key).toBe('k:declared');
+    scene.destroy();
+  });
+
+  it('does not key on drawn text, so a text edit stays one changed entry', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    const label = new Lbl('t', 20, 10);
+    scene.add(label);
+    const before = captureSnapshot(scene);
+    expect(before.root[0]!.key).toBeUndefined();
+
+    label.text = 'edited';
+    const diffs = diffSnapshots(before, captureSnapshot(scene));
+    // One `changed` carrying from/to — not a removal plus an addition, which is
+    // what keying on content would have produced.
+    expect(diffs).toHaveLength(1);
+    expect(diffs[0]!.kind).toBe('changed');
+    expect(diffs[0]!.changes?.text).toEqual({ from: 'caption', to: 'edited' });
+    scene.destroy();
+  });
+
+  it('falls back to index matching when sibling keys collide', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    // Two controls with the same label: pairing by key could match either, so
+    // an honest index diff is preferable to an arbitrary one.
+    scene.add(new Labelled('a', 'Delete'));
+    scene.add(new Labelled('b', 'Delete'));
+    const before = captureSnapshot(scene);
+
+    (scene.rootEntity.children[1] as Entity).setPosition(0, 40);
+    const diffs = diffSnapshots(before, captureSnapshot(scene));
+    expect(diffs).toHaveLength(1);
+    expect(diffs[0]!.path).toBe('root > Labelled[1]');
+    scene.destroy();
+  });
+
+  it('survives a descriptor or a11y getter that throws', () => {
+    class Hostile extends Box {
+      override getDevtoolsDescriptor(): never {
+        throw new Error('nope');
+      }
+      override getA11yAttributes(): never {
+        throw new Error('also nope');
+      }
+    }
+    const scene = makeScene();
+    scene.add(new Hostile('h', 10, 10));
+    expect(() => captureSnapshot(scene)).not.toThrow();
+    expect(captureSnapshot(scene).root[0]!.key).toBeUndefined();
+    scene.destroy();
+  });
+
+  it('detects a keyed removal by key, not position', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    scene.add(new Row('a', 'row-a'));
+    scene.add(new Row('b', 'row-b'));
+    scene.add(new Row('c', 'row-c'));
+    const before = captureSnapshot(scene);
+
+    // Remove the MIDDLE row. Index alignment would call it a change to `b` plus
+    // a removal of the tail.
+    scene.rootEntity.children.splice(1, 1);
+    const diffs = diffSnapshots(before, captureSnapshot(scene));
+    expect(diffs).toHaveLength(1);
+    expect(diffs[0]).toMatchObject({ kind: 'removed', path: 'root > Row{k:row-b}' });
     scene.destroy();
   });
 });
