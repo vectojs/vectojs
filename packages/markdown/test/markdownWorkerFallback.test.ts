@@ -165,13 +165,17 @@ describe('Markdown worker error fallback', () => {
     md.appendMarkdown('\n\nFirst.');
     const worker = MockWorker.instances.at(-1)!;
     const tokens1 = marked.lexer('# Title\n\nFirst.');
-    worker.onmessage!({ data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) } });
+    worker.onmessage!({
+      data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) },
+    });
 
     // A steady-state append would be a delta from here.
     md.appendMarkdown('\n\nSecond.');
     expect(worker.posted[1].append).toBe('\n\nSecond.');
     const tokens2 = marked.lexer('# Title\n\nFirst.\n\nSecond.');
-    worker.onmessage!({ data: { id: worker.posted[1].id, matchLen: 2, tail: tokens2.slice(2) } });
+    worker.onmessage!({
+      data: { id: worker.posted[1].id, matchLen: 2, tail: tokens2.slice(2) },
+    });
 
     // setContent replaces the document, so the worker's copy of the source now
     // describes something that no longer exists and the next append must resend
@@ -212,7 +216,9 @@ describe('Markdown worker error fallback', () => {
     md.appendMarkdown('\n\nFirst.');
     const worker = MockWorker.instances.at(-1)!;
     const tokens1 = marked.lexer('# Title\n\nFirst.');
-    worker.onmessage!({ data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) } });
+    worker.onmessage!({
+      data: { id: worker.posted[0].id, matchLen: 1, tail: tokens1.slice(1) },
+    });
 
     // The worker's lexer throws for the next request, so the main thread parses
     // it locally. The worker never saw that source, so its cached copy is now
@@ -332,5 +338,83 @@ describe('Markdown worker error fallback', () => {
     });
 
     expect((md as unknown as { rawMarkdown: string }).rawMarkdown).toBe('Hello world!');
+  });
+
+  it('discards a worker reply for a document that setContent already replaced', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# original');
+    const anyMd = md as unknown as {
+      tokens: Array<{ raw: string }>;
+      rawMarkdown: string;
+      content: { children: unknown[] };
+    };
+
+    md.appendMarkdown('\n\nstreamed tail');
+    const worker = MockWorker.instances.at(-1)!;
+    const inFlightId = worker.posted.at(-1)!.id;
+
+    // The caller replaces the whole document while that request is still out —
+    // switching conversation threads mid-stream, for instance.
+    md.setContent('# completely different document');
+    const tokensAfter = anyMd.tokens.map((t) => t.raw);
+    const childrenAfter = anyMd.content.children.length;
+
+    // Now the stale reply lands. Its matchLen and tail describe the OLD
+    // document, and its closure holds the OLD token snapshot; applying it
+    // rebuilds the tree from a document that no longer exists, leaving
+    // `tokens` disagreeing with `rawMarkdown` so the NEXT append diffs
+    // against tokens the source never had.
+    worker.onmessage!({
+      data: {
+        id: inFlightId,
+        matchLen: 1,
+        tail: marked.lexer('# original\n\nstreamed tail').slice(1),
+      },
+    });
+
+    expect(anyMd.rawMarkdown).toBe('# completely different document');
+    expect(anyMd.tokens.map((t) => t.raw)).toEqual(tokensAfter);
+    expect(anyMd.content.children.length).toBe(childrenAfter);
+  });
+
+  it('keeps streaming after a setContent that dropped an in-flight request', async () => {
+    vi.resetModules();
+    vi.stubGlobal('Worker', MockWorker);
+    URL.createObjectURL = (() => 'blob:mock') as never;
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+
+    const { Markdown } = await import('../src/index');
+    const md = new Markdown('# original');
+    const anyMd = md as unknown as {
+      rawMarkdown: string;
+      tokens: Array<{ raw: string }>;
+    };
+
+    md.appendMarkdown('\n\nstreamed tail');
+    const worker = MockWorker.instances.at(-1)!;
+    const postsBefore = worker.posted.length;
+
+    md.setContent('# replaced');
+
+    // Dropping the callback is only half the fix: `appendInFlight` gates every
+    // future dispatch, so leaving it set would make the next append set
+    // `appendPending` and wait forever for a reply that can never arrive.
+    md.appendMarkdown(' and more');
+    expect(worker.posted.length).toBe(postsBefore + 1);
+
+    const post = worker.posted.at(-1)!;
+    // The worker's source describes the replaced document, so this must be the
+    // full shape rather than a delta sliced from a stale offset.
+    expect(post.text).toBe('# replaced and more');
+    expect(post.append).toBeUndefined();
+
+    const tokens = marked.lexer('# replaced and more');
+    worker.onmessage!({ data: { id: post.id, matchLen: 0, tail: tokens } });
+    expect(anyMd.tokens.map((t) => t.raw).join('')).toContain('and more');
   });
 });
