@@ -14,6 +14,18 @@ import {
 } from '@vectojs/core';
 import { marked, type Token, type Tokens, type TokensList } from 'marked';
 
+/**
+ * Monotonic clock, falling back to `Date.now` where `performance` is absent.
+ *
+ * Used only for the streaming stats, so a coarse fallback is acceptable — but the
+ * fallback matters: a worker round trip under 1ms would read as 0 and make the
+ * total look like the worker cost nothing.
+ */
+const now = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+
 marked.use({
   extensions: [
     {
@@ -1044,6 +1056,23 @@ export class Markdown extends UIComponent {
     tokensReused: 0,
     /** Sum of returned tail lengths, i.e. tokens the worker had to re-lex. */
     tokensRelexed: 0,
+    /** Total round-trip ms across worker lex requests, dispatch to callback. */
+    workerMs: 0,
+    /** Longest single worker round trip, which is what a dropped frame feels. */
+    workerMsMax: 0,
+    /**
+     * Source length of the stable prefix on the most recent append: the text the
+     * worker matched and did not re-read.
+     */
+    stablePrefixChars: 0,
+    /** Source length of the tail that had to be re-lexed on the most recent append. */
+    changedTailChars: 0,
+    /** Child entities kept across reconciles, either untouched or updated in place. */
+    entitiesReused: 0,
+    /** Child entities destroyed and rebuilt across reconciles. */
+    entitiesRebuilt: 0,
+    /** In-place updates via setCode/setSpans, the streaming fast path. */
+    inPlaceUpdates: 0,
   };
   // Worker request ids dispatched by *this* instance that haven't resolved yet.
   // The module-level `workerCallbacks` map holds a closure capturing `this`, so
@@ -1195,6 +1224,56 @@ export class Markdown extends UIComponent {
               readOnly: true,
             },
             { label: 'appendPending', value: this.appendPending, readOnly: true },
+            {
+              label: 'workerMsAvg',
+              value:
+                s.workerResponses > 0
+                  ? Math.round((s.workerMs / s.workerResponses) * 100) / 100
+                  : 0,
+              hint: 'Mean lex round trip, dispatch to applied',
+              readOnly: true,
+            },
+            {
+              label: 'workerMsMax',
+              value: Math.round(s.workerMsMax * 100) / 100,
+              hint: 'Worst single round trip — this is the one a dropped frame comes from',
+              readOnly: true,
+            },
+          ],
+        },
+        {
+          label: 'Delta shape',
+          fields: [
+            {
+              label: 'stablePrefixChars',
+              value: s.stablePrefixChars,
+              hint: 'Source characters the worker matched and did not re-read, on the last append',
+              readOnly: true,
+            },
+            {
+              label: 'changedTailChars',
+              value: s.changedTailChars,
+              hint: 'Source characters re-lexed on the last append. Growing with the document means O(document) per chunk',
+              readOnly: true,
+            },
+            {
+              label: 'entitiesReused',
+              value: s.entitiesReused,
+              hint: 'Child entities kept untouched across reconciles',
+              readOnly: true,
+            },
+            {
+              label: 'entitiesRebuilt',
+              value: s.entitiesRebuilt,
+              hint: 'Child entities destroyed and reconstructed',
+              readOnly: true,
+            },
+            {
+              label: 'inPlaceUpdates',
+              value: s.inPlaceUpdates,
+              hint: 'setCode/setSpans on the growing last block — the streaming fast path',
+              readOnly: true,
+            },
           ],
         },
         {
@@ -1230,7 +1309,13 @@ export class Markdown extends UIComponent {
             ? [
                 `Only ${Math.round(reuseRatio * 100)}% of lexed tokens were reused, so most of the document is being re-lexed per chunk. Expect O(document) work per append.`,
               ]
-            : undefined,
+            : s.changedTailChars > 0 &&
+                this.rawMarkdown.length > 0 &&
+                s.changedTailChars / this.rawMarkdown.length > 0.5
+              ? [
+                  `The last append re-lexed ${s.changedTailChars} of ${this.rawMarkdown.length} characters. A tail that grows with the document is the O(document)-per-chunk shape, even when the token reuse ratio looks healthy.`,
+                ]
+              : undefined,
     };
   }
 
@@ -1292,6 +1377,7 @@ export class Markdown extends UIComponent {
     // coalescing rather than tracking `this.tokens` live).
     const oldTokensSnapshot = this.tokens;
     const baseVersion = this.tokenVersion;
+    const dispatchedAt = now();
     this.pendingWorkerIds.add(id);
     workerCallbacks.set(id, {
       cb: (matchLen, tail) => {
@@ -1299,6 +1385,16 @@ export class Markdown extends UIComponent {
         this.streamStats.workerResponses++;
         this.streamStats.tokensReused += matchLen;
         this.streamStats.tokensRelexed += tail.length;
+        const elapsed = now() - dispatchedAt;
+        this.streamStats.workerMs += elapsed;
+        if (elapsed > this.streamStats.workerMsMax) this.streamStats.workerMsMax = elapsed;
+        // Character counts, not token counts: a stable prefix of 40 tokens says
+        // nothing about how much text the worker skipped, and the O(document) vs
+        // O(appended) question is about characters.
+        let prefixChars = 0;
+        for (let i = 0; i < matchLen; i++) prefixChars += oldTokensSnapshot[i]?.raw.length ?? 0;
+        this.streamStats.stablePrefixChars = prefixChars;
+        this.streamStats.changedTailChars = this.rawMarkdown.length - prefixChars;
         this.appendInFlight = false;
         const newTokens = [...oldTokensSnapshot.slice(0, matchLen), ...tail] as TokensList;
         // The worker's matchLen is exactly the prefix it kept, and `newTokens` is
@@ -1389,6 +1485,7 @@ export class Markdown extends UIComponent {
         // arrives on the next chunk, so pass it through rather than assuming it
         // is stable.
         existingEntity.setCode(codeToken.text, codeToken.lang ?? undefined);
+        this.streamStats.inPlaceUpdates++;
         matchLen++;
         // Same O(1) tail resync as the paragraph path: the block is still the
         // Stack's last child, so its own box changed but no sibling moved.
@@ -1411,6 +1508,7 @@ export class Markdown extends UIComponent {
           spans.push({ text: pToken.text });
         }
         (existingEntity as any).setSpans(spans);
+        this.streamStats.inPlaceUpdates++;
         matchLen++; // This token is now handled
         // Streaming's hot path: the growing paragraph is still the Stack's
         // last child, so its own size changed but no sibling moved — resync
@@ -1426,8 +1524,14 @@ export class Markdown extends UIComponent {
     // detaches from `content` itself. Starts AT matchLen — the old loop walked
     // every token from 0 only to skip the matched prefix with an `i >= matchLen`
     // test, making it O(total blocks) per streamed chunk.
+    // Everything before matchLen kept its entity untouched, which is the reuse
+    // the incremental path exists to produce.
+    for (let i = 0; i < matchLen; i++) {
+      if (this.producesEntity(oldTokens[i])) this.streamStats.entitiesReused++;
+    }
     for (let i = matchLen; i < oldTokens.length; i++) {
       if (this.producesEntity(oldTokens[i])) {
+        this.streamStats.entitiesRebuilt++;
         const idx = oldTokenToChild[i];
         if (idx < oldChildren.length) {
           oldChildren[idx].destroy();

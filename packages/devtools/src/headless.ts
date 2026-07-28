@@ -58,6 +58,15 @@ export {
   type A11yInfo,
 } from './a11yInspect';
 export {
+  auditMarkdownStreaming,
+  formatMarkdownStream,
+  inspectMarkdownStream,
+  isMarkdownEntity,
+  markdownStreamAudit,
+  markdownStreamInspector,
+  type MarkdownStreamInfo,
+} from './markdownInspect';
+export {
   auditTextShaping,
   formatTextInspection,
   inspectText,
