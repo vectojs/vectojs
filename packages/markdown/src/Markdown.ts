@@ -1033,6 +1033,14 @@ export class Markdown extends UIComponent {
   public theme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
+  /**
+   * Called after a streamed append has re-laid-out the document.
+   *
+   * Not required for a `VirtualList` to track a streaming row's height: the list
+   * re-reads `height` on every mounted row each frame, so it sees this entity grow
+   * without being told. Prefer that over wiring this up — it fires from the append
+   * path only, **not** from `setContent()`, so it is not a complete size signal.
+   */
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
   private tokens: Token[] = [];
