@@ -21,6 +21,13 @@
 // they ever disagree the run reports a mismatch instead of a speedup, so a
 // "faster" number can't come from doing less work.
 import { createWebGLPointRenderer, type PointRenderer } from '@vectojs/core';
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import { median, percentile } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const GLYPH_COUNTS = (p.get('glyphs') ?? '1000,5000,12000,24800,50000').split(',').map(Number);
@@ -141,18 +148,19 @@ function whiteAtlas(): HTMLCanvasElement {
   return c;
 }
 
-const median = (xs: number[]): number => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
-};
 const yieldToBrowser = () => new Promise<void>((r) => setTimeout(r, 0));
 
 interface HostMetrics {
   cpu: number;
   ramUsed: number;
   ramTotal: number;
-  gpu: { name: string; util: number; mem: number; temp: number; clock: number } | null;
+  gpu: {
+    name: string;
+    util: number;
+    mem: number;
+    temp: number;
+    clock: number;
+  } | null;
 }
 
 /**
@@ -248,17 +256,16 @@ async function runSustained(renderer: PointRenderer): Promise<Record<string, unk
 
   clearInterval(poll);
 
-  const pct = (xs: number[], q: number): number => {
-    const s2 = [...xs].sort((a, b) => a - b);
-    return s2[Math.min(s2.length - 1, Math.floor(s2.length * q))] ?? 0;
-  };
   const fit240 = frameMs.filter((f) => f <= 4.17).length / (frameMs.length || 1);
   return {
     glyphsPerFrame: SUSTAIN_GLYPHS,
     frames,
     fps: +(1000 / median(frameMs)).toFixed(1),
     frameP50: +median(frameMs).toFixed(2),
-    frameP99: +pct(frameMs, 0.99).toFixed(2),
+    // `frameP99` now comes from the shared R-7 interpolated `percentile`, where
+    // the local helper it replaces was nearest-rank. The figure shifts slightly
+    // as a result; that is intended, not a regression.
+    frameP99: +percentile(frameMs, 0.99).toFixed(2),
     accumP50: +median(accumMs).toFixed(2),
     flushP50: +median(flushMs).toFixed(2),
     framesFitting240Hz: +(fit240 * 100).toFixed(1),
@@ -275,22 +282,25 @@ async function runSustained(renderer: PointRenderer): Promise<Record<string, unk
  *
  * `window.close()` is ignored for a browser-launched top-level window in some
  * engines, so this is best-effort: the harness's own close remains the fallback.
+ *
+ * The POST itself now goes through the shared client, which builds the full
+ * envelope; `render` runs before the hold and the close because nothing after
+ * `window.close()` is guaranteed to run.
  */
-async function postResults(payload: unknown, holdMs = 0): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* payload is already rendered into the page as a fallback */
-  }
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+  holdMs = 0,
+): Promise<void> {
+  const result = await reportResult(input);
+  render(result);
   if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));
   window.close();
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const canvas = document.createElement('canvas');
   canvas.width = VIEW_W;
   canvas.height = VIEW_H;
@@ -370,25 +380,31 @@ async function main(): Promise<void> {
     sustained = await runSustained(renderer);
   }
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
-  const payload = {
-    name: 'glyph-batch',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      trials: TRIALS,
-      dpr: devicePixelRatio,
-      viewport: `${VIEW_W}x${VIEW_H}`,
-      colors: COLORS.length,
-      note: 'oldAccum is an inlined replica of the pre-CTX-0069 per-quad body, timed in the same run',
-    },
-    rows,
-    sustained,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
   // In HUD mode hold the page open first so it can be captured with `grim`;
   // the results POST (and self-close) is what ends the run.
-  await postResults(payload, HUD ? Number(p.get('holdMs') ?? 20000) : 0);
+  await postResults(
+    {
+      name: 'glyph-batch',
+      // `dpr`/`viewport` stay in params as deliberate duplication of the
+      // envelope's own fields, so the params shape stays comparable.
+      params: {
+        trials: TRIALS,
+        dpr: devicePixelRatio,
+        viewport: `${VIEW_W}x${VIEW_H}`,
+        colors: COLORS.length,
+        note: 'oldAccum is an inlined replica of the pre-CTX-0069 per-quad body, timed in the same run',
+      },
+      rows,
+      // `sustained` keeps its key inside the envelope's `summary` slot, so an
+      // existing reader still finds it under the name it has always had.
+      summary: { sustained },
+      durationMs: +(performance.now() - startedAt).toFixed(1),
+    },
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+    HUD ? Number(p.get('holdMs') ?? 20000) : 0,
+  );
 }
 
-void main();
+main().catch((error) => reportFailure('glyph-batch', error));

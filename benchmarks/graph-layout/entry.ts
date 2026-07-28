@@ -5,6 +5,8 @@
 // (hyprland-browser-bench contract). Both run the SAME graph; we report ms per
 // tick (median), so it's a like-for-like per-frame layout cost comparison.
 import { VectoForceLayout, D3ForceLayout, type GraphData } from '@vectojs/graph3d';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const COUNTS = (p.get('counts') ?? '500,1000,2000,5000').split(',').map(Number);
@@ -32,11 +34,6 @@ function makeGraph(n: number): GraphData {
   return { nodes, links };
 }
 
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
-}
-
 const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
 
 async function benchTickMs(
@@ -58,7 +55,8 @@ async function benchTickMs(
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const progress = document.createElement('pre');
   document.body.appendChild(progress);
   const rows: Array<Record<string, number>> = [];
@@ -77,26 +75,16 @@ async function main() {
       speedup: +(d3Ms / vectoMs).toFixed(2),
     });
   }
-  const payload = {
+  const result = await reportResult({
     name: 'graph-layout',
-    engine,
-    userAgent: navigator.userAgent,
     params: { COUNTS, TICKS, TRIALS },
     rows,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   progress.textContent = 'done';
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('graph-layout', error));

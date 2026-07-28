@@ -13,6 +13,7 @@
 // against the JS depth-first walk (findHitRecursively), on real Chrome/Firefox.
 // Posts JSON to /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 const p = new URLSearchParams(location.search);
 const NS = (p.get('ns') ?? '1000,10000,100000').split(',').map(Number);
@@ -113,14 +114,6 @@ function beacon(level: string, msg: string): void {
     /* best effort */
   }
 }
-function engineTag(): string {
-  const ua = navigator.userAgent;
-  const ff = /Firefox\/(\d+)/.exec(ua);
-  if (ff) return `Firefox${ff[1]}`;
-  const cr = /Chrome\/(\d+)/.exec(ua);
-  if (cr) return `Chrome${cr[1]}`;
-  return 'unknown';
-}
 
 const status = document.createElement('h2');
 status.id = 'status';
@@ -132,6 +125,8 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const rows: Record<string, unknown>[] = [];
 
@@ -279,26 +274,36 @@ async function run(): Promise<void> {
     status.textContent = `done ${rows.length}/${NS.length}…`;
   }
 
-  const report = {
+  // `warmQueries`/`trials`/`note` move into `params` (workload dimensions). The
+  // per-cell correctness and provenance fields (`wasmAvailable`, `mismatches`,
+  // `gatherPath`, `transformsResident`) stay in `rows` where they already were —
+  // they vary per N, so hoisting them to a single `summary` would lose that.
+  const mismatchTotal = rows.reduce((sum, r) => sum + ((r.mismatches as number) ?? 0), 0);
+  const report = await reportResult({
     name: 'scene-hit-wasm',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    crossOriginIsolated: self.crossOriginIsolated,
-    warmQueries: WARM_QUERIES,
-    trials: TRIALS,
-    note: 'render cost is untimed setup, isolating pure hit-test overhead; cold = one query per fresh render (pays lazy grid rebuild); warm = amortized over WARM_QUERIES against one build; hot = steady-state per-query with the build cost excluded entirely (fair vs jsSteady)',
+    params: {
+      warmQueries: WARM_QUERIES,
+      trials: TRIALS,
+      note: 'render cost is untimed setup, isolating pure hit-test overhead; cold = one query per fresh render (pays lazy grid rebuild); warm = amortized over WARM_QUERIES against one build; hot = steady-state per-query with the build cost excluded entirely (fair vs jsSteady)',
+    },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+    // A wasm/js divergence invalidates the paired figures, so it is raised as a
+    // validation issue rather than left in a row for a reader to spot. Summed from
+    // `rows` because `mismatches` is per-N loop-local; no new accumulator needed.
+    issues:
+      mismatchTotal > 0 ? [`${mismatchTotal} wasm/js hit-test mismatches across the sweep`] : [],
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('scene-hit-wasm', error);
 });

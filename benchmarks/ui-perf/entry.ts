@@ -16,6 +16,8 @@
 //
 // Posts JSON to /results (browser-bench contract).
 import { RichText, RowHeights } from '@vectojs/ui';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
 
 const p = new URLSearchParams(location.search);
 const LIST_NS = (p.get('listNs') ?? '1000,10000,100000,500000').split(',').map(Number);
@@ -66,11 +68,6 @@ function seedHeights<T extends { set(i: number, h: number): void }>(
   for (let k = 0; k < Math.min(n, 2000); k++) {
     store.set(Math.floor(rand() * n), 10 + Math.floor(rand() * 40));
   }
-}
-
-function median(xs: number[]): number {
-  xs.sort((a, b) => a - b);
-  return xs[Math.floor(xs.length / 2)]!;
 }
 
 function benchList(n: number) {
@@ -138,29 +135,23 @@ function benchRich(glyphs: number) {
 }
 
 async function main() {
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
+  await awaitStart();
+  const startedAt = performance.now();
   const list = LIST_NS.map(benchList);
   const rich = RICH_GLYPHS.map(benchRich);
-  const payload = {
+  const result = await reportResult({
     name: 'ui-perf',
-    engine,
-    userAgent: navigator.userAgent,
     params: { LIST_NS, RICH_GLYPHS, TRIALS, FRAMES },
-    virtualListRowMath: list,
-    richTextProjection: rich,
-  };
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore — table still shown below
-  }
+    // This benchmark has no rows: it hangs two named sub-objects off the
+    // envelope instead, which is exactly what the `summary` slot is for. Their
+    // key names are unchanged.
+    rows: [],
+    summary: { virtualListRowMath: list, richTextProjection: rich },
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+  });
   const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  pre.textContent = JSON.stringify(result, null, 2);
   document.body.appendChild(pre);
 }
 
-main();
+main().catch((error) => reportFailure('ui-perf', error));

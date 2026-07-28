@@ -30,6 +30,14 @@
 // with getError after a readPixels of 1 pixel) which serialises the frame and
 // makes the submit cost observable without the extension. Both are reported so
 // neither can be mistaken for the other.
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import { median } from '../_shared/stats.ts';
+
 const p = new URLSearchParams(location.search);
 const QUAD_COUNTS = (p.get('quads') ?? '12000,24800,50000,100000').split(',').map(Number);
 const TRIALS = Number(p.get('trials') ?? 12);
@@ -73,11 +81,6 @@ function compile(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebG
   return pr;
 }
 
-const median = (xs: number[]): number => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
-};
 const yieldToBrowser = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 interface Variant {
@@ -97,22 +100,25 @@ interface Variant {
  *
  * `window.close()` is ignored for a browser-launched top-level window in some
  * engines, so this is best-effort: the harness's own close remains the fallback.
+ *
+ * The POST itself now goes through the shared client, which builds the full
+ * envelope; `render` runs before the close because nothing after
+ * `window.close()` is guaranteed to run.
  */
-async function postResults(payload: unknown, holdMs = 0): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* payload is already rendered into the page as a fallback */
-  }
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+  holdMs = 0,
+): Promise<void> {
+  const result = await reportResult(input);
+  render(result);
   if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));
   window.close();
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const canvas = document.createElement('canvas');
   canvas.width = VIEW_W;
   canvas.height = VIEW_H;
@@ -472,32 +478,35 @@ async function main(): Promise<void> {
     pre.textContent = `measured ${n} quads…\n` + JSON.stringify(rows.slice(-4), null, 1);
   }
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
-  const payload = {
-    name: 'flush-upload',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      trials: TRIALS,
-      dpr: devicePixelRatio,
-      viewport: `${VIEW_W}x${VIEW_H}`,
-      gpuTimerAvailable: !!timerExt,
-      renderer:
-        (gl.getExtension('WEBGL_debug_renderer_info') &&
-          (gl.getParameter(
-            (
-              gl.getExtension('WEBGL_debug_renderer_info') as {
-                UNMASKED_RENDERER_WEBGL: number;
-              }
-            ).UNMASKED_RENDERER_WEBGL,
-          ) as string)) ||
-        null,
-      note: 'submitMs = JS call-return (async, understates GPU); stalledMs = same work + gl.finish(); gpuMs = EXT_disjoint_timer_query_webgl2 when present',
+  await postResults(
+    {
+      name: 'flush-upload',
+      // `dpr`/`viewport` stay in params as deliberate duplication of the
+      // envelope's own fields, so the params shape stays comparable.
+      params: {
+        trials: TRIALS,
+        dpr: devicePixelRatio,
+        viewport: `${VIEW_W}x${VIEW_H}`,
+        gpuTimerAvailable: !!timerExt,
+        renderer:
+          (gl.getExtension('WEBGL_debug_renderer_info') &&
+            (gl.getParameter(
+              (
+                gl.getExtension('WEBGL_debug_renderer_info') as {
+                  UNMASKED_RENDERER_WEBGL: number;
+                }
+              ).UNMASKED_RENDERER_WEBGL,
+            ) as string)) ||
+          null,
+        note: 'submitMs = JS call-return (async, understates GPU); stalledMs = same work + gl.finish(); gpuMs = EXT_disjoint_timer_query_webgl2 when present',
+      },
+      rows,
+      durationMs: +(performance.now() - startedAt).toFixed(1),
     },
-    rows,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
-  await postResults(payload);
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+  );
 }
 
-void main();
+main().catch((error) => reportFailure('flush-upload', error));

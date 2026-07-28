@@ -5,6 +5,7 @@
 // Confirms the number on real Chrome (V8) and Firefox (SpiderMonkey). Posts JSON
 // to /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 const p = new URLSearchParams(location.search);
 const NS = (p.get('ns') ?? '10000,100000').split(',').map(Number);
@@ -93,14 +94,6 @@ function beacon(level: string, msg: string): void {
     /* best effort */
   }
 }
-function engineTag(): string {
-  const ua = navigator.userAgent;
-  const ff = /Firefox\/(\d+)/.exec(ua);
-  if (ff) return `Firefox${ff[1]}`;
-  const cr = /Chrome\/(\d+)/.exec(ua);
-  if (cr) return `Chrome${cr[1]}`;
-  return 'unknown';
-}
 
 const status = document.createElement('h2');
 status.id = 'status';
@@ -112,6 +105,8 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const rows: Record<string, unknown>[] = [];
   let frame = 1000;
@@ -151,25 +146,29 @@ async function run(): Promise<void> {
     }
   }
 
-  const report = {
+  // `iters`/`trials` move into `params` (workload dimensions). `wasmAvailable` is
+  // per-cell here, so it stays in `rows` rather than being hoisted into `summary`.
+  const report = await reportResult({
     name: 'scene-wasm',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    crossOriginIsolated: self.crossOriginIsolated,
-    iters: ITERS,
-    trials: TRIALS,
+    params: { iters: ITERS, trials: TRIALS },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
+    // Without resident transforms the wasm column measures nothing, so a cell that
+    // reported `wasmAvailable: false` makes the paired speedup meaningless.
+    issues: rows.some((r) => !(r as { wasmAvailable?: boolean }).wasmAvailable)
+      ? ['wasm transforms unavailable in at least one cell: its speedup is not meaningful']
+      : [],
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead.
+  void reportFailure('scene-wasm', error);
 });

@@ -20,6 +20,7 @@
 // Without that, the `*_f32` exports are absent and this page reports the missing
 // kernel rather than silently comparing nothing.
 import { buildStore, type InputNode } from '@core/soa';
+import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
 type Topo = 'flat' | 'chain' | 'bushy';
 
@@ -227,6 +228,8 @@ function engineTag(): string {
 }
 
 async function run(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   beacon('info', `start ${engineTag()} topos=${TOPOS} ns=${NS}`);
   const bytes = await (await fetch('./vectojs_core.wasm')).arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {});
@@ -241,22 +244,17 @@ async function run(): Promise<void> {
     }
   }
 
-  const report = {
+  // `iters`/`trials` move into `params` (workload dimensions). `hardwareConcurrency`
+  // and `crossOriginIsolated` are dropped here because the envelope's `browser`
+  // block already carries both. The per-cell precision figures (maxAbsErr /
+  // maxRelErr) stay in `rows`, where they already were.
+  const report = await reportResult({
     name: 'f32-simd-eval',
-    engine: engineTag(),
-    userAgent: navigator.userAgent,
-    hardwareConcurrency: navigator.hardwareConcurrency,
-    crossOriginIsolated: self.crossOriginIsolated,
-    iters: ITERS,
-    trials: TRIALS,
+    params: { iters: ITERS, trials: TRIALS },
     rows,
-  };
-  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
-  await fetch('/results', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(report),
+    durationMs: +(performance.now() - startedAt).toFixed(1),
   });
+  (window as unknown as { __BENCH__?: unknown }).__BENCH__ = report;
   (window as unknown as { __BENCH_DONE__?: boolean }).__BENCH_DONE__ = true;
   status.textContent = `done: ${rows.length} cells posted — you can close this window`;
 }
@@ -271,7 +269,13 @@ window.addEventListener('unhandledrejection', (e) =>
   beacon('error', `reject: ${String(e.reason)}`),
 );
 
-run().catch((e) => {
-  status.textContent = 'error: ' + String(e);
-  beacon('error', `run failed: ${String(e)}`);
+run().catch((error) => {
+  status.textContent = 'error: ' + String(error);
+  beacon('error', `run failed: ${String(error)}`);
+  // The beacon only reaches the server log. Without this the page never POSTs
+  // anything, so a thrown run is indistinguishable from a hang and burns the
+  // runner's full timeout; `reportFailure` posts a complete `failed: true`
+  // envelope instead. This benchmark throws by design on a wasm build without
+  // the `bench-f32` feature, which is exactly the case that used to time out.
+  void reportFailure('f32-simd-eval', error);
 });

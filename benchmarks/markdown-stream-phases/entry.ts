@@ -24,6 +24,21 @@
 //
 // Runs in a real browser via hyprland-browser-bench: layout and render depend on
 // real text measurement and a real compositor, neither of which Node has.
+import {
+  awaitStart,
+  reportFailure,
+  reportResult,
+  type BenchmarkResult,
+} from '../_shared/client.ts';
+import {
+  beginPhaseCapture,
+  endPhaseCapture,
+  medianPhaseCapture,
+  type PhaseCapture,
+  type PhaseEntry,
+} from '../_shared/phases.ts';
+import { median } from '../_shared/stats.ts';
+
 type MarkdownCtor = new (
   text: string,
   opts?: Record<string, unknown>,
@@ -66,31 +81,31 @@ interface PhaseTotals {
   render: number;
 }
 
-const median = (xs: number[]): number => {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
-};
 const yieldToBrowser = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 /**
  * POST results and close, so the run ends when the data lands rather than
  * depending on the harness noticing.
+ *
+ * The POST itself now goes through the shared client, which builds the full
+ * envelope. The local `median` this file used to carry is gone in favour of
+ * `../_shared/stats.ts`, which is the same definition this file used (the two
+ * middle values averaged on an even count).
  */
-async function postResults(payload: unknown): Promise<void> {
-  try {
-    await fetch('/results', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    /* payload is rendered into the page as a fallback */
-  }
+async function postResults(
+  input: Parameters<typeof reportResult>[0],
+  render: (result: BenchmarkResult) => void,
+): Promise<void> {
+  const result = await reportResult(input);
+  // Render before closing: the original set the on-page dump first so it stays
+  // the visible fallback, and nothing after window.close() is guaranteed to run.
+  render(result);
   window.close();
 }
 
 async function main(): Promise<void> {
+  await awaitStart();
+  const startedAt = performance.now();
   const canvas = document.createElement('canvas');
   canvas.width = 900;
   canvas.height = 700;
@@ -124,14 +139,9 @@ async function main(): Promise<void> {
       destroy: () => void;
       setPhaseTiming: (on: boolean) => void;
       clearRenderPhases: () => void;
-      renderPhases: Array<{
-        phase: string;
-        totalMs: number;
-        calls: number;
-        avgMs: number;
-        maxMs: number;
-        share: number | null;
-      }>;
+      // Structurally identical to the entry shape spelled out here before; it is
+      // now named once in ../_shared/phases.ts instead.
+      renderPhases: PhaseEntry[];
     };
   };
   // Import `marked` AFTER @vectojs/markdown so both resolve to the same module
@@ -143,9 +153,27 @@ async function main(): Promise<void> {
   };
 
   const rows: Array<Record<string, unknown>> = [];
+  /**
+   * The generic per-shape phase breakdown, carried on the envelope.
+   *
+   * `renderBreakdown` in the rows below is kept as it is, but it is a hardcoded
+   * 7-name subset of the 14 phases the engine reports, and it silently dropped the
+   * other seven: gridMaterialize, contentProjection, a11yNodes, gridSync,
+   * gridCalibrateSchedule, calibScan, calibProbeBuild. This capture keeps whatever
+   * `scene.renderPhases` reports, so nothing is dropped and a new engine phase
+   * needs no edit here.
+   */
+  const phases: Array<{ shape: string; capture: PhaseCapture }> = [];
 
   for (const [shape, chunkOf] of Object.entries(SHAPES)) {
     const perTrial: PhaseTotals[] = [];
+    /**
+     * Per-trial captures, median-combined per phase at the end of the shape.
+     *
+     * Per-phase medians rather than the phases of the median trial, so one trial's
+     * `flush` spiking does not also distort its `transform`.
+     */
+    const captures: PhaseCapture[] = [];
     const renderPhaseSamples: Array<Record<string, number>> = [];
     const textSamples: Array<{
       measureMs: number;
@@ -168,8 +196,10 @@ async function main(): Promise<void> {
       };
       // Decompose the render term. #234 established render is 85-99% of an append
       // but could not say what is inside it, which is the gap this closes.
-      scene.setPhaseTiming(true);
-      scene.clearRenderPhases();
+      //
+      // Enables timing and clears anything already recorded — the same pair of
+      // calls as before, named once.
+      beginPhaseCapture(scene);
 
       // Split entityPaint into text SHAPING vs RASTERIZATION by timing the two
       // canvas calls directly. Patching the prototype is the same technique used
@@ -216,7 +246,9 @@ async function main(): Promise<void> {
       // stubbed-worker path does exactly: marked.lexer(source) then
       // updateTokens(tokens). Wrapping both gives real per-phase numbers instead
       // of an average-based guess.
-      const mdAny = md as unknown as { updateTokens: (...a: unknown[]) => unknown };
+      const mdAny = md as unknown as {
+        updateTokens: (...a: unknown[]) => unknown;
+      };
       const originalLexer = markedModule.marked.lexer.bind(markedModule.marked);
       const originalUpdate = mdAny.updateTokens.bind(mdAny);
       let parseMs = 0;
@@ -249,13 +281,20 @@ async function main(): Promise<void> {
       proto.measureText = originalMeasure;
       proto.fillText = originalFill;
       textSamples.push({ measureMs, measureCalls, fillMs, fillCalls });
+      // One read of the scene per trial, kept whole. `renderPhaseSamples` — which
+      // the named `renderBreakdown` fields below are computed from — is derived
+      // from that same capture rather than reading `scene.renderPhases` a second
+      // time, so the named subset and the full breakdown cannot describe different
+      // states. `endPhaseCapture` also turns timing back off, replacing the
+      // `scene.setPhaseTiming(false)` that used to sit here.
+      const capture = endPhaseCapture(scene);
+      captures.push(capture);
       renderPhaseSamples.push(
-        Object.fromEntries(scene.renderPhases.map((p) => [p.phase, p.totalMs])) as Record<
+        Object.fromEntries(capture.entries.map((e) => [e.phase, e.totalMs])) as Record<
           string,
           number
         >,
       );
-      scene.setPhaseTiming(false);
       perTrial.push(totals);
       md.destroy();
       scene.destroy();
@@ -275,6 +314,10 @@ async function main(): Promise<void> {
     const renderTotal = subPhase('render');
     const subShare = (name: string): number =>
       renderTotal > 0 ? +((100 * subPhase(name)) / renderTotal).toFixed(1) : 0;
+
+    // Per-phase medians across trials of this shape. Kept whole and put on the
+    // envelope; `renderBreakdown` below names only 7 of the 14 phases in it.
+    phases.push({ shape, capture: medianPhaseCapture(captures) });
 
     rows.push({
       shape,
@@ -314,22 +357,27 @@ async function main(): Promise<void> {
     await yieldToBrowser();
   }
 
-  const engine = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
   if (RealWorker !== undefined) (globalThis as { Worker?: unknown }).Worker = RealWorker;
-  const payload = {
-    name: 'markdown-stream-phases',
-    engine,
-    userAgent: navigator.userAgent,
-    params: {
-      chunks: CHUNKS,
-      trials: TRIALS,
-      dpr: devicePixelRatio,
-      note: 'Worker REMOVED before import so the synchronous path runs and parse is synchronous and attributable to its append; the worker transport cost is measured by markdown-stream-transfer instead. parse = marked.lexer over the accumulated source (the O(N)/chunk floor). reconcile = append minus one internal lex. render = scene.step.',
+  // `engine` and `userAgent` are gone from here: the shared envelope supplies both.
+  await postResults(
+    {
+      name: 'markdown-stream-phases',
+      params: {
+        chunks: CHUNKS,
+        trials: TRIALS,
+        dpr: devicePixelRatio,
+        note: 'Worker REMOVED before import so the synchronous path runs and parse is synchronous and attributable to its append; the worker transport cost is measured by markdown-stream-transfer instead. parse = marked.lexer over the accumulated source (the O(N)/chunk floor). reconcile = append minus one internal lex. render = scene.step.',
+      },
+      rows,
+      phases,
+      durationMs: +(performance.now() - startedAt).toFixed(1),
     },
-    rows,
-  };
-  pre.textContent = JSON.stringify(payload, null, 2);
-  await postResults(payload);
+    (result) => {
+      pre.textContent = JSON.stringify(result, null, 2);
+    },
+  );
 }
 
-void main();
+void main().catch((e) => {
+  void reportFailure('markdown-stream-phases', e);
+});
