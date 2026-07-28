@@ -145,7 +145,12 @@ self.onmessage = (e: MessageEvent) => {
     // The caller already knows which of ITS OWN previous tokens are still
     // valid (raw source unchanged), so diff the same way `updateTokens()`
     // does on the receiving end and send back only the changed suffix.
+    // Time the lex itself. It is the one cost in this pipeline that is still
+    // O(document) per chunk, and nothing downstream could see it: the reuse
+    // counters describe the token DIFF, which is a different thing entirely.
+    const lexStart = performance.now();
     const tokens = marked.lexer(source);
+    const lexerMs = performance.now() - lexStart;
     let matchLen = 0;
     if (priorRaws) {
       const minLen = Math.min(priorRaws.length, tokens.length);
@@ -164,7 +169,13 @@ self.onmessage = (e: MessageEvent) => {
         source,
       });
     }
-    self.postMessage({ id, matchLen, tail: tokens.slice(matchLen) });
+    self.postMessage({
+      id,
+      matchLen,
+      tail: tokens.slice(matchLen),
+      lexerMs,
+      sourceCharsLexed: source.length,
+    });
   } catch (err) {
     // The cached raws no longer describe anything the caller can trust.
     if (key !== null) rawCache.delete(key);

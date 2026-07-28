@@ -18,9 +18,29 @@ export interface MarkdownStreamInfo {
   workerResponses: number;
   /** Fewer responses than appends means chunks coalesced while a request was in flight. */
   coalesced: number;
-  tokensReused: number;
-  tokensRelexed: number;
-  reuseRatio: number;
+  /**
+   * Leading tokens whose `raw` was unchanged, so the main thread kept its existing
+   * token objects and child entities. A prefix match — the worker still lexed them.
+   */
+  tokensPrefixMatched: number;
+  /** Tokens in the changed suffix the worker cloned back: the transfer payload. */
+  tokensReturned: number;
+  /**
+   * `matched / (matched + returned)`. Near 1 means small transfers and high entity
+   * reuse. It does **not** mean less lexing — see {@link lexerMs}.
+   */
+  tokenPrefixReuseRatio: number;
+  /**
+   * Total ms inside `marked.lexer()`. `marked` has no incremental lexing API, so
+   * this covers the whole accumulated source on every append and is the one cost
+   * in the pipeline that is still O(document) per chunk.
+   */
+  lexerMs: number;
+  /**
+   * Characters handed to the lexer, summed across appends. Grows ~O(n^2) over a
+   * stream of n chunks.
+   */
+  sourceCharsLexed: number;
   workerMsAvg: number;
   workerMsMax: number;
   stablePrefixChars: number;
@@ -29,11 +49,16 @@ export interface MarkdownStreamInfo {
   entitiesRebuilt: number;
   inPlaceUpdates: number;
   /**
-   * Fraction of the document re-lexed on the most recent append.
+   * Fraction of the document whose token raws CHANGED on the most recent append.
    *
-   * This is the number that answers the O(appended) vs O(document) question, and
-   * it can be bad while the token reuse ratio looks healthy: reusing 95% of tokens
-   * still means re-reading the whole tail if the tail is most of the characters.
+   * Not the fraction lexed — that is always 1.0, because the worker lexes the whole
+   * accumulated source every time. This is the share that had to be transferred back
+   * and have its entities rebuilt.
+   *
+   * This is what answers the "is the delta actually a delta" question, and it can be
+   * bad while the prefix-reuse ratio looks healthy: matching 95% of tokens still
+   * means transferring and rebuilding most of the document if those 5% cover most of
+   * the characters.
    */
   tailFraction: number;
   notes: string[];
@@ -78,7 +103,7 @@ function numberField(descriptor: Descriptor, label: string): number {
  *
  * Every value already exists in the component's descriptor; this shapes it into
  * the derived quantities worth looking at — the coalescing count, and the fraction
- * of the document re-lexed on the last append.
+ * of the document whose tokens changed on the last append.
  */
 export function inspectMarkdownStream(entity: Entity): MarkdownStreamInfo | null {
   const descriptor = readDescriptor(entity);
@@ -87,10 +112,12 @@ export function inspectMarkdownStream(entity: Entity): MarkdownStreamInfo | null
   const sourceLength = numberField(descriptor, 'sourceLength');
   const appends = numberField(descriptor, 'appends');
   const workerResponses = numberField(descriptor, 'workerResponses');
-  const tokensReused = numberField(descriptor, 'tokensReused');
-  const tokensRelexed = numberField(descriptor, 'tokensRelexed');
+  const tokensPrefixMatched = numberField(descriptor, 'tokensPrefixMatched');
+  const tokensReturned = numberField(descriptor, 'tokensReturned');
   const changedTailChars = numberField(descriptor, 'changedTailChars');
-  const lexed = tokensReused + tokensRelexed;
+  // Tokens that went through the diff, which is NOT the number lexed: the worker
+  // lexes the whole source every time regardless of how the diff turns out.
+  const diffedTokens = tokensPrefixMatched + tokensReturned;
 
   return {
     entityId: entity.id,
@@ -104,9 +131,11 @@ export function inspectMarkdownStream(entity: Entity): MarkdownStreamInfo | null
     // the worker never answered at all — `appends - 0` would otherwise claim every
     // append was coalesced on a main-thread parse, where no coalescing happened.
     coalesced: workerResponses > 0 ? Math.max(0, appends - workerResponses) : 0,
-    tokensReused,
-    tokensRelexed,
-    reuseRatio: lexed > 0 ? tokensReused / lexed : 0,
+    tokensPrefixMatched,
+    tokensReturned,
+    tokenPrefixReuseRatio: diffedTokens > 0 ? tokensPrefixMatched / diffedTokens : 0,
+    lexerMs: numberField(descriptor, 'lexerMs'),
+    sourceCharsLexed: numberField(descriptor, 'sourceCharsLexed'),
     workerMsAvg: numberField(descriptor, 'workerMsAvg'),
     workerMsMax: numberField(descriptor, 'workerMsMax'),
     stablePrefixChars: numberField(descriptor, 'stablePrefixChars'),
@@ -142,13 +171,18 @@ export function formatMarkdownStream(info: MarkdownStreamInfo): PluginRow[] {
           : 'none yet',
     },
     {
-      label: 'token reuse',
-      value: pct(info.reuseRatio),
-      note: `${info.tokensReused} reused / ${info.tokensRelexed} re-lexed`,
+      label: 'token prefix reuse',
+      value: pct(info.tokenPrefixReuseRatio),
+      note: `${info.tokensPrefixMatched} matched / ${info.tokensReturned} returned`,
+    },
+    {
+      label: 'lexer',
+      value: `${Math.round(info.lexerMs * 10) / 10}ms`,
+      note: `${info.sourceCharsLexed} chars lexed — the whole source, every append`,
     },
     {
       label: 'last delta',
-      value: `${info.changedTailChars} chars re-lexed`,
+      value: `${info.changedTailChars} chars changed`,
       note: `${pct(info.tailFraction)} of document`,
     },
     { label: 'stable prefix', value: `${info.stablePrefixChars} chars` },
@@ -162,7 +196,7 @@ export function formatMarkdownStream(info: MarkdownStreamInfo): PluginRow[] {
   return rows;
 }
 
-/** Above this share of the document re-lexed per append, the delta is not a delta. */
+/** Above this share of the document CHANGED per append, the delta is not a delta. */
 const TAIL_FRACTION_LIMIT = 0.5;
 /** Below this token reuse ratio, the incremental path is not paying off. */
 const REUSE_RATIO_FLOOR = 0.5;
@@ -188,10 +222,10 @@ export const markdownStreamInspector: PluginInspector = {
 /**
  * Audit every Markdown entity in the scene for streaming pathologies.
  *
- * Reports the tail fraction separately from the token reuse ratio because they
- * fail independently: a document can reuse most of its tokens while still
- * re-reading most of its characters, and only the second one explains why a long
- * stream gets slower as it goes.
+ * Reports the tail fraction separately from the prefix-reuse ratio because they fail
+ * independently: a document can match most of its tokens while the changed tail still
+ * covers most of its characters. Note neither explains lexer cost, which is
+ * O(document) per append by construction — `lexerMs` is the field for that.
  */
 export function auditMarkdownStreaming(scene: Scene): PluginFinding[] {
   const findings: PluginFinding[] = [];
@@ -203,15 +237,15 @@ export function auditMarkdownStreaming(scene: Scene): PluginFinding[] {
           kind: 'tail-not-a-delta',
           entityId: entity.id,
           severity: 'warn',
-          message: `last append re-lexed ${info.changedTailChars} of ${info.sourceLength} chars (${Math.round(info.tailFraction * 100)}%), which is O(document) per chunk`,
+          message: `last append changed ${info.changedTailChars} of ${info.sourceLength} chars (${Math.round(info.tailFraction * 100)}%), so the delta is nearly the whole document and almost nothing is reused`,
         });
       }
-      if (info.reuseRatio > 0 && info.reuseRatio < REUSE_RATIO_FLOOR) {
+      if (info.tokenPrefixReuseRatio > 0 && info.tokenPrefixReuseRatio < REUSE_RATIO_FLOOR) {
         findings.push({
           kind: 'low-token-reuse',
           entityId: entity.id,
           severity: 'warn',
-          message: `only ${Math.round(info.reuseRatio * 100)}% of lexed tokens reused`,
+          message: `only ${Math.round(info.tokenPrefixReuseRatio * 100)}% of tokens matched the prior prefix, so most entities are rebuilt per chunk`,
         });
       }
       if (info.workerMsMax > WORKER_MS_LIMIT) {

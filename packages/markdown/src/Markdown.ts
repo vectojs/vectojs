@@ -120,10 +120,22 @@ let workerInstanceCounter = 0;
 // `onNeedResync` is invoked instead of `cb` when the worker reports that what it
 // holds for this instance (prior token raws, or the document source itself) is
 // missing or stale; the requester re-dispatches once with both attached.
+/**
+ * What the worker's lex actually cost, as opposed to how much of the token array
+ * survived the diff. Absent on the main-thread fallback path, which does its own
+ * lexing and is timed by the caller.
+ */
+interface LexCost {
+  /** Wall-clock ms inside `marked.lexer()`. */
+  lexerMs: number;
+  /** Characters handed to the lexer — the WHOLE accumulated source, every time. */
+  sourceCharsLexed: number;
+}
+
 const workerCallbacks = new Map<
   number,
   {
-    cb: (matchLen: number, tail: TokensList, local?: boolean) => void;
+    cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
     onNeedResync?: () => void;
     text: string;
   }
@@ -140,7 +152,7 @@ const workerCallbacks = new Map<
  * correctly, just without the transfer-size saving for this one call.
  */
 function runSyncFallback(entry: {
-  cb: (matchLen: number, tail: TokensList, local?: boolean) => void;
+  cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
   text: string;
 }): void {
   try {
@@ -159,7 +171,7 @@ if (typeof Worker !== 'undefined') {
     });
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
-      const { id, matchLen, tail, error, needResync } = e.data;
+      const { id, matchLen, tail, error, needResync, lexerMs, sourceCharsLexed } = e.data;
       const entry = workerCallbacks.get(id);
       if (entry) {
         workerCallbacks.delete(id);
@@ -171,7 +183,10 @@ if (typeof Worker !== 'undefined') {
           // No retry path (shouldn't happen); parse locally rather than drop it.
           runSyncFallback(entry);
         } else if (!error) {
-          entry.cb(matchLen as number, tail as TokensList);
+          entry.cb(matchLen as number, tail as TokensList, false, {
+            lexerMs: typeof lexerMs === 'number' ? lexerMs : 0,
+            sourceCharsLexed: typeof sourceCharsLexed === 'number' ? sourceCharsLexed : 0,
+          });
         } else {
           runSyncFallback(entry);
         }
@@ -1057,19 +1072,38 @@ export class Markdown extends UIComponent {
   /**
    * Streaming counters for the DevTools inspector.
    *
-   * Cheap enough to keep always-on (four integer increments per append) and the
-   * only way to see, from outside, whether incremental reuse is actually working:
-   * a stable-prefix ratio near 1 means the worker is matching almost everything
-   * and only the tail is re-lexed, while a ratio near 0 means every chunk is
-   * re-parsing the whole document.
+   * Cheap enough to keep always-on (a handful of integer increments per append).
+   *
+   * These describe the **token diff and the transfer**, not the parser. `marked`
+   * has no incremental lexing API, so the worker calls `marked.lexer()` on the
+   * whole accumulated source for every chunk and the lexer's cost is O(document)
+   * per append no matter how well the diff goes. That is what `lexerMs` and
+   * `sourceCharsLexed` are for; an earlier version of these counters was named as
+   * though a high prefix match meant less lexing, which sent readers to optimise
+   * the already-solved transfer path.
    */
   private streamStats = {
     appends: 0,
     workerResponses: 0,
-    /** Sum of `matchLen` across responses, i.e. tokens reused rather than re-lexed. */
-    tokensReused: 0,
-    /** Sum of returned tail lengths, i.e. tokens the worker had to re-lex. */
-    tokensRelexed: 0,
+    /**
+     * Sum of `matchLen`: leading tokens whose `raw` was unchanged, so the main
+     * thread kept its existing token objects and child entities. A prefix match,
+     * not a lexer saving — the worker still lexed them.
+     */
+    tokensPrefixMatched: 0,
+    /**
+     * Sum of returned tail lengths: tokens the worker sent back because their
+     * `raw` differed. This is the structured-clone payload size in tokens, which
+     * is what the delta protocol exists to keep small.
+     */
+    tokensReturned: 0,
+    /** Total ms spent inside `marked.lexer()` across worker responses. */
+    lexerMs: 0,
+    /**
+     * Characters handed to the lexer, summed across responses. Grows ~O(n^2) over
+     * a stream of n chunks, because every chunk re-lexes the whole document.
+     */
+    sourceCharsLexed: 0,
     /** Total round-trip ms across worker lex requests, dispatch to callback. */
     workerMs: 0,
     /** Longest single worker round trip, which is what a dropped frame feels. */
@@ -1079,7 +1113,7 @@ export class Markdown extends UIComponent {
      * worker matched and did not re-read.
      */
     stablePrefixChars: 0,
-    /** Source length of the tail that had to be re-lexed on the most recent append. */
+    /** Source length of the tail whose tokens changed on the most recent append. */
     changedTailChars: 0,
     /** Child entities kept across reconciles, either untouched or updated in place. */
     entitiesReused: 0,
@@ -1243,15 +1277,17 @@ export class Markdown extends UIComponent {
    * Streaming and parse state — the markdown streaming inspector.
    *
    * Source length, chunk count, worker in-flight state, and the stable-prefix
-   * versus re-lexed-tail split. That last ratio is the one worth watching: it is
+   * versus changed-tail split. That last ratio is the one worth watching: it is
    * how you tell incremental reuse is working from outside, and nothing else
    * surfaces it. A ratio near 1 means the worker matched almost the whole prefix
-   * and only re-lexed the tail; near 0 means every chunk re-parses the document.
+   * and rebuilt only the tail's entities; near 0 means almost nothing was reused.
+   * Neither says anything about lexer CPU, which is O(document) per append — that
+   * is what the Parser cost group reports.
    */
   public override getDevtoolsDescriptor(): DevtoolsDescriptor {
     const s = this.streamStats;
-    const lexed = s.tokensReused + s.tokensRelexed;
-    const reuseRatio = lexed > 0 ? s.tokensReused / lexed : 0;
+    const diffedTokens = s.tokensPrefixMatched + s.tokensReturned;
+    const tokenPrefixReuseRatio = diffedTokens > 0 ? s.tokensPrefixMatched / diffedTokens : 0;
     return {
       kind: 'Markdown',
       groups: [
@@ -1326,7 +1362,7 @@ export class Markdown extends UIComponent {
             {
               label: 'changedTailChars',
               value: s.changedTailChars,
-              hint: 'Source characters re-lexed on the last append. Growing with the document means O(document) per chunk',
+              hint: 'Source characters whose tokens changed on the last append. Growing with the document means the delta is not a delta',
               readOnly: true,
             },
             {
@@ -1353,21 +1389,38 @@ export class Markdown extends UIComponent {
           label: 'Incremental reuse',
           fields: [
             {
-              label: 'tokensReused',
-              value: s.tokensReused,
-              hint: 'Sum of matchLen: prefix tokens the worker matched and did not re-lex',
+              label: 'tokensPrefixMatched',
+              value: s.tokensPrefixMatched,
+              hint: 'Sum of matchLen: leading tokens whose raw was unchanged, so their entities were kept',
               readOnly: true,
             },
             {
-              label: 'tokensRelexed',
-              value: s.tokensRelexed,
-              hint: 'Sum of returned tail lengths: tokens the worker had to re-lex',
+              label: 'tokensReturned',
+              value: s.tokensReturned,
+              hint: 'Sum of returned tail lengths: the changed suffix the worker cloned back',
               readOnly: true,
             },
             {
-              label: 'reuseRatio',
-              value: Math.round(reuseRatio * 1000) / 1000,
-              hint: 'reused / (reused + relexed). Near 1 is healthy; near 0 means no reuse',
+              label: 'tokenPrefixReuseRatio',
+              value: Math.round(tokenPrefixReuseRatio * 1000) / 1000,
+              hint: 'matched / (matched + returned). Near 1 means small transfers and high entity reuse — NOT less lexing',
+              readOnly: true,
+            },
+          ],
+        },
+        {
+          label: 'Parser cost',
+          fields: [
+            {
+              label: 'lexerMs',
+              value: Math.round(s.lexerMs * 10) / 10,
+              hint: 'Total ms inside marked.lexer() — the whole source, every append',
+              readOnly: true,
+            },
+            {
+              label: 'sourceCharsLexed',
+              value: s.sourceCharsLexed,
+              hint: 'Characters lexed, summed over appends. Grows ~O(n^2) across a stream',
               readOnly: true,
             },
           ],
@@ -1378,15 +1431,15 @@ export class Markdown extends UIComponent {
           ? [
               'No worker responses yet: either the worker is unavailable and parsing ran synchronously on the main thread, or the first request is still in flight.',
             ]
-          : reuseRatio > 0 && reuseRatio < 0.5
+          : tokenPrefixReuseRatio > 0 && tokenPrefixReuseRatio < 0.5
             ? [
-                `Only ${Math.round(reuseRatio * 100)}% of lexed tokens were reused, so most of the document is being re-lexed per chunk. Expect O(document) work per append.`,
+                `Only ${Math.round(tokenPrefixReuseRatio * 100)}% of tokens matched the prior prefix, so most of the token array is being returned and its entities rebuilt every chunk. Note the LEXER is O(document) per append regardless — see lexerMs.`,
               ]
             : s.changedTailChars > 0 &&
                 this.rawMarkdown.length > 0 &&
                 s.changedTailChars / this.rawMarkdown.length > 0.5
               ? [
-                  `The last append re-lexed ${s.changedTailChars} of ${this.rawMarkdown.length} characters. A tail that grows with the document is the O(document)-per-chunk shape, even when the token reuse ratio looks healthy.`,
+                  `The last append changed ${s.changedTailChars} of ${this.rawMarkdown.length} characters. A changed tail that grows with the document means the delta is not a delta, so almost every entity is rebuilt per chunk.`,
                 ]
               : undefined,
     };
@@ -1466,11 +1519,15 @@ export class Markdown extends UIComponent {
     const canSendDelta = !resync && this.workerSourceLen > 0 && this.workerSourceLen <= sentLength;
     this.pendingWorkerIds.add(id);
     workerCallbacks.set(id, {
-      cb: (matchLen, tail, local = false) => {
+      cb: (matchLen, tail, local = false, lex) => {
         this.pendingWorkerIds.delete(id);
         this.streamStats.workerResponses++;
-        this.streamStats.tokensReused += matchLen;
-        this.streamStats.tokensRelexed += tail.length;
+        this.streamStats.tokensPrefixMatched += matchLen;
+        this.streamStats.tokensReturned += tail.length;
+        if (lex) {
+          this.streamStats.lexerMs += lex.lexerMs;
+          this.streamStats.sourceCharsLexed += lex.sourceCharsLexed;
+        }
         const elapsed = now() - dispatchedAt;
         this.streamStats.workerMs += elapsed;
         if (elapsed > this.streamStats.workerMsMax) this.streamStats.workerMsMax = elapsed;
