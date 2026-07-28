@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Scene, Entity } from '../src/index';
+import { decodeRectVertex } from './helpers/packedVertex';
 
 HTMLCanvasElement.prototype.getContext = (() => null) as never;
 
@@ -42,8 +43,10 @@ function recorderCtx() {
 /** Mock WebGL2 context capturing the last uploaded point buffer + draw count. */
 function mockGL() {
   const captures = {
+    /** The POINTS path is still all-float. */
     buffer: null as Float32Array | null,
-    rectBuffer: null as Float32Array | null,
+    /** Rects upload a PACKED byte payload — decode with decodeRectVertex. */
+    rectBuffer: null as ArrayBufferView | null,
     drawCount: -1,
     rectInstances: -1,
   };
@@ -88,12 +91,17 @@ function mockGL() {
       ELEMENT_ARRAY_BUFFER: 30,
       UNSIGNED_INT: 31,
       bindBuffer: () => {},
-      bufferData: (target: number, data: Float32Array | Uint32Array | number) => {
+      bufferData: (target: number, data: Float32Array | Uint32Array | Uint8Array | number) => {
         // Ignore the shared static quad index buffer: it uploads Uint32Array
         // indices to ELEMENT_ARRAY_BUFFER and would otherwise clobber the vertex
         // payload this test inspects.
         if (target === 30) return;
-        lastUpload = (data as Float32Array).slice();
+        const view = data as ArrayBufferView;
+        // Copy, since the renderer reuses its buffer across frames. A byte-wise
+        // copy preserves the packed layout for either payload kind.
+        lastUpload = new Uint8Array(
+          new Uint8Array(view.buffer as ArrayBuffer, view.byteOffset, view.byteLength),
+        );
       },
       enableVertexAttribArray: () => {},
       vertexAttribPointer: () => {},
@@ -108,7 +116,10 @@ function mockGL() {
         if (mode === 4) {
           // POINTS = circles
           captures.drawCount = count;
-          captures.buffer = lastUpload;
+          // Reinterpret the byte copy as the floats the POINTS path uploaded.
+          captures.buffer = lastUpload
+            ? new Float32Array(lastUpload.buffer, lastUpload.byteOffset, lastUpload.byteLength >> 2)
+            : null;
         }
       },
       drawElements: (_mode: number, count: number) => {
@@ -119,7 +130,7 @@ function mockGL() {
     },
   };
 }
-let lastUpload: Float32Array | null = null;
+let lastUpload: Uint8Array | null = null;
 
 class BatchDot extends Entity {
   color: string;
@@ -244,9 +255,11 @@ describe('Scene — WebGL point backend', () => {
 
     expect(captures.rectInstances).toBe(1);
     const buf = captures.rectBuffer!;
-    // Triangle batch: first vertex = top-left corner (40,50); third = bottom-right (60,60).
-    expect(Array.from(buf.slice(0, 2))).toEqual([40, 50]);
-    expect(Array.from(buf.slice(12, 14))).toEqual([60, 60]); // 40+20, 50+10
+    // Indexed packed batch: first vertex = top-left (40,50); third = bottom-right (60,60).
+    const v0 = decodeRectVertex(buf, 0);
+    expect([v0.x, v0.y]).toEqual([40, 50]);
+    const v2 = decodeRectVertex(buf, 2);
+    expect([v2.x, v2.y]).toEqual([60, 60]); // 40+20, 50+10
     expect(ctx.calls).not.toContain('arc');
   });
 

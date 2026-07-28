@@ -17,9 +17,14 @@
 // so the result is a delta measured under one JIT/GPU/compositor state rather
 // than an absolute across two builds (skill rule: measure the alternative).
 //
-// The old-path replica is byte-verified against the new one before timing: if
-// they ever disagree the run reports a mismatch instead of a speedup, so a
-// "faster" number can't come from doing less work.
+// The two paths write DIFFERENT vertex layouts by design, and that difference is
+// part of what is being measured: the old replica writes 6 vertices x 8 floats
+// (48 floats/quad), while the shipped path writes 4 packed 16-byte vertices
+// (8 f32 + 8 u16 + 4 u32 stores/quad) behind a static index buffer. So this is a
+// cost comparison of two encodings of the same quad, not a byte-for-byte
+// equivalence check — the geometry fed to both is identical, and correctness of
+// the packed encoding is pinned by unit tests
+// (packages/core/test/WebGLPointRenderer.test.ts) rather than here.
 import { createWebGLPointRenderer, type PointRenderer } from '@vectojs/core';
 import {
   awaitStart,
