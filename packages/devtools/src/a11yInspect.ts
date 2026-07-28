@@ -66,10 +66,14 @@ export interface A11yInfo {
   disabled?: boolean;
   focused?: boolean;
   /**
-   * Position in the flat reading order, 1-based, or `undefined` when not projected.
+   * Position in the projected reading order, 1-based, or `undefined` when not
+   * projected.
    *
-   * The a11y projection is flat — every node is a sibling under the root and order
-   * comes from sorting — so this is the only place reading order is observable.
+   * Document order across the entire projected layer, so it stays comparable
+   * between widgets: composite widgets nest their parts (`grid > row >
+   * gridcell`), and a per-parent index would restart at 1 in every row. Order
+   * itself is produced by sorting mirrors into visual reading order, so this is
+   * the only place it is observable.
    */
   readingOrder?: number;
   /** World-space bounds of the canvas-painted entity. */
@@ -193,11 +197,16 @@ export function inspectA11y(scene: Scene, entity: Entity): A11yInfo {
     info.focused = el.ownerDocument?.activeElement === el;
     const dom = domBoundsOf(scene, entity);
     if (dom) info.domBounds = dom;
-    // Reading order comes from the node's index among its siblings, because the
-    // projection is flat and ordering is done by sorting rather than nesting.
-    const parent = el.parentElement;
-    if (parent) {
-      const index = [...parent.children].indexOf(el);
+    // Reading order is the node's position in DOCUMENT order across the whole
+    // projected layer, not its index among its siblings. Composite widgets nest
+    // (`grid > row > gridcell`), so a sibling index restarts at 1 inside every
+    // row and stops being comparable between widgets — which is the one thing
+    // this field is for. `querySelectorAll` returns document order, which is
+    // exactly the order assistive tech and Tab traverse.
+    const root = el.closest('[data-vecto-a11y-root]') ?? el.ownerDocument;
+    if (root) {
+      const projected = root.querySelectorAll('[data-vecto-id]');
+      const index = [...projected].indexOf(el);
       if (index >= 0) info.readingOrder = index + 1;
     }
   }

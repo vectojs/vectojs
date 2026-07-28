@@ -70,6 +70,7 @@
     "@vectojs/text": "^0.2.0"
   },
   "devDependencies": {
+    "@guidepup/virtual-screen-reader": "0.32.1",
     "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
