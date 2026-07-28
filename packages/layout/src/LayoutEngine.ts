@@ -89,6 +89,22 @@ export interface LayoutResult {
 }
 
 /** A single measured grapheme (the "cold" half of the cold/hot split). */
+/** The internal caches {@link LayoutEngine.cacheStats} reports on. */
+export type LayoutCacheName = 'word' | 'grapheme' | 'paragraph' | 'richParagraph';
+
+/** One cache's tallies. `hitRate` is null until the cache has been consulted. */
+export interface LayoutCacheStat {
+  hits: number;
+  misses: number;
+  /** Full flushes, not evicted entries: these caches clear wholesale at their cap. */
+  evictions: number;
+  size: number;
+  capacity: number;
+  hitRate: number | null;
+}
+
+export type LayoutCacheStats = Record<LayoutCacheName, LayoutCacheStat>;
+
 export interface PreparedGlyph {
   char: string;
   /** Advance width at the prepared `fontSize`. */
@@ -99,6 +115,17 @@ export interface PreparedGlyph {
   sourceIndex: number;
   sourceLength: number;
   combining?: string[];
+  /**
+   * Set when the glyph atlas had no entry for this glyph, so its advance came
+   * from the canvas measurer instead of the atlas.
+   *
+   * The engine already computed this to decide the paragraph's
+   * `fallbackToCanvas` flag and then discarded it, leaving "some glyph in this
+   * paragraph fell back" as the finest available granularity — which is not
+   * enough to find WHICH character is the expensive one. Recorded only when true,
+   * so the common case adds no property.
+   */
+  atlasMiss?: true;
 }
 
 /** A measured word/segment, ready to be placed without re-measuring. */
@@ -358,6 +385,26 @@ export class LayoutEngine {
     /** Running count of fallback words, so the paragraph flag is O(1). */
     fallbackCount: number;
   } | null = null;
+  /**
+   * Hit/miss/eviction tallies per cache, readable via {@link cacheStats}.
+   *
+   * Kept because the caches are the difference between O(appended) and
+   * O(document) on a streaming paragraph, and until now there was no way to tell
+   * whether one was working: a key that varies by accident (a style signature
+   * that includes an object identity, a font size that arrives as 15.999998)
+   * turns every lookup into a miss and the memo into pure overhead, with no
+   * symptom other than being slow. Three integer increments per lookup is a cost
+   * worth paying to make that visible.
+   */
+  private cacheCounters: Record<
+    LayoutCacheName,
+    { hits: number; misses: number; evictions: number }
+  > = {
+    word: { hits: 0, misses: 0, evictions: 0 },
+    grapheme: { hits: 0, misses: 0, evictions: 0 },
+    paragraph: { hits: 0, misses: 0, evictions: 0 },
+    richParagraph: { hits: 0, misses: 0, evictions: 0 },
+  };
   private lastAtlas: GlyphAtlas | null = null;
   private measurer: GlyphMeasurer | null;
 
@@ -398,13 +445,20 @@ export class LayoutEngine {
     paragraph: string,
   ): Array<{ segment: string; isWordLike: boolean | undefined }> {
     const cached = this.wordCache.get(paragraph);
-    if (cached) return cached;
+    if (cached) {
+      this.cacheCounters.word.hits++;
+      return cached;
+    }
+    this.cacheCounters.word.misses++;
 
     const fresh = Array.from(this.wordSegmenter.segment(paragraph)).map((s) => ({
       segment: s.segment,
       isWordLike: s.isWordLike,
     }));
-    if (this.wordCache.size > 500) this.wordCache.clear();
+    if (this.wordCache.size > 500) {
+      this.wordCache.clear();
+      this.cacheCounters.word.evictions++;
+    }
     this.wordCache.set(paragraph, fresh);
     return fresh;
   }
@@ -428,6 +482,50 @@ export class LayoutEngine {
     return fontSize * 0.5;
   }
 
+  /**
+   * Hit/miss/eviction tallies and current size for each internal cache.
+   *
+   * A hit rate near zero on a repeated workload means the key is varying when it
+   * should not — the failure mode the counters exist to expose, since it looks
+   * identical to having no cache at all. Eviction counts a full flush, not one
+   * entry: every cache here clears wholesale when it exceeds its cap.
+   */
+  public cacheStats(): LayoutCacheStats {
+    const sizes: Record<LayoutCacheName, number> = {
+      word: this.wordCache.size,
+      grapheme: this.graphemeCache.size,
+      paragraph: this.paragraphCache.size,
+      richParagraph: this.richParagraphCache.size,
+    };
+    const caps: Record<LayoutCacheName, number> = {
+      word: 500,
+      grapheme: 2000,
+      paragraph: 1000,
+      richParagraph: 1000,
+    };
+    const out = {} as LayoutCacheStats;
+    for (const name of Object.keys(sizes) as LayoutCacheName[]) {
+      const c = this.cacheCounters[name];
+      const lookups = c.hits + c.misses;
+      out[name] = {
+        hits: c.hits,
+        misses: c.misses,
+        evictions: c.evictions,
+        size: sizes[name],
+        capacity: caps[name],
+        hitRate: lookups === 0 ? null : c.hits / lookups,
+      };
+    }
+    return out;
+  }
+
+  /** Zero the cache tallies without discarding the cached entries themselves. */
+  public resetCacheStats(): void {
+    for (const name of Object.keys(this.cacheCounters) as LayoutCacheName[]) {
+      this.cacheCounters[name] = { hits: 0, misses: 0, evictions: 0 };
+    }
+  }
+
   private glyphKeyFor(grapheme: string, fontAtlas: GlyphAtlas): string {
     if (fontAtlas[grapheme]) return grapheme;
     const firstCodePoint = Array.from(grapheme)[0];
@@ -437,10 +535,15 @@ export class LayoutEngine {
 
   private getGraphemes(word: string): string[] {
     const cached = this.graphemeCache.get(word);
+    if (cached) this.cacheCounters.grapheme.hits++;
+    else this.cacheCounters.grapheme.misses++;
     if (cached) return cached;
 
     const fresh = Array.from(this.charSegmenter.segment(word)).map((g) => g.segment);
-    if (this.graphemeCache.size > 2000) this.graphemeCache.clear();
+    if (this.graphemeCache.size > 2000) {
+      this.graphemeCache.clear();
+      this.cacheCounters.grapheme.evictions++;
+    }
     this.graphemeCache.set(word, fresh);
     return fresh;
   }
@@ -506,6 +609,8 @@ export class LayoutEngine {
 
       const key = `${fontSize} ${paragraph}`;
       const cached = this.paragraphCache.get(key);
+      if (cached) this.cacheCounters.paragraph.hits++;
+      else this.cacheCounters.paragraph.misses++;
       if (cached) {
         paragraphs.push(cached);
         if (cached.fallbackToCanvas) fallbackToCanvas = true;
@@ -563,6 +668,13 @@ export class LayoutEngine {
             level,
             sourceIndex,
             sourceLength,
+            // Retained per glyph, not just aggregated into the paragraph flag:
+            // knowing a paragraph fell back does not say which character caused
+            // it, and that character is the one worth looking at.
+            // Whitespace is excluded here for the same reason it is excluded from
+            // the paragraph fallback flag: a space needs no glyph, so a missing one
+            // is not a fallback cause and reporting it would bury the real one.
+            ...(hasGlyph || char.trim().length === 0 ? {} : { atlasMiss: true as const }),
           });
           width += w;
           shapedCharIdx += char.length;
@@ -597,7 +709,10 @@ export class LayoutEngine {
         fallbackToCanvas: pFallback || undefined,
         baseLevel: BidiResolver.getBaseLevel(shapedText),
       };
-      if (this.paragraphCache.size > 1000) this.paragraphCache.clear();
+      if (this.paragraphCache.size > 1000) {
+        this.paragraphCache.clear();
+        this.cacheCounters.paragraph.evictions++;
+      }
       this.paragraphCache.set(key, prepared);
       paragraphs.push(prepared);
       offset += consumed;
@@ -764,6 +879,8 @@ export class LayoutEngine {
       const sig = styleSig(0, fullText.length);
       const key = `${baseFontSize} ${fullText} ${sig}`;
       const cached = this.richParagraphCache.get(key);
+      if (cached) this.cacheCounters.richParagraph.hits++;
+      else this.cacheCounters.richParagraph.misses++;
       if (cached) {
         return {
           paragraphs: [cached],
@@ -779,7 +896,10 @@ export class LayoutEngine {
         fallbackToCanvas: pFallback || undefined,
         baseLevel: 0,
       };
-      if (this.richParagraphCache.size > 1000) this.richParagraphCache.clear();
+      if (this.richParagraphCache.size > 1000) {
+        this.richParagraphCache.clear();
+        this.cacheCounters.richParagraph.evictions++;
+      }
       this.richParagraphCache.set(key, prepared);
       let fallbackCount = 0;
       for (const f of shaped.wordFallbacks) if (f) fallbackCount++;
@@ -818,6 +938,8 @@ export class LayoutEngine {
 
       const key = `${baseFontSize} ${paragraph} ${styleSig(offset, paragraph.length)}`;
       const cached = this.richParagraphCache.get(key);
+      if (cached) this.cacheCounters.richParagraph.hits++;
+      else this.cacheCounters.richParagraph.misses++;
       if (cached) {
         paragraphs.push(cached);
         if (cached.fallbackToCanvas) fallbackToCanvas = true;
@@ -878,6 +1000,10 @@ export class LayoutEngine {
             level,
             sourceIndex,
             sourceLength,
+            // Whitespace is excluded here for the same reason it is excluded from
+            // the paragraph fallback flag: a space needs no glyph, so a missing one
+            // is not a fallback cause and reporting it would bury the real one.
+            ...(hasGlyph || char.trim().length === 0 ? {} : { atlasMiss: true as const }),
           });
           width += w;
           shapedCharIdx += char.length;
@@ -912,7 +1038,10 @@ export class LayoutEngine {
         fallbackToCanvas: pFallback || undefined,
         baseLevel: BidiResolver.getBaseLevel(shapedText),
       };
-      if (this.richParagraphCache.size > 1000) this.richParagraphCache.clear();
+      if (this.richParagraphCache.size > 1000) {
+        this.richParagraphCache.clear();
+        this.cacheCounters.richParagraph.evictions++;
+      }
       this.richParagraphCache.set(key, prepared);
       paragraphs.push(prepared);
       offset += consumed; // paragraph + the '\r' (if any) + the consumed '\n'
@@ -969,7 +1098,8 @@ export class LayoutEngine {
         const glyphKey = this.glyphKeyFor(char, fontAtlas);
         const style = styleAt[charIdx];
         const gfs = style?.fontSize ?? baseFontSize;
-        if (char.trim().length > 0 && !fontAtlas[glyphKey]) wordFallback = true;
+        const inAtlas = !!fontAtlas[glyphKey];
+        if (char.trim().length > 0 && !inAtlas) wordFallback = true;
         const w = this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
         glyphs.push({
           char,
@@ -978,6 +1108,10 @@ export class LayoutEngine {
           level: 0,
           sourceIndex: charIdx,
           sourceLength: char.length,
+          // The streaming fast path needs the same per-glyph record as the two
+          // full-shaping paths, or a streamed paragraph reports a fallback with
+          // no way to see which glyph caused it.
+          ...(inAtlas || char.trim().length === 0 ? {} : { atlasMiss: true as const }),
         });
         width += w;
         charIdx += char.length;

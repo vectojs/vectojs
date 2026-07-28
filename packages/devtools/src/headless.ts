@@ -58,6 +58,54 @@ export {
   type A11yInfo,
 } from './a11yInspect';
 export {
+  createDevtoolsBackend,
+  createDevtoolsClient,
+  createDirectTransportPair,
+  createWindowTransport,
+  DEVTOOLS_CHANNEL,
+  DEVTOOLS_PROTOCOL_VERSION,
+  publishSelection,
+  publishStructure,
+  type DevtoolsBackendOptions,
+  type DevtoolsClient,
+  type DevtoolsEvent,
+  type DevtoolsMessage,
+  type DevtoolsMethod,
+  type DevtoolsRequest,
+  type DevtoolsResponse,
+  type DevtoolsTransport,
+} from './bridge';
+export {
+  auditGpu,
+  enableDrawCountersCommand,
+  enablePhaseTimingCommand,
+  formatGpuInspection,
+  gpuAudit,
+  gpuInspector,
+  inspectGpu,
+  resetDrawCountersCommand,
+  type GpuInspection,
+} from './gpuInspect';
+export {
+  auditMarkdownStreaming,
+  formatMarkdownStream,
+  inspectMarkdownStream,
+  isMarkdownEntity,
+  markdownStreamAudit,
+  markdownStreamInspector,
+  type MarkdownStreamInfo,
+} from './markdownInspect';
+export {
+  auditTextShaping,
+  formatTextInspection,
+  inspectText,
+  isTextEntity,
+  shapeProbe,
+  textInspector,
+  type TextGlyphInfo,
+  type TextInspection,
+} from './textInspect';
+export {
   clearDevtoolsPlugins,
   devtoolsPlugins,
   pluginCommands,

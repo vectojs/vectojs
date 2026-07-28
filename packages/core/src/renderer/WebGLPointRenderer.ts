@@ -6,6 +6,30 @@ import { parseColorToRGBA } from './colorParse';
  * render `getBatchCircle()` / `getBatchRect()` entities — the point-cloud /
  * particle case where Canvas2D tops out at ~7 fps for 100k primitives.
  */
+/** Per-frame and cumulative WebGL draw accounting. */
+export interface WebGLDrawStats {
+  /** Draw calls issued for the last completed frame. */
+  drawCalls: number;
+  /** Cumulative draw calls since creation. */
+  totalDrawCalls: number;
+  /** Cumulative mid-frame MSDF atlas switches, each costing an extra draw. */
+  atlasSwitches: number;
+  /** Programs compiled at creation — a fixed capability, not a per-frame cost. */
+  programs: number;
+  /** Textures currently allocated (colour atlas and/or MSDF atlas). */
+  textures: number;
+  /**
+   * Circles routed to the quad path rather than `gl.POINTS`, cumulatively.
+   *
+   * A circle takes the quad path when it could clip off-viewport or exceeds the
+   * driver's maximum aliased point size. A high share means the POINTS fast path
+   * is not being used and each circle costs four vertices instead of one.
+   */
+  circleQuadFallbacks: number;
+  /** Circles drawn through the `gl.POINTS` fast path, cumulatively. */
+  circlePoints: number;
+}
+
 export interface PointRenderer {
   /** Resize the backing buffer + GL viewport to a logical `w × h` (DPR applied). */
   resize(width: number, height: number): void;
@@ -23,6 +47,16 @@ export interface PointRenderer {
   maxDPR?: number;
   /** Begin a frame: reset the accumulated primitive buffers. */
   begin(): void;
+  /**
+   * Draw-call counters for the most recent frame, plus cumulative totals.
+   *
+   * Batching here is by primitive type — one draw per active type — so draw calls
+   * and batches are the same number, and both are bounded at five plus one per
+   * mid-frame MSDF atlas switch. That switch is the only variable term and the
+   * only thing worth watching: it forces a commit of glyphs batched against the
+   * previous font.
+   */
+  stats?(): WebGLDrawStats;
   /** Add one circle in world (CSS-pixel) coordinates; `alpha` multiplies the color's. */
   addCircle(x: number, y: number, radius: number, color: string, alpha?: number): void;
   /**
@@ -621,6 +655,15 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   // Glyphs reuse the sprite vertex layout (8 floats/vert, 4 verts/quad).
   let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 1024);
   let glyphCount = 0;
+  // Draw accounting. Always on: this is a handful of integer increments per
+  // frame against a backend that is already issuing GL calls, and a counter that
+  // has to be switched on is a counter nobody has when they need it.
+  let frameDrawCalls = 0;
+  let lastFrameDrawCalls = 0;
+  let totalDrawCalls = 0;
+  let atlasSwitches = 0;
+  let circleQuadFallbacks = 0;
+  let circlePoints = 0;
   let circleQuadData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 64);
   let circleQuadCount = 0;
   let logicalW = 0;
@@ -652,6 +695,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     gl.uniform1f(gURange, distanceRange);
     ensureQuadIndices(glyphCount);
     gl.drawElements(gl.TRIANGLES, glyphCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
+    frameDrawCalls++;
     gl.bindVertexArray(null);
     glyphCount = 0;
   };
@@ -670,7 +714,27 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       gl.viewport(0, 0, canvas.width, canvas.height);
     },
 
+    stats() {
+      return {
+        drawCalls: lastFrameDrawCalls,
+        totalDrawCalls,
+        atlasSwitches,
+        // Fixed at creation: five programs compiled once, never per frame, so
+        // these are capability facts rather than counters.
+        programs: 5,
+        textures: (texture ? 1 : 0) + (msdfTexture ? 1 : 0),
+        circleQuadFallbacks,
+        circlePoints,
+      };
+    },
+
     begin() {
+      // The frame that just ended is the one a reader wants; capture it before
+      // resetting. `flush()` is the wrong place — mid-frame commits mean flush can
+      // run more than once per frame.
+      lastFrameDrawCalls = frameDrawCalls;
+      totalDrawCalls += frameDrawCalls;
+      frameDrawCalls = 0;
       pointCount = 0;
       rectCount = 0;
       spriteCount = 0;
@@ -730,6 +794,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       }
       // Different atlas: glyphs already batched belong to the previous font —
       // draw them with it before the upload replaces the texture contents.
+      atlasSwitches++;
       drawGlyphs();
       distanceRange = range;
       if (!msdfTexture) {
@@ -780,6 +845,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
           (x < radius || y < radius || x > logicalW - radius || y > logicalH - radius)) ||
         radius * 2 * dpr > maxPointSize;
       if (needsQuad) {
+        circleQuadFallbacks++;
         const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
         circleQuadData = grow(circleQuadData, (circleQuadCount + 1) * stride);
         const rgba = parseColorToRGBA(color);
@@ -804,6 +870,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         circleQuadCount++;
         return;
       }
+      circlePoints++;
       pointData = grow(pointData, (pointCount + 1) * FLOATS_PER_POINT);
       const [r, g, b, a] = parseColorToRGBA(color);
       const o = pointCount * FLOATS_PER_POINT;
@@ -847,6 +914,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.uniform2f(rURes, logicalW, logicalH);
         ensureQuadIndices(rectCount);
         gl.drawElements(gl.TRIANGLES, rectCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
+        frameDrawCalls++;
       }
 
       if (pointCount > 0) {
@@ -861,6 +929,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.uniform2f(pURes, logicalW, logicalH);
         gl.uniform1f(pUDpr, dpr);
         gl.drawArrays(gl.POINTS, 0, pointCount);
+        frameDrawCalls++;
       }
 
       if (circleQuadCount > 0) {
@@ -872,6 +941,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.uniform2f(cURes, logicalW, logicalH);
         ensureQuadIndices(circleQuadCount);
         gl.drawElements(gl.TRIANGLES, circleQuadCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
+        frameDrawCalls++;
       }
 
       if (spriteCount > 0 && texture) {
@@ -886,6 +956,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         gl.uniform2f(sURes, logicalW, logicalH);
         ensureQuadIndices(spriteCount);
         gl.drawElements(gl.TRIANGLES, spriteCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
+        frameDrawCalls++;
       }
 
       gl.bindVertexArray(null);

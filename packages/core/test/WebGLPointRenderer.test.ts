@@ -487,3 +487,93 @@ describe('gl.POINTS clip fallback', () => {
     expect(tris).toHaveLength(1);
   });
 });
+
+describe('draw accounting', () => {
+  it('counts one draw call per active primitive type', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+
+    r.begin();
+    r.addCircle(10, 20, 5, '#ff0000');
+    r.addRect(10, 20, 30, 40, '#00ff00');
+    r.flush();
+    // begin() closes the frame, so the count is readable on the next one.
+    r.begin();
+
+    const stats = r.stats!();
+    // Two active types, two draws: batching here is per primitive type.
+    expect(stats.drawCalls).toBe(2);
+    expect(captures.drawArrays.length + captures.drawElements.length).toBe(2);
+    expect(stats.totalDrawCalls).toBe(2);
+  });
+
+  it('accumulates totals across frames while drawCalls stays per-frame', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+
+    for (let frame = 0; frame < 3; frame++) {
+      r.begin();
+      r.addCircle(10, 20, 5, '#ff0000');
+      r.flush();
+    }
+    r.begin();
+
+    const stats = r.stats!();
+    expect(stats.drawCalls).toBe(1);
+    expect(stats.totalDrawCalls).toBe(3);
+  });
+
+  it('reports zero draws for an empty frame', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.begin();
+    r.flush();
+    r.begin();
+    expect(r.stats!().drawCalls).toBe(0);
+  });
+
+  it('splits circles between the POINTS fast path and the quad fallback', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    r.resize(200, 200);
+
+    r.begin();
+    r.addCircle(100, 100, 5, '#f00'); // interior: POINTS
+    r.addCircle(2, 100, 5, '#f00'); // near the edge: could clip, so quad
+    r.flush();
+    r.begin();
+
+    const stats = r.stats!();
+    expect(stats.circlePoints).toBe(1);
+    expect(stats.circleQuadFallbacks).toBe(1);
+  });
+
+  it('counts an MSDF atlas switch, which costs an extra draw', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlasA = { width: 4, height: 4 } as unknown as TexImageSource;
+    const atlasB = { width: 8, height: 8 } as unknown as TexImageSource;
+
+    r.begin();
+    r.setMSDFTexture!(atlasA, 4); // first upload is itself a switch: none before it
+    r.setMSDFTexture!(atlasA, 4); // same atlas re-set: free, must not count
+    r.setMSDFTexture!(atlasB, 4); // a real switch
+    r.flush();
+    r.begin();
+
+    // Two: the initial upload and the change. The middle call is the one that
+    // matters — entities re-set their atlas every render, and counting those
+    // would make the number meaningless.
+    expect(r.stats!().atlasSwitches).toBe(2);
+  });
+
+  it('reports programs and textures as fixed capabilities', () => {
+    const { gl } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const stats = r.stats!();
+    // Five programs compiled once at creation, never per frame.
+    expect(stats.programs).toBe(5);
+    // No atlas uploaded yet.
+    expect(stats.textures).toBe(0);
+  });
+});

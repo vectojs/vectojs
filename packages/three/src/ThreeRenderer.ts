@@ -93,6 +93,8 @@ class ThreePath {
  * Bridges VectoJS's 2D canvas API to Three.js for 3D hardware-accelerated rendering.
  */
 export class ThreeRenderer implements IRenderer {
+  /** Backend discriminator; see {@link IRenderer.kind}. */
+  public readonly kind = 'three';
   public scene: THREE.Scene;
   public camera: THREE.OrthographicCamera;
   public renderer: THREE.WebGLRenderer;

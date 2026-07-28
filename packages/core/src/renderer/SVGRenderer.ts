@@ -85,6 +85,8 @@ function fontFamilyFromShorthand(font: string, sizeToken: { start: number; end: 
 }
 
 export class SVGRenderer implements IRenderer {
+  /** Backend discriminator; see {@link IRenderer.kind}. */
+  public readonly kind = 'svg';
   private width: number;
   private height: number;
   private buffer: string[] = [];
