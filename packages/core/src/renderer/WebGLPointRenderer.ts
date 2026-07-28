@@ -155,13 +155,51 @@ const POINT_STRIDE = FLOATS_PER_POINT * 4;
 // floats instead of 48.
 const VERTS_PER_QUAD = 4;
 const INDICES_PER_QUAD = 6;
-// Rect vertex: world position + color (6 floats).
-const FLOATS_PER_RECT_VERT = 6; // x, y, r, g, b, a
-const RECT_VERT_STRIDE = FLOATS_PER_RECT_VERT * 4;
-// Sprites: same indexed quad, plus UVs to sample a texture atlas and a multiply
-// tint. Each vertex: x, y, u, v, r, g, b, a.
-const FLOATS_PER_SPRITE_VERT = 8;
-const SPRITE_VERT_STRIDE = FLOATS_PER_SPRITE_VERT * 4;
+// Vertex attributes are PACKED rather than all-float, which halves the upload
+// again on top of the indexing above. `normalized: true` in vertexAttribPointer
+// makes the GPU expand an integer attribute back to a float in [0,1] before the
+// shader sees it, so the shaders are unchanged — only the pointer setup and the
+// writers differ from the all-float form.
+//
+//   sprite/glyph/circle-quad vertex, 16 B:  pos 2xf32 @0, uv 2xu16n @8, tint 4xu8n @12
+//   rect vertex, 12 B:                      pos 2xf32 @0,              tint 4xu8n @8
+//
+// Position stays f32: it is a logical-pixel coordinate that has no bounded range
+// to normalize against. UV and tint are [0,1] by construction, which is exactly
+// what a normalized integer attribute encodes.
+//
+// Precision, measured rather than assumed (the reason this was split out of the
+// indexing work and decided separately):
+//
+//   - u16 uv resolves to 1/65535 of the atlas, i.e. 0.016px on a 2048px atlas and
+//     0.031px on 4096px. MSDF atlasBounds are integer pixel edges, so this is
+//     exact for any atlas up to 65535px.
+//   - u8 tint RGB is lossless: colours originate as CSS 0-255 and are divided by
+//     255 on parse (see colorParse.ts), so this round-trips exactly.
+//   - u8 tint ALPHA is the one lossy field, and it carries live animated opacity
+//     (colour alpha x accumulated ancestor opacity x particle life), not a static
+//     colour. It is still safe, because alpha is not displayed — it is a blend
+//     factor into an 8-bit framebuffer, so d(out)/d(alpha) is bounded by 1 and
+//     half a u8 step of alpha error moves the composited result by at most half
+//     one framebuffer step. A 4s fade at 240Hz produces 256 distinct output
+//     levels and a longest identical-output run of 4 frames with BOTH f32 and u8
+//     alpha: the banding in a slow fade comes from the 8-bit framebuffer, not
+//     from this. Worst single-layer composited error is 1 of 255 levels; worst
+//     low-alpha overdraw (alpha 0.02 x 50 coincident layers) is 1.9 levels.
+//     Keeping alpha as f32 would cost a third of the bandwidth win to fix an
+//     artifact below the visibility threshold.
+//
+// Encoding rounds to nearest (see {@link encodeUnorm}). Truncating instead — as
+// the benchmark prototype did — doubles the worst-case error from half a step to
+// a full step for free.
+const PACKED_QUAD_VERT_STRIDE = 16;
+const PACKED_RECT_VERT_STRIDE = 12;
+/** Byte offset of the uv pair within a packed sprite vertex. */
+const PACKED_UV_OFFSET = 8;
+/** Byte offset of the tint word within a packed sprite vertex. */
+const PACKED_TINT_OFFSET = 12;
+/** Byte offset of the tint word within a packed rect vertex. */
+const PACKED_RECT_TINT_OFFSET = 8;
 
 /**
  * Build the static index buffer contents for `quads` quads: for quad `i` the
@@ -185,6 +223,90 @@ function buildQuadIndices(quads: number): Uint32Array {
     out[o + 5] = v + 3;
   }
   return out;
+}
+
+/**
+ * Encode a normalized float into an unsigned integer of `max` full scale, the
+ * inverse of what `normalized: true` does on the GPU.
+ *
+ * Rounds to nearest, which halves the worst-case error against truncation (half
+ * a step versus a full step). Clamps, because a typed-array store wraps: an
+ * unclamped uv of 1.0000001 encodes to 65536, stores as 0, and samples the
+ * opposite edge of the atlas — a stark visual bug from a rounding error. Alpha
+ * likewise clamps, since `Entity.opacity` is not range-checked on assignment.
+ */
+function encodeUnorm(v: number, max: number): number {
+  // `| 0` truncates, so the + 0.5 is the rounding; both operands are already
+  // non-negative after the clamp.
+  return v <= 0 ? 0 : v >= 1 ? max : (v * max + 0.5) | 0;
+}
+
+/**
+ * Whether this platform is little-endian, which decides the byte order of the
+ * packed tint word.
+ *
+ * A `Uint32Array` store writes in platform byte order while the GPU reads the
+ * four tint bytes positionally (byte 0 is red), so the shift order has to follow
+ * the platform. Writing the four bytes through a `Uint8Array` instead would avoid
+ * the question, but costs 16 stores per quad against 4 — this is the hot path at
+ * ~25k glyphs/frame. Every browser-bearing platform in practice is little-endian;
+ * the big-endian branch exists so that is a fact rather than an assumption.
+ */
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * Pack RGBA in [0,1] into one 32-bit word laid out so that a `Uint32Array` store
+ * places red at the lowest byte address.
+ */
+function packTint(r: number, g: number, b: number, a: number): number {
+  const ri = encodeUnorm(r, 255);
+  const gi = encodeUnorm(g, 255);
+  const bi = encodeUnorm(b, 255);
+  const ai = encodeUnorm(a, 255);
+  return LITTLE_ENDIAN
+    ? (ai << 24) | (bi << 16) | (gi << 8) | ri
+    : (ri << 24) | (gi << 16) | (bi << 8) | ai;
+}
+
+/**
+ * A vertex buffer with the overlapping typed-array views the packed layouts need.
+ *
+ * One `ArrayBuffer` viewed three ways rather than a `DataView`: `DataView` would
+ * force an explicit endianness argument per store and is measurably slower, and
+ * the views agree with the GPU by construction because both read the same bytes
+ * in platform order. The 16- and 12-byte strides are chosen so every view index
+ * divides exactly — a 14-byte vertex would misalign the u32 tint store.
+ */
+interface PackedBuffer {
+  bytes: ArrayBuffer;
+  f32: Float32Array;
+  u16: Uint16Array;
+  u32: Uint32Array;
+  u8: Uint8Array;
+}
+
+function createPackedBuffer(byteLength: number): PackedBuffer {
+  const bytes = new ArrayBuffer(byteLength);
+  return {
+    bytes,
+    f32: new Float32Array(bytes),
+    u16: new Uint16Array(bytes),
+    u32: new Uint32Array(bytes),
+    u8: new Uint8Array(bytes),
+  };
+}
+
+/**
+ * Grow `buf` to hold at least `neededBytes`, doubling and copying. Returns the
+ * original when it already fits, so the steady state allocates nothing.
+ */
+function growPacked(buf: PackedBuffer, neededBytes: number): PackedBuffer {
+  if (neededBytes <= buf.bytes.byteLength) return buf;
+  let cap = buf.bytes.byteLength;
+  while (cap < neededBytes) cap *= 2;
+  const grown = createPackedBuffer(cap);
+  grown.u8.set(buf.u8);
+  return grown;
 }
 
 const POINT_VERT = `#version 300 es
@@ -334,9 +456,10 @@ function link(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLPr
 }
 
 /**
- * Write one textured quad's 4 vertices (TL, TR, BR, BL) into `out` at float
- * offset `o`, rotated by `rotation` about `(x, y)`. Triangle assembly is left to
- * the shared static index buffer (see {@link buildQuadIndices}).
+ * Write one textured quad's 4 vertices (TL, TR, BR, BL) into `out` at
+ * `byteOffset`, rotated by `rotation` about `(x, y)`. Triangle assembly is left
+ * to the shared static index buffer (see {@link buildQuadIndices}); the packed
+ * 16-byte layout is described at {@link PACKED_QUAD_VERT_STRIDE}.
  *
  * Deliberately allocation-free and closure-free: an earlier version built a
  * `corner` closure plus ~10 temporary arrays per quad and destructured twice per
@@ -347,8 +470,8 @@ function link(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLPr
  * the overwhelmingly common case for text.
  */
 function writeQuad(
-  out: Float32Array,
-  o: number,
+  out: PackedBuffer,
+  byteOffset: number,
   x: number,
   y: number,
   width: number,
@@ -391,47 +514,49 @@ function writeQuad(
     x3 = x - hs;
     y3 = y + hc;
   }
-  out[o] = x;
-  out[o + 1] = y;
-  out[o + 2] = u0;
-  out[o + 3] = v0;
-  out[o + 4] = r;
-  out[o + 5] = g;
-  out[o + 6] = b;
-  out[o + 7] = al;
-  out[o + 8] = x1;
-  out[o + 9] = y1;
-  out[o + 10] = u1;
-  out[o + 11] = v0;
-  out[o + 12] = r;
-  out[o + 13] = g;
-  out[o + 14] = b;
-  out[o + 15] = al;
-  out[o + 16] = x2;
-  out[o + 17] = y2;
-  out[o + 18] = u1;
-  out[o + 19] = v1;
-  out[o + 20] = r;
-  out[o + 21] = g;
-  out[o + 22] = b;
-  out[o + 23] = al;
-  out[o + 24] = x3;
-  out[o + 25] = y3;
-  out[o + 26] = u0;
-  out[o + 27] = v1;
-  out[o + 28] = r;
-  out[o + 29] = g;
-  out[o + 30] = b;
-  out[o + 31] = al;
+  // uv and tint are identical for all four vertices of a quad in every axis but
+  // the corner they name, so encode once and store the words four times.
+  const iu0 = encodeUnorm(u0, 65535);
+  const iv0 = encodeUnorm(v0, 65535);
+  const iu1 = encodeUnorm(u1, 65535);
+  const iv1 = encodeUnorm(v1, 65535);
+  const tint = packTint(r, g, b, al);
+  const f32 = out.f32;
+  const u16 = out.u16;
+  const u32 = out.u32;
+  // Per-view indices. The 16-byte stride keeps each division exact.
+  const fi = byteOffset >> 2;
+  const si = (byteOffset + PACKED_UV_OFFSET) >> 1;
+  const ti = (byteOffset + PACKED_TINT_OFFSET) >> 2;
+  f32[fi] = x;
+  f32[fi + 1] = y;
+  u16[si] = iu0;
+  u16[si + 1] = iv0;
+  u32[ti] = tint;
+  f32[fi + 4] = x1;
+  f32[fi + 5] = y1;
+  u16[si + 8] = iu1;
+  u16[si + 9] = iv0;
+  u32[ti + 4] = tint;
+  f32[fi + 8] = x2;
+  f32[fi + 9] = y2;
+  u16[si + 16] = iu1;
+  u16[si + 17] = iv1;
+  u32[ti + 8] = tint;
+  f32[fi + 12] = x3;
+  f32[fi + 13] = y3;
+  u16[si + 24] = iu0;
+  u16[si + 25] = iv1;
+  u32[ti + 12] = tint;
 }
 
 /**
- * Write one solid-color quad's 4 vertices (no UVs) into `out` at float offset
- * `o`. Same rationale as {@link writeQuad}.
+ * Write one solid-color quad's 4 vertices (no UVs) into `out` at `byteOffset`,
+ * in the packed 12-byte layout. Same rationale as {@link writeQuad}.
  */
 function writeRectQuad(
-  out: Float32Array,
-  o: number,
+  out: PackedBuffer,
+  byteOffset: number,
   x: number,
   y: number,
   width: number,
@@ -469,32 +594,30 @@ function writeRectQuad(
     x3 = x - hs;
     y3 = y + hc;
   }
-  out[o] = x;
-  out[o + 1] = y;
-  out[o + 2] = r;
-  out[o + 3] = g;
-  out[o + 4] = b;
-  out[o + 5] = al;
-  out[o + 6] = x1;
-  out[o + 7] = y1;
-  out[o + 8] = r;
-  out[o + 9] = g;
-  out[o + 10] = b;
-  out[o + 11] = al;
-  out[o + 12] = x2;
-  out[o + 13] = y2;
-  out[o + 14] = r;
-  out[o + 15] = g;
-  out[o + 16] = b;
-  out[o + 17] = al;
-  out[o + 18] = x3;
-  out[o + 19] = y3;
-  out[o + 20] = r;
-  out[o + 21] = g;
-  out[o + 22] = b;
-  out[o + 23] = al;
+  const tint = packTint(r, g, b, al);
+  const f32 = out.f32;
+  const u32 = out.u32;
+  // 12-byte stride: 3 f32 slots per vertex, tint in the third.
+  const fi = byteOffset >> 2;
+  f32[fi] = x;
+  f32[fi + 1] = y;
+  u32[fi + 2] = tint;
+  f32[fi + 3] = x1;
+  f32[fi + 4] = y1;
+  u32[fi + 5] = tint;
+  f32[fi + 6] = x2;
+  f32[fi + 7] = y2;
+  u32[fi + 8] = tint;
+  f32[fi + 9] = x3;
+  f32[fi + 10] = y3;
+  u32[fi + 11] = tint;
 }
 
+/**
+ * Grow an all-float vertex array, doubling and copying. Only the `gl.POINTS`
+ * circle path still uses this — every quad batch is packed and goes through
+ * {@link growPacked}.
+ */
 function grow(data: Float32Array, needed: number): Float32Array {
   if (needed <= data.length) return data;
   let cap = data.length;
@@ -559,9 +682,16 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.bindVertexArray(rectVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, rectBuffer);
   gl.enableVertexAttribArray(rAPos);
-  gl.vertexAttribPointer(rAPos, 2, gl.FLOAT, false, RECT_VERT_STRIDE, 0);
+  gl.vertexAttribPointer(rAPos, 2, gl.FLOAT, false, PACKED_RECT_VERT_STRIDE, 0);
   gl.enableVertexAttribArray(rAColor);
-  gl.vertexAttribPointer(rAColor, 4, gl.FLOAT, false, RECT_VERT_STRIDE, 8);
+  gl.vertexAttribPointer(
+    rAColor,
+    4,
+    gl.UNSIGNED_BYTE,
+    true,
+    PACKED_RECT_VERT_STRIDE,
+    PACKED_RECT_TINT_OFFSET,
+  );
 
   // --- Sprite program state (textured-quad triangle batch) ---
   const sAPos = gl.getAttribLocation(spriteProgram, 'a_pos');
@@ -574,11 +704,25 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.bindVertexArray(spriteVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
   gl.enableVertexAttribArray(sAPos);
-  gl.vertexAttribPointer(sAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.vertexAttribPointer(sAPos, 2, gl.FLOAT, false, PACKED_QUAD_VERT_STRIDE, 0);
   gl.enableVertexAttribArray(sAUv);
-  gl.vertexAttribPointer(sAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.vertexAttribPointer(
+    sAUv,
+    2,
+    gl.UNSIGNED_SHORT,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_UV_OFFSET,
+  );
   gl.enableVertexAttribArray(sATint);
-  gl.vertexAttribPointer(sATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
+  gl.vertexAttribPointer(
+    sATint,
+    4,
+    gl.UNSIGNED_BYTE,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_TINT_OFFSET,
+  );
 
   // --- MSDF glyph program state (same vertex layout as sprites) ---
   const gAPos = gl.getAttribLocation(msdfProgram, 'a_pos');
@@ -592,11 +736,25 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.bindVertexArray(glyphVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
   gl.enableVertexAttribArray(gAPos);
-  gl.vertexAttribPointer(gAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.vertexAttribPointer(gAPos, 2, gl.FLOAT, false, PACKED_QUAD_VERT_STRIDE, 0);
   gl.enableVertexAttribArray(gAUv);
-  gl.vertexAttribPointer(gAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.vertexAttribPointer(
+    gAUv,
+    2,
+    gl.UNSIGNED_SHORT,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_UV_OFFSET,
+  );
   gl.enableVertexAttribArray(gATint);
-  gl.vertexAttribPointer(gATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
+  gl.vertexAttribPointer(
+    gATint,
+    4,
+    gl.UNSIGNED_BYTE,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_TINT_OFFSET,
+  );
 
   // --- Circle-quad program state (POINTS fallback; sprite vertex layout) ---
   const cAPos = gl.getAttribLocation(circleQuadProgram, 'a_pos');
@@ -608,11 +766,25 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   gl.bindVertexArray(circleQuadVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, circleQuadBuffer);
   gl.enableVertexAttribArray(cAPos);
-  gl.vertexAttribPointer(cAPos, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 0);
+  gl.vertexAttribPointer(cAPos, 2, gl.FLOAT, false, PACKED_QUAD_VERT_STRIDE, 0);
   gl.enableVertexAttribArray(cAUv);
-  gl.vertexAttribPointer(cAUv, 2, gl.FLOAT, false, SPRITE_VERT_STRIDE, 8);
+  gl.vertexAttribPointer(
+    cAUv,
+    2,
+    gl.UNSIGNED_SHORT,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_UV_OFFSET,
+  );
   gl.enableVertexAttribArray(cATint);
-  gl.vertexAttribPointer(cATint, 4, gl.FLOAT, false, SPRITE_VERT_STRIDE, 16);
+  gl.vertexAttribPointer(
+    cATint,
+    4,
+    gl.UNSIGNED_BYTE,
+    true,
+    PACKED_QUAD_VERT_STRIDE,
+    PACKED_TINT_OFFSET,
+  );
   gl.bindVertexArray(null);
 
   // --- Shared static quad index buffer ------------------------------------
@@ -621,14 +793,26 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   // largest batch dictates its size. Uploaded on growth only, never per frame.
   const quadIndexBuffer = gl.createBuffer();
   let quadIndexCapacity = 0;
-  /** Ensure the shared index buffer covers `quads` quads, growing geometrically. */
+  /**
+   * Ensure the shared index buffer covers `quads` quads, growing geometrically.
+   *
+   * Deliberately does NOT unbind ELEMENT_ARRAY_BUFFER afterwards. `flush()` calls
+   * this with a quad VAO already bound, and a VAO *records* its
+   * ELEMENT_ARRAY_BUFFER binding — so a trailing `bindBuffer(ELEMENT_ARRAY_BUFFER,
+   * null)` writes that null into whichever VAO is current and permanently clears
+   * its index binding. Every later `drawElements` on that VAO is then
+   * GL_INVALID_OPERATION and silently draws nothing: measured on real hardware
+   * (Chrome and Firefox alike) as a fully transparent framebuffer, hitting rects in
+   * a mixed scene and glyphs in a text-only one, i.e. whichever batch happened to
+   * trigger the growth. Rebinding the same buffer here is harmless precisely
+   * because the VAO already holds it from setup below.
+   */
   const ensureQuadIndices = (quads: number): void => {
     if (quads <= quadIndexCapacity) return;
     let cap = quadIndexCapacity || 256;
     while (cap < quads) cap *= 2;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, quadIndexBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, buildQuadIndices(cap), gl.STATIC_DRAW);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
     quadIndexCapacity = cap;
   };
 
@@ -648,12 +832,12 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
   let pointData: Float32Array = new Float32Array(FLOATS_PER_POINT * 1024);
   let pointCount = 0;
-  let rectData: Float32Array = new Float32Array(FLOATS_PER_RECT_VERT * VERTS_PER_QUAD * 256);
+  let rectData = createPackedBuffer(PACKED_RECT_VERT_STRIDE * VERTS_PER_QUAD * 256);
   let rectCount = 0;
-  let spriteData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 256);
+  let spriteData = createPackedBuffer(PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD * 256);
   let spriteCount = 0;
-  // Glyphs reuse the sprite vertex layout (8 floats/vert, 4 verts/quad).
-  let glyphData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 1024);
+  // Glyphs reuse the sprite vertex layout (16 bytes/vert, 4 verts/quad).
+  let glyphData = createPackedBuffer(PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD * 1024);
   let glyphCount = 0;
   // Draw accounting. Always on: this is a handful of integer increments per
   // frame against a backend that is already issuing GL calls, and a counter that
@@ -664,7 +848,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   let atlasSwitches = 0;
   let circleQuadFallbacks = 0;
   let circlePoints = 0;
-  let circleQuadData: Float32Array = new Float32Array(FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD * 64);
+  let circleQuadData = createPackedBuffer(PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD * 64);
   let circleQuadCount = 0;
   let logicalW = 0;
   let logicalH = 0;
@@ -683,11 +867,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   // batched against the previous font aren't drawn with the new one.
   const drawGlyphs = () => {
     if (glyphCount === 0 || !msdfTexture) return;
-    const floats = glyphCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
+    const bytes = glyphCount * VERTS_PER_QUAD * PACKED_QUAD_VERT_STRIDE;
     gl.useProgram(msdfProgram);
     gl.bindVertexArray(glyphVAO);
     gl.bindBuffer(gl.ARRAY_BUFFER, glyphBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, glyphData.subarray(0, floats), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, glyphData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, msdfTexture);
     gl.uniform1i(gUTex, 0);
@@ -764,8 +948,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     addSprite(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
       if (!texture) return; // nothing to sample yet
-      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
-      spriteData = grow(spriteData, (spriteCount + 1) * stride);
+      const stride = PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD;
+      spriteData = growPacked(spriteData, (spriteCount + 1) * stride);
       const rgba = parseColorToRGBA(color);
       writeQuad(
         spriteData,
@@ -813,8 +997,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     addGlyph(x, y, width, height, u0, v0, u1, v1, color = '#ffffff', alpha = 1, rotation = 0) {
       if (!msdfTexture) return; // no glyph atlas yet
-      const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
-      glyphData = grow(glyphData, (glyphCount + 1) * stride);
+      const stride = PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD;
+      glyphData = growPacked(glyphData, (glyphCount + 1) * stride);
       const rgba = parseColorToRGBA(color);
       writeQuad(
         glyphData,
@@ -846,8 +1030,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
         radius * 2 * dpr > maxPointSize;
       if (needsQuad) {
         circleQuadFallbacks++;
-        const stride = FLOATS_PER_SPRITE_VERT * VERTS_PER_QUAD;
-        circleQuadData = grow(circleQuadData, (circleQuadCount + 1) * stride);
+        const stride = PACKED_QUAD_VERT_STRIDE * VERTS_PER_QUAD;
+        circleQuadData = growPacked(circleQuadData, (circleQuadCount + 1) * stride);
         const rgba = parseColorToRGBA(color);
         const d = radius * 2;
         writeQuad(
@@ -885,8 +1069,8 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     },
 
     addRect(x, y, width, height, color, alpha = 1, rotation = 0) {
-      const stride = FLOATS_PER_RECT_VERT * VERTS_PER_QUAD;
-      rectData = grow(rectData, (rectCount + 1) * stride);
+      const stride = PACKED_RECT_VERT_STRIDE * VERTS_PER_QUAD;
+      rectData = growPacked(rectData, (rectCount + 1) * stride);
       const rgba = parseColorToRGBA(color);
       writeRectQuad(
         rectData,
@@ -906,11 +1090,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     flush() {
       if (rectCount > 0) {
-        const floats = rectCount * VERTS_PER_QUAD * FLOATS_PER_RECT_VERT;
+        const bytes = rectCount * VERTS_PER_QUAD * PACKED_RECT_VERT_STRIDE;
         gl.useProgram(rectProgram);
         gl.bindVertexArray(rectVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, rectBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, rectData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, rectData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
         gl.uniform2f(rURes, logicalW, logicalH);
         ensureQuadIndices(rectCount);
         gl.drawElements(gl.TRIANGLES, rectCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
@@ -933,11 +1117,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       }
 
       if (circleQuadCount > 0) {
-        const floats = circleQuadCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
+        const bytes = circleQuadCount * VERTS_PER_QUAD * PACKED_QUAD_VERT_STRIDE;
         gl.useProgram(circleQuadProgram);
         gl.bindVertexArray(circleQuadVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, circleQuadBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, circleQuadData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, circleQuadData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
         gl.uniform2f(cURes, logicalW, logicalH);
         ensureQuadIndices(circleQuadCount);
         gl.drawElements(gl.TRIANGLES, circleQuadCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
@@ -945,11 +1129,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       }
 
       if (spriteCount > 0 && texture) {
-        const floats = spriteCount * VERTS_PER_QUAD * FLOATS_PER_SPRITE_VERT;
+        const bytes = spriteCount * VERTS_PER_QUAD * PACKED_QUAD_VERT_STRIDE;
         gl.useProgram(spriteProgram);
         gl.bindVertexArray(spriteVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, spriteData.subarray(0, floats), gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, spriteData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.uniform1i(sUTex, 0);

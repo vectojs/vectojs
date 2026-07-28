@@ -23,6 +23,15 @@
 //   D packed+idx    C plus a 16-byte vertex: pos 2xf32, uv
 //                   2xu16-normalized, tint 4xu8-normalized        (3.2 MB)
 //
+// C shipped in PR #208 and D in CTX-0119, so A and B are now historical arms kept
+// as evidence for why they were rejected, and D is what production does. Two
+// deliberate differences remain between D here and the shipped writer: D
+// truncates when encoding (`c[2] * 65535`) where production rounds to nearest,
+// which halves the worst-case error, and production clamps because
+// `Entity.opacity` is not range-checked. Neither affects what this bench
+// measures — bytes uploaded per frame — but do not copy this arm as a reference
+// encoder; see PACKED_QUAD_VERT_STRIDE in WebGLPointRenderer.ts.
+//
 // Timing: JS call-return time is NOT GPU time (GL is async), so where
 // EXT_disjoint_timer_query_webgl2 is available we read real GPU nanoseconds.
 // Chrome ships it behind a flag and Firefox generally does not expose it, so we
