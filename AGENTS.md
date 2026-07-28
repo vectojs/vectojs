@@ -27,6 +27,7 @@ vectojs/
 │   ├── devtools/         # VMT inspector panel + headless model layer (audit, snapshot, pick)
 │   ├── video-exporter/   # Deterministic fixed-step Chromium + FFmpeg H.264 export
 │   └── graph3d/          # 3D force-directed graph visualization (instanced Three.js)
+├── benchmarks/           # Real-headed-browser benchmarks; _shared/ holds the one server + bundler
 ├── scripts/              # Build, CI, and benchmark helper scripts
 ├── Justfile              # Convenience recipes (downstream-versions, etc.)
 ├── tsconfig.json         # Workspace TS compilation config
@@ -67,6 +68,18 @@ machine and CI runner uses the same locked version.
 - **Task runner (preferred entry point)**: `just` — a `Justfile` of thin wrappers over the package.json scripts + pinned toolchain. Prefer `just <recipe>` over the raw `bun run …`/`cargo …` invocations (run `just --list` to see all); each recipe calls the same underlying command, so CI parity is preserved.
 - **Unit testing**: Vitest — `just test` (all packages), `just test-pkg <pkg>`, or `just test-file <pkg> <file>` (each wraps `bun run test` / `bun run --filter …`).
 - **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`, wrapped as `just wasm-check`; build with `just wasm` (never a bare `cargo build --target wasm32-unknown-unknown`). Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). `just wasm` runs `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
+
+### Benchmarks: what may be quoted
+
+Only `benchmarks/run-browsers.sh` produces quotable numbers — it drives a real
+headed browser on a dedicated Hyprland workspace with a focused window and the
+real GPU. `scripts/benchmark.ts` and `benchmarks/debug-page.ts` are both headless
+(the former with `--disable-gpu`) and are a same-environment regression tripwire
+and a debugging aid respectively; neither may be cited as a performance figure.
+
+Each benchmark owns only `entry.ts` and a three-line `build.ts`. The server and
+bundler live in `benchmarks/_shared/` — do not create per-benchmark copies. Never
+hardcode a refresh rate; call `calibrateRefreshRate()` and report `refreshHz`.
 
 ### Build & Verification Workflow
 
