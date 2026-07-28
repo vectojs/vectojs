@@ -18,7 +18,7 @@ User asks to "release", "publish", "cut a version", or "bump" a package under `p
 5. **Push to a branch and open a PR** (never push version bumps directly to `main`) — see the `create-pr` skill for title formatting. Wait for CI (ci.yml + codeql.yml) to pass and get it merged.
 6. **After merge, tag the release** from `main`: `git tag @vectojs/<pkg>@<version>` matching the exact package.json version, then `git push origin @vectojs/<pkg>@<version>`. The tag format `@vectojs/<pkg>@<version>` is what `release.yml` matches on (`push: tags: ['@vectojs/*@*']`) — get this exactly right or the workflow never triggers.
 
-   **Push tags ONE AT A TIME, never several in a single `git push`.** GitHub does not create a push event when a single push contains more than three tags, so the tags land on the remote and *nothing triggers* — no workflow run, no error, no output anywhere. A four-package release pushed as one command produced four correct tags and zero release runs (2026-07-27); the tags had to be deleted from the remote and re-pushed individually. Loop instead, and confirm a new run appeared after each:
+   **Push tags ONE AT A TIME, never several in a single `git push`.** GitHub does not create a push event when a single push contains more than three tags, so the tags land on the remote and _nothing triggers_ — no workflow run, no error, no output anywhere. A four-package release pushed as one command produced four correct tags and zero release runs (2026-07-27); the tags had to be deleted from the remote and re-pushed individually. Loop instead, and confirm a new run appeared after each:
 
    ```bash
    for t in "@vectojs/core@1.21.0" "@vectojs/ui@2.4.0" "@vectojs/markdown@0.2.0"; do
@@ -31,13 +31,14 @@ User asks to "release", "publish", "cut a version", or "bump" a package under `p
    ```
 
    Re-pushing is safe **only** while nothing has consumed the tag: check `npm view @vectojs/<pkg>@<version>` and `gh release view` are both absent first. Once a version is on npm it cannot be republished, and the fix becomes a new patch version rather than a re-tag.
+
 7. **Monitor the triggered `release.yml` run** (`gh run watch` or `gh run list --workflow=release.yml`). It will: parse package+version from the tag, verify the tag matches `package.json`, run that package's tests, lint (`oxlint packages/<pkg>/src`), build, publish to npm (`npm publish --access public`), and attach a tarball to a GitHub Release. If it fails at the "verify tag matches package.json" step, the tag was cut against the wrong commit — fix and re-tag, don't force-push the old tag.
 8. **Verify the npm publish landed**: `npm view @vectojs/<pkg>@<version>` and confirm the GitHub Release was created with the tarball attached.
 
 9. **Sync `vectojs-website` to the new versions** — a separate repo, so this is easy to forget and was in fact skipped for two consecutive releases (1.19.0 and 1.20.0), leaving every live sandbox loading a three-versions-stale `core`. Four places must move together, and `bun run check:docs` fails on the last three if you only do the first:
    - `src/consts.ts` → `VERSIONS` (drives the docs sidebar chips)
-   - `public/sandbox/*.html` → the `esm.sh` import-map pins (26 pins across 14 files as of 1.21.0)
-   - `package.json` + lockfile → the real `@vectojs/*` deps; `check-docs-consistency.ts` compares `VERSIONS` against what is **installed in `node_modules`**, not the declared range, so `bun install` must run
+   - `public/sandbox/**/*.html` → the `esm.sh` import-map pins (14 `core` pins across 14 files, plus 11 `ui` and 1 `markdown`, as of 1.23.0). **Glob recursively** — `public/sandbox/ui/` is a subdirectory, so a non-recursive `public/sandbox/*.html` silently misses 5 of the 14 `core` pins. `check:docs` scans `**/*.html` and will fail on the ones you missed.
+   - `package.json` + lockfile → the real `@vectojs/*` deps; `check-docs-consistency.ts` compares `VERSIONS` against what is **installed in `node_modules`**, not the declared range, so `bun install` must run. Note it only version-checks the four packages the site actually depends on (`core`, `ui`, `three`, `video-exporter`) — `VERSIONS.devtools`, `.text`, `.layout`, `.math`, `.animation`, `.markdown`, `.graph3d` are display-only for the docs sidebar and **no gate catches them**, so update those by hand and re-read the diff.
    - `src/content/reference/ui-components.md` → the `Version documented:` line
 
    Confirm each new pin resolves (`curl -o /dev/null -w '%{http_code}' https://esm.sh/@vectojs/<pkg>@<version>`) **before** committing: an unresolvable pin breaks the sandbox outright rather than degrading, and it only fails at runtime in a visitor's browser. Run all five CI steps locally (`check:docs`, `check`, `test`, `format:check`, `build`), then verify the deployed page with `curl -sL` — note `/sandbox/*.html` answers `308`, so `-L` is required.
