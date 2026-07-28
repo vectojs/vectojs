@@ -58,6 +58,17 @@ export {
   type A11yInfo,
 } from './a11yInspect';
 export {
+  auditGpu,
+  enableDrawCountersCommand,
+  enablePhaseTimingCommand,
+  formatGpuInspection,
+  gpuAudit,
+  gpuInspector,
+  inspectGpu,
+  resetDrawCountersCommand,
+  type GpuInspection,
+} from './gpuInspect';
+export {
   auditMarkdownStreaming,
   formatMarkdownStream,
   inspectMarkdownStream,
