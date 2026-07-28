@@ -58,6 +58,16 @@ export {
   type A11yInfo,
 } from './a11yInspect';
 export {
+  auditTextShaping,
+  formatTextInspection,
+  inspectText,
+  isTextEntity,
+  shapeProbe,
+  textInspector,
+  type TextGlyphInfo,
+  type TextInspection,
+} from './textInspect';
+export {
   clearDevtoolsPlugins,
   devtoolsPlugins,
   pluginCommands,
