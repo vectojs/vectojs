@@ -30,6 +30,41 @@ interface RawExports {
   p_run_len(): number;
   p_wa(): number;
   p_x(): number;
+  anim_init(springCap: number, tweenCap: number): void;
+  spring_step(dt: number, count: number): number;
+  tween_step(dt: number, count: number): number;
+  p_s_val(): number;
+  p_s_vel(): number;
+  p_s_target(): number;
+  p_s_stiff(): number;
+  p_s_damp(): number;
+  p_s_mass(): number;
+  p_t_elapsed(): number;
+  p_t_val(): number;
+  particle_init(capacity: number): void;
+  particle_step(
+    dt: number,
+    mouseX: number,
+    mouseY: number,
+    width: number,
+    height: number,
+    springK: number,
+    damping: number,
+    bounceDamping: number,
+    maxVelocity: number,
+    explActive: number,
+    explX: number,
+    explY: number,
+    explForce: number,
+    count: number,
+  ): number;
+  pp_px(): number;
+  pp_life(): number;
+}
+
+/** `particle_step` with benign physics, so only `count` is under test. */
+function particleStep(ex: RawExports, count: number): number {
+  return ex.particle_step(0.016, -99999, -99999, 800, 600, 0.1, 0.9, 0.5, 500, 0, 0, 0, 0, count);
 }
 
 function load(): RawExports {
@@ -155,5 +190,151 @@ describe.skipIf(!haveWasm)('WASM ABI bounds validation', () => {
     expect(ex.compose_scalar()).toBe(WASM_STATUS.OK);
     // The guards must not have changed the arithmetic — only whether it runs.
     expect(ex.compute_aabbs(2)).toBe(WASM_STATUS.OK);
+  });
+});
+
+// The anim and particle kernels are separate SoA modules with their own statics.
+// Neither recorded a capacity at all before this: `anim.rs` had no capacity field
+// and `particle_init` took a `capacity` argument it immediately discarded, so
+// their Safety contracts were unenforceable even in principle — there was nothing
+// to compare a count against.
+describe.skipIf(!haveWasm)('anim ABI bounds validation', () => {
+  it('rejects a step before anim_init', () => {
+    const ex = load();
+    expect(ex.spring_step(0.016, 4)).toBe(WASM_STATUS.UNINITIALIZED);
+    expect(ex.tween_step(16, 4)).toBe(WASM_STATUS.UNINITIALIZED);
+  });
+
+  it('rejects a count beyond the allocated spring/tween capacity', () => {
+    const ex = load();
+    ex.anim_init(16, 8);
+    expect(ex.spring_step(0.016, 16)).toBe(WASM_STATUS.OK);
+    expect(ex.spring_step(0.016, 17)).toBe(WASM_STATUS.CAPACITY);
+    expect(ex.tween_step(16, 8)).toBe(WASM_STATUS.OK);
+    expect(ex.tween_step(16, 9)).toBe(WASM_STATUS.CAPACITY);
+  });
+
+  it('validates the two capacities independently', () => {
+    const ex = load();
+    // Asymmetric allocation: a shared bound would let the smaller array be
+    // walked past by a count that is legal for the larger one.
+    ex.anim_init(64, 4);
+    expect(ex.spring_step(0.016, 64)).toBe(WASM_STATUS.OK);
+    expect(ex.tween_step(16, 64)).toBe(WASM_STATUS.CAPACITY);
+    expect(ex.tween_step(16, 4)).toBe(WASM_STATUS.OK);
+  });
+
+  it('rejects a count that would run far off the end', () => {
+    const ex = load();
+    ex.anim_init(8, 8);
+    expect(ex.spring_step(0.016, 1 << 24)).toBe(WASM_STATUS.CAPACITY);
+    expect(ex.tween_step(16, 1 << 24)).toBe(WASM_STATUS.CAPACITY);
+  });
+
+  it('a rejected spring step leaves the SoA untouched', () => {
+    const ex = load();
+    ex.anim_init(8, 8);
+    const val = new Float64Array(ex.memory.buffer, ex.p_s_val(), 16);
+    const vel = new Float64Array(ex.memory.buffer, ex.p_s_vel(), 16);
+    // A spring displaced from its target would move if the kernel ran.
+    val.fill(5);
+    vel.fill(1);
+    const beforeVal = Array.from(val);
+    const beforeVel = Array.from(vel);
+    expect(ex.spring_step(0.016, 9)).toBe(WASM_STATUS.CAPACITY);
+    expect(Array.from(val)).toEqual(beforeVal);
+    expect(Array.from(vel)).toEqual(beforeVel);
+  });
+
+  it('a rejected tween step does not advance elapsed', () => {
+    const ex = load();
+    ex.anim_init(8, 8);
+    const elapsed = new Float64Array(ex.memory.buffer, ex.p_t_elapsed(), 16);
+    const out = new Float64Array(ex.memory.buffer, ex.p_t_val(), 16);
+    const before = Array.from(elapsed);
+    expect(ex.tween_step(16, 9)).toBe(WASM_STATUS.CAPACITY);
+    // `elapsed` is kernel-side STATE, so a partial advance would corrupt every
+    // later frame rather than just this one.
+    expect(Array.from(elapsed)).toEqual(before);
+    expect(Array.from(out)).toEqual(Array.from({ length: 16 }, () => 0));
+  });
+
+  it('still steps correctly once the counts are valid', () => {
+    const ex = load();
+    ex.anim_init(4, 4);
+    const buf = ex.memory.buffer;
+    const val = new Float64Array(buf, ex.p_s_val(), 12);
+    const vel = new Float64Array(buf, ex.p_s_vel(), 12);
+    const target = new Float64Array(buf, ex.p_s_target(), 12);
+    const stiff = new Float64Array(buf, ex.p_s_stiff(), 12);
+    const damp = new Float64Array(buf, ex.p_s_damp(), 12);
+    const mass = new Float64Array(buf, ex.p_s_mass(), 12);
+    val[0] = 100;
+    vel[0] = 0;
+    target[0] = 0;
+    // Real physics: the arrays are zero-filled, and mass = 0 would make
+    // acceleration 0/0 = NaN rather than exercising the kernel.
+    stiff[0] = 170;
+    damp[0] = 26;
+    mass[0] = 1;
+    // The spring must accelerate toward its target. The guards gate execution
+    // only — they must never alter the arithmetic.
+    expect(ex.spring_step(0.016, 4)).toBe(WASM_STATUS.OK);
+    expect(val[0]).toBeLessThan(100);
+    expect(Number.isNaN(val[0])).toBe(false);
+  });
+});
+
+describe.skipIf(!haveWasm)('particle ABI bounds validation', () => {
+  it('rejects a step before particle_init', () => {
+    const ex = load();
+    // Negated status: 0 and 1 are both valid success returns (the fused pending
+    // flag), so a rejection cannot share their encoding.
+    expect(particleStep(ex, 4)).toBe(-WASM_STATUS.UNINITIALIZED);
+  });
+
+  it('rejects a count beyond the allocated capacity', () => {
+    const ex = load();
+    ex.particle_init(32);
+    expect(particleStep(ex, 32)).toBeGreaterThanOrEqual(0);
+    expect(particleStep(ex, 33)).toBe(-WASM_STATUS.CAPACITY);
+    expect(particleStep(ex, 1 << 24)).toBe(-WASM_STATUS.CAPACITY);
+  });
+
+  it('a rejected step writes nothing', () => {
+    const ex = load();
+    ex.particle_init(16);
+    const px = new Float32Array(ex.memory.buffer, ex.pp_px(), 24);
+    const life = new Float32Array(ex.memory.buffer, ex.pp_life(), 24);
+    px.fill(7);
+    life.fill(1);
+    const beforePx = Array.from(px);
+    const beforeLife = Array.from(life);
+    expect(particleStep(ex, 17)).toBe(-WASM_STATUS.CAPACITY);
+    // The caller gathers into these arrays before stepping, so if a rejected
+    // call were scattered back the simulation would freeze while still looking
+    // like a successful frame.
+    expect(Array.from(px)).toEqual(beforePx);
+    expect(Array.from(life)).toEqual(beforeLife);
+  });
+
+  it('a rejection is distinguishable from both success values', () => {
+    const ex = load();
+    ex.particle_init(8);
+    // `life` is zero-filled by the allocator, and the fused pending check skips
+    // dead particles — so without this every step would report 0 and the "not
+    // pending" case would pass for the wrong reason.
+    const life = new Float32Array(ex.memory.buffer, ex.pp_life(), 16);
+    life.fill(1);
+
+    // All at rest on their origin => 0 (nothing pending). Displaced => 1.
+    expect(particleStep(ex, 8)).toBe(0);
+
+    const px = new Float32Array(ex.memory.buffer, ex.pp_px(), 16);
+    px[0] = 400;
+    expect(particleStep(ex, 8)).toBe(1);
+
+    // Neither success value is negative, so `flag < 0` is an unambiguous test.
+    expect(particleStep(ex, 99)).toBeLessThan(0);
   });
 });

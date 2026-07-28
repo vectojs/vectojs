@@ -36,7 +36,7 @@
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
-use crate::SIMD_ALIGN;
+use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_UNINITIALIZED};
 
 // hasPendingAnimations epsilons — must match ComputeParticleEntity.ts:204-205.
 const EPS_VELOCITY: f32 = 0.5; // px/s — below this a particle looks at rest
@@ -53,6 +53,13 @@ struct Particles {
     ox: *mut f32,
     oy: *mut f32,
     life: *mut f32,
+
+    /// Particle slots requested by `particle_init` (excluding the tail pad it
+    /// adds). `particle_step` validates `count` against this instead of trusting
+    /// the caller: the doc comment below used to delegate the whole bounds
+    /// guarantee to TypeScript, and nothing recorded the capacity to check
+    /// against even if the kernel had wanted to.
+    capacity: usize,
 }
 
 static mut P: Particles = Particles {
@@ -63,6 +70,7 @@ static mut P: Particles = Particles {
     ox: ptr::null_mut(),
     oy: ptr::null_mut(),
     life: ptr::null_mut(),
+    capacity: 0,
 };
 
 fn leak_f32(n: usize) -> *mut f32 {
@@ -85,7 +93,14 @@ pub extern "C" fn particle_init(capacity: usize) {
         P.ox = leak_f32(n);
         P.oy = leak_f32(n);
         P.life = leak_f32(n);
+        P.capacity = capacity;
     }
+}
+
+/// True once `particle_init` has allocated the SoA.
+#[inline]
+fn particles_ready() -> bool {
+    unsafe { P.capacity > 0 && !P.px.is_null() }
 }
 
 macro_rules! ptr_export {
@@ -111,10 +126,15 @@ ptr_export!(pp_life, life);
 ///
 /// `expl_active` is `1` when an explosion impulse should be applied this step.
 ///
-/// # Safety
+/// ## Rejection is encoded as a NEGATIVE return
 ///
-/// `particle_init` must have been called with a capacity `>= count`. `count`
-/// must not exceed the allocated capacity or this reads/writes out of bounds.
+/// The success values `0`/`1` are both meaningful here, so a rejected call
+/// cannot reuse them — reporting `1` would claim "still animating" and reporting
+/// `0` would claim "everything settled", and the caller would scatter the
+/// untouched gather buffer back either way. A violation therefore returns the
+/// negated status (`-STATUS_CAPACITY`, `-STATUS_UNINITIALIZED`), which no valid
+/// step can produce, and writes nothing: the caller must skip its scatter and
+/// fall back to the JS `updateCPU` path.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn particle_step(
     dt: f32,
@@ -132,6 +152,14 @@ pub unsafe extern "C" fn particle_step(
     expl_force: f32,
     count: usize,
 ) -> i32 {
+    if !particles_ready() {
+        return -STATUS_UNINITIALIZED;
+    }
+    // SAFETY of the loop below rests on this check rather than the caller's
+    // discipline: every `P.*.add(i)` for `i` in `0..count` is in bounds.
+    if count > unsafe { P.capacity } {
+        return -STATUS_CAPACITY;
+    }
     unsafe {
         // clamp() == max(a, min(x, b)) for finite inputs (NaN cases pre-guarded),
         // so this stays bit-identical to updateCPU's Math.max(a, Math.min(x, b));

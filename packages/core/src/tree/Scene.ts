@@ -1699,8 +1699,16 @@ export class Scene {
         sv.damp[i] = phys.damping;
         sv.mass[i] = phys.mass;
       }
-      backend.stepSprings(dt, springCount);
-      for (let i = 0; i < springCount; i++) sD[i].syncExternal(sv.val[i], sv.vel[i]);
+      if (backend.stepSprings(dt, springCount)) {
+        for (let i = 0; i < springCount; i++) sD[i].syncExternal(sv.val[i], sv.vel[i]);
+      } else {
+        // The kernel declined and wrote nothing, so the views still hold the
+        // pre-step state — syncing them back would freeze every spring. Every
+        // entity here was already stamped `_driversTickedFrame` above, so
+        // tickDrivers() will skip them for the rest of the frame; tick them in
+        // JS now (same dt, same math) or they lose the frame entirely.
+        for (let i = 0; i < springCount; i++) sD[i].tick(dt);
+      }
     }
     if (tweenCount > 0) {
       const tv = backend.tweenView();
@@ -1713,8 +1721,11 @@ export class Scene {
         tv.delay[i] = d.delayMs;
         tv.ease[i] = d.wasmEasingId!;
       }
-      backend.stepTweens(dt, tweenCount);
-      for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
+      if (backend.stepTweens(dt, tweenCount)) {
+        for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
+      } else {
+        for (let i = 0; i < tweenCount; i++) tD[i].tick(dt);
+      }
     }
 
     // Finalize every batchable driver this pass touched (completion check +
@@ -1814,7 +1825,11 @@ export class Scene {
       bounds.bw[slot] = b ? b.width : 0;
       bounds.bh[slot] = b ? b.height : 0;
     }
-    backend.runAabbs(slotEntity.length);
+    // A rejected pass leaves the store's AABB slots holding the previous
+    // frame's bounds. Marking them fresh anyway would hand the fused gather
+    // stale geometry and silently mis-hit every pointer event this frame, so
+    // report failure and let the caller fall back to the JS gather.
+    if (!backend.runAabbs(slotEntity.length)) return false;
     this._wasmAabbsFresh = true;
     return true;
   }

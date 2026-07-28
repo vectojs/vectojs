@@ -52,7 +52,8 @@ interface CoreExports {
   p_we(): number;
   p_wf(): number;
   p_wo(): number;
-  compute_aabbs(count: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  compute_aabbs(count: number): number;
   p_bx(): number;
   p_by(): number;
   p_bw(): number;
@@ -250,7 +251,12 @@ export class WasmTransformBackend {
     this.vby.set(store.by.subarray(0, n));
     this.vbw.set(store.bw.subarray(0, n));
     this.vbh.set(store.bh.subarray(0, n));
-    this.ex.compute_aabbs(n);
+    this.lastStatus = this.ex.compute_aabbs(n);
+    // A rejected pass leaves the wasm-side AABB arrays holding the PREVIOUS
+    // frame's values, so reading them back would silently publish stale world
+    // bounds as if they were current. `ensure` above sizes for `n`, so this is
+    // defence in depth rather than an expected path.
+    if (this.lastStatus !== WASM_STATUS.OK) return;
     store.aminx.set(this.vaminx.subarray(0, n));
     store.aminy.set(this.vaminy.subarray(0, n));
     store.amaxx.set(this.vamaxx.subarray(0, n));
@@ -259,9 +265,12 @@ export class WasmTransformBackend {
 
   /** Run the AABB pass only, over `count` entities already resident in wasm
    *  memory (bounds written via {@link boundsView}, world matrices already
-   *  composed). No upload/readback — the per-frame resident path. */
-  runAabbs(count: number): void {
-    this.ex.compute_aabbs(count);
+   *  composed). No upload/readback — the per-frame resident path. Returns
+   *  `false` if the kernel rejected `count` (beyond capacity, or uninitialized),
+   *  in which case {@link aabbView} still holds the previous frame's bounds. */
+  runAabbs(count: number): boolean {
+    this.lastStatus = this.ex.compute_aabbs(count);
+    return this.lastStatus === WASM_STATUS.OK;
   }
 
   /** Resident wasm local-bounds input views (`bx,by,bw,bh`) for the AABB pass. */
