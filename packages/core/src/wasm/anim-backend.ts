@@ -20,12 +20,16 @@
  * wasm-side state to invalidate.
  */
 
+import { WASM_STATUS } from './backend';
+
 /** The raw C ABI the crate (`crates/vectojs-core-rs/src/anim.rs`) exports. */
 interface AnimExports {
   memory: WebAssembly.Memory;
   anim_init(springCap: number, tweenCap: number): void;
-  spring_step(dt: number, count: number): void;
-  tween_step(dt: number, count: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see `WASM_STATUS`). */
+  spring_step(dt: number, count: number): number;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see `WASM_STATUS`). */
+  tween_step(dt: number, count: number): number;
   p_s_val(): number;
   p_s_target(): number;
   p_s_vel(): number;
@@ -99,15 +103,36 @@ export class AnimBackend {
     this.refreshViews();
   }
 
-  /** Advance `count` springs (from index 0) by `dtMs` milliseconds, in place. */
-  stepSprings(dtMs: number, count: number): void {
-    this.ex.spring_step(dtMs / 1000, count); // kernel integrates in seconds, matching SpringPhysics
+  /**
+   * Advance `count` springs (from index 0) by `dtMs` milliseconds, in place.
+   * Returns `true` when the kernel ran. `false` means it rejected the call
+   * (count beyond the capacity {@link ensure} allocated, or no `anim_init` yet)
+   * and wrote nothing, so the caller must tick those drivers in JS instead of
+   * scattering back a pack the kernel never touched. See {@link lastStatus}.
+   */
+  stepSprings(dtMs: number, count: number): boolean {
+    // kernel integrates in seconds, matching SpringPhysics
+    this.lastStatus = this.ex.spring_step(dtMs / 1000, count);
+    return this.lastStatus === WASM_STATUS.OK;
   }
 
-  /** Advance `count` tweens (from index 0) by `dtMs` milliseconds, writing `val`. */
-  stepTweens(dtMs: number, count: number): void {
-    this.ex.tween_step(dtMs, count);
+  /**
+   * Advance `count` tweens (from index 0) by `dtMs` milliseconds, writing `val`.
+   * Returns `true` when the kernel ran; `false` means it rejected the call and
+   * wrote nothing (see {@link stepSprings}). `elapsed` is kernel-side state, so
+   * a rejected tween pack must not be read back — it is unadvanced, not
+   * partially advanced.
+   */
+  stepTweens(dtMs: number, count: number): boolean {
+    this.lastStatus = this.ex.tween_step(dtMs, count);
+    return this.lastStatus === WASM_STATUS.OK;
   }
+
+  /**
+   * Status of the most recent kernel call — `WASM_STATUS.OK` unless the kernel
+   * declined it. Mirrors {@link TransformBackend.lastStatus}.
+   */
+  public lastStatus: number = WASM_STATUS.OK;
 
   private refreshViews(): void {
     const buf = this.ex.memory.buffer;

@@ -384,7 +384,7 @@ export class ComputeParticleEntity extends Entity {
     const count = this.maxParticles;
     backend.ensure(count);
     backend.gather(this.particleData, count, true);
-    this._wasmPending = backend.step(count, {
+    const pending = backend.step(count, {
       dt,
       mouseX,
       mouseY,
@@ -396,6 +396,16 @@ export class ComputeParticleEntity extends Entity {
       maxVelocity: this.maxVelocity,
       explosion: this.pendingExplosion,
     });
+    if (pending === null) {
+      // The kernel rejected the call and wrote nothing. Scattering now would
+      // copy the gathered pre-step values straight back and freeze the
+      // simulation while still looking like a successful frame, so run the JS
+      // path instead — it resets `_wasmPending` to null itself, and consumes
+      // `pendingExplosion`.
+      this.updateCPU(dt, mouseX, mouseY, width, height);
+      return;
+    }
+    this._wasmPending = pending;
     backend.scatter(this.particleData, count);
     this.pendingExplosion = null;
   }

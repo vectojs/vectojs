@@ -37,11 +37,18 @@ import {
   PARTICLE_OFFSET_ORIGIN_Y,
   PARTICLE_OFFSET_LIFE,
 } from '../tree/ComputeParticleEntity';
+import { WASM_STATUS } from './backend';
 
 /** The raw C ABI the crate exports for the particle kernel. */
 interface ParticleExports {
   memory: WebAssembly.Memory;
   particle_init(capacity: number): void;
+  /**
+   * Returns the fused pending-animation flag (0 or 1) on success, or a NEGATIVE
+   * status (`-WASM_STATUS.CAPACITY`, `-WASM_STATUS.UNINITIALIZED`) when the
+   * kernel rejected the call and wrote nothing. Both 0 and 1 are meaningful
+   * successes, so rejection cannot share their encoding.
+   */
   particle_step(
     dt: number,
     mouseX: number,
@@ -125,8 +132,14 @@ export class ParticleBackend {
    * Advance `count` particles one step in place. Returns `true` when at least
    * one live particle is still moving or off-origin beyond epsilon (the fused
    * `hasPendingAnimations` flag), so the caller need not re-scan the buffer.
+   *
+   * Returns `null` when the kernel REJECTED the call — `count` beyond the
+   * capacity {@link ensure} allocated, or no `particle_init` yet. Nothing was
+   * written, so the caller must NOT {@link scatter} (that would write the
+   * gathered pre-step values back and freeze the simulation) and should fall
+   * back to the JS `updateCPU` path for this frame. See {@link lastStatus}.
    */
-  step(count: number, p: ParticleStepParams): boolean {
+  step(count: number, p: ParticleStepParams): boolean | null {
     const e = p.explosion;
     const flag = this.ex.particle_step(
       p.dt,
@@ -144,8 +157,21 @@ export class ParticleBackend {
       e ? e.force : 0,
       count,
     );
+    // A negative return is a rejection status, not a pending flag; `flag !== 0`
+    // would read it as "still animating" and hide the fault.
+    if (flag < 0) {
+      this.lastStatus = -flag;
+      return null;
+    }
+    this.lastStatus = WASM_STATUS.OK;
     return flag !== 0;
   }
+
+  /**
+   * Status of the most recent {@link step} — `WASM_STATUS.OK` unless the kernel
+   * declined it. Mirrors {@link TransformBackend.lastStatus}.
+   */
+  public lastStatus: number = WASM_STATUS.OK;
 
   /** Transpose the AoS stride-8 buffer into the SoA views (position/velocity/
    *  life every frame; origin upload-once when `withOrigin`). */

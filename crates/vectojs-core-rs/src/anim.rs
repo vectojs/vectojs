@@ -20,7 +20,7 @@
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
-use crate::SIMD_ALIGN;
+use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_OK, STATUS_UNINITIALIZED};
 
 // SpringPhysics constants — must match packages/math/src/SpringPhysics.ts exactly.
 const MAX_FRAME_DT: f64 = 0.25; // seconds simulated per update() call
@@ -45,6 +45,15 @@ struct Anim {
     t_delay: *mut f64,
     t_ease: *mut f64, // easing id, stored as f64 (0..=8), truncated on read
     t_val: *mut f64,
+
+    /// Spring slots requested by `anim_init` (excluding the tail pad it adds).
+    /// Recorded so `spring_step` can validate the count the JS side passes
+    /// instead of trusting it — the same reason the transform `Store` keeps
+    /// `capacity`. This module had no capacity tracking at all, so a stale or
+    /// oversized count walked straight off the end of every SoA array.
+    spring_capacity: usize,
+    /// Tween slots requested by `anim_init` (excluding the tail pad).
+    tween_capacity: usize,
 }
 
 static mut A: Anim = Anim {
@@ -61,6 +70,8 @@ static mut A: Anim = Anim {
     t_delay: ptr::null_mut(),
     t_ease: ptr::null_mut(),
     t_val: ptr::null_mut(),
+    spring_capacity: 0,
+    tween_capacity: 0,
 };
 
 fn leak_f64(n: usize) -> *mut f64 {
@@ -89,7 +100,21 @@ pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) {
         A.t_delay = leak_f64(t);
         A.t_ease = leak_f64(t);
         A.t_val = leak_f64(t);
+        A.spring_capacity = spring_cap;
+        A.tween_capacity = tween_cap;
     }
+}
+
+/// True once `anim_init` has allocated the spring SoA.
+#[inline]
+fn springs_ready() -> bool {
+    unsafe { A.spring_capacity > 0 && !A.s_val.is_null() }
+}
+
+/// True once `anim_init` has allocated the tween SoA.
+#[inline]
+fn tweens_ready() -> bool {
+    unsafe { A.tween_capacity > 0 && !A.t_elapsed.is_null() }
 }
 
 macro_rules! ptr_export {
@@ -121,8 +146,21 @@ fn is_at_rest(val: f64, target: f64, vel: f64) -> bool {
 
 /// Advance `count` springs by `dt` seconds, in place. Bit-identical to
 /// `SpringPhysics.update` (same substep loop, same op order, same rest snap).
+///
+/// Returns [`STATUS_OK`], or a non-zero status when `anim_init` has not run or
+/// `count` exceeds the spring capacity it allocated — in which case nothing is
+/// written, so the caller can tick the drivers in JS instead of scattering back
+/// a half-written pack.
 #[unsafe(no_mangle)]
-pub extern "C" fn spring_step(dt: f64, count: usize) {
+pub extern "C" fn spring_step(dt: f64, count: usize) -> i32 {
+    if !springs_ready() {
+        return STATUS_UNINITIALIZED;
+    }
+    // SAFETY of the loop below rests on this check rather than the caller's
+    // discipline: every `A.s_*.add(i)` for `i` in `0..count` is in bounds.
+    if count > unsafe { A.spring_capacity } {
+        return STATUS_CAPACITY;
+    }
     unsafe {
         for i in 0..count {
             let mut val = *A.s_val.add(i);
@@ -166,6 +204,7 @@ pub extern "C" fn spring_step(dt: f64, count: usize) {
             *A.s_vel.add(i) = vel;
         }
     }
+    STATUS_OK
 }
 
 const C1: f64 = 1.70158;
@@ -229,8 +268,20 @@ fn ease(id: i32, t: f64) -> f64 {
 /// Advance `count` tweens by `dt` ms, writing `t_val`. Matches `TweenDriver.tick`
 /// (advance elapsed, clamp progress, ease) bit-for-bit — see `ease()` on why the
 /// easing is now exact rather than ~1e-12 close.
+///
+/// Returns [`STATUS_OK`], or a non-zero status when `anim_init` has not run or
+/// `count` exceeds the tween capacity it allocated; nothing is written in that
+/// case. Note `t_elapsed` is state, so a partially-advanced pack would corrupt
+/// every later frame, not just this one — rejecting up front is what keeps the
+/// JS fallback able to take over cleanly.
 #[unsafe(no_mangle)]
-pub extern "C" fn tween_step(dt: f64, count: usize) {
+pub extern "C" fn tween_step(dt: f64, count: usize) -> i32 {
+    if !tweens_ready() {
+        return STATUS_UNINITIALIZED;
+    }
+    if count > unsafe { A.tween_capacity } {
+        return STATUS_CAPACITY;
+    }
     unsafe {
         for i in 0..count {
             let elapsed = *A.t_elapsed.add(i) + dt;
@@ -247,4 +298,5 @@ pub extern "C" fn tween_step(dt: f64, count: usize) {
             *A.t_val.add(i) = from + (to - from) * ease(id, p);
         }
     }
+    STATUS_OK
 }
