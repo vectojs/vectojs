@@ -57,3 +57,12 @@ export {
   type A11yFinding,
   type A11yInfo,
 } from './a11yInspect';
+export {
+  formatHighlightGeometry,
+  highlightGeometry,
+  sampleHitRegion,
+  type HighlightGeometryOptions,
+  type HighlightLayer,
+  type HighlightLayerKind,
+  type HighlightPolygon,
+} from './highlightGeometry';

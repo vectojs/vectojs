@@ -13,6 +13,11 @@ import {
 } from '@vectojs/ui';
 import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
 import { auditScene, type AuditFinding } from './audit';
+import {
+  highlightGeometry,
+  type HighlightLayer,
+  type HighlightLayerKind,
+} from './highlightGeometry';
 import { auditA11y, inspectA11y } from './a11yInspect';
 import { entityPath, inspectEntity, layoutControlledProperties } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
@@ -126,6 +131,8 @@ export class DevtoolsPanel {
   private selected: Entity | null = null;
   private highlight: HighlightEntity | null = null;
   private highlightEnabled = true;
+  private highlightLayers: HighlightLayerKind[] = ['aabb'];
+  private hitSampleStep: number | undefined;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private perfTimer: ReturnType<typeof setInterval> | null = null;
   private pickArmed = false;
@@ -763,6 +770,7 @@ export class DevtoolsPanel {
         this.highlight = new HighlightEntity();
         this.host.showOverlay(this.highlight);
       }
+      this.highlight.setLayers(this.highlightLayers, this.hitSampleStep);
       this.highlight.track(entity);
       this.host.markDirty();
     }
@@ -797,6 +805,31 @@ export class DevtoolsPanel {
     } else if (enabled && this.selected) {
       this.select(this.selected);
     }
+  }
+
+  /**
+   * Choose which geometry layers the selection highlight draws.
+   *
+   * Defaults to `['aabb']`, matching what the panel drew before layers existed.
+   * `'hit'` samples `isPointInside` on a grid and is quadratic in the entity's
+   * size, so it is never enabled implicitly — pass it explicitly, and raise
+   * `hitSampleStep` on a large entity.
+   */
+  public setHighlightLayers(
+    kinds: ReadonlyArray<HighlightLayerKind>,
+    hitSampleStep?: number,
+  ): void {
+    this.highlightLayers = [...kinds];
+    this.hitSampleStep = hitSampleStep;
+    if (this.highlight) {
+      this.highlight.setLayers(this.highlightLayers, hitSampleStep);
+      this.host.markDirty();
+    }
+  }
+
+  /** The layers computed on the most recent highlight draw. */
+  public getHighlightLayers(): ReadonlyArray<HighlightLayer> {
+    return this.highlight?.layers ?? [];
   }
 
   /** Change the auto-refresh cadence (ms; 0 disables). Also gates the reconcile. */
@@ -997,14 +1030,51 @@ class Container extends Entity {
 }
 
 /**
- * Selection outline drawn on the HOST scene's overlay layer: the tracked
- * entity's world-space AABB with an accent border.
+ * Per-layer stroke colors.
+ *
+ * The renderer has no dash support, so layers can only be told apart by hue.
+ * `aabb` keeps the original accent so an existing screenshot still reads the
+ * same, and the rest run cool to warm roughly by how often a divergence in them
+ * turns out to be the bug.
+ */
+const LAYER_COLORS: Record<HighlightLayerKind, string> = {
+  aabb: ACCENT,
+  layout: '#a78bfa',
+  render: '#34d399',
+  clip: '#fbbf24',
+  content: '#f472b6',
+  a11y: '#fb923c',
+  hit: '#f87171',
+};
+
+/**
+ * Selection outline drawn on the HOST scene's overlay layer.
+ *
+ * Draws each enabled geometry layer as a true polygon rather than a bounding
+ * box, so a rotated entity shows its real edges and a box that has drifted from
+ * the layout quad appears as its own outline instead of being averaged into one
+ * rectangle.
  */
 class HighlightEntity extends Entity {
   private target: Entity | null = null;
+  private layerKinds: ReadonlyArray<HighlightLayerKind> = ['aabb'];
+  private hitSampleStep: number | undefined;
+  private cached: HighlightLayer[] = [];
 
   public track(target: Entity): void {
     this.target = target;
+    this.cached = [];
+  }
+
+  public setLayers(kinds: ReadonlyArray<HighlightLayerKind>, hitSampleStep?: number): void {
+    this.layerKinds = kinds;
+    this.hitSampleStep = hitSampleStep;
+    this.cached = [];
+  }
+
+  /** The layers computed on the most recent draw, for tests and the readout. */
+  public get layers(): ReadonlyArray<HighlightLayer> {
+    return this.cached;
   }
 
   public isPointInside(_x?: number, _y?: number): boolean {
@@ -1019,34 +1089,40 @@ class HighlightEntity extends Entity {
     save(): void;
     restore(): void;
     beginPath(): void;
+    moveTo(x: number, y: number): void;
+    lineTo(x: number, y: number): void;
+    closePath(): void;
     roundRect(x: number, y: number, w: number, h: number, radius: number): void;
     stroke(color: string, width?: number): void;
     fill(color: string): void;
   }): void {
     const t = this.target;
     if (!t) return;
-    const { a, b, c, d, e, f } = t.getWorldTransform();
-    const w = t.width || 8;
-    const h = t.height || 8;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let i = 0; i < 4; i++) {
-      const lx = i & 1 ? w : 0;
-      const ly = i & 2 ? h : 0;
-      const wx = a * lx + c * ly + e;
-      const wy = b * lx + d * ly + f;
-      if (wx < minX) minX = wx;
-      if (wx > maxX) maxX = wx;
-      if (wy < minY) minY = wy;
-      if (wy > maxY) maxY = wy;
+    const scene = t.scene as Scene | null;
+    if (!scene) return;
+
+    // Recomputed every draw rather than cached across frames: a dragged or
+    // animated entity moves between frames, and an outline pointing at where it
+    // used to be is worse than no outline.
+    this.cached = highlightGeometry(scene, t, {
+      layers: this.layerKinds,
+      hitSampleStep: this.hitSampleStep,
+    });
+
+    for (const layer of this.cached) {
+      const color = LAYER_COLORS[layer.kind];
+      for (const polygon of layer.polygons) {
+        const points = polygon.points;
+        if (points.length < 2) continue;
+        r.beginPath();
+        r.moveTo(points[0]!.x, points[0]!.y);
+        for (let i = 1; i < points.length; i++) r.lineTo(points[i]!.x, points[i]!.y);
+        r.closePath();
+        // Only the primary box gets a fill; washing every layer would stack
+        // translucency until the entity underneath is unreadable.
+        if (layer.kind === 'aabb' || layer.kind === 'layout') r.fill('rgba(56, 189, 248, 0.10)');
+        r.stroke(color, layer.divergesFromLayout ? 2 : 1);
+      }
     }
-    r.beginPath();
-    r.roundRect(minX - 1, minY - 1, maxX - minX + 2, maxY - minY + 2, 3);
-    r.fill('rgba(56, 189, 248, 0.10)');
-    r.beginPath();
-    r.roundRect(minX - 1, minY - 1, maxX - minX + 2, maxY - minY + 2, 3);
-    r.stroke(ACCENT, 2);
   }
 }
