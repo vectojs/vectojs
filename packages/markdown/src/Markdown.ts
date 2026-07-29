@@ -11,6 +11,9 @@ import {
   type StyledSpan,
   type TextStyle,
   SVGEntity,
+  beginVectoUserTiming,
+  endVectoUserTiming,
+  VECTO_USER_TIMING,
 } from '@vectojs/core';
 import { marked, type Token, type Tokens, type TokensList } from 'marked';
 
@@ -25,6 +28,16 @@ const now = (): number =>
   typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
     : Date.now();
+
+function lexMarkdown(text: string, userTiming: boolean): TokensList {
+  if (!userTiming) return marked.lexer(text);
+  const timing = beginVectoUserTiming(VECTO_USER_TIMING.markdown.parse);
+  try {
+    return marked.lexer(text);
+  } finally {
+    if (timing) endVectoUserTiming(timing);
+  }
+}
 
 marked.use({
   extensions: [
@@ -138,6 +151,7 @@ const workerCallbacks = new Map<
     cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
     onNeedResync?: () => void;
     text: string;
+    userTiming: boolean;
   }
 >();
 
@@ -154,11 +168,12 @@ const workerCallbacks = new Map<
 function runSyncFallback(entry: {
   cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
   text: string;
+  userTiming: boolean;
 }): void {
   try {
     // `local: true` — the worker did not produce this, so it never saw this
     // source and the requester must resync before it can send a delta again.
-    entry.cb(0, marked.lexer(entry.text), true);
+    entry.cb(0, lexMarkdown(entry.text, entry.userTiming), true);
   } catch (err) {
     console.warn('Markdown sync fallback parse failed', err);
   }
@@ -1024,6 +1039,8 @@ export interface MarkdownOptions {
   onLinkClick?: (url: string) => void;
   /** Allow browser-native drag selection and copy for rendered text. Default `true`. */
   selectable?: boolean;
+  /** Emit a `vecto:markdown:parse` User Timing measure. Default `false`. */
+  userTiming?: boolean;
 }
 
 interface BlockMetrics {
@@ -1066,6 +1083,7 @@ export class Markdown extends UIComponent {
    */
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
+  private _userTiming: boolean;
   private tokens: Token[] = [];
   // At most one worker lex request in flight at a time. Required for the
   // delta-transfer protocol below to be safe: the request captures a
@@ -1198,6 +1216,7 @@ export class Markdown extends UIComponent {
     this.theme = { ...DEFAULT_THEME, ...opts.theme };
     this.onLinkClick = opts.onLinkClick;
     this.selectable = opts.selectable ?? true;
+    this._userTiming = opts.userTiming ?? false;
 
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
@@ -1208,7 +1227,7 @@ export class Markdown extends UIComponent {
   }
 
   private renderMarkdown(text: string): void {
-    const tokens = marked.lexer(text);
+    const tokens = lexMarkdown(text, this._userTiming);
     this.setTokens(tokens);
     for (const token of tokens) {
       const el = this.renderToken(token);
@@ -1453,6 +1472,17 @@ export class Markdown extends UIComponent {
     };
   }
 
+  /** Enable or disable User Timing for subsequent parses. */
+  public setUserTiming(enabled: boolean): this {
+    this._userTiming = enabled;
+    return this;
+  }
+
+  /** Whether Markdown parse User Timing is enabled. */
+  public get userTiming(): boolean {
+    return this._userTiming;
+  }
+
   /** Enable or disable native selection for existing and future Markdown text. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
@@ -1478,7 +1508,7 @@ export class Markdown extends UIComponent {
       // lex here. Nothing the worker holds is advanced by this, so a later
       // request — if a worker ever exists again — must resend the full text.
       this.workerSourceLen = 0;
-      const newTokens = marked.lexer(this.rawMarkdown);
+      const newTokens = lexMarkdown(this.rawMarkdown, this._userTiming);
       this.updateTokens(newTokens);
       return this;
     }
@@ -1572,11 +1602,13 @@ export class Markdown extends UIComponent {
         this.dispatchAppend(true);
       },
       text: this.rawMarkdown,
+      userTiming: this._userTiming,
     });
     markdownWorker.postMessage({
       id,
       instance: this.workerInstanceId,
       baseVersion,
+      userTimingName: this._userTiming ? VECTO_USER_TIMING.markdown.parse : undefined,
       ...(canSendDelta
         ? {
             append: this.rawMarkdown.slice(this.workerSourceLen),

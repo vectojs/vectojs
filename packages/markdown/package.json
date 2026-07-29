@@ -47,7 +47,7 @@
     "mathjax-full": "^3.2.2"
   },
   "peerDependencies": {
-    "@vectojs/core": ">=1.8.0 <2.0.0",
+    "@vectojs/core": ">=1.24.0 <2.0.0",
     "@vectojs/ui": ">=2.0.0 <3.0.0"
   },
   "devDependencies": {

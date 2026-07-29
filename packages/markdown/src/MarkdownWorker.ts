@@ -1,4 +1,51 @@
-import { marked } from 'marked';
+import { marked, type TokensList } from 'marked';
+
+interface WorkerTimingSpan {
+  name: string;
+  startMark: string;
+  endMark: string;
+}
+
+let nextTimingSpanId = 0;
+
+function beginUserTiming(name: unknown): WorkerTimingSpan | null {
+  if (
+    typeof name !== 'string' ||
+    typeof performance.mark !== 'function' ||
+    typeof performance.measure !== 'function'
+  ) {
+    return null;
+  }
+  const id = nextTimingSpanId++;
+  const span = {
+    name,
+    startMark: `${name}:start:${id}`,
+    endMark: `${name}:end:${id}`,
+  };
+  try {
+    performance.mark(span.startMark);
+    return span;
+  } catch {
+    return null;
+  }
+}
+
+function endUserTiming(span: WorkerTimingSpan | null): void {
+  if (!span) return;
+  try {
+    performance.mark(span.endMark);
+    performance.measure(span.name, span.startMark, span.endMark);
+  } catch {
+    // Optional diagnostics must not break parsing.
+  } finally {
+    try {
+      performance.clearMarks?.(span.startMark);
+      performance.clearMarks?.(span.endMark);
+    } catch {
+      // Optional diagnostics must not break parsing.
+    }
+  }
+}
 
 marked.use({
   extensions: [
@@ -57,7 +104,17 @@ self.onmessage = (e: MessageEvent) => {
   // malformed post can't drive the lexer with a non-string or crash the handler.
   const data = e.data;
   if (typeof data !== 'object' || data === null) return;
-  const { id, text, append, expectedLength, oldRaws, instance, baseVersion, dispose } = data as {
+  const {
+    id,
+    text,
+    append,
+    expectedLength,
+    oldRaws,
+    instance,
+    baseVersion,
+    dispose,
+    userTimingName,
+  } = data as {
     id: unknown;
     text?: unknown;
     append?: unknown;
@@ -66,6 +123,7 @@ self.onmessage = (e: MessageEvent) => {
     instance?: unknown;
     baseVersion?: unknown;
     dispose?: unknown;
+    userTimingName?: unknown;
   };
 
   // A destroyed Markdown instance releases its cache entry so a long-lived page
@@ -148,8 +206,14 @@ self.onmessage = (e: MessageEvent) => {
     // Time the lex itself. It is the one cost in this pipeline that is still
     // O(document) per chunk, and nothing downstream could see it: the reuse
     // counters describe the token DIFF, which is a different thing entirely.
+    const userTiming = typeof userTimingName === 'string' ? beginUserTiming(userTimingName) : null;
     const lexStart = performance.now();
-    const tokens = marked.lexer(source);
+    let tokens: TokensList;
+    try {
+      tokens = marked.lexer(source);
+    } finally {
+      if (userTiming) endUserTiming(userTiming);
+    }
     const lexerMs = performance.now() - lexStart;
     let matchLen = 0;
     if (priorRaws) {

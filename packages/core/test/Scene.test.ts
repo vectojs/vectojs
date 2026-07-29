@@ -47,7 +47,14 @@ if (typeof HTMLCanvasElement !== 'undefined') {
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),
 };
-import { Scene, Entity, CanvasRenderer, ComputeParticleEntity, DOMPortalEntity } from '../src';
+import {
+  Scene,
+  Entity,
+  CanvasRenderer,
+  ComputeParticleEntity,
+  DOMPortalEntity,
+  VECTO_USER_TIMING,
+} from '../src';
 
 // Entity is abstract; use a minimal concrete subclass for tests.
 class TestEntity extends Entity {
@@ -2406,6 +2413,82 @@ describe('Scene SSR / no-DOM safety', () => {
       g.document = savedDoc;
       g.window = savedWin;
       g.requestAnimationFrame = savedRaf;
+    }
+  });
+});
+
+describe('Scene User Timing', () => {
+  it('is silent by default and emits every phase when enabled', () => {
+    const originalPerformance = globalThis.performance;
+    let clock = 0;
+    const timing = {
+      now: vi.fn(() => ++clock),
+      mark: vi.fn(),
+      measure: vi.fn(),
+      clearMarks: vi.fn(),
+    };
+    Object.defineProperty(globalThis, 'performance', {
+      value: timing,
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      value: () => 0,
+      configurable: true,
+    });
+
+    try {
+      const canvas = mockCanvas as unknown as HTMLCanvasElement;
+      const silent = new Scene(canvas, { userTiming: false });
+      silent.step(16);
+      expect(timing.mark).not.toHaveBeenCalled();
+      expect(timing.measure).not.toHaveBeenCalled();
+
+      const scene = new Scene(canvas, { userTiming: true });
+      const entity = new TestEntity('timed');
+      entity.interactive = true;
+      scene.add(entity);
+      scene.step(16);
+      (scene as unknown as { isRunning: boolean }).isRunning = true;
+      (scene as unknown as { loop: (time: number) => void }).loop(32);
+
+      const names = timing.measure.mock.calls.map(([name]) => name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          VECTO_USER_TIMING.scene.transform,
+          VECTO_USER_TIMING.scene.drawWalk,
+          VECTO_USER_TIMING.scene.entityPaint,
+          VECTO_USER_TIMING.scene.flush,
+          VECTO_USER_TIMING.scene.a11ySync,
+        ]),
+      );
+      expect(names.filter((name) => name === VECTO_USER_TIMING.scene.entityPaint)).toHaveLength(2);
+      expect(timing.clearMarks).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'performance', {
+        value: originalPerformance,
+        configurable: true,
+      });
+    }
+  });
+
+  it('does not require User Timing APIs when explicitly enabled', () => {
+    const originalPerformance = globalThis.performance;
+    Object.defineProperty(globalThis, 'performance', {
+      value: { now: () => 1 },
+      configurable: true,
+    });
+    try {
+      const canvas = mockCanvas as unknown as HTMLCanvasElement;
+      const scene = new Scene(canvas, { userTiming: true });
+      expect(scene.userTiming).toBe(true);
+      expect(() => scene.step(16)).not.toThrow();
+      scene.setUserTiming(false);
+      expect(scene.userTiming).toBe(false);
+    } finally {
+      Object.defineProperty(globalThis, 'performance', {
+        value: originalPerformance,
+        configurable: true,
+      });
     }
   });
 });

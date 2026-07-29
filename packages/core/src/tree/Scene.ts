@@ -43,6 +43,12 @@ import { WASM_STATUS, type WasmModuleSource, type WasmTransformBackend } from '.
 import { gatherHitAABBs } from '../wasm/hit-store';
 import { createHitGatherBuffer, gatherHitAABBsFromStore } from '../wasm/hit-store-fused';
 import { type CoreModuleSource, type CoreWasmRuntime, loadCoreWasmRuntime } from '../wasm/runtime';
+import {
+  beginVectoUserTiming,
+  endVectoUserTiming,
+  measureVectoUserTiming,
+  VECTO_USER_TIMING,
+} from '../performance/UserTiming';
 import { type HitModuleSource, type HitTestBackend } from '../wasm/hit-backend';
 import { type AnimModuleSource, type AnimBackend } from '../wasm/anim-backend';
 import { type ParticleModuleSource, type ParticleBackend } from '../wasm/particle-backend';
@@ -399,6 +405,11 @@ export interface SceneOptions {
    * and not marked dirty) to save power/CPU. Default is `true`.
    */
   autoThrottle?: boolean;
+  /**
+   * Emit User Timing marks and measures for render phases. Default `false`.
+   * Intended for short profiler captures; enable only while collecting one.
+   */
+  userTiming?: boolean;
   /**
    * Mirror static text from entities implementing
    * {@link Entity.getContentProjection} as transparent, position-synced DOM
@@ -989,6 +1000,7 @@ export class Scene {
   /** Cap on distinct recorded dirty reasons (see `recordDirtyReason`). */
   private static readonly MAX_DIRTY_REASONS = 200;
   private _phaseTiming = false;
+  private _userTiming = false;
   private _phaseTotals = new Map<RenderPhase, { totalMs: number; calls: number; maxMs: number }>();
 
   /**
@@ -1012,6 +1024,21 @@ export class Scene {
   /** Whether per-phase render timing is being recorded. */
   public get phaseTiming(): boolean {
     return this._phaseTiming;
+  }
+
+  /**
+   * Enable or disable browser User Timing phase instrumentation.
+   *
+   * Off by default. The disabled frame path performs only boolean checks and
+   * emits no Performance Timeline entries.
+   */
+  public setUserTiming(enabled: boolean): void {
+    this._userTiming = enabled;
+  }
+
+  /** Whether browser User Timing phase instrumentation is enabled. */
+  public get userTiming(): boolean {
+    return this._userTiming;
   }
 
   /**
@@ -2342,6 +2369,7 @@ export class Scene {
     this.maxFPS = options.maxFPS ?? (isTest ? 0 : 60);
     this.respectReducedMotion = options.respectReducedMotion ?? true;
     this.autoThrottle = options.autoThrottle ?? true;
+    this._userTiming = options.userTiming ?? false;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
@@ -5230,9 +5258,13 @@ export class Scene {
     ) {
       this.lastA11ySync = time;
       if (hasInteractive || wantsContentSync) {
+        const userTiming = this._userTiming
+          ? beginVectoUserTiming(VECTO_USER_TIMING.scene.a11ySync)
+          : null;
         const t0 = this._phaseTiming ? performance.now() : 0;
         this.syncA11y(this.root);
         if (this._phaseTiming) this._recordPhase('a11ySync', performance.now() - t0);
+        if (userTiming) endVectoUserTiming(userTiming);
       }
       const t1 = this._phaseTiming ? performance.now() : 0;
       this.enforceA11yDomOrder();
@@ -5562,14 +5594,19 @@ export class Scene {
       for (const overlay of this.overlayRoot.children) updateWalk(overlay);
     }
 
+    const transformTiming = this._userTiming
+      ? beginVectoUserTiming(VECTO_USER_TIMING.scene.transform)
+      : null;
     const wasmT0 = this._phaseTiming ? performance.now() : 0;
     const wasmWorld = wasmMain ? this._syncWasmStore() : null;
     if (this._phaseTiming) this._recordPhase('transform', performance.now() - wasmT0);
+    if (transformTiming) endVectoUserTiming(transformTiming);
     const wasmSlotEntity = this._slotEntity;
 
     // renderNode carries the parent's accumulated world matrix as six scalar
     // params (canvas T*S*R order) to avoid per-node array allocation — important
     // for large scenes. Off-viewport entities with a known getBounds() are culled.
+    let userEntityPaintMs = 0;
     const renderNode = (
       node: Entity,
       pa: number,
@@ -5766,10 +5803,15 @@ export class Scene {
           // measured 100% of render, which makes it the only opaque block left —
           // and "the draw walk is expensive" is not actionable without knowing
           // whether the cost is per-entity painting or the traversal around it.
-          if (this._phaseTiming) {
+          if (this._userTiming || this._phaseTiming) {
             const t0 = performance.now();
-            node.render(renderer);
-            this._recordPhase('entityPaint', performance.now() - t0);
+            try {
+              node.render(renderer);
+            } finally {
+              const elapsed = performance.now() - t0;
+              if (this._userTiming) userEntityPaintMs += elapsed;
+              if (this._phaseTiming) this._recordPhase('entityPaint', elapsed);
+            }
           } else {
             node.render(renderer);
           }
@@ -5788,17 +5830,27 @@ export class Scene {
       renderer.restore();
     };
 
+    const drawTiming = this._userTiming
+      ? beginVectoUserTiming(VECTO_USER_TIMING.scene.drawWalk)
+      : null;
     const drawT0 = this._phaseTiming ? performance.now() : 0;
     renderNode(this.root, 1, 0, 0, 1, 0, 0, 1);
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
     if (this._phaseTiming) this._recordPhase('drawWalk', performance.now() - drawT0);
+    if (drawTiming) endVectoUserTiming(drawTiming);
+    if (this._userTiming) {
+      measureVectoUserTiming(VECTO_USER_TIMING.scene.entityPaint, userEntityPaintMs);
+    }
     if (isMainRenderer) {
       this.frameHadAnimation = walkHadAnimation;
       this.frameHadInteractive = walkHadInteractive;
       this.reconcilePortals();
     }
+    const flushTiming = this._userTiming
+      ? beginVectoUserTiming(VECTO_USER_TIMING.scene.flush)
+      : null;
     const flushT0 = this._phaseTiming ? performance.now() : 0;
     renderer.flush();
     if (isMainRenderer) {
@@ -5807,6 +5859,7 @@ export class Scene {
     // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
     renderer.present?.();
     if (this._phaseTiming) this._recordPhase('flush', performance.now() - flushT0);
+    if (flushTiming) endVectoUserTiming(flushTiming);
     if (this._devActive) {
       this._devFrameCount++;
       this._devRunChecks();
