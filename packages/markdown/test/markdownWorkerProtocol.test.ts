@@ -284,6 +284,47 @@ describe('MarkdownWorker delta protocol', () => {
     expect(second.sourceCharsLexed).toBeGreaterThan(first.sourceCharsLexed!);
   });
 
+  it('emits parse timing only when the request opts in', () => {
+    const originalPerformance = globalThis.performance;
+    let clock = 0;
+    const timing = {
+      now: vi.fn(() => ++clock),
+      mark: vi.fn(),
+      measure: vi.fn(),
+      clearMarks: vi.fn(),
+    };
+    Object.defineProperty(globalThis, 'performance', {
+      value: timing,
+      configurable: true,
+    });
+
+    try {
+      request({
+        id: 1,
+        text: '# silent',
+        instance: 'silent',
+        baseVersion: 0,
+      });
+      expect(timing.mark).not.toHaveBeenCalled();
+
+      request({
+        id: 2,
+        text: '# timed',
+        instance: 'timed',
+        baseVersion: 0,
+        oldRaws: [],
+        userTimingName: 'vecto:markdown:parse',
+      });
+      expect(timing.measure.mock.calls.map(([name]) => name)).toContain('vecto:markdown:parse');
+      expect(timing.clearMarks).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, 'performance', {
+        value: originalPerformance,
+        configurable: true,
+      });
+    }
+  });
+
   it('ignores a malformed message instead of driving the lexer with it', () => {
     const before = responses.length;
     onmessage!({ data: null });

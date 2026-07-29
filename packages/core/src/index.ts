@@ -16,6 +16,7 @@ export * from './renderer/colorParse';
 export * from './renderer/url';
 export * from './renderer/GlyphRasterAtlas';
 export * from './renderer/TextRasterCache';
+export * from './performance/UserTiming';
 export * from './tree/Entity';
 export * from './tree/Scene';
 export * from './components/TextEntity';

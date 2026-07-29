@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Tokens } from 'marked';
 import { lexer as markedLexer } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
+import { VECTO_USER_TIMING } from '@vectojs/core';
 import { RichText, Text } from '@vectojs/ui';
 
 function clickFirstLink(entity: RichText): void {
@@ -803,5 +804,19 @@ Plain paragraph at the end.
       expect(survivors).toContain('keep');
       expect(survivors).not.toContain('drop');
     });
+  });
+
+  it('emits parse timing only when explicitly enabled', () => {
+    const mark = vi.spyOn(performance, 'mark');
+    const measure = vi.spyOn(performance, 'measure');
+    const clearMarks = vi.spyOn(performance, 'clearMarks');
+
+    new Markdown('# silent');
+    expect(mark).not.toHaveBeenCalled();
+    expect(measure).not.toHaveBeenCalled();
+
+    new Markdown('# timed', { userTiming: true });
+    expect(measure.mock.calls.map(([name]) => name)).toContain(VECTO_USER_TIMING.markdown.parse);
+    expect(clearMarks).toHaveBeenCalled();
   });
 });
