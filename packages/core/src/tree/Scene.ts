@@ -5248,6 +5248,26 @@ export class Scene {
   /**
    * Render the entire scene graph onto the specified renderer.
    *
+   * Main-frame causal order is a correctness contract:
+   *
+   * 1. Browser/input callbacks finish before the scheduled frame begins.
+   * 2. Batched property drivers and particle simulation advance.
+   * 3. Entity `update()` hooks run.
+   * 4. Transform inputs are gathered and world matrices are composed.
+   * 5. Updated world bounds are tested for culling.
+   * 6. Visible entities paint in scene-graph order.
+   * 7. Canvas/GPU batches flush and retained renderers present.
+   * 8. The rAF loop synchronizes content and accessibility projections after
+   *    this method returns.
+   *
+   * The causal order is fixed; physical walks may stay fused. The JavaScript
+   * transform path interleaves update → compose → cull → paint per node in
+   * pre-order. The WASM path updates the whole tree first, then gathers and
+   * composes it in one store pass before the same cull/paint walk. Both must
+   * expose an update's transform mutation in that same rendered frame.
+   * Secondary renderers are read-only snapshots: they skip simulation and
+   * updates, then compose/cull/paint/flush the current state.
+   *
    * @param renderer - The renderer instance to draw to.
    * @param dt - Delta time in milliseconds (default 0).
    * @param time - Current absolute time in milliseconds (default 0).

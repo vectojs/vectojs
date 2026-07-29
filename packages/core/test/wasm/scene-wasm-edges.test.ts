@@ -30,6 +30,34 @@ class Box extends Entity {
   render(): void {}
 }
 
+class FrameOrderProbe extends Box {
+  public readonly phases: string[] = [];
+  public paintedWorldX: number | null = null;
+
+  constructor() {
+    super('frame-order');
+    this.x = 1000;
+    this.width = 10;
+    this.height = 10;
+  }
+
+  public override update(dt: number, time: number): void {
+    super.update(dt, time);
+    this.phases.push('update');
+    this.x = 40;
+  }
+
+  public override getBounds() {
+    this.phases.push('bounds');
+    return { x: 0, y: 0, width: this.width, height: this.height };
+  }
+
+  public override render(): void {
+    this.phases.push('paint');
+    this.paintedWorldX = this.getWorldTransform().e;
+  }
+}
+
 function setWindow(): void {
   (globalThis as { window?: unknown }).window = {
     innerWidth: 800,
@@ -280,6 +308,30 @@ describe.skipIf(!haveWasm)('G1 Stage 4 — edge cases', () => {
     const w = c.getWorldTransform();
     expect(w.e).toBeCloseTo(20, 9); // c.x, composed from identity (no parent)
     expect(w.f).toBeCloseTo(0, 9);
+  });
+
+  it('applies update transforms before compose, cull, and paint in the same JS and WASM frame', () => {
+    for (const backend of ['js', 'wasm'] as const) {
+      setWindow();
+      const scene = sceneWith();
+      const probe = new FrameOrderProbe();
+      scene.add(probe);
+      if (backend === 'wasm') enableWasm(scene);
+
+      scene.step(16);
+
+      expect({
+        backend,
+        phases: probe.phases,
+        paintedWorldX: probe.paintedWorldX,
+        cachedWorldX: probe.getWorldTransform().e,
+      }).toEqual({
+        backend,
+        phases: ['update', 'bounds', 'paint'],
+        paintedWorldX: 40,
+        cachedWorldX: 40,
+      });
+    }
   });
 
   it('never freezes an animation started after WASM is enabled (no-freeze)', () => {
