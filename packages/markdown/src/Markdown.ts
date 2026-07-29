@@ -1026,6 +1026,13 @@ export interface MarkdownOptions {
   selectable?: boolean;
 }
 
+interface BlockMetrics {
+  marginBefore: number;
+  marginAfter: number;
+  indentStart: number;
+  availableWidth: number;
+}
+
 /**
  * Renders Markdown content into a VectoJS entity tree using {@link marked}.
  *
@@ -1048,6 +1055,7 @@ export class Markdown extends UIComponent {
   public theme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
+  private activeBlockMetrics: BlockMetrics | null = null;
   /**
    * Called after a streamed append has re-laid-out the document.
    *
@@ -1726,6 +1734,20 @@ export class Markdown extends UIComponent {
   }
 
   /**
+   * Render one nested block with a temporary width/margin context while
+   * preserving `renderToken` as the subclass override seam.
+   */
+  private renderTokenWithMetrics(token: Token, metrics: BlockMetrics): Entity | null {
+    const previous = this.activeBlockMetrics;
+    this.activeBlockMetrics = metrics;
+    try {
+      return this.renderToken(token);
+    } finally {
+      this.activeBlockMetrics = previous;
+    }
+  }
+
+  /**
    * Whether {@link renderToken} produces a child entity for this token (vs
    * `null`). `updateTokens` maps token indices to child-entity indices, and the
    * reconcile/removal loops must skip EXACTLY the tokens that render nothing —
@@ -1736,6 +1758,7 @@ export class Markdown extends UIComponent {
    * the wrong entity was updated or destroyed. Kept in lockstep with
    * `renderToken`'s null returns.
    */
+
   protected producesEntity(token: Token): boolean {
     switch (token.type) {
       case 'space':
@@ -1760,6 +1783,13 @@ export class Markdown extends UIComponent {
   protected renderToken(token: Token): Entity | null {
     const t = this.theme;
     const bodyFont = `${t.fontSize}px ${t.bodyFont}`;
+    const metrics = this.activeBlockMetrics ?? {
+      marginBefore: 0,
+      marginAfter: 0,
+      indentStart: 0,
+      availableWidth: this.maxWidth,
+    };
+    const availableWidth = metrics.availableWidth;
 
     switch (token.type) {
       // ── Headings ─────────────────────────────────────────────────────
@@ -1773,7 +1803,7 @@ export class Markdown extends UIComponent {
           hToken.text,
           headingFont,
           t.headingColor,
-          this.maxWidth,
+          availableWidth,
           t,
           this.selectable,
           this.onLinkClick,
@@ -1789,7 +1819,7 @@ export class Markdown extends UIComponent {
             pToken.text,
             bodyFont,
             t.textColor,
-            this.maxWidth,
+            availableWidth,
             t,
             this.selectable,
             this.onLinkClick,
@@ -1800,7 +1830,7 @@ export class Markdown extends UIComponent {
         const stack = new Stack({
           direction: 'vertical',
           gap: 16,
-          maxWidth: this.maxWidth,
+          maxWidth: availableWidth,
         });
         let currentTokens: Token[] = [];
 
@@ -1812,7 +1842,7 @@ export class Markdown extends UIComponent {
                 '',
                 bodyFont,
                 t.textColor,
-                this.maxWidth,
+                availableWidth,
                 t,
                 this.selectable,
                 this.onLinkClick,
@@ -1826,7 +1856,7 @@ export class Markdown extends UIComponent {
           if (child.type === 'image') {
             flushText();
             const imgToken = child as Tokens.Image;
-            const initialWidth = Math.min(800, this.maxWidth);
+            const initialWidth = Math.min(800, availableWidth);
             const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
             const img = new Image(imgToken.href, {
               width: initialWidth,
@@ -1837,7 +1867,7 @@ export class Markdown extends UIComponent {
                 const bmp = (img as any).bitmap;
                 if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
                   const aspect = bmp.naturalHeight / bmp.naturalWidth;
-                  img.width = Math.min(bmp.naturalWidth, this.maxWidth);
+                  img.width = Math.min(bmp.naturalWidth, availableWidth);
                   img.height = Math.round(img.width * aspect);
                   if (this.scene) this.scene.markDirty();
                 }
@@ -1862,8 +1892,8 @@ export class Markdown extends UIComponent {
           if (mathData) {
             // Provide a generous default height, it will scale based on width
             const mathImg = new Image(mathData.uri, {
-              width: Math.min(this.maxWidth, mathData.width),
-              height: mathData.height * Math.min(1, this.maxWidth / mathData.width),
+              width: Math.min(availableWidth, mathData.width),
+              height: mathData.height * Math.min(1, availableWidth / mathData.width),
               alt: codeToken.text,
             });
             // Let the layout flow it as a block
@@ -1877,23 +1907,30 @@ export class Markdown extends UIComponent {
           }
         }
 
-        return new CodeBlock(codeToken.text, lang, this.maxWidth, t, this.selectable);
+        return new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable);
       }
 
       // ── Blockquotes ──────────────────────────────────────────────────
       case 'blockquote': {
         const bqToken = token as Tokens.Blockquote;
         const innerStack = new Stack({ direction: 'vertical', gap: 8 });
+        const indentStart = Math.min(16, availableWidth);
+        const childMetrics: BlockMetrics = {
+          marginBefore: 0,
+          marginAfter: 0,
+          indentStart,
+          availableWidth: Math.max(0, availableWidth - indentStart),
+        };
 
         // Recursively render inner tokens
         if (bqToken.tokens) {
           for (const inner of bqToken.tokens) {
-            const el = this.renderToken(inner);
+            const el = this.renderTokenWithMetrics(inner, childMetrics);
             if (el) {
               const wrapper = new MarkdownContainer();
-              el.x = 16;
+              el.x = childMetrics.indentStart;
               wrapper.add(el);
-              wrapper.width = el.width + 16;
+              wrapper.width = el.width + childMetrics.indentStart;
               wrapper.height = el.height;
               innerStack.add(wrapper);
             }
@@ -1917,7 +1954,7 @@ export class Markdown extends UIComponent {
         innerStack.y = 0;
         innerStack.x = 0;
         container.add(innerStack);
-        container.width = this.maxWidth;
+        container.width = availableWidth;
         container.height = Math.max(border.height, innerStack.height);
 
         return container;
@@ -1964,7 +2001,7 @@ export class Markdown extends UIComponent {
           const itemRt = new RichText(itemSpans, {
             font: bodyFont,
             color: t.textColor,
-            maxWidth: this.maxWidth - 24,
+            maxWidth: Math.max(0, availableWidth - 24),
             linkColor: '#38bdf8',
             selectable: this.selectable,
             onLinkClick: this.onLinkClick,
@@ -1999,7 +2036,7 @@ export class Markdown extends UIComponent {
         return new Table({
           headers,
           rows,
-          width: this.maxWidth,
+          width: availableWidth,
           textColor: t.textColor,
           headerTextColor: t.headingColor,
           font: `${t.fontSize - 2}px ${t.bodyFont}`,
@@ -2012,7 +2049,7 @@ export class Markdown extends UIComponent {
 
       // ── Horizontal rule ──────────────────────────────────────────────
       case 'hr':
-        return new HorizontalRule(this.maxWidth, t.hrColor);
+        return new HorizontalRule(availableWidth, t.hrColor);
 
       // ── Whitespace ───────────────────────────────────────────────────
       case 'space':
@@ -2036,7 +2073,7 @@ export class Markdown extends UIComponent {
           return new Text((token as any).text, {
             font: bodyFont,
             color: t.textColor,
-            maxWidth: this.maxWidth,
+            maxWidth: availableWidth,
             lineHeight: 24,
             selectable: this.selectable,
           });
