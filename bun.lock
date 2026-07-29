@@ -113,6 +113,7 @@
         "@vectojs/ui": "workspace:*",
         "esbuild": "^0.28.1",
         "prettier": "^3.9.6",
+        "puppeteer-core": "^25.3.0",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
       },

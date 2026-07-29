@@ -80,6 +80,10 @@ jobs:
       - name: Install Firefox for cross-browser text projection tests
         id: setup-firefox
         uses: browser-actions/setup-firefox@v1
+      - name: Markdown blockquote geometry e2e
+        env:
+          FIREFOX_EXECUTABLE_PATH: ${{ steps.setup-firefox.outputs.firefox-path }}
+        run: cd packages/markdown && bun run test:e2e
       - name: Browser e2e (HiDPI, selection, RTL, and font substitution)
         # Chrome comes from the hosted runner. Firefox is resolved from the
         # setup action output, then the suite also exercises Noto Serif and
