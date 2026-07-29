@@ -35,10 +35,11 @@ export interface AuditOptions {
    */
   includeOverlay?: boolean;
   /**
-   * Clipping ancestors whose constructor name is listed here scroll their
-   * content: vertical escape past them is normal and not reported (horizontal
-   * escape still is). Matches by `constructor.name`, so minified production
-   * bundles need explicit names passed in. Default covers the @vectojs/ui set.
+   * Scroll owners whose constructor name is listed here: vertical escape
+   * through their own clipping box, or through a direct clipping child, is
+   * normal and not reported (horizontal escape still is). Matches by
+   * `constructor.name`, so minified production bundles need explicit names
+   * passed in. Default covers the @vectojs/ui set.
    */
   scrollableTypes?: string[];
   /** Prune whole subtrees from the audit. */
@@ -47,7 +48,7 @@ export interface AuditOptions {
   ignoreOverlap?: (a: Entity, b: Entity) => boolean;
 }
 
-const DEFAULT_SCROLLABLE = ['ScrollView', 'VirtualList', 'TreeView', 'Tree'];
+const DEFAULT_SCROLLABLE = ['ScrollView', 'VirtualList', 'TreeView', 'Table'];
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -286,7 +287,10 @@ export function auditTree(
       entity,
       box: worldBox(entity),
       clips: entity.clipChildren,
-      scrollable: entity.clipChildren && scrollable.has(entity.constructor.name),
+      scrollable:
+        entity.clipChildren &&
+        (scrollable.has(entity.constructor.name) ||
+          (entity.parent !== null && scrollable.has(entity.parent.constructor.name))),
       sized: hasSize,
       textLike: isTextLike(entity),
     };
