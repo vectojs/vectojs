@@ -5,7 +5,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChromeAdapter } from './browser/chrome';
 import { FirefoxAdapter } from './browser/firefox';
-import { profileProcessIds, terminateProfileProcesses, type ProcessSignal } from './processes';
+import {
+  profileProcessIds,
+  terminateProfileProcesses,
+  terminateProfileProcessesDetailed,
+  type ProcessSignal,
+} from './processes';
 import { findResult, starvationWarnings } from './results';
 import { runOne } from './runner';
 import { parseRunnerArgs, parseRunnerResult, RunnerUsageError } from './schema';
@@ -16,7 +21,7 @@ import type {
   RunnerConfig,
   WindowController,
 } from './types';
-import { quoteShellArgument, selectWindow } from './window/hyprland';
+import { formatBrowserLaunchCommand, quoteShellArgument, selectWindow } from './window/hyprland';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoot = join(repositoryRoot, 'tmp', 'benchmark-runner-tests');
@@ -83,10 +88,13 @@ describe('runner CLI schema', () => {
     ).toThrow('--mode profile does not support --iterations > 1');
   });
 
-  test('rejects Firefox profile mode until the Gecko profiler ships', () => {
-    expect(() => parseRunnerArgs(['ondemand-raf', '8178', '--mode', 'profile', 'firefox'])).toThrow(
-      '--mode profile currently supports Chrome only',
-    );
+  test('accepts Firefox and dual-browser profile capture', () => {
+    expect(
+      parseRunnerArgs(['ondemand-raf', '8178', '--mode', 'profile', 'firefox']).browsers,
+    ).toEqual(['firefox']);
+    expect(
+      parseRunnerArgs(['ondemand-raf', '8178', '--mode', 'profile', 'chrome', 'firefox']).browsers,
+    ).toEqual(['chrome', 'firefox']);
   });
 
   test('rejects malformed values and unknown browsers', () => {
@@ -150,9 +158,28 @@ describe('browser launch contracts', () => {
     expect(spec.args).toContain('--width=900');
     expect(spec.args).toContain('--height=700');
   });
+
+  test('quotes each Firefox profiler environment assignment as one shell token', () => {
+    const command = formatBrowserLaunchCommand({
+      executable: '/usr/bin/firefox',
+      args: ['--profile', '/repo/profile with space'],
+      environment: {
+        MOZ_PROFILER_STARTUP: '1',
+        MOZ_PROFILER_SHUTDOWN: "/repo/traces/run's profile.json",
+      },
+      windowClass: 'firefox',
+    });
+    expect(command).toBe(
+      "'/usr/bin/env' 'MOZ_PROFILER_STARTUP=1' 'MOZ_PROFILER_SHUTDOWN=/repo/traces/run'\\''s profile.json' '/usr/bin/firefox' '--profile' '/repo/profile with space'",
+    );
+    expect(command).not.toContain("MOZ_PROFILER_SHUTDOWN='/repo");
+  });
 });
 
-async function exerciseProfileLifecycle(completes: boolean) {
+async function exerciseProfileLifecycle(
+  completes: boolean,
+  browser: 'chrome' | 'firefox' = 'chrome',
+) {
   const benchRoot = await mkdtemp(join(tempRoot, 'profile-run-'));
   const resultPath = join(benchRoot, 'result.json');
   const events: string[] = [];
@@ -162,17 +189,23 @@ async function exerciseProfileLifecycle(completes: boolean) {
     written: [] as string[],
     stop() {},
   };
+  const stopsAfterBrowserExit = browser === 'firefox';
   let requestedTracePath = '';
+  let requestedGate: string | null = null;
+  let launchedEnvironment: Readonly<Record<string, string>> | undefined;
+  let terminationOptions: { graceMs?: number; requireGracefulExit?: boolean } | undefined;
   const profileSession: BrowserProfileSession = {
+    stopAfterBrowserExit: stopsAfterBrowserExit,
+    shutdownGraceMs: stopsAfterBrowserExit ? 60_000 : 10_000,
     async releaseBenchmark() {
       events.push('release');
       if (completes) {
         await Bun.write(
           resultPath,
           JSON.stringify({
-            runId: 'suite-chrome-i1',
+            runId: `suite-${browser}-i1`,
             suiteRunId: 'suite',
-            engine: 'chrome',
+            engine: browser,
             rows: [],
           }),
         );
@@ -185,33 +218,48 @@ async function exerciseProfileLifecycle(completes: boolean) {
     },
   };
   const adapter: BrowserAdapter = {
-    name: 'chrome',
+    name: browser,
     profiler: {
+      gate: !stopsAfterBrowserExit,
+      async prepare(options) {
+        events.push('profile-prepare');
+        requestedTracePath = options.tracePath;
+        return stopsAfterBrowserExit
+          ? {
+              MOZ_PROFILER_STARTUP: '1',
+              MOZ_PROFILER_SHUTDOWN: options.tracePath.slice(0, -3),
+            }
+          : {};
+      },
       async start(options) {
         events.push('attach');
-        requestedTracePath = options.tracePath;
-        expect(new URL(options.targetUrl).searchParams.get('gate')).toBe('1');
+        requestedGate = new URL(options.targetUrl).searchParams.get('gate');
         return profileSession;
       },
     },
-    resolveExecutable: () => '/usr/bin/chromium',
+    resolveExecutable: () => `/usr/bin/${browser}`,
     async prepareProfile() {
       events.push('prepare');
     },
     launchSpec: () => ({
-      executable: '/usr/bin/chromium',
+      executable: `/usr/bin/${browser}`,
       args: [],
-      windowClass: 'chromium',
+      windowClass: browser,
     }),
   };
   const windows: WindowController = {
     activeWorkspace: async () => 1,
-    async launch() {
+    async launch(_workspace, spec) {
       events.push('launch');
+      launchedEnvironment = spec.environment;
     },
     async find() {
       events.push('find');
       return '0xcafe';
+    },
+    async processId() {
+      events.push('process-id');
+      return 4242;
     },
     async focusWorkspace() {
       events.push('focus-workspace');
@@ -230,7 +278,7 @@ async function exerciseProfileLifecycle(completes: boolean) {
     iterations: 1,
     profileState: 'cold',
     mode: 'profile',
-    browsers: ['chrome'],
+    browsers: [browser],
     timeoutMs: 0,
     extendMs: 0,
   };
@@ -248,23 +296,41 @@ async function exerciseProfileLifecycle(completes: boolean) {
     new AbortController().signal,
     {
       wait: async () => {},
-      async terminate() {
+      async terminate(_windows, _address, _profileDir, _homeWorkspace, options) {
         events.push('terminate');
+        terminationOptions = options;
       },
     },
   );
-  return { benchRoot, events, match, requestedTracePath };
+  return {
+    benchRoot,
+    events,
+    launchedEnvironment,
+    match,
+    requestedGate,
+    requestedTracePath,
+    terminationOptions,
+  };
 }
 
 describe('profile orchestration', () => {
   test('focuses before release and stops tracing before browser termination on success', async () => {
-    const { benchRoot, events, match, requestedTracePath } = await exerciseProfileLifecycle(true);
+    const { benchRoot, events, match, requestedGate, requestedTracePath, terminationOptions } =
+      await exerciseProfileLifecycle(true);
     expect(match?.path).toEndWith('result.json');
+    expect(events.indexOf('profile-prepare')).toBeLessThan(events.indexOf('launch'));
     expect(requestedTracePath).toBe(join(benchRoot, 'traces', 'suite-chrome-i1.json.gz'));
+    expect(requestedGate).toBe('1');
+    expect(events.indexOf('process-id')).toBeLessThan(events.indexOf('focus-window'));
     expect(events.indexOf('attach')).toBeLessThan(events.indexOf('focus-window'));
     expect(events.indexOf('focus-window')).toBeLessThan(events.indexOf('release'));
     expect(events.indexOf('release')).toBeLessThan(events.indexOf('stop'));
     expect(events.indexOf('stop')).toBeLessThan(events.indexOf('terminate'));
+    expect(terminationOptions).toEqual({
+      graceMs: 10_000,
+      requireGracefulExit: false,
+      rootPid: 4242,
+    });
   });
 
   test('still stops and preserves a partial profile when the benchmark times out', async () => {
@@ -273,6 +339,32 @@ describe('profile orchestration', () => {
     expect(events).toContain('release');
     expect(events.indexOf('release')).toBeLessThan(events.indexOf('stop'));
     expect(events.indexOf('stop')).toBeLessThan(events.indexOf('terminate'));
+  });
+
+  test('lets Firefox run ungated and finalizes only after graceful browser exit', async () => {
+    const result = await exerciseProfileLifecycle(true, 'firefox');
+    expect(result.match?.path).toEndWith('result.json');
+    expect(result.requestedGate).toBeNull();
+    expect(result.launchedEnvironment).toEqual({
+      MOZ_PROFILER_STARTUP: '1',
+      MOZ_PROFILER_SHUTDOWN: result.requestedTracePath.slice(0, -3),
+    });
+    expect(result.events.indexOf('profile-prepare')).toBeLessThan(result.events.indexOf('launch'));
+    expect(result.events.indexOf('release')).toBeLessThan(result.events.indexOf('terminate'));
+    expect(result.events.indexOf('process-id')).toBeLessThan(result.events.indexOf('release'));
+    expect(result.events.indexOf('terminate')).toBeLessThan(result.events.indexOf('stop'));
+    expect(result.terminationOptions).toEqual({
+      graceMs: 60_000,
+      requireGracefulExit: true,
+      rootPid: 4242,
+    });
+  });
+
+  test('uses the same post-exit Firefox finalization order after timeout', async () => {
+    const result = await exerciseProfileLifecycle(false, 'firefox');
+    expect(result.match).toBeNull();
+    expect(result.events.indexOf('release')).toBeLessThan(result.events.indexOf('terminate'));
+    expect(result.events.indexOf('terminate')).toBeLessThan(result.events.indexOf('stop'));
   });
 });
 
@@ -350,6 +442,69 @@ describe('profile-owned process cleanup', () => {
     });
     expect(signals).toEqual([[101, 'SIGTERM']]);
     expect(survivors).toEqual([]);
+  });
+
+  test('tracks a Firefox window PID tree while waiting for natural exit', async () => {
+    const procRoot = await mkdtemp(join(tempRoot, 'proc-tree-'));
+    for (const pid of [303, 404]) {
+      await mkdir(join(procRoot, String(pid), 'task', String(pid)), { recursive: true });
+    }
+    await writeFile(join(procRoot, '303', 'task', '303', 'children'), '404');
+    await writeFile(join(procRoot, '404', 'task', '404', 'children'), '');
+
+    const signals: Array<[number, ProcessSignal]> = [];
+    let sleeps = 0;
+    const result = await terminateProfileProcessesDetailed('/profile-not-in-argv', {
+      procRoot,
+      rootPid: 303,
+      gracefulWaitSteps: 2,
+      termWaitSteps: 1,
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 1) {
+          rmSync(join(procRoot, '303'), { recursive: true, force: true });
+          rmSync(join(procRoot, '404'), { recursive: true, force: true });
+        }
+      },
+      killProcess: (pid, signal) => signals.push([pid, signal]),
+    });
+    expect(result).toEqual({
+      forcedTerminationPids: [],
+      forcedKillPids: [],
+      survivors: [],
+    });
+    expect(signals).toEqual([]);
+  });
+
+  test('reports SIGTERM as a non-graceful fallback after the Firefox grace expires', async () => {
+    const procRoot = await mkdtemp(join(tempRoot, 'proc-tree-timeout-'));
+    for (const pid of [505, 606]) {
+      await mkdir(join(procRoot, String(pid), 'task', String(pid)), { recursive: true });
+    }
+    await writeFile(join(procRoot, '505', 'task', '505', 'children'), '606');
+    await writeFile(join(procRoot, '606', 'task', '606', 'children'), '');
+
+    const signals: Array<[number, ProcessSignal]> = [];
+    const result = await terminateProfileProcessesDetailed('/profile-not-in-argv', {
+      procRoot,
+      rootPid: 505,
+      gracefulWaitSteps: 1,
+      termWaitSteps: 1,
+      sleep: async () => {},
+      killProcess: (pid, signal) => {
+        signals.push([pid, signal]);
+        rmSync(join(procRoot, String(pid)), { recursive: true, force: true });
+      },
+    });
+    expect(result).toEqual({
+      forcedTerminationPids: [505, 606],
+      forcedKillPids: [],
+      survivors: [],
+    });
+    expect(signals).toEqual([
+      [505, 'SIGTERM'],
+      [606, 'SIGTERM'],
+    ]);
   });
 });
 

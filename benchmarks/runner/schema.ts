@@ -111,11 +111,6 @@ export function parseRunnerArgs(
 
   const browserArgs = args.slice(index);
   const browsers = browserArgs.length === 0 ? ['chrome' as const] : browserArgs.map(browser);
-  if (mode === 'profile' && browsers.some((name) => name !== 'chrome')) {
-    throw new RunnerUsageError(
-      '--mode profile currently supports Chrome only; Firefox Gecko profiling is not implemented',
-    );
-  }
   return {
     benchDir,
     port,

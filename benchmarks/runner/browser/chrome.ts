@@ -10,7 +10,11 @@ import { firstExecutable } from './interface';
 
 export class ChromeAdapter implements BrowserAdapter {
   public readonly name = 'chrome';
-  public readonly profiler: BrowserProfiler = { start: startChromeProfile };
+  public readonly profiler: BrowserProfiler = {
+    gate: true,
+    prepare: () => Promise.resolve({}),
+    start: startChromeProfile,
+  };
 
   public constructor(private readonly executableOverride?: string) {}
 

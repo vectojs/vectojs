@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BenchmarkServer } from '../_shared/server';
 import { browserAdapter } from './browser';
-import { terminateProfileProcesses } from './processes';
+import { terminateProfileProcessesDetailed } from './processes';
 import { aggregateSuite, findResult, starvationWarnings, type ResultMatch } from './results';
 import { startRunnerServer } from './server';
 import type {
@@ -51,6 +51,7 @@ function runUrl(
   currentSuiteRunId: string,
   iteration: number,
   config: RunnerConfig,
+  gated: boolean,
 ): string {
   const url = new URL(serverUrl);
   url.searchParams.set('runId', runId);
@@ -58,7 +59,7 @@ function runUrl(
   url.searchParams.set('iteration', String(iteration));
   url.searchParams.set('mode', config.mode);
   url.searchParams.set('profileState', config.profileState);
-  if (config.mode === 'profile') url.searchParams.set('gate', '1');
+  if (gated) url.searchParams.set('gate', '1');
   return url.href;
 }
 
@@ -68,23 +69,47 @@ async function safely(action: () => Promise<void>): Promise<void> {
   } catch {}
 }
 
+export interface BrowserTerminationOptions {
+  graceMs?: number;
+  requireGracefulExit?: boolean;
+  rootPid?: number | null;
+}
+
 async function terminateBrowser(
   windows: WindowController,
   address: string | null,
   profileDir: string,
   homeWorkspace: number,
+  options: BrowserTerminationOptions = {},
 ): Promise<void> {
+  let rootPid = options.rootPid ?? null;
+  if (rootPid === null && address && windows.processId) {
+    try {
+      rootPid = await windows.processId(address);
+    } catch {}
+  }
   if (address) {
     await safely(() => windows.closeWindow(address));
     await delay(500);
   }
-  const survivors = await terminateProfileProcesses(profileDir);
-  if (survivors.length > 0) {
+  const termination = await terminateProfileProcessesDetailed(profileDir, {
+    rootPid,
+    gracefulWaitSteps: options.requireGracefulExit
+      ? Math.ceil((options.graceMs ?? 60_000) / 500)
+      : 0,
+    termWaitSteps: options.requireGracefulExit ? 20 : Math.ceil((options.graceMs ?? 10_000) / 500),
+  });
+  if (termination.survivors.length > 0) {
     console.warn(
-      `  warning: browser processes for ${profileDir} survived SIGKILL: ${survivors.join(', ')}`,
+      `  warning: browser processes for ${profileDir} survived SIGKILL: ${termination.survivors.join(', ')}`,
     );
   }
   await safely(() => windows.focusWorkspace(homeWorkspace));
+  if (options.requireGracefulExit && termination.forcedTerminationPids.length > 0) {
+    throw new Error(
+      `Firefox profile shutdown did not finish gracefully within ${options.graceMs ?? 60_000}ms; sent SIGTERM to ${termination.forcedTerminationPids.join(', ')}`,
+    );
+  }
 }
 
 function checkInterrupted(signal: AbortSignal): void {
@@ -98,6 +123,7 @@ export interface RunOneDependencies {
     address: string | null,
     profileDir: string,
     homeWorkspace: number,
+    options?: BrowserTerminationOptions,
   ): Promise<void>;
 }
 
@@ -120,33 +146,61 @@ export async function runOne(
   dependencies: RunOneDependencies = defaultRunOneDependencies,
 ): Promise<ResultMatch | null> {
   const runId = `${currentSuiteRunId}-${adapter.name}-i${iteration}`;
-  const url = runUrl(server.url, runId, currentSuiteRunId, iteration, config);
+  const profiler = config.mode === 'profile' ? adapter.profiler : null;
+  if (config.mode === 'profile' && !profiler) {
+    throw new Error(`${adapter.name} profile mode is not implemented`);
+  }
+  const url = runUrl(
+    server.url,
+    runId,
+    currentSuiteRunId,
+    iteration,
+    config,
+    profiler?.gate ?? false,
+  );
+  const profileOptions = profiler
+    ? {
+        profileDir,
+        targetUrl: url,
+        tracePath: resolve(benchRoot, 'traces', `${runId}.json.gz`),
+        signal,
+      }
+    : null;
   const resultStart = server.written.length;
   let address: string | null = null;
+  let browserPid: number | null = null;
   let profileSession: BrowserProfileSession | null = null;
 
   await adapter.prepareProfile(profileDir);
-  const spec: BrowserLaunchSpec = adapter.launchSpec(profileDir, url, config.viewport, config.mode);
+  const environment = profileOptions ? await profiler?.prepare(profileOptions) : undefined;
+  const launchSpec = adapter.launchSpec(profileDir, url, config.viewport, config.mode);
+  const spec: BrowserLaunchSpec =
+    environment && Object.keys(environment).length > 0
+      ? { ...launchSpec, environment }
+      : launchSpec;
   let result: ResultMatch | null = null;
   const failures: unknown[] = [];
   try {
     result = await (async () => {
       console.log(`  launching ${adapter.name} on workspace ${config.workspace} (incognito)…`);
       await windows.launch(config.workspace, spec);
-      await windows.focusWorkspace(config.workspace);
-      if (config.mode === 'profile') {
-        if (!adapter.profiler) throw new Error(`${adapter.name} profile mode is not implemented`);
-        profileSession = await adapter.profiler.start({
-          profileDir,
-          targetUrl: url,
-          tracePath: join(benchRoot, 'traces', `${runId}.json.gz`),
-          signal,
-        });
+      if (profileOptions && profiler) {
+        profileSession = await profiler.start(profileOptions);
       }
+      await windows.focusWorkspace(config.workspace);
 
       const windowDeadline = Date.now() + 30_000;
       while (Date.now() < windowDeadline) {
         checkInterrupted(signal);
+        address = await windows.find(config.workspace, spec.windowClass, 'vectojs');
+        if (address) {
+          if (windows.processId) {
+            try {
+              browserPid = await windows.processId(address);
+            } catch {}
+          }
+          break;
+        }
         const finished = await findResult(server.written, resultStart, runId);
         if (finished) {
           console.log(
@@ -154,8 +208,6 @@ export async function runOne(
           );
           return finished;
         }
-        address = await windows.find(config.workspace, spec.windowClass, 'vectojs');
-        if (address) break;
         await dependencies.wait(500);
       }
 
@@ -210,18 +262,29 @@ export async function runOne(
     failures.push(error);
   }
 
-  if (profileSession) {
+  const stopProfile = async (): Promise<void> => {
+    if (!profileSession) return;
     try {
       const artifact = await profileSession.stop();
       console.log(`  ${adapter.name} trace -> ${artifact.tracePath}`);
     } catch (error) {
       failures.push(error);
     }
+  };
+  if (profileSession && !profileSession.stopAfterBrowserExit) {
+    await stopProfile();
   }
   try {
-    await dependencies.terminate(windows, address, profileDir, homeWorkspace);
+    await dependencies.terminate(windows, address, profileDir, homeWorkspace, {
+      graceMs: profileSession?.shutdownGraceMs,
+      requireGracefulExit: profileSession?.stopAfterBrowserExit,
+      rootPid: browserPid,
+    });
   } catch (error) {
     failures.push(error);
+  }
+  if (profileSession?.stopAfterBrowserExit) {
+    await stopProfile();
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) {

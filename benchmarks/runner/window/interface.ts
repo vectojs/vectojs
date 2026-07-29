@@ -5,4 +5,5 @@ export interface HyprlandClient {
   className: string;
   title: string;
   workspace: number;
+  pid?: number;
 }

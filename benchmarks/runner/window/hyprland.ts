@@ -18,6 +18,25 @@ export function quoteShellArgument(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+export function formatBrowserLaunchCommand(spec: BrowserLaunchSpec): string {
+  const environment = Object.entries(spec.environment ?? {});
+  for (const [name] of environment) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`invalid browser environment variable name: ${name}`);
+    }
+  }
+  const command =
+    environment.length === 0
+      ? [spec.executable, ...spec.args]
+      : [
+          '/usr/bin/env',
+          ...environment.map(([name, value]) => `${name}=${value}`),
+          spec.executable,
+          ...spec.args,
+        ];
+  return command.map(quoteShellArgument).join(' ');
+}
+
 export function selectWindow(
   clients: readonly HyprlandClient[],
   workspace: number,
@@ -62,6 +81,7 @@ function parseClients(value: unknown): HyprlandClient[] {
       address: item.address,
       className: item.class,
       title: item.title,
+      pid: 'pid' in item && typeof item.pid === 'number' ? item.pid : undefined,
       workspace: item.workspace.id,
     });
   }
@@ -85,7 +105,7 @@ export class HyprlandWindowController implements WindowController {
   }
 
   public async launch(workspace: number, spec: BrowserLaunchSpec): Promise<void> {
-    const browserCommand = [spec.executable, ...spec.args].map(quoteShellArgument).join(' ');
+    const browserCommand = formatBrowserLaunchCommand(spec);
     await command(['hyprctl', 'dispatch', 'exec', `[workspace ${workspace}] ${browserCommand}`]);
   }
 
@@ -96,6 +116,11 @@ export class HyprlandWindowController implements WindowController {
   ): Promise<string | null> {
     const value: unknown = JSON.parse(await command(['hyprctl', 'clients', '-j']));
     return selectWindow(parseClients(value), workspace, className, titleFragment);
+  }
+
+  public async processId(address: string): Promise<number | null> {
+    const value: unknown = JSON.parse(await command(['hyprctl', 'clients', '-j']));
+    return parseClients(value).find((client) => client.address === address)?.pid ?? null;
   }
 
   public async focusWorkspace(workspace: number): Promise<void> {
