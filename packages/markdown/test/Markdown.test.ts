@@ -123,6 +123,40 @@ describe('Markdown', () => {
     expect(bq.height).toBeGreaterThanOrEqual(border.height);
   });
 
+  it('lays blockquote descendants inside the available width', () => {
+    const md = new Markdown('> A long quoted paragraph that wraps across lines.', {
+      maxWidth: 120,
+    });
+    const blockquote = md.content.children[0];
+    const innerStack = blockquote.children[1];
+    const wrapper = innerStack.children[0];
+    const paragraph = wrapper.children[0] as RichText;
+
+    expect(paragraph).toBeInstanceOf(RichText);
+    expect(paragraph.maxWidth).toBe(104);
+    expect(paragraph.x + paragraph.width).toBeLessThanOrEqual(blockquote.width);
+    expect(wrapper.width).toBeLessThanOrEqual(blockquote.width);
+  });
+
+  it('composes nested blockquote indentation without widening either container', () => {
+    const md = new Markdown('> > A nested quoted paragraph that wraps across lines.', {
+      maxWidth: 120,
+    });
+    const outer = md.content.children[0];
+    const outerStack = outer.children[1];
+    const outerWrapper = outerStack.children[0];
+    const nested = outerWrapper.children[0];
+    const nestedStack = nested.children[1];
+    const nestedWrapper = nestedStack.children[0];
+    const paragraph = nestedWrapper.children[0] as RichText;
+
+    expect(outer.width).toBe(120);
+    expect(nested.width).toBe(104);
+    expect(paragraph.maxWidth).toBe(88);
+    expect(outerWrapper.width).toBeLessThanOrEqual(outer.width);
+    expect(nestedWrapper.width).toBeLessThanOrEqual(nested.width);
+  });
+
   it('renders horizontal rules', () => {
     const md = new Markdown('---');
     expect(md.content.children.length).toBeGreaterThanOrEqual(1);
