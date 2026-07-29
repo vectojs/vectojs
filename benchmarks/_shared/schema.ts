@@ -65,6 +65,45 @@ export interface ViewportInfo {
   rasterPixels: number;
 }
 
+/** One script that contributed to a retained Long Animation Frame. */
+export interface LongAnimationFrameScriptAttribution {
+  startTimeMs: number;
+  durationMs: number;
+  executionStartMs: number;
+  forcedStyleAndLayoutDurationMs: number;
+  pauseDurationMs: number;
+  invoker: string;
+  invokerType: string;
+  sourceURL: string;
+  sourceFunctionName: string;
+  sourceCharPosition: number;
+  windowAttribution: string;
+}
+
+/** One of the run's most blocking Long Animation Frames. */
+export interface LongAnimationFrameRecord {
+  startTimeMs: number;
+  durationMs: number;
+  blockingDurationMs: number;
+  renderStartMs: number;
+  styleAndLayoutStartMs: number;
+  firstUIEventTimestampMs: number;
+  scriptCount: number;
+  droppedScripts: number;
+  scripts: LongAnimationFrameScriptAttribution[];
+}
+
+/** Bounded LoAF summary attached to every benchmark result. */
+export interface LongAnimationFrameObservation {
+  status: 'supported' | 'unavailable';
+  reason: 'unsupported' | 'observer-error' | null;
+  entryCount: number;
+  totalDurationMs: number;
+  totalBlockingDurationMs: number;
+  droppedEntries: number;
+  entries: LongAnimationFrameRecord[];
+}
+
 /** Which browser, at which version. */
 export interface BrowserInfo {
   /** `chrome` | `firefox` | `unknown`. */
@@ -126,6 +165,8 @@ export interface BenchmarkResult {
   startedAt: string;
   /** Wall-clock time the measured section took, for spotting a run that stalled. */
   durationMs: number;
+  /** Long frames observed during measured work; unavailable is expected in Firefox. */
+  longAnimationFrames: LongAnimationFrameObservation;
   validation: ValidationBlock;
   /** Benchmark-specific workload dimensions. Shape is the benchmark's own. */
   params: Record<string, unknown>;
