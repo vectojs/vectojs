@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
+import { Table } from '@vectojs/ui';
 import { auditScene, auditTree } from '../src/audit';
 
 class Box extends Entity {
@@ -99,6 +100,20 @@ describe('auditTree — clip overflow and scroll exemption', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].entityId).toBe('wide');
     expect(findings[0].overflow?.right).toBe(200);
+  });
+
+  it('exempts mounted overscan rows in a virtualized Table', () => {
+    const root = new Box('root');
+    const table = new Table({
+      headers: ['Name'],
+      rows: Array.from({ length: 20 }, (_, index) => [`Row ${index}`]),
+      width: 120,
+      rowHeight: 36,
+      viewportHeight: 100,
+    });
+    root.add(table);
+
+    expect(auditTree(root, null).filter((f) => f.kind === 'clip-overflow')).toHaveLength(0);
   });
 });
 
