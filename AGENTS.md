@@ -114,6 +114,22 @@ The `lefthook` pre-commit hook auto-runs `oxfmt --write`, `oxlint --fix`, and
 `markdownlint-cli2 --fix` on staged files, so formatting is applied for you at
 commit time.
 
+### Backlog context loading
+
+The authoritative living docs are in the sibling local repository
+`../vectojs-docs/`. Load only the document required by the task:
+
+- `TODO.md`: current executable work; start here for task selection.
+- `ROADMAP.md`: capability sequencing and dependency planning.
+- `KNOWN_ISSUES.md`: active defects, false positives, and workarounds.
+- `forge/decisions/` or `forge/baselines/`: one focused rationale or
+  measurement when needed.
+- `forge/archive/`: frozen history; never load routinely.
+
+`TODO.md` stays below 300 lines with at most five **Now** tasks. Detailed
+completion findings belong in CarryCtx, a focused baseline, or a decision
+record—not in the active backlog.
+
 ---
 
 ## 3. Agent Rules & Constraints
@@ -124,5 +140,18 @@ commit time.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.
 6. **Task management via CarryCtx**: `.carryctx/` holds the project config plus `rules/`, `workflows/`, and `personas/` presets. Check `.carryctx/rules/formatting-and-linting.md` and `.carryctx/rules/wasm-crate-build.md` for domain-specific constraints before starting matching work, `.carryctx/workflows/publish-package.md` before cutting a release, and `.carryctx/personas/code-reviewer.md` when asked to review a PR. Use `carryctx progress todo/done/block/risk/note` and `carryctx checkpoint` to track multi-step work.
+
+   CarryCtx identity must match the harness that is actually running; `opencode`
+   is not a shared default. Before writing state, run `carryctx agent current`.
+   Register and pass the correct repository-local identity explicitly:
+
+   - Oh My Pi: `--agent omp` (`--name omp --provider oh-my-pi`)
+   - OpenCode: `--agent opencode` (provider `opencode-cli`)
+   - Claude Code: `--agent claude-code` (provider `claude-code`)
+   - Kiro: `--agent kiro` (provider `kiro`)
+   - Codex: `--agent codex` (provider `openai-codex`)
+
+   Register the same real identity in every repository a task touches. Never
+   reuse a previous agent merely because it is active in the registry.
 
    `carryctx` is pinned as a `devDependency` so a contributor gets the version this repo expects from a plain `bun install`, with no separate global install step — run it as `bunx carryctx …` (or `./node_modules/.bin/carryctx`). A globally installed `carryctx` works identically; the pin exists so nothing is required beyond `bun install`. It is the one tool in this repo that reads and writes state (`.git/carryctx/state.sqlite`) rather than only inspecting files, which is why the version is pinned rather than floated.
