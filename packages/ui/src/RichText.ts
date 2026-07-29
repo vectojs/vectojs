@@ -48,14 +48,44 @@ export interface RichTextOptions {
   hyphenate?: (word: string) => string[];
 }
 
+interface LinkRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Transparent pointer region for one visual line of a logical link. It is
+ * projected only so browser pointer input stays above selectable text; the
+ * presentational role keeps the semantic tree at one parent anchor.
+ */
+class LinkHitRegion extends UIComponent {
+  constructor() {
+    super();
+    this.interactive = true;
+  }
+
+  public getA11yAttributes(): A11yAttributes {
+    return { role: 'presentation' };
+  }
+
+  public render(): void {
+    /* invisible — RichText paints the text */
+  }
+}
+
 /**
  * A transparent, interactive hotspot over a link run. It renders nothing (the
  * {@link RichText} draws the underlined text); it exists so the a11y/automation
- * layer projects a real `<a href>` an agent or screen-reader can find and click,
- * and so a canvas click routes to {@link RichTextOptions.onLinkClick}.
+ * layer projects one real `<a href>` an agent or screen-reader can find and
+ * click, while presentational child regions route canvas and browser pointer
+ * input from every visual line to {@link RichTextOptions.onLinkClick}.
  */
 class LinkHotspot extends UIComponent {
   public href: string;
+  private hitRegions: LinkHitRegion[] = [];
+
   constructor(href: string, onClick?: (href: string) => void) {
     super();
     this.href = href;
@@ -65,12 +95,50 @@ class LinkHotspot extends UIComponent {
       if (safe && safe !== '#') onClick?.(safe);
     });
   }
+
+  public setRects(rects: LinkRect[]): void {
+    let left = rects[0].x;
+    let top = rects[0].y;
+    let right = rects[0].x + rects[0].width;
+    let bottom = rects[0].y + rects[0].height;
+    for (let i = 1; i < rects.length; i++) {
+      const rect = rects[i];
+      left = Math.min(left, rect.x);
+      top = Math.min(top, rect.y);
+      right = Math.max(right, rect.x + rect.width);
+      bottom = Math.max(bottom, rect.y + rect.height);
+    }
+
+    this.setPosition(left, top);
+    this.width = right - left;
+    this.height = bottom - top;
+    if (rects.length !== this.hitRegions.length) {
+      for (const old of this.hitRegions) {
+        this.remove(old);
+        this.scene?.detachA11y(old);
+      }
+      this.hitRegions = rects.map(() => {
+        const region = new LinkHitRegion();
+        this.add(region);
+        return region;
+      });
+    }
+    for (let i = 0; i < rects.length; i++) {
+      const rect = rects[i];
+      const region = this.hitRegions[i];
+      region.setPosition(rect.x - left, rect.y - top);
+      region.width = rect.width;
+      region.height = rect.height;
+    }
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'a',
       href: sanitizeUrl(this.href),
       label: this.href,
       target: '_blank',
+      pointerEvents: 'none',
     };
   }
 
@@ -254,46 +322,50 @@ export class RichText extends UIComponent {
     return result;
   }
 
-  /** One box per contiguous link run, sized to its first wrapped line. */
-  private computeLinks(): Array<{
-    href: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }> {
-    const out: Array<{
-      href: string;
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-    }> = [];
+  /** One logical link per contiguous run, with one hit rectangle per visual line. */
+  private computeLinks(): Array<{ href: string; rects: LinkRect[] }> {
+    const out: Array<{ href: string; rects: LinkRect[] }> = [];
     const nodes = this.result.nodes;
     let i = 0;
     while (i < nodes.length) {
-      const href = nodes[i].style?.href;
+      const first = nodes[i];
+      const href = first.style?.href;
       if (!href) {
         i++;
         continue;
       }
-      let j = i;
-      while (j < nodes.length && nodes[j].style?.href === href) j++;
-      const run = nodes.slice(i, j);
-      const y0 = Math.min(...run.map((n) => n.y));
-      const firstLine = run.filter((n) => n.y === y0);
-      const x = Math.min(...firstLine.map((n) => n.x));
-      const right = Math.max(...firstLine.map((n) => n.x + n.width));
-      const height = Math.max(...firstLine.map((n) => n.height));
-      out.push({ href, x, y: y0, width: right - x, height });
+
+      const rects: LinkRect[] = [];
+      let lineY = first.y;
+      let left = first.x;
+      let right = first.x + first.width;
+      let height = first.height;
+      let j = i + 1;
+      while (j < nodes.length && nodes[j].style?.href === href) {
+        const node = nodes[j];
+        if (node.y !== lineY) {
+          rects.push({ x: left, y: lineY, width: right - left, height });
+          lineY = node.y;
+          left = node.x;
+          right = node.x + node.width;
+          height = node.height;
+        } else {
+          left = Math.min(left, node.x);
+          right = Math.max(right, node.x + node.width);
+          height = Math.max(height, node.height);
+        }
+        j++;
+      }
+      rects.push({ x: left, y: lineY, width: right - left, height });
+      out.push({ href, rects });
       i = j;
     }
     return out;
   }
 
   /**
-   * Reconcile the `<a>` hotspot children with the current link runs. Stable
-   * across re-wrap (one hotspot per run), so positions update in place; only a
+   * Reconcile the `<a>` hotspot children with the current logical link runs.
+   * Stable across re-wrap, so per-line hit rectangles update in place; only a
    * change in link *count* rebuilds (pruning old shadow nodes via the scene).
    */
   private syncHotspots(): void {
@@ -312,10 +384,7 @@ export class RichText extends UIComponent {
     for (let k = 0; k < links.length; k++) {
       const l = links[k];
       const h = this.hotspots[k];
-      h.href = l.href;
-      h.setPosition(l.x, l.y);
-      h.width = l.width;
-      h.height = l.height;
+      h.setRects(l.rects);
     }
   }
 
