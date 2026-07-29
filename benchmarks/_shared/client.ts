@@ -21,6 +21,7 @@
  * In `profile` mode the page now waits to be told to start.
  */
 
+import { observeLongAnimationFrames, type LongAnimationFrameCollector } from './loaf.ts';
 import {
   browserVersionFromUa,
   engineFromUa,
@@ -105,6 +106,7 @@ export function readRunContext(search: string = location.search): RunContext {
 let control: BenchmarkControl | null = null;
 let startSignal: Promise<void> | null = null;
 let releaseStart: (() => void) | null = null;
+let longAnimationFrameCollector: LongAnimationFrameCollector | null = null;
 
 /**
  * Install `window.__VECTO_BENCH__` and return it.
@@ -151,8 +153,8 @@ export function installControl(context: RunContext = readRunContext()): Benchmar
  */
 export async function awaitStart(context: RunContext = readRunContext()): Promise<RunContext> {
   installControl(context);
-  if (!context.gate) return context;
-  await startSignal;
+  if (context.gate) await startSignal;
+  longAnimationFrameCollector ??= observeLongAnimationFrames();
   return context;
 }
 
@@ -245,22 +247,6 @@ export function runIdFromUrl(): string {
   return readRunContext().runId;
 }
 
-/** Chrome-only: frames that blocked for >50 ms, with script attribution. */
-export function observeLongAnimationFrames(): { entries: PerformanceEntry[] } {
-  const entries: PerformanceEntry[] = [];
-  const supported = PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame');
-  if (supported) {
-    // Firefox does not implement this, so its absence is expected rather than a
-    // fault; the field is simply empty there.
-    const observer = new PerformanceObserver((list) => entries.push(...list.getEntries()));
-    observer.observe({
-      type: 'long-animation-frame',
-      buffered: true,
-    } as PerformanceObserverInit);
-  }
-  return { entries };
-}
-
 /** Engine name from the user agent. Only Chrome and Firefox are driven. */
 export function engineName(): string {
   return engineFromUa(navigator.userAgent);
@@ -327,8 +313,13 @@ export interface ResultInput {
  */
 export async function buildResult(
   input: ResultInput,
-  options: { calibrateMs?: number; context?: RunContext } = {},
+  options: {
+    calibrateMs?: number;
+    context?: RunContext;
+  } = {},
 ): Promise<BenchmarkResult> {
+  const longAnimationFrames = (longAnimationFrameCollector ??=
+    observeLongAnimationFrames()).finish();
   const context = options.context ?? readRunContext();
   const refreshHz = await calibrateRefreshRate(options.calibrateMs ?? 1000);
   const host = await fetchHostInfo();
@@ -363,6 +354,7 @@ export async function buildResult(
     host,
     startedAt: new Date().toISOString(),
     durationMs: input.durationMs ?? 0,
+    longAnimationFrames,
     validation: { ok: issues.length === 0, issues },
     params: input.params ?? {},
     rows: input.rows ?? [],
