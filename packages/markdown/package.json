@@ -39,7 +39,8 @@
   ],
   "scripts": {
     "build": "(cd ../ui && bun run build) && node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "bun e2e/blockquote-layout.e2e.ts"
   },
   "dependencies": {
     "marked": "^18.0.7",
@@ -54,6 +55,7 @@
     "@vectojs/ui": "workspace:*",
     "esbuild": "^0.28.1",
     "prettier": "^3.9.6",
+    "puppeteer-core": "^25.3.0",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10"
   }
