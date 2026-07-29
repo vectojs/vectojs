@@ -16,6 +16,12 @@ import {
   VECTO_USER_TIMING,
 } from '@vectojs/core';
 import { marked, type Token, type Tokens, type TokensList } from 'marked';
+import {
+  createStreamController,
+  type BoundStreamController,
+  type StreamController,
+  type StreamControllerOptions,
+} from './StreamController';
 
 /**
  * Monotonic clock, falling back to `Date.now` where `performance` is absent.
@@ -1083,6 +1089,7 @@ export class Markdown extends UIComponent {
    */
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
+  private streamController: BoundStreamController | null = null;
   private _userTiming: boolean;
   private tokens: Token[] = [];
   // At most one worker lex request in flight at a time. Required for the
@@ -1240,8 +1247,27 @@ export class Markdown extends UIComponent {
     this.height = this.content.height;
   }
 
+  /** Create a frame-coalesced stream bound to this Markdown instance. */
+  public createStream(options: StreamControllerOptions = {}): StreamController {
+    if (this.streamController) {
+      throw new Error('Markdown already has an active StreamController');
+    }
+    const controller = createStreamController(
+      {
+        append: (chunk) => this.appendMarkdownCore(chunk),
+        release: (released) => {
+          if (this.streamController === released) this.streamController = null;
+        },
+      },
+      options,
+    );
+    if (controller.state === 'open') this.streamController = controller;
+    return controller;
+  }
+
   /** Replace all markdown content (full rebuild). */
   public setContent(markdown: string): this {
+    this.streamController?.abort(new Error('Markdown content was replaced'));
     // Drop any in-flight worker request. Its `matchLen` is relative to a token
     // snapshot captured from the document being replaced, and its closure still
     // holds that snapshot, so applying the reply would rebuild the tree from a
@@ -1287,6 +1313,7 @@ export class Markdown extends UIComponent {
    * content subtree via `super.destroy()` so every block's resources are freed.
    */
   public override destroy(): void {
+    this.streamController?.destroy();
     for (const id of this.pendingWorkerIds) workerCallbacks.delete(id);
     this.pendingWorkerIds.clear();
     this.appendInFlight = false;
@@ -1500,6 +1527,11 @@ export class Markdown extends UIComponent {
 
   /** Append a markdown chunk incrementally. Reuses unchanged prefix entities. */
   public appendMarkdown(chunk: string): this {
+    this.streamController?.flush();
+    return this.appendMarkdownCore(chunk);
+  }
+
+  private appendMarkdownCore(chunk: string): this {
     this.rawMarkdown += chunk;
     this.streamStats.appends++;
 

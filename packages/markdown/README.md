@@ -22,11 +22,44 @@ bun add @vectojs/markdown @vectojs/ui @vectojs/core
 ## Usage
 
 ```ts
-import { Markdown, CodeBlock } from '@vectojs/markdown';
+import { Markdown } from '@vectojs/markdown';
 
-const md = new Markdown({ source: '# Hello\n\nInline math $E = mc^2$.' });
+const md = new Markdown('# Hello\n\nInline math $E = mc^2$.');
 scene.add(md);
 ```
+
+## Streaming
+
+`createStream()` coalesces accepted chunks into at most one Markdown
+parse/layout commit per animation frame. `write()` applies backpressure when its
+bounded buffer is full; await it when consuming an async token source.
+
+```ts
+const md = new Markdown('');
+scene.add(md);
+
+const stream = md.createStream();
+for await (const token of tokens) {
+  await stream.write(token);
+}
+await stream.close(); // final text is committed immediately
+```
+
+Add fixed-rate typewriter pacing without changing producer code:
+
+```ts
+const stream = md.createStream({
+  pacing: { graphemesPerSecond: 48 },
+  maxBufferedChars: 64 * 1024,
+  signal: abortController.signal,
+});
+```
+
+Pacing slices by grapheme cluster, so combining marks, emoji ZWJ sequences,
+flags, and surrogate pairs stay intact across ordinary chunk/frame boundaries.
+`abort()` discards uncommitted text; `Markdown.destroy()` does the same cleanup
+automatically. The existing `appendMarkdown()` API remains synchronous and
+flushes submitted controller text before a direct append.
 
 > Migrating from `@vectojs/ui` ≤ 1.x? `Markdown` and `CodeBlock` used to be
 > exported from `@vectojs/ui`. As of `@vectojs/ui@2.0.0` they live here — change
