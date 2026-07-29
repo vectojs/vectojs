@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
-import { Scene } from '@vectojs/core';
+import { Scene, VectoJSEvent } from '@vectojs/core';
 import { RichText } from '../src/RichText';
 
 /**
@@ -57,8 +57,9 @@ describe('RichText inline-link a11y contract', () => {
 
     const a = root.querySelector('a');
     expect(a?.getAttribute('href')).toBe('https://vecto.dev/docs');
-    // Operable by an agent: opacity:0 (canvas is the visual) but pointer-events on.
-    expect((a as HTMLElement).style.pointerEvents).toBe('auto');
+    // Real pointer input stays on the canvas for precise multi-line geometry;
+    // AT/automation-synthesized clicks still activate the anchor.
+    expect((a as HTMLElement).style.pointerEvents).toBe('none');
   });
 
   it('routes a shadow-node click to onLinkClick with the run href', () => {
@@ -107,6 +108,29 @@ describe('RichText inline-link a11y contract', () => {
     const links = root.querySelectorAll('a');
     expect(links.length).toBe(1);
     expect(links[0].getAttribute('href')).toBe('/wrap');
+  });
+
+  it('hits every visual line of a wrapped link without covering line-tail gaps', () => {
+    const { scene, root, tick } = makeScene();
+    const onLinkClick = vi.fn();
+    const rt = new RichText([{ text: 'aaaa b', style: { href: '/wrap' } }], {
+      maxWidth: 40,
+      onLinkClick,
+    }).setPosition(10, 20);
+    scene.add(rt);
+    tick();
+
+    expect(root.querySelectorAll('a').length).toBe(1);
+    const lastLineY = 20 + rt.height * 0.75;
+    const laterLineHit = scene.findEntityAt(11, lastLineY);
+    expect(laterLineHit).not.toBeNull();
+    expect(laterLineHit).not.toBe(rt);
+    laterLineHit!.dispatchEvent(new VectoJSEvent('click', laterLineHit!));
+    expect(onLinkClick).toHaveBeenCalledOnce();
+
+    const gapHit = scene.findEntityAt(10 + rt.width - 1, lastLineY);
+    if (gapHit) gapHit.dispatchEvent(new VectoJSEvent('click', gapHit));
+    expect(onLinkClick).toHaveBeenCalledOnce();
   });
 
   it('prunes the shadow <a> when the link run is removed (no leak)', () => {

@@ -324,6 +324,39 @@ async function runCase(engine: 'chrome' | 'firefox', executablePath: string, url
       `[${engine}] a link must project a native <a>`,
     );
 
+    // A wrapped RichText link stays one semantic anchor, but its canvas hit
+    // geometry follows each visual line instead of the union box's empty tail.
+    assert.equal(
+      byId(nodes, 'link-wrapped').tag,
+      'a',
+      `[${engine}] wrapped link must stay one native anchor`,
+    );
+    const wrappedBox = await page.$eval('[data-vecto-id="link-wrapped"]', (raw) => {
+      const rect = (raw as HTMLElement).getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        height: rect.height,
+      };
+    });
+    assert.ok(wrappedBox.height > 20, `[${engine}] wrapped link must span multiple lines`);
+    const laterLineY = wrappedBox.top + wrappedBox.height * 0.75;
+
+    await clearEvents(page);
+    await page.mouse.click(wrappedBox.left + 1, laterLineY);
+    assert.ok(
+      (await readEvents(page)).some((event) => event.id === 'link-wrapped'),
+      `[${engine}] wrapped link's later visual line must activate`,
+    );
+
+    await clearEvents(page);
+    await page.mouse.click(wrappedBox.right - 1, laterLineY);
+    assert.ok(
+      !(await readEvents(page)).some((event) => event.id === 'link-wrapped'),
+      `[${engine}] wrapped link must not activate in a visual-line tail gap`,
+    );
+
     // ---- Composite widgets: role structure + roving tabindex ---------------
     // Structure first: assistive tech requires these exact nestings, and a
     // missing intermediate role (grid without row, say) breaks navigation even

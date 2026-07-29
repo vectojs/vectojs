@@ -22,6 +22,7 @@ import {
   ContextMenu,
   Modal,
   RadioGroup,
+  RichText,
   Slider,
   Tabs,
   Text,
@@ -293,6 +294,15 @@ caption.id = 'text-caption';
 caption.x = 20;
 caption.y = 280;
 scene.add(caption);
+
+const wrappedLink = new RichText([{ text: 'aaaa b', style: { href: '/wrapped' } }], {
+  maxWidth: 40,
+  onLinkClick: () => log('link-wrapped', 'click'),
+});
+wrappedLink.x = 460;
+wrappedLink.y = 240;
+wrappedLink.children[0].id = 'link-wrapped';
+scene.add(wrappedLink);
 
 // --- Live region ------------------------------------------------------------
 
