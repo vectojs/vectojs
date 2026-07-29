@@ -13,6 +13,7 @@
   "scripts": {
     "build": "bun run --filter '@vectojs/math' build && bun run --filter '@vectojs/text' build && bun run --filter '@vectojs/layout' build && bun run --filter '@vectojs/animation' build && bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/markdown' build && bun run --filter '@vectojs/three' build",
     "test": "bun run --filter '@vectojs/*' test",
+    "test:benchmarks": "bun test benchmarks/_shared benchmarks/runner",
     "format": "oxfmt --write \"packages/**/*.{js,ts,jsx,tsx,mjs,cjs,json}\" \"scripts/**/*.ts\" \"benchmarks/**/*.ts\"",
     "format:check": "oxfmt --check \"packages/**/*.{js,ts,jsx,tsx,mjs,cjs,json}\" \"scripts/**/*.ts\" \"benchmarks/**/*.ts\"",
     "lint": "oxlint --deny-warnings",
