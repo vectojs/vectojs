@@ -6,6 +6,7 @@
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyFileSync, existsSync } from 'node:fs';
+import { benchmarkDocument } from '../_shared/build';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKGS = resolve(HERE, '../../packages');
@@ -37,17 +38,10 @@ if (!out.success) {
 }
 
 const js = await out.outputs[0].text();
-const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>vectojs scene-hit-wasm bench</title>
-  </head>
-  <body>
-    <script type="module">${js}</script>
-  </body>
-</html>
-`;
+const html = benchmarkDocument(
+  'vectojs scene-hit-wasm bench',
+  `<script type="module">${js}</script>`,
+);
 await Bun.write(join(HERE, 'page', 'index.html'), html);
 copyFileSync(WASM, join(HERE, 'page', 'vectojs_core.wasm'));
 console.log('built page/index.html (inline) + page/vectojs_core.wasm');

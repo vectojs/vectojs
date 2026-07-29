@@ -4,6 +4,7 @@
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { copyFileSync, existsSync } from 'node:fs';
+import { benchmarkDocument } from '../_shared/build';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORE_WASM_DIR = resolve(HERE, '../../packages/core/src/wasm');
@@ -39,17 +40,7 @@ if (!out.success) {
 // application/octet-stream, and browsers reject a module script with a non-JS
 // MIME type, so the page would never run. Inlining sidesteps MIME entirely.
 const js = await out.outputs[0].text();
-const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>vectojs core-wasm bench</title>
-  </head>
-  <body>
-    <script type="module">${js}</script>
-  </body>
-</html>
-`;
+const html = benchmarkDocument('vectojs core-wasm bench', `<script type="module">${js}</script>`);
 await Bun.write(join(HERE, 'page', 'index.html'), html);
 copyFileSync(WASM, join(HERE, 'page', 'vectojs_core.wasm'));
 console.log('built page/index.html (inline) + page/vectojs_core.wasm');
