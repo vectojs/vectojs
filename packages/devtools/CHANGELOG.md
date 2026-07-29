@@ -1,5 +1,87 @@
 # @vectojs/devtools
 
+## 0.11.0
+
+### Minor Changes
+
+- ca63f77: Rename the Markdown streaming reuse metrics to describe what they measure, and
+  report the parser cost that was missing.
+
+  `marked` has no incremental lexing API, so `MarkdownWorker` calls
+  `marked.lexer()` on the **whole accumulated source** for every streamed chunk —
+  its own comment says so — and `matchLen` is a raw-string comparison against the
+  caller's prior token raws. The counters built on those two values were named as
+  though a high match rate meant less lexing:
+
+  | before          | after                   | what it actually counts                                                    |
+  | --------------- | ----------------------- | -------------------------------------------------------------------------- |
+  | `tokensReused`  | `tokensPrefixMatched`   | leading tokens whose `raw` was unchanged, so their entities were kept      |
+  | `tokensRelexed` | `tokensReturned`        | tokens in the changed suffix the worker cloned back — the transfer payload |
+  | `reuseRatio`    | `tokenPrefixReuseRatio` | `matched / (matched + returned)`                                           |
+
+  A reader optimising against the old names would keep attacking the transfer path,
+  which PRs #263 and #264 already reduced by 89×. The lexer, meanwhile, was
+  invisible.
+
+  So this also **adds** the figures that were missing, rather than only renaming:
+  the worker now times its own `marked.lexer()` call and reports `lexerMs` and
+  `sourceCharsLexed`, surfaced as a new "Parser cost" group in the `Markdown`
+  devtools descriptor and a `lexer` row in `formatMarkdownStream`.
+  `sourceCharsLexed` grows ~O(n²) across a stream of n chunks, which is the shape
+  the old metrics obscured.
+
+  `MarkdownStreamInfo` gains `lexerMs` and `sourceCharsLexed` alongside the three
+  renamed fields. The old names are not kept as aliases: the defect is that they
+  mislead, and keeping them would preserve exactly that. Anything reading them from
+  `inspectMarkdownStream`, the descriptor labels, or the `low-token-reuse` finding's
+  message needs the new names.
+
+  Nine docstrings and audit messages across both packages claimed the changed tail
+  was "re-lexed" — including `tailFraction`'s, which described it as "fraction of the
+  document re-lexed" when that fraction is always 1.0. They now say "changed".
+
+### Patch Changes
+
+- 6b39a07: Nest composite widgets in the accessibility projection.
+
+  The projection was flat: every mirror was appended to the projection root as a
+  sibling and reading order came from sorting. That is valid for most of ARIA,
+  which relates elements by IDREF, but a handful of composite widgets are specified
+  in terms of ownership — a `gridcell` is only a grid cell because a `row` contains
+  it. Flat, those widgets were structurally invalid however correct their
+  attributes were, and axe's `aria-required-children` / `aria-required-parent` had
+  to be disabled.
+
+  The projection now nests exactly the role pairs ARIA requires to be
+  DOM-contained, derived from axe-core's own role table:
+  `grid`/`table`/`treegrid` → `row` → `gridcell`, `tablist` → `tab`,
+  `tree` → `treeitem`, `menu` → `menuitem`, `listbox` → `option`,
+  `list` → `listitem`. Both rules are now enabled and asserted in CI against
+  real Chrome and Firefox.
+
+  Deliberately narrow. `radiogroup`/`radio` is absent from ARIA's containment
+  requirements, so `RadioGroup` stays flat, and a role a container may not own is
+  never nested under it — axe checks unallowed children before it reviews empty
+  containers, so nesting one would convert a passing tree into a violation.
+
+  Rendered geometry is unchanged. A nested mirror's `left`/`top` resolve against
+  its container rather than the projection root, so those values are now rebased
+  through the inverse of the container's transform; every element's
+  `getBoundingClientRect` is identical to the flat projection's, including under a
+  rotated and scaled ancestor.
+
+  `Scene` also sets `data-vecto-a11y-root` on the projection root, so an audit can
+  scope to the projected layer instead of the whole document.
+
+  `@vectojs/devtools`: `a11yInspect`'s `readingOrder` is now the node's position in
+  document order across the whole projected layer. It was the node's index among
+  its siblings, which under nesting restarts at 1 inside every row and stops being
+  comparable between widgets.
+
+- 7673748: `auditTree`: recognize virtualized `Table` body clips as scrollable.
+
+  The default scroll-owner list now uses the exported `Table` name instead of the stale `Tree` name, and clipping children inherit a configured direct parent's vertical-scroll exemption.
+
 ## 0.10.0
 
 ### Minor Changes

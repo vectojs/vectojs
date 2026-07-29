@@ -1,5 +1,106 @@
 # @vectojs/markdown
 
+## 0.5.0
+
+### Minor Changes
+
+- ca63f77: Rename the Markdown streaming reuse metrics to describe what they measure, and
+  report the parser cost that was missing.
+
+  `marked` has no incremental lexing API, so `MarkdownWorker` calls
+  `marked.lexer()` on the **whole accumulated source** for every streamed chunk —
+  its own comment says so — and `matchLen` is a raw-string comparison against the
+  caller's prior token raws. The counters built on those two values were named as
+  though a high match rate meant less lexing:
+
+  | before          | after                   | what it actually counts                                                    |
+  | --------------- | ----------------------- | -------------------------------------------------------------------------- |
+  | `tokensReused`  | `tokensPrefixMatched`   | leading tokens whose `raw` was unchanged, so their entities were kept      |
+  | `tokensRelexed` | `tokensReturned`        | tokens in the changed suffix the worker cloned back — the transfer payload |
+  | `reuseRatio`    | `tokenPrefixReuseRatio` | `matched / (matched + returned)`                                           |
+
+  A reader optimising against the old names would keep attacking the transfer path,
+  which PRs #263 and #264 already reduced by 89×. The lexer, meanwhile, was
+  invisible.
+
+  So this also **adds** the figures that were missing, rather than only renaming:
+  the worker now times its own `marked.lexer()` call and reports `lexerMs` and
+  `sourceCharsLexed`, surfaced as a new "Parser cost" group in the `Markdown`
+  devtools descriptor and a `lexer` row in `formatMarkdownStream`.
+  `sourceCharsLexed` grows ~O(n²) across a stream of n chunks, which is the shape
+  the old metrics obscured.
+
+  `MarkdownStreamInfo` gains `lexerMs` and `sourceCharsLexed` alongside the three
+  renamed fields. The old names are not kept as aliases: the defect is that they
+  mislead, and keeping them would preserve exactly that. Anything reading them from
+  `inspectMarkdownStream`, the descriptor labels, or the `low-token-reuse` finding's
+  message needs the new names.
+
+  Nine docstrings and audit messages across both packages claimed the changed tail
+  was "re-lexed" — including `tailFraction`'s, which described it as "fraction of the
+  document re-lexed" when that fraction is always 1.0. They now say "changed".
+
+- c691773: Add `Markdown.createStream()` for frame-coalesced, backpressured token streams.
+
+  The lifecycle-bound controller batches accepted chunks into at most one parse/layout commit per animation frame, supports optional fixed-rate grapheme pacing, final flush, `AbortSignal`, and deterministic destroy cleanup, while the existing `appendMarkdown()` API remains synchronous.
+
+- 67e6544: Add default-off User Timing instrumentation for Scene render phases and Markdown parsing. Enable it per instance with `userTiming: true` or `setUserTiming(true)` to emit stable `vecto:scene:*` and `vecto:markdown:parse` marks and measures for browser traces and profiles.
+
+### Patch Changes
+
+- 0450640: `Markdown`: keep blockquote content within the configured width.
+
+  Nested blocks now receive the width left after each blockquote indent, so wrapped text and nested blockquotes no longer overflow their containers.
+
+- 734f1d0: `VirtualList`: track rows that keep resizing after they mount.
+
+  A row's height was read once, on the frame it mounted, and never again — so a
+  streaming Markdown row that kept growing never updated its Fenwick entry and the
+  list's geometry drifted further from the truth with every chunk. Every mounted row's
+  `height` is now re-read each frame and any change applied as an O(log n) point
+  update.
+
+  New `keyForItem` option. Supplying it gives stable row identity, which enables three
+  things index identity cannot express:
+
+  - **Measured heights survive `setItems`**, so appending to a transcript re-measures
+    nothing. Previously `setItems` cleared every measurement and jumped to the top,
+    which is right for a replaced list and wrong for a growing one. That remains the
+    behaviour when `keyForItem` is absent.
+  - **The scroll position is anchored across resizes.** If the viewport was following
+    the bottom it keeps following; otherwise the row under the top edge stays exactly
+    where it was, however much the rows above it changed height. The anchor keeps its
+    offset _within_ the anchored row, clamped in case that row itself shrank.
+  - **Prepend works.** A prepend shifts every index, so the pooled entities are rekeyed
+    along with the heights.
+
+  New `jumpToBottom()` — the instant counterpart to `scrollToBottom()`, and what
+  streaming content should call. Retargeting the scroll integrator on every chunk never
+  lets it settle, so the viewport chases the content instead of tracking it;
+  `ScrollView.scrollToBottom` already snapped for this reason.
+
+  New `stickToBottomThreshold` option (default `48`): how close to the bottom counts as
+  "following". Following is latched at the last user scroll rather than re-derived when
+  a row resizes, because a resize changes the distance to the bottom without the user
+  having moved.
+
+  Measurement is a poll rather than a notification. `Entity.width`/`height` are plain
+  fields with no setter and no dirty flag, so there is nothing to subscribe to, and
+  reading `ent.height` costs exactly what reading a version counter would — the check
+  _is_ the work. Polling is also more general: it catches a height change by any
+  mechanism, including a caller assigning `height` directly. The no-change path is one
+  map lookup and one float compare per mounted row (~10-16) and deliberately does not
+  mark the scene dirty, so the idle throttle is preserved.
+
+  Two fixes fall out of this:
+
+  - A row measured on its mount frame positioned every row below it against the stale
+    estimate, so a freshly mounted variable-height row settled one frame late.
+    `_reconcile` now mounts, then measures, then positions.
+  - `Markdown.onLayoutUpdated` is documented as unnecessary for this (and as an
+    incomplete size signal, since it fires from the append path but not from
+    `setContent`). It has no callers and needs none.
+
 ## 0.4.0
 
 ### Minor Changes
