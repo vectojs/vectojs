@@ -68,12 +68,22 @@ function sourcePlugin() {
   };
 }
 
-function document(title: string, script: string): string {
+export function benchmarkDocument(title: string, script: string): string {
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>${title}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+    </style>
   </head>
   <body>
     ${script}
@@ -108,7 +118,7 @@ export async function buildBenchmark(options: BuildBenchmarkOptions): Promise<vo
     if (!out.success) throw new Error('bundle failed:\n' + out.logs.map(String).join('\n'));
     await Bun.write(
       join(pageRoot, 'index.html'),
-      document(title, '<script type="module" src="./benchmark.js"></script>'),
+      benchmarkDocument(title, '<script type="module" src="./benchmark.js"></script>'),
     );
     console.log('built page/index.html + benchmark.js (external, source-mapped)');
     return;
@@ -124,7 +134,7 @@ export async function buildBenchmark(options: BuildBenchmarkOptions): Promise<vo
   const js = await out.outputs[0]!.text();
   await Bun.write(
     join(pageRoot, 'index.html'),
-    document(title, `<script type="module">${js}</script>`),
+    benchmarkDocument(title, `<script type="module">${js}</script>`),
   );
   console.log('built page/index.html (inline)');
 }
