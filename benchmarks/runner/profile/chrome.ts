@@ -284,6 +284,8 @@ async function writeTrace(
 }
 
 class ActiveChromeProfile implements BrowserProfileSession {
+  public readonly stopAfterBrowserExit = false;
+  public readonly shutdownGraceMs = 10_000;
   private releasePromise: Promise<void> | null = null;
   private stopPromise: Promise<BrowserProfileArtifact> | null = null;
 

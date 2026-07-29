@@ -34,17 +34,22 @@ export interface BrowserProfileArtifact {
 }
 
 export interface BrowserProfileSession {
+  readonly stopAfterBrowserExit: boolean;
+  readonly shutdownGraceMs: number;
   releaseBenchmark(): Promise<void>;
   stop(): Promise<BrowserProfileArtifact>;
 }
 
 export interface BrowserProfiler {
+  readonly gate: boolean;
+  prepare(options: BrowserProfileOptions): Promise<Readonly<Record<string, string>>>;
   start(options: BrowserProfileOptions): Promise<BrowserProfileSession>;
 }
 
 export interface BrowserLaunchSpec {
   executable: string;
   args: string[];
+  environment?: Readonly<Record<string, string>>;
   windowClass: string;
 }
 
@@ -65,6 +70,7 @@ export interface WindowController {
   activeWorkspace(): Promise<number>;
   launch(workspace: number, spec: BrowserLaunchSpec): Promise<void>;
   find(workspace: number, className: string, titleFragment: string): Promise<string | null>;
+  processId?(address: string): Promise<number | null>;
   focusWorkspace(workspace: number): Promise<void>;
   focusWindow(address: string): Promise<void>;
   closeWindow(address: string): Promise<void>;

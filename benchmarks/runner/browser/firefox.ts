@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import type { BrowserAdapter, BrowserLaunchSpec, Viewport } from '../types';
+import { prepareFirefoxProfile, startFirefoxProfile } from '../profile/firefox';
+import type { BrowserAdapter, BrowserLaunchSpec, BrowserProfiler, Viewport } from '../types';
 import { firstExecutable } from './interface';
 
 const PROFILE_PREFERENCES = `// Suppress first-run and privacy-notice windows.
@@ -22,7 +23,11 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 
 export class FirefoxAdapter implements BrowserAdapter {
   public readonly name = 'firefox';
-  public readonly profiler = null;
+  public readonly profiler: BrowserProfiler = {
+    gate: false,
+    prepare: prepareFirefoxProfile,
+    start: startFirefoxProfile,
+  };
 
   public constructor(private readonly executableOverride?: string) {}
 
