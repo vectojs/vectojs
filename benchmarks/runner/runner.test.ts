@@ -7,8 +7,15 @@ import { ChromeAdapter } from './browser/chrome';
 import { FirefoxAdapter } from './browser/firefox';
 import { profileProcessIds, terminateProfileProcesses, type ProcessSignal } from './processes';
 import { findResult, starvationWarnings } from './results';
+import { runOne } from './runner';
 import { parseRunnerArgs, parseRunnerResult, RunnerUsageError } from './schema';
 import { startRunnerServer } from './server';
+import type {
+  BrowserAdapter,
+  BrowserProfileSession,
+  RunnerConfig,
+  WindowController,
+} from './types';
 import { quoteShellArgument, selectWindow } from './window/hyprland';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -76,6 +83,12 @@ describe('runner CLI schema', () => {
     ).toThrow('--mode profile does not support --iterations > 1');
   });
 
+  test('rejects Firefox profile mode until the Gecko profiler ships', () => {
+    expect(() => parseRunnerArgs(['ondemand-raf', '8178', '--mode', 'profile', 'firefox'])).toThrow(
+      '--mode profile currently supports Chrome only',
+    );
+  });
+
   test('rejects malformed values and unknown browsers', () => {
     expect(() => parseRunnerArgs(['x', '8178', '--iterations', '0'])).toThrow(RunnerUsageError);
     expect(() => parseRunnerArgs(['x', '8178', '--viewport', '900-700'])).toThrow(
@@ -111,6 +124,18 @@ describe('browser launch contracts', () => {
     expect(quoteShellArgument("a'b")).toBe("'a'\\''b'");
   });
 
+  test('opens a loopback CDP endpoint only in Chrome profile mode', () => {
+    const spec = new ChromeAdapter('/usr/bin/chromium').launchSpec(
+      '/repo/tmp/chrome-profile',
+      'http://127.0.0.1:8178/?runId=a&gate=1',
+      null,
+      'profile',
+    );
+    expect(spec.args).toContain('--remote-debugging-address=127.0.0.1');
+    expect(spec.args).toContain('--remote-debugging-port=0');
+    expect(spec.args.at(-1)).toBe('http://127.0.0.1:8178/?runId=a&gate=1');
+  });
+
   test('passes the benchmark URL as Firefox --private-window argument', () => {
     const spec = new FirefoxAdapter('/usr/bin/firefox').launchSpec(
       '/repo/tmp/firefox-profile',
@@ -124,6 +149,130 @@ describe('browser launch contracts', () => {
     ]);
     expect(spec.args).toContain('--width=900');
     expect(spec.args).toContain('--height=700');
+  });
+});
+
+async function exerciseProfileLifecycle(completes: boolean) {
+  const benchRoot = await mkdtemp(join(tempRoot, 'profile-run-'));
+  const resultPath = join(benchRoot, 'result.json');
+  const events: string[] = [];
+  const server = {
+    port: 8178,
+    url: 'http://127.0.0.1:8178/',
+    written: [] as string[],
+    stop() {},
+  };
+  let requestedTracePath = '';
+  const profileSession: BrowserProfileSession = {
+    async releaseBenchmark() {
+      events.push('release');
+      if (completes) {
+        await Bun.write(
+          resultPath,
+          JSON.stringify({
+            runId: 'suite-chrome-i1',
+            suiteRunId: 'suite',
+            engine: 'chrome',
+            rows: [],
+          }),
+        );
+        server.written.push(resultPath);
+      }
+    },
+    async stop() {
+      events.push('stop');
+      return { tracePath: requestedTracePath, dataLossOccurred: false };
+    },
+  };
+  const adapter: BrowserAdapter = {
+    name: 'chrome',
+    profiler: {
+      async start(options) {
+        events.push('attach');
+        requestedTracePath = options.tracePath;
+        expect(new URL(options.targetUrl).searchParams.get('gate')).toBe('1');
+        return profileSession;
+      },
+    },
+    resolveExecutable: () => '/usr/bin/chromium',
+    async prepareProfile() {
+      events.push('prepare');
+    },
+    launchSpec: () => ({
+      executable: '/usr/bin/chromium',
+      args: [],
+      windowClass: 'chromium',
+    }),
+  };
+  const windows: WindowController = {
+    activeWorkspace: async () => 1,
+    async launch() {
+      events.push('launch');
+    },
+    async find() {
+      events.push('find');
+      return '0xcafe';
+    },
+    async focusWorkspace() {
+      events.push('focus-workspace');
+    },
+    async focusWindow() {
+      events.push('focus-window');
+    },
+    async closeWindow() {},
+  };
+  const config: RunnerConfig = {
+    benchDir: 'fixture',
+    port: 8178,
+    workspace: 3,
+    keepGoing: false,
+    viewport: null,
+    iterations: 1,
+    profileState: 'cold',
+    mode: 'profile',
+    browsers: ['chrome'],
+    timeoutMs: 0,
+    extendMs: 0,
+  };
+
+  const match = await runOne(
+    config,
+    server,
+    benchRoot,
+    windows,
+    adapter,
+    join(benchRoot, 'profile'),
+    1,
+    'suite',
+    1,
+    new AbortController().signal,
+    {
+      wait: async () => {},
+      async terminate() {
+        events.push('terminate');
+      },
+    },
+  );
+  return { benchRoot, events, match, requestedTracePath };
+}
+
+describe('profile orchestration', () => {
+  test('focuses before release and stops tracing before browser termination on success', async () => {
+    const { benchRoot, events, match, requestedTracePath } = await exerciseProfileLifecycle(true);
+    expect(match?.path).toEndWith('result.json');
+    expect(requestedTracePath).toBe(join(benchRoot, 'traces', 'suite-chrome-i1.json.gz'));
+    expect(events.indexOf('attach')).toBeLessThan(events.indexOf('focus-window'));
+    expect(events.indexOf('focus-window')).toBeLessThan(events.indexOf('release'));
+    expect(events.indexOf('release')).toBeLessThan(events.indexOf('stop'));
+    expect(events.indexOf('stop')).toBeLessThan(events.indexOf('terminate'));
+  });
+
+  test('still stops and preserves a partial profile when the benchmark times out', async () => {
+    const { events, match } = await exerciseProfileLifecycle(false);
+    expect(match).toBeNull();
+    expect(events).toContain('release');
+    expect(events.indexOf('release')).toBeLessThan(events.indexOf('stop'));
+    expect(events.indexOf('stop')).toBeLessThan(events.indexOf('terminate'));
   });
 });
 

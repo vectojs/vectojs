@@ -1,8 +1,16 @@
-import type { BrowserAdapter, BrowserLaunchSpec, Viewport } from '../types';
+import { startChromeProfile } from '../profile/chrome';
+import type {
+  BenchmarkMode,
+  BrowserAdapter,
+  BrowserLaunchSpec,
+  BrowserProfiler,
+  Viewport,
+} from '../types';
 import { firstExecutable } from './interface';
 
 export class ChromeAdapter implements BrowserAdapter {
   public readonly name = 'chrome';
+  public readonly profiler: BrowserProfiler = { start: startChromeProfile };
 
   public constructor(private readonly executableOverride?: string) {}
 
@@ -15,7 +23,12 @@ export class ChromeAdapter implements BrowserAdapter {
 
   public async prepareProfile(_profileDir: string): Promise<void> {}
 
-  public launchSpec(profileDir: string, url: string, viewport: Viewport | null): BrowserLaunchSpec {
+  public launchSpec(
+    profileDir: string,
+    url: string,
+    viewport: Viewport | null,
+    mode: BenchmarkMode = 'measure',
+  ): BrowserLaunchSpec {
     const executable = this.resolveExecutable();
     if (!executable) throw new Error('chrome is not installed');
     const basename = executable.split('/').at(-1);
@@ -27,6 +40,9 @@ export class ChromeAdapter implements BrowserAdapter {
       '--no-first-run',
       '--no-default-browser-check',
     ];
+    if (mode === 'profile') {
+      args.push('--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0');
+    }
     if (viewport) args.push(`--window-size=${viewport.width},${viewport.height}`);
     args.push(url);
     return { executable, args, windowClass };

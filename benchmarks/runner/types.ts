@@ -21,6 +21,27 @@ export interface RunnerConfig {
   extendMs: number;
 }
 
+export interface BrowserProfileOptions {
+  profileDir: string;
+  targetUrl: string;
+  tracePath: string;
+  signal: AbortSignal;
+}
+
+export interface BrowserProfileArtifact {
+  tracePath: string;
+  dataLossOccurred: boolean;
+}
+
+export interface BrowserProfileSession {
+  releaseBenchmark(): Promise<void>;
+  stop(): Promise<BrowserProfileArtifact>;
+}
+
+export interface BrowserProfiler {
+  start(options: BrowserProfileOptions): Promise<BrowserProfileSession>;
+}
+
 export interface BrowserLaunchSpec {
   executable: string;
   args: string[];
@@ -29,9 +50,15 @@ export interface BrowserLaunchSpec {
 
 export interface BrowserAdapter {
   readonly name: BrowserName;
+  readonly profiler: BrowserProfiler | null;
   resolveExecutable(): string | null;
   prepareProfile(profileDir: string): Promise<void>;
-  launchSpec(profileDir: string, url: string, viewport: Viewport | null): BrowserLaunchSpec;
+  launchSpec(
+    profileDir: string,
+    url: string,
+    viewport: Viewport | null,
+    mode?: BenchmarkMode,
+  ): BrowserLaunchSpec;
 }
 
 export interface WindowController {

@@ -18,6 +18,7 @@
         "markdownlint-cli2": "^0.23.1",
         "oxfmt": "^0.60.0",
         "oxlint": "^1.75.0",
+        "puppeteer-core": "^25.3.0",
         "typescript": "^7.0.2",
       },
     },

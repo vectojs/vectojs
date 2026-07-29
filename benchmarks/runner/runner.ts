@@ -7,7 +7,13 @@ import { browserAdapter } from './browser';
 import { terminateProfileProcesses } from './processes';
 import { aggregateSuite, findResult, starvationWarnings, type ResultMatch } from './results';
 import { startRunnerServer } from './server';
-import type { BrowserAdapter, BrowserLaunchSpec, RunnerConfig, WindowController } from './types';
+import type {
+  BrowserAdapter,
+  BrowserLaunchSpec,
+  BrowserProfileSession,
+  RunnerConfig,
+  WindowController,
+} from './types';
 import { HyprlandWindowController } from './window/hyprland';
 
 const benchmarksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -52,6 +58,7 @@ function runUrl(
   url.searchParams.set('iteration', String(iteration));
   url.searchParams.set('mode', config.mode);
   url.searchParams.set('profileState', config.profileState);
+  if (config.mode === 'profile') url.searchParams.set('gate', '1');
   return url.href;
 }
 
@@ -84,9 +91,25 @@ function checkInterrupted(signal: AbortSignal): void {
   if (signal.aborted) throw new RunnerInterruptedError('benchmark run interrupted');
 }
 
-async function runOne(
+export interface RunOneDependencies {
+  wait(milliseconds: number): Promise<void>;
+  terminate(
+    windows: WindowController,
+    address: string | null,
+    profileDir: string,
+    homeWorkspace: number,
+  ): Promise<void>;
+}
+
+const defaultRunOneDependencies: RunOneDependencies = {
+  wait: delay,
+  terminate: terminateBrowser,
+};
+
+export async function runOne(
   config: RunnerConfig,
   server: BenchmarkServer,
+  benchRoot: string,
   windows: WindowController,
   adapter: BrowserAdapter,
   profileDir: string,
@@ -94,80 +117,117 @@ async function runOne(
   currentSuiteRunId: string,
   homeWorkspace: number,
   signal: AbortSignal,
+  dependencies: RunOneDependencies = defaultRunOneDependencies,
 ): Promise<ResultMatch | null> {
   const runId = `${currentSuiteRunId}-${adapter.name}-i${iteration}`;
   const url = runUrl(server.url, runId, currentSuiteRunId, iteration, config);
   const resultStart = server.written.length;
   let address: string | null = null;
+  let profileSession: BrowserProfileSession | null = null;
 
   await adapter.prepareProfile(profileDir);
-  const spec: BrowserLaunchSpec = adapter.launchSpec(profileDir, url, config.viewport);
+  const spec: BrowserLaunchSpec = adapter.launchSpec(profileDir, url, config.viewport, config.mode);
+  let result: ResultMatch | null = null;
+  const failures: unknown[] = [];
   try {
-    console.log(`  launching ${adapter.name} on workspace ${config.workspace} (incognito)…`);
-    await windows.launch(config.workspace, spec);
-    await windows.focusWorkspace(config.workspace);
-
-    const windowDeadline = Date.now() + 30_000;
-    while (Date.now() < windowDeadline) {
-      checkInterrupted(signal);
-      const finished = await findResult(server.written, resultStart, runId);
-      if (finished) {
-        console.log(`  ${adapter.name} -> ${finished.path} (finished before its window was seen)`);
-        return finished;
-      }
-      address = await windows.find(config.workspace, spec.windowClass, 'vectojs');
-      if (address) break;
-      await delay(500);
-    }
-
-    if (!address) {
-      const finished = await findResult(server.written, resultStart, runId);
-      if (finished) {
-        console.log(`  ${adapter.name} -> ${finished.path}`);
-        return finished;
-      }
-      console.error(`  ${adapter.name}: no window appeared on workspace ${config.workspace}`);
-      return null;
-    }
-
-    await windows.focusWindow(address);
-    console.log(`  focused ${address}`);
-    let deadline = Date.now() + config.timeoutMs;
-    let nextFocus = Date.now() + 20_000;
-    let extended = false;
-    while (true) {
-      checkInterrupted(signal);
-      const finished = await findResult(server.written, resultStart, runId);
-      if (finished) {
-        console.log(`  ${adapter.name} -> ${finished.path}`);
-        return finished;
+    result = await (async () => {
+      console.log(`  launching ${adapter.name} on workspace ${config.workspace} (incognito)…`);
+      await windows.launch(config.workspace, spec);
+      await windows.focusWorkspace(config.workspace);
+      if (config.mode === 'profile') {
+        if (!adapter.profiler) throw new Error(`${adapter.name} profile mode is not implemented`);
+        profileSession = await adapter.profiler.start({
+          profileDir,
+          targetUrl: url,
+          tracePath: join(benchRoot, 'traces', `${runId}.json.gz`),
+          signal,
+        });
       }
 
-      const now = Date.now();
-      if (now >= deadline) {
-        if (!extended && config.extendMs > 0) {
+      const windowDeadline = Date.now() + 30_000;
+      while (Date.now() < windowDeadline) {
+        checkInterrupted(signal);
+        const finished = await findResult(server.written, resultStart, runId);
+        if (finished) {
           console.log(
-            `  not finished at ${config.timeoutMs / 1_000}s — extending by ${config.extendMs / 1_000}s`,
+            `  ${adapter.name} -> ${finished.path} (finished before its window was seen)`,
           );
-          deadline += config.extendMs;
-          extended = true;
-        } else {
-          console.error(
-            `  ${adapter.name} timed out after ${(config.timeoutMs + config.extendMs) / 1_000}s`,
-          );
-          return null;
+          return finished;
         }
+        address = await windows.find(config.workspace, spec.windowClass, 'vectojs');
+        if (address) break;
+        await dependencies.wait(500);
       }
-      if (now >= nextFocus) {
-        await safely(() => windows.focusWorkspace(config.workspace));
-        await safely(() => windows.focusWindow(address));
-        nextFocus = now + 20_000;
+
+      if (!address) {
+        const finished = await findResult(server.written, resultStart, runId);
+        if (finished) {
+          console.log(`  ${adapter.name} -> ${finished.path}`);
+          return finished;
+        }
+        console.error(`  ${adapter.name}: no window appeared on workspace ${config.workspace}`);
+        return null;
       }
-      await delay(500);
-    }
-  } finally {
-    await terminateBrowser(windows, address, profileDir, homeWorkspace);
+
+      await windows.focusWindow(address);
+      console.log(`  focused ${address}`);
+      await profileSession?.releaseBenchmark();
+      let deadline = Date.now() + config.timeoutMs;
+      let nextFocus = Date.now() + 20_000;
+      let extended = false;
+      while (true) {
+        checkInterrupted(signal);
+        const finished = await findResult(server.written, resultStart, runId);
+        if (finished) {
+          console.log(`  ${adapter.name} -> ${finished.path}`);
+          return finished;
+        }
+
+        const now = Date.now();
+        if (now >= deadline) {
+          if (!extended && config.extendMs > 0) {
+            console.log(
+              `  not finished at ${config.timeoutMs / 1_000}s — extending by ${config.extendMs / 1_000}s`,
+            );
+            deadline += config.extendMs;
+            extended = true;
+          } else {
+            console.error(
+              `  ${adapter.name} timed out after ${(config.timeoutMs + config.extendMs) / 1_000}s`,
+            );
+            return null;
+          }
+        }
+        if (now >= nextFocus) {
+          await safely(() => windows.focusWorkspace(config.workspace));
+          await safely(() => windows.focusWindow(address));
+          nextFocus = now + 20_000;
+        }
+        await dependencies.wait(500);
+      }
+    })();
+  } catch (error) {
+    failures.push(error);
   }
+
+  if (profileSession) {
+    try {
+      const artifact = await profileSession.stop();
+      console.log(`  ${adapter.name} trace -> ${artifact.tracePath}`);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  try {
+    await dependencies.terminate(windows, address, profileDir, homeWorkspace);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, `${adapter.name} run and cleanup failed`);
+  }
+  return result;
 }
 
 export async function runBenchmarkSuite(
@@ -215,6 +275,7 @@ export async function runBenchmarkSuite(
             match = await runOne(
               config,
               server,
+              benchRoot,
               windows,
               adapter,
               profileDir,

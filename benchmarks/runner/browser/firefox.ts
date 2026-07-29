@@ -22,6 +22,7 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 
 export class FirefoxAdapter implements BrowserAdapter {
   public readonly name = 'firefox';
+  public readonly profiler = null;
 
   public constructor(private readonly executableOverride?: string) {}
 
