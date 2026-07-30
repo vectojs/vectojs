@@ -54,12 +54,14 @@ const CHUNKS = Number(p.get('chunks') ?? 200);
 const TRIALS = Number(p.get('trials') ?? 7);
 
 /**
- * Three stream shapes, because the phase mix differs sharply between them and a
+ * Six stream shapes, because the phase mix differs sharply between them and a
  * single shape would generalise a conclusion that does not hold.
  *
  * `prose` is the common case and the one with an in-place fast path. `code` has no
  * inline-token work but re-highlights lines. `mixed` forces block-structure churn,
  * which is the only shape that regularly destroys and recreates entities.
+ * `blockquote`, `headings`, and `math` each grow one construct that `mixed` only
+ * ever emits whole, so they are the shapes that exercise the per-type reuse paths.
  */
 const SHAPES: Record<string, (i: number) => string> = {
   prose: (i) =>
@@ -98,6 +100,26 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (step < 8) return ` word${step}`;
     if (step === 8) return '\n\nA short body paragraph under the heading. ';
     return 'More body text to close out the section. ';
+  },
+  // A TeX fence that GROWS a fragment at a time. `marked` lexes an unterminated
+  // fence as a complete `code` token, so every chunk used to be a full MathJax
+  // convert on an invalid prefix — by far the most expensive per-chunk shape.
+  //
+  // Every cycle emits a DIFFERENT formula (`n` is interpolated into it). A
+  // repeated formula would be answered by the module-level cache after the first
+  // convert, so the shape would measure the cache instead of the pipeline and
+  // report a saving that no real document sees.
+  math: (i) => {
+    const step = i % 12;
+    const n = Math.floor(i / 12);
+    if (step === 0) return '\n\n```math';
+    if (step === 1) return `\n\\sum_{k=1}^{${n + 2}}`;
+    if (step === 2) return ' \\frac{1}{k^2}';
+    if (step === 3) return ' = \\frac{\\pi^2}{6}';
+    if (step === 4) return ` - \\epsilon_{${n}}`;
+    if (step === 5) return '\n```';
+    if (step === 6) return '\n\nThe identity above converges. ';
+    return 'Additional prose between formulas that keeps accumulating. ';
   },
 };
 
