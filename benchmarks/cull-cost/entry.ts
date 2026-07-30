@@ -264,6 +264,11 @@ async function main(): Promise<void> {
   await postResults(
     {
       name: 'cull-cost',
+      // LoAF is withheld: this benchmark advances the scene with `scene.step()` in a
+      // synchronous loop, so there are no real animation frames to observe and the
+      // observer would only report the harness's own blocking. See
+      // `ResultInput.syntheticFrames`.
+      syntheticFrames: true,
       // `summary` rides along in params because the shared envelope has no
       // top-level slot for a derived summary and dropping it would lose the two
       // numbers this benchmark exists to produce. The pre-existing params keys

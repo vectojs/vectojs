@@ -21,7 +21,11 @@
  * In `profile` mode the page now waits to be told to start.
  */
 
-import { observeLongAnimationFrames, type LongAnimationFrameCollector } from './loaf.ts';
+import {
+  observeLongAnimationFrames,
+  unavailableObservation,
+  type LongAnimationFrameCollector,
+} from './loaf.ts';
 import {
   browserVersionFromUa,
   engineFromUa,
@@ -298,6 +302,24 @@ export interface ResultInput {
   durationMs?: number;
   /** Extra validation problems the benchmark itself detected. */
   issues?: string[];
+  /**
+   * Set when the benchmark drives frames itself with `scene.step()` rather than
+   * `requestAnimationFrame`, which makes the LoAF observation meaningless.
+   *
+   * LoAF measures real animation frames. A benchmark that advances the scene in a
+   * tight synchronous loop has no animation frames to measure: the whole loop is
+   * ONE long task, so LoAF faithfully reports the harness's own blocking and says
+   * nothing about the framework. Measured on `markdown-transcript` (CTX-0148/0149):
+   * 5 entries totalling 27,510 ms of blocking against a 5,547 ms median trial —
+   * 4.96x, because each entry was one entire trial of 6,543 un-yielded appends,
+   * confirmed one-for-one against the instrumented per-trial span.
+   *
+   * That number invites exactly the wrong conclusion, so setting this replaces the
+   * observation with `unavailable`/`synthetic-frames` instead of publishing it.
+   * Yielding inside the loop to create real frames is NOT the fix: it would change
+   * what the benchmark measures and break comparability with its own baseline.
+   */
+  syntheticFrames?: boolean;
   failed?: true;
   error?: string;
 }
@@ -318,8 +340,12 @@ export async function buildResult(
     context?: RunContext;
   } = {},
 ): Promise<BenchmarkResult> {
-  const longAnimationFrames = (longAnimationFrameCollector ??=
-    observeLongAnimationFrames()).finish();
+  // Always finish the collector, even when the result is withheld: it disconnects
+  // the observer, and leaving it live would leak it across a multi-iteration run.
+  const observed = (longAnimationFrameCollector ??= observeLongAnimationFrames()).finish();
+  const longAnimationFrames = input.syntheticFrames
+    ? unavailableObservation('synthetic-frames')
+    : observed;
   const context = options.context ?? readRunContext();
   const refreshHz = await calibrateRefreshRate(options.calibrateMs ?? 1000);
   const host = await fetchHostInfo();

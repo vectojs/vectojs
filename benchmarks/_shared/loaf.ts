@@ -55,6 +55,19 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+/**
+ * An observation carrying no data, with the reason it carries none.
+ *
+ * Exported so {@link buildResult} can withhold LoAF for a benchmark that drives
+ * frames synthetically, which is a property of the harness rather than something
+ * the observer could detect for itself.
+ */
+export function unavailableObservation(
+  reason: LongAnimationFrameObservation['reason'],
+): LongAnimationFrameObservation {
+  return unavailable(reason);
+}
+
 function unavailable(
   reason: LongAnimationFrameObservation['reason'],
 ): LongAnimationFrameObservation {

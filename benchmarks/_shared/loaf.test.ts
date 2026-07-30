@@ -3,6 +3,7 @@ import {
   observeLongAnimationFrames,
   type LongAnimationFrameObserverEnvironment,
   type LongAnimationFrameObserverLike,
+  unavailableObservation,
 } from './loaf.ts';
 
 function entry(properties: Record<string, unknown>): PerformanceEntry {
@@ -229,5 +230,36 @@ describe('observeLongAnimationFrames', () => {
     const disconnectFailure = observeLongAnimationFrames(disconnectFailureHarness.environment);
     expect(disconnectFailure.finish().reason).toBe('observer-error');
     expect(disconnectFailure.finish()).toBe(disconnectFailure.finish());
+  });
+});
+
+describe('withholding LoAF for a synthetic-frame benchmark', () => {
+  test('carries no data, and says why', () => {
+    // A benchmark that advances the scene with `scene.step()` in a tight loop has
+    // no real animation frames: the loop is ONE long task, so LoAF reports the
+    // harness's own blocking and nothing about the framework. Measured on
+    // markdown-transcript, that was 27,510 ms of blocking against a 5,547 ms
+    // median trial (4.96x -- one entry per un-yielded trial), a number that
+    // invites precisely the wrong conclusion. So it is withheld rather than
+    // published, and the reason travels with it.
+    const observation = unavailableObservation('synthetic-frames');
+
+    expect(observation.status).toBe('unavailable');
+    expect(observation.reason).toBe('synthetic-frames');
+    // Every count must be zeroed: a reader aggregating across benchmarks must not
+    // pick up a partial total from a run whose observation was withheld.
+    expect(observation.entryCount).toBe(0);
+    expect(observation.totalDurationMs).toBe(0);
+    expect(observation.totalBlockingDurationMs).toBe(0);
+    expect(observation.droppedEntries).toBe(0);
+    expect(observation.entries).toEqual([]);
+  });
+
+  test('is distinguishable from an unsupported engine', () => {
+    // Firefox reports `unsupported` because it has no long-animation-frame at all.
+    // That is a different fact from "we chose not to measure", and a reader
+    // comparing engines needs to tell them apart.
+    expect(unavailableObservation('unsupported').reason).toBe('unsupported');
+    expect(unavailableObservation('synthetic-frames').reason).toBe('synthetic-frames');
   });
 });

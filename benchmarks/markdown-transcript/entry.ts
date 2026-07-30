@@ -204,6 +204,11 @@ async function main(): Promise<void> {
 
   const result = await reportResult({
     name: 'markdown-transcript',
+    // LoAF is withheld: this benchmark advances the scene with `scene.step()` in a
+    // synchronous loop, so there are no real animation frames to observe and the
+    // observer would only report the harness's own blocking. See
+    // `ResultInput.syntheticFrames`.
+    syntheticFrames: true,
     params: {
       trials: TRIALS,
       turns: TURNS,
