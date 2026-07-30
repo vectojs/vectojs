@@ -54,14 +54,15 @@ const CHUNKS = Number(p.get('chunks') ?? 200);
 const TRIALS = Number(p.get('trials') ?? 7);
 
 /**
- * Eight stream shapes, because the phase mix differs sharply between them and a
+ * Nine stream shapes, because the phase mix differs sharply between them and a
  * single shape would generalise a conclusion that does not hold.
  *
  * `prose` is the common case and the one with an in-place fast path. `code` has no
  * inline-token work but re-highlights lines. `mixed` forces block-structure churn,
  * which is the only shape that regularly destroys and recreates entities.
- * `blockquote`, `headings`, and `math` each grow one construct that `mixed` only
- * ever emits whole, so they are the shapes that exercise the per-type reuse paths.
+ * `blockquote`, `headings`, `math`, `list`, `table`, and `image` each grow one
+ * construct that `mixed` only ever emits whole (or, for `image`, never emits at
+ * all), so they are the shapes that exercise the per-type reuse paths.
  */
 const SHAPES: Record<string, (i: number) => string> = {
   prose: (i) =>
@@ -156,6 +157,25 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (step === 8) return `\n| a${n}.8 | partial`;
     if (step === 9) return ' | completed later |';
     if (step === 10) return '\n\nA body paragraph after the table. ';
+    return 'More body text to close out this section. ';
+  },
+  // A paragraph that CONTAINS an image and then grows prose after it, which no
+  // other shape produces: `mixed` has no images at all. Such a paragraph renders
+  // as a Stack of runs and images rather than one RichText, so before the
+  // image-paragraph path every later chunk rebuilt the whole subtree — including
+  // re-creating the Image and discarding its decoded bitmap.
+  //
+  // The data URI is a real 8x8 PNG so the browser genuinely decodes it once and
+  // then serves it from cache; a remote URL would measure the network instead.
+  image: (i) => {
+    const step = i % 12;
+    const n = Math.floor(i / 12);
+    if (step === 0) return `\n\nFigure ${n}: `;
+    if (step === 1) {
+      return `![diagram ${n}](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGO4o6GBFTEMLQkAe3tLAfuiUfAAAAAASUVORK5CYII=)`;
+    }
+    if (step < 10) return `caption words ${step} after the figure. `;
+    if (step === 10) return '\n\nA plain paragraph between figures. ';
     return 'More body text to close out this section. ';
   },
 };
@@ -440,6 +460,42 @@ async function main(): Promise<void> {
     });
     pre.textContent = JSON.stringify(rows, null, 1);
     await yieldToBrowser();
+  }
+
+  // Leave a SETTLED, visually verifiable frame on the canvas.
+  //
+  // Every measured trial is destroyed as soon as it is timed, so without this the
+  // canvas keeps whatever the last trial left mid-flight. That mattered: the
+  // shapes that render an `@vectojs/ui` `Image` (`image`, and `math` via its SVG
+  // data URI) showed only `Image`'s `#1e293b` placeholder slab, so the pictures
+  // and the formulas never appeared on screen. `Image` becomes paintable in its
+  // async `onload`, whose only action is `markDirty()` — a flag, consumed by the
+  // NEXT `step()`. The measured loop ends synchronously right after its last
+  // chunk, so nothing consumed it. A real app's rAF loop does, which is why this
+  // was a bench artifact and not a rendering defect.
+  //
+  // Built after all measurement and never timed, so it cannot affect a number.
+  {
+    const showcase = new Scene(canvas, { disableWindowResize: true });
+    showcase.resize(900, 700);
+    // `selectable` defaults to true; passed explicitly because the visible frame
+    // is also what a human uses to check that drag-selection and copy still work.
+    const demo = new Markdown('', { maxWidth: 820, selectable: true });
+    showcase.add(demo);
+    // Deliberately SHORT enough to fit the 700px viewport. Content projection is
+    // viewport-virtualized — a block far off-screen has its projected element
+    // freed on purpose — so a tall showcase would leave most of the document with
+    // no DOM to select, which looks like broken selection but is the
+    // virtualization working. One figure and one formula is enough to see both.
+    demo.appendMarkdown('One streamed figure and one streamed formula:\n\n');
+    demo.appendMarkdown(SHAPES.image(1));
+    demo.appendMarkdown(' caption text after the figure, selectable.');
+    demo.appendMarkdown('\n\n```math\n\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}\n```\n');
+    showcase.step(16.67);
+    // Two turns: one for the decode to land, one for the frame that shows it.
+    await yieldToBrowser();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    showcase.step(16.67);
   }
 
   if (RealWorker !== undefined) (globalThis as { Worker?: unknown }).Worker = RealWorker;

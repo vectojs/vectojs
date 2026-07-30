@@ -253,6 +253,49 @@ function isFenceClosed(raw: string): boolean {
  * An empty closed fence is deliberately NOT math: it renders as the empty
  * CodeBlock any other empty fence would, rather than as a zero-width image.
  */
+/**
+ * Whether a paragraph renders as a `Stack` of runs and images rather than one
+ * `RichText`.
+ *
+ * The same test the `paragraph` render arm uses, so the reconciler and the
+ * renderer cannot disagree about which shape a token produces.
+ */
+function paragraphHasImage(token: Tokens.Paragraph): boolean {
+  return token.tokens?.some((child) => child.type === 'image') === true;
+}
+
+/** Index of the last `image` token in an inline run, or -1 if there is none. */
+function lastIndexOfImage(tokens: Token[]): number {
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    if (tokens[i].type === 'image') return i;
+  }
+  return -1;
+}
+
+/**
+ * How many `Stack` children the paragraph render arm builds for an inline run.
+ *
+ * One child per image, plus one per *maximal run* of consecutive non-image
+ * tokens — the arm merges those into a single `RichText` via `flushText`, so this
+ * is not `tokens.length`. Kept in lockstep with that arm; it is what
+ * `updateImageParagraph` checks to confirm the entity it was handed is the one
+ * built for the old tokens.
+ */
+function expectedImageParagraphChildren(tokens: Token[]): number {
+  let children = 0;
+  let inTextRun = false;
+  for (const token of tokens) {
+    if (token.type === 'image') {
+      children++;
+      inTextRun = false;
+    } else if (!inTextRun) {
+      children++;
+      inTextRun = true;
+    }
+  }
+  return children;
+}
+
 function rendersAsMath(token: Tokens.Code): boolean {
   return (
     MATH_LANGS.has((token.lang ?? '').toLowerCase()) &&
@@ -2116,6 +2159,70 @@ export class Markdown extends UIComponent {
     return spans;
   }
 
+  /**
+   * Spans for one run of consecutive non-image inline tokens.
+   *
+   * A paragraph holding an image renders as a `Stack` of alternating text runs
+   * and images, and this is one text run. Shared by the render arm and
+   * {@link updateImageParagraph} so a reused run cannot drift from a rebuilt one.
+   *
+   * The empty fallback mirrors `renderInlineToRichText('', …)`, which the render
+   * arm passed for these runs: a run is only created when it has at least one
+   * token, so the fallback is for tokens that emit no spans at all rather than
+   * for an empty run.
+   */
+  private inlineRunSpans(tokens: Token[], t: Required<MarkdownTheme>): StyledSpan[] {
+    const spans: StyledSpan[] = [];
+    if (tokens.length > 0) collectSpans(tokens, {}, t, spans);
+    if (spans.length === 0) spans.push({ text: '' });
+    return spans;
+  }
+
+  /** One text run of an image-bearing paragraph, as both paths build it. */
+  private inlineRunRichText(
+    tokens: Token[],
+    availableWidth: number,
+    t: Required<MarkdownTheme>,
+  ): RichText {
+    return new RichText(this.inlineRunSpans(tokens, t), {
+      font: `${t.fontSize}px ${t.bodyFont}`,
+      color: t.textColor,
+      maxWidth: availableWidth,
+      linkColor: '#38bdf8',
+      selectable: this.selectable,
+      onLinkClick: this.onLinkClick,
+    });
+  }
+
+  /**
+   * One image inside a paragraph, sized by a guess until its bitmap decodes.
+   *
+   * Width and height start at a 16:10 guess because the intrinsic size is not
+   * known until the browser has the bitmap; `onLoad` corrects both from
+   * `naturalWidth`/`naturalHeight`. Extracted from the render arm so the streamed
+   * path reuses this exact entity rather than constructing a second variant.
+   */
+  private paragraphImage(imgToken: Tokens.Image, availableWidth: number): Image {
+    const initialWidth = Math.min(800, availableWidth);
+    const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
+    const img = new Image(imgToken.href, {
+      width: initialWidth,
+      height: initialHeight,
+      alt: imgToken.text,
+      radius: 8,
+      onLoad: () => {
+        const bmp = (img as any).bitmap;
+        if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
+          const aspect = bmp.naturalHeight / bmp.naturalWidth;
+          img.width = Math.min(bmp.naturalWidth, availableWidth);
+          img.height = Math.round(img.width * aspect);
+          if (this.scene) this.scene.markDirty();
+        }
+      },
+    });
+    return img;
+  }
+
   /** One table cell entity, shared by the render arm and the streamed-table path. */
   private tableCellRichText(
     cell: Tokens.TableCell,
@@ -2269,6 +2376,136 @@ export class Markdown extends UIComponent {
     // not hold.
     const last = stack.children.at(-1);
     if (last) stack.resizeLastChild(last);
+    return true;
+  }
+
+  /**
+   * Reuse a streamed image-bearing paragraph's `Stack` instead of rebuilding it.
+   *
+   * Returns `false` to mean "rebuild instead", and every rejection happens before
+   * any mutation, so a refused reuse leaves the entity exactly as it was.
+   *
+   * This was the last silent fallthrough in the in-place reuse path. A paragraph
+   * holding an image renders as a `Stack` of alternating text runs and images
+   * rather than one `RichText`, so it has no `setSpans` and failed the ordinary
+   * paragraph gate — with no `else`, which is what made the miss invisible:
+   * `inPlaceUpdates` stayed flat while `entitiesRebuilt` climbed. Measured on a
+   * six-chunk stream, `inPlaceUpdates` 0 / `entitiesRebuilt` 4 with an image
+   * against 4 / 0 for the identical shape without one. Every rebuild also
+   * re-created the `Image`, discarding its decoded bitmap and its corrected
+   * intrinsic size.
+   *
+   * It is *only* a performance path. The obvious worry — that a fresh `Image`
+   * starts at `loaded = false` and so repaints its placeholder slab — was
+   * measured and does not happen: sampling the real canvas pixel at the image
+   * centre in both Chromium and Firefox gives zero placeholder frames after the
+   * first paint, at 60ms and at 0ms between chunks, because a cached bitmap
+   * decodes before the next frame.
+   *
+   * The reuse is deliberately narrow: **only a growing trailing text run**. Probed
+   * against `marked@18.0.7`, that is the shape a stream actually produces once an
+   * image has closed — the image token's `raw` and its index are then stable while
+   * trailing prose grows, and the token list settles at
+   * `[…, image, text]` and stops changing length. Anything else (a new image
+   * arriving, an image token changing, a run appearing before the last image)
+   * falls through to the rebuild, which is correct and rare.
+   *
+   * Note the child list is not one entity per token: consecutive non-image tokens
+   * are merged into one `RichText` by the render arm's `flushText`, so
+   * `[text, text, image]` is two children, not three. The guards therefore compare
+   * *token runs* split at the last image, never token index against child index.
+   */
+  private updateImageParagraph(
+    entity: Entity,
+    oldToken: Tokens.Paragraph,
+    newToken: Tokens.Paragraph,
+  ): boolean {
+    // The `Stack` gate is what makes `children` and `resizeLastChild` meaningful:
+    // an ordinary paragraph's entity is a `RichText`, which has neither the child
+    // list this reasons about nor that method. Mutation-checked as caught by the
+    // child-count guard below as well (a `RichText` reports zero children), but it
+    // must stay: without it the resync at the end calls an undefined method.
+    if (!(entity instanceof Stack)) return false;
+    const oldTokens = oldToken.tokens;
+    const newTokens = newToken.tokens;
+    if (!oldTokens || !newTokens) return false;
+
+    // Both sides must be the image-bearing shape this method owns. A paragraph
+    // that only just gained its first image is a shape change, not a growing
+    // tail, so it rebuilds.
+    //
+    // Mutation-checked as redundant in practice — an image-free paragraph never
+    // arrives here, because the branch above claims it via `setSpans`, and if one
+    // did its `RichText` entity would fail the `Stack` gate. Kept because without
+    // it `-1` would make the prefix loop a no-op and slice the WHOLE token list as
+    // the tail, which is a silently wrong reuse rather than a rejection.
+    const oldLastImage = lastIndexOfImage(oldTokens);
+    const newLastImage = lastIndexOfImage(newTokens);
+    if (oldLastImage < 0 || newLastImage < 0) return false;
+
+    // The prefix through the last image must be byte-identical. This is what
+    // makes reuse safe without comparing entities: it proves every existing
+    // child except a trailing text run is still correct, including each image's
+    // `href` and `alt`, and that no image was inserted or removed.
+    //
+    // The index equality is a precondition of that loop rather than an
+    // independent check — mutation-checked as redundant, because when a second
+    // image arrives the raw comparison catches the same paragraph one token
+    // earlier. It stays because the loop below only compares `0..newLastImage`,
+    // so without it a shorter old prefix would be read past its end.
+    if (oldLastImage !== newLastImage) return false;
+    for (let i = 0; i <= newLastImage; i++) {
+      if (oldTokens[i].raw !== newTokens[i].raw) return false;
+    }
+
+    // Only a trailing run may differ, and only by growing. A shrinking tail is
+    // not something an append-only stream produces, and reusing on one would
+    // leave the `Stack`'s cached height too large.
+    const oldTail = oldTokens.slice(oldLastImage + 1);
+    const newTail = newTokens.slice(newLastImage + 1);
+    if (newTail.length === 0) return false;
+    const oldTailRaw = oldTail.map((t) => t.raw).join('');
+    const newTailRaw = newTail.map((t) => t.raw).join('');
+    if (!newTailRaw.startsWith(oldTailRaw)) return false;
+
+    // The entity must be the one the render arm built for the old tokens: one
+    // child per image, plus one per text run. Recomputing it from the old tokens
+    // rather than trusting a count keeps this correct for any arrangement of
+    // runs, including two adjacent images.
+    const expectedOldChildren = expectedImageParagraphChildren(oldTokens);
+    if (entity.children.length !== expectedOldChildren) return false;
+
+    const t = this.theme;
+    const availableWidth = this.activeBlockMetrics?.availableWidth ?? this.maxWidth;
+
+    if (oldTail.length === 0) {
+      // The trailing run is new: the paragraph ended at its image last time, and
+      // prose has now started after it. Append one run.
+      entity.add(this.inlineRunRichText(newTail, availableWidth, t));
+    } else {
+      // The common case: the existing trailing run grew.
+      //
+      // The `RichText` check is defence in depth, and mutation-checked as
+      // unreachable: a non-empty `oldTail` means the render arm ran `flushText`
+      // after the last image, so the last child IS that run's `RichText`. An
+      // `Image` can only be last when `oldTail` is empty, which is the branch
+      // above. Kept because it is what makes `setSpans` provably safe here.
+      const tailEntity = entity.children[entity.children.length - 1];
+      if (!(tailEntity instanceof RichText)) return false;
+      tailEntity.setSpans(this.inlineRunSpans(newTail, t));
+    }
+
+    // Resync the Stack from its new last child.
+    //
+    // Load-bearing, and only visibly so when the tail gains a LINE:
+    // `RichText.setSpans` re-lays out the child but does not touch its parent's
+    // cached box, so without this a wrapped tail leaves the `Stack` at its old
+    // height (measured 320 where 368 is correct). A tail growing within one line
+    // hides it, and `Stack.add` happens to update the height itself, which is why
+    // the append branch alone would not reveal it. `resizeLastChild` falls back to
+    // a full `layout()` when its invariants do not hold, so it is safe for both.
+    const last = entity.children[entity.children.length - 1];
+    if (last) entity.resizeLastChild(last);
     return true;
   }
 
@@ -2819,7 +3056,19 @@ export class Markdown extends UIComponent {
       // Update existing paragraph entity in-place via setSpans
       const entityIdx = oldTokenToChild[matchLen];
       const existingEntity = oldChildren[entityIdx];
-      if (existingEntity && 'setSpans' in existingEntity) {
+      // The `setSpans` path is only valid while the paragraph still renders as one
+      // `RichText`. It dispatches on the ENTITY's shape, so without the token check
+      // a plain paragraph that gains its first image kept its `RichText` and was
+      // handed the image paragraph's spans — and `collectSpans` emits nothing for
+      // an `image` token, so the picture was silently DROPPED. Streamed
+      // `'Figure: '` then `'![a](u.png)'` rendered a bare `RichText` where a
+      // one-shot build gives `Stack[RichText, Image]`. Pre-existing: reproduced
+      // unchanged on the commit before this one.
+      if (
+        existingEntity &&
+        'setSpans' in existingEntity &&
+        !paragraphHasImage(newTokens[matchLen] as Tokens.Paragraph)
+      ) {
         // Re-render the paragraph's inline tokens
         const pToken = newTokens[matchLen] as Tokens.Paragraph;
         // `lastTokenSameType` is indexed off the OLD token list, so it does not
@@ -2841,6 +3090,22 @@ export class Markdown extends UIComponent {
         // the container's cached width/height in O(1) instead of falling
         // through to the unconditional full `layout()` this used to run on
         // every single streamed chunk regardless of what actually changed.
+        this.content.resizeLastChild(existingEntity);
+      } else if (
+        existingEntity &&
+        this.updateImageParagraph(
+          existingEntity,
+          oldTokens[matchLen] as Tokens.Paragraph,
+          newTokens[matchLen] as Tokens.Paragraph,
+        )
+      ) {
+        // A paragraph containing an image renders as a `Stack`, which has no
+        // `setSpans`, so it fell out of the branch above and was rebuilt on every
+        // chunk. This `else` is the fix; until it existed the miss was invisible,
+        // because the `if` had no alternative and simply dropped through to the
+        // destroy/render loops with `inPlaceUpdates` never incrementing.
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
         this.content.resizeLastChild(existingEntity);
       }
     } else if (lastTokenSameType && newTokens[matchLen]?.type === 'heading') {
@@ -3077,7 +3342,7 @@ export class Markdown extends UIComponent {
       // ── Paragraphs ───────────────────────────────────────────────────
       case 'paragraph': {
         const pToken = token as Tokens.Paragraph;
-        if (!pToken.tokens || !pToken.tokens.some((t) => t.type === 'image')) {
+        if (!paragraphHasImage(pToken)) {
           return renderInlineToRichText(
             pToken.tokens,
             pToken.text,
@@ -3100,18 +3365,7 @@ export class Markdown extends UIComponent {
 
         const flushText = () => {
           if (currentTokens.length > 0) {
-            stack.add(
-              renderInlineToRichText(
-                currentTokens,
-                '',
-                bodyFont,
-                t.textColor,
-                availableWidth,
-                t,
-                this.selectable,
-                this.onLinkClick,
-              ),
-            );
+            stack.add(this.inlineRunRichText(currentTokens, availableWidth, t));
             currentTokens = [];
           }
         };
@@ -3119,25 +3373,7 @@ export class Markdown extends UIComponent {
         for (const child of pToken.tokens) {
           if (child.type === 'image') {
             flushText();
-            const imgToken = child as Tokens.Image;
-            const initialWidth = Math.min(800, availableWidth);
-            const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
-            const img = new Image(imgToken.href, {
-              width: initialWidth,
-              height: initialHeight,
-              alt: imgToken.text,
-              radius: 8,
-              onLoad: () => {
-                const bmp = (img as any).bitmap;
-                if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
-                  const aspect = bmp.naturalHeight / bmp.naturalWidth;
-                  img.width = Math.min(bmp.naturalWidth, availableWidth);
-                  img.height = Math.round(img.width * aspect);
-                  if (this.scene) this.scene.markDirty();
-                }
-              },
-            });
-            stack.add(img);
+            stack.add(this.paragraphImage(child as Tokens.Image, availableWidth));
           } else {
             currentTokens.push(child);
           }
