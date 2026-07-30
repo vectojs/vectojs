@@ -4,7 +4,7 @@ import type { Tokens } from 'marked';
 import { lexer as markedLexer } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
 import { VECTO_USER_TIMING } from '@vectojs/core';
-import { RichText, Stack, Text } from '@vectojs/ui';
+import { RichText, Stack, Table, Text } from '@vectojs/ui';
 
 function clickFirstLink(entity: RichText): void {
   expect(entity.children.length).toBeGreaterThan(0);
@@ -1144,6 +1144,230 @@ Plain paragraph at the end.
           (c) => (c as unknown as { maxWidth: number }).maxWidth,
         );
         expect(maxWidths).toEqual([md.maxWidth, md.maxWidth]);
+      });
+    });
+
+    describe('streamed table reuses its Table', () => {
+      // The last block type to get an in-place path, and the most expensive to
+      // rebuild: a table token carries every row, so the rebuild cost across a
+      // stream is Theta(C*N^2) cell constructions plus a 2x fitCell penalty.
+      //
+      // Two shapes matter, because of how marked lexes a growing table (probed
+      // against 18.0.7): a partial row appears immediately as a FULL row of empty
+      // cells which then fill one at a time, so a 2x2 table passes through eleven
+      // distinct row states of which only two are clean appends. Handling appends
+      // alone would reject most chunks.
+      const HEAD = '| A | B |\n| --- | --- |';
+      const tableOf = (md: Markdown) => md.content.children[0] as Table;
+      const cellTexts = (md: Markdown) =>
+        tableOf(md).rows.map((row) =>
+          row.map((c) =>
+            ((c as unknown as { spans?: Array<{ text: string }> }).spans ?? [])
+              .map((s) => s.text)
+              .join(''),
+          ),
+        );
+
+      it('keeps the same Table instance across appended rows', () => {
+        const md = new Markdown(`${HEAD}\n| a1 | b1 |`);
+        const table = tableOf(md);
+
+        md.appendMarkdown('\n| a2 | b2 |');
+        md.appendMarkdown('\n| a3 | b3 |');
+
+        // Identity, not shape: a rebuild would substitute a new Table.
+        expect(tableOf(md)).toBe(table);
+        expect(cellTexts(md)).toEqual([
+          ['a1', 'b1'],
+          ['a2', 'b2'],
+          ['a3', 'b3'],
+        ]);
+      });
+
+      it('fills a partially-arrived row in place rather than rebuilding', () => {
+        // marked materializes `|` as a full empty row, so this is the common case
+        // during a stream and the one appendRows alone could not serve.
+        const md = new Markdown(`${HEAD}\n| a1 | b1 |`);
+        const table = tableOf(md);
+
+        md.appendMarkdown('\n| a2');
+        expect(cellTexts(md)).toEqual([
+          ['a1', 'b1'],
+          ['a2', ''],
+        ]);
+        md.appendMarkdown(' | b2');
+
+        expect(tableOf(md)).toBe(table);
+        expect(cellTexts(md)).toEqual([
+          ['a1', 'b1'],
+          ['a2', 'b2'],
+        ]);
+      });
+
+      it('counts reuse as an in-place update and rebuilds nothing', () => {
+        const md = new Markdown(`${HEAD}\n| a1 | b1 |`) as unknown as Markdown & {
+          streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        };
+        const before = { ...md.streamStats };
+
+        md.appendMarkdown('\n| a2 | b2 |');
+        md.appendMarkdown('\n| a3 | b3 |');
+
+        expect(md.streamStats.inPlaceUpdates).toBeGreaterThan(before.inPlaceUpdates);
+        expect(md.streamStats.entitiesRebuilt).toBe(before.entitiesRebuilt);
+      });
+
+      it('reuses the table that was lexed with no rows yet', () => {
+        // A table exists as soon as its delimiter row arrives, so this is the
+        // first state every streamed table is in — and the first reuse chance.
+        const md = new Markdown(HEAD);
+        const table = tableOf(md);
+        expect(table.rows.length).toBe(0);
+
+        md.appendMarkdown('\n| a1 | b1 |');
+
+        expect(tableOf(md)).toBe(table);
+        expect(cellTexts(md)).toEqual([['a1', 'b1']]);
+      });
+
+      it('matches a one-shot build geometrically', () => {
+        const streamed = new Markdown(`${HEAD}\n| a1 | b1 |`);
+        streamed.appendMarkdown('\n| a2 | b2 |');
+        streamed.appendMarkdown('\n| a3 | b3 |');
+        const oneShot = new Markdown(`${HEAD}\n| a1 | b1 |\n| a2 | b2 |\n| a3 | b3 |`);
+
+        const s = tableOf(streamed);
+        const o = tableOf(oneShot);
+        expect(s.height).toBe(o.height);
+        expect(s.rowHeights).toEqual(o.rowHeights);
+        expect(s.getA11yAttributes().label).toBe(o.getA11yAttributes().label);
+        expect(streamed.height).toBe(oneShot.height);
+      });
+
+      it('rebuilds when the header changes', () => {
+        // `Table` has no header mutator, so reuse would leave a stale header.
+        const md = new Markdown(`${HEAD}\n| a1 | b1 |`);
+        const table = tableOf(md);
+
+        md.setContent('| X | Y |\n| --- | --- |\n| a1 | b1 |');
+
+        expect(tableOf(md)).not.toBe(table);
+        expect(tableOf(md).headers.length).toBe(2);
+      });
+
+      describe('guards that reject reuse', () => {
+        // These reject states an append cannot produce. Probed across every prefix
+        // of a streamed table: rows never shrink, the header never changes, and no
+        // earlier row is ever mutated — and `setContent` rebuilds without reaching
+        // `updateTokens`, so append is the only real caller. Tested directly
+        // against the private method, because a test driven through
+        // `appendMarkdown` would pass without exercising them at all. Verified by
+        // mutation: removing any one of these fails its case here and nothing else.
+        type TableUpdater = {
+          updateStreamedTable: (entity: unknown, oldT: Tokens.Table, newT: Tokens.Table) => boolean;
+        };
+        const tableTokenOf = (src: string): Tokens.Table =>
+          markedLexer(src).find((tk) => tk.type === 'table') as Tokens.Table;
+
+        const SRC = `${HEAD}\n| a1 | b1 |\n| a2 | b2 |`;
+        const attempt = (mutate: (t: Tokens.Table) => Tokens.Table): boolean => {
+          const md = new Markdown(SRC);
+          return (md as unknown as TableUpdater).updateStreamedTable(
+            md.content.children[0],
+            tableTokenOf(SRC),
+            mutate(tableTokenOf(SRC)),
+          );
+        };
+
+        it('accepts an unchanged table, so the negatives below mean something', () => {
+          expect(attempt((t) => t)).toBe(true);
+        });
+
+        it('rejects a shrinking row count', () => {
+          expect(attempt((t) => ({ ...t, rows: t.rows.slice(0, 1) }))).toBe(false);
+        });
+
+        it('rejects a changed header cell', () => {
+          expect(
+            attempt((t) => ({
+              ...t,
+              header: [{ ...t.header[0], text: 'CHANGED' }, t.header[1]],
+            })),
+          ).toBe(false);
+        });
+
+        it('rejects a changed column count', () => {
+          expect(attempt((t) => ({ ...t, header: t.header.slice(0, 1) }))).toBe(false);
+        });
+
+        it('rejects a mutated earlier row', () => {
+          // Only the LAST retained row may differ; an earlier change means the
+          // entity's cells no longer correspond to these tokens.
+          expect(
+            attempt((t) => ({
+              ...t,
+              rows: [[{ ...t.rows[0][0], text: 'MUTATED' }, t.rows[0][1]], t.rows[1]],
+            })),
+          ).toBe(false);
+        });
+
+        it('rejects an entity whose row count disagrees with the token', () => {
+          // Guards against an entity some other path built, where indices would
+          // not line up and the wrong row would be rewritten.
+          const md = new Markdown(SRC);
+          const table = md.content.children[0] as Table;
+          table.appendRows([['extra', 'extra']]);
+          const token = tableTokenOf(SRC);
+          expect((md as unknown as TableUpdater).updateStreamedTable(table, token, token)).toBe(
+            false,
+          );
+        });
+
+        it('rejects a non-Table entity', () => {
+          const md = new Markdown(SRC);
+          const token = tableTokenOf(SRC);
+          expect(
+            (md as unknown as TableUpdater).updateStreamedTable(
+              new RichText([{ text: 'x' }], { font: '16px sans-serif' }),
+              token,
+              token,
+            ),
+          ).toBe(false);
+        });
+      });
+
+      it('every cell is a RichText, including an empty one', () => {
+        // An empty cell used to render as a bare string, which `Table` turned into
+        // a `Text`. `Text` has setText and `RichText` has setSpans, and nothing
+        // converts between them, so a cell that starts empty and later gains
+        // content could not have been updated in place.
+        const md = new Markdown(`${HEAD}\n| a1 |`);
+        const table = tableOf(md);
+        expect(table.rows[0].every((c) => c instanceof RichText)).toBe(true);
+        expect(cellTexts(md)).toEqual([['a1', '']]);
+      });
+
+      it('gives an empty cell one empty span rather than none', () => {
+        // Geometry is identical either way (measured), so this pins the one
+        // observable effect of the fallback in `tableCellSpans`: every cell has at
+        // least one span, which is what keeps a cell's span list addressable when
+        // its content arrives later. Without it the assertion above still passes,
+        // because `RichText([])` is still a `RichText`.
+        const md = new Markdown(`${HEAD}\n| a1 |`);
+        const empty = tableOf(md).rows[0][1] as RichText;
+        expect(empty.spans.length).toBe(1);
+        expect(empty.spans[0].text).toBe('');
+      });
+
+      it('fills an empty cell in place when its content arrives', () => {
+        // The end-to-end reason the fallback and the RichText conversion exist.
+        const md = new Markdown(`${HEAD}\n| a1 |`);
+        const cell = tableOf(md).rows[0][1] as RichText;
+
+        md.appendMarkdown(' b1 |');
+
+        expect(tableOf(md).rows[0][1]).toBe(cell);
+        expect(cellTexts(md)).toEqual([['a1', 'b1']]);
       });
     });
   });

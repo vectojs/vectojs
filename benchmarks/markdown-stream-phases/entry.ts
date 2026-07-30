@@ -54,7 +54,7 @@ const CHUNKS = Number(p.get('chunks') ?? 200);
 const TRIALS = Number(p.get('trials') ?? 7);
 
 /**
- * Six stream shapes, because the phase mix differs sharply between them and a
+ * Eight stream shapes, because the phase mix differs sharply between them and a
  * single shape would generalise a conclusion that does not hold.
  *
  * `prose` is the common case and the one with an in-place fast path. `code` has no
@@ -136,6 +136,26 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (step === 8) return ' and continues to wrap onto a second line here';
     if (step < 9) return `\n- item ${n}.${step}`;
     if (step === 9) return '\n\nA body paragraph between lists. ';
+    return 'More body text to close out this section. ';
+  },
+  // A table that GROWS, which `mixed` never produces. A table token carries every
+  // row, so before the in-place path this rebuilt every cell on every chunk:
+  // Theta(C*N^2) RichText constructions, plus a further 2x because
+  // `Table.layout()` re-runs `fitCell` on each one.
+  //
+  // Deliberately exercises BOTH reuse shapes. Steps 2-7 append whole rows, while
+  // steps 8-9 split one row across two chunks so it arrives as a padded empty
+  // cell that is then filled -- the shape `marked` actually produces mid-row, and
+  // the one an append-only path cannot serve.
+  table: (i) => {
+    const step = i % 12;
+    const n = Math.floor(i / 12);
+    if (step === 0) return `\n\n| Col A ${n} | Col B | Col C |`;
+    if (step === 1) return '\n| --- | --- | --- |';
+    if (step < 8) return `\n| a${n}.${step} | value ${step} | note ${step} |`;
+    if (step === 8) return `\n| a${n}.8 | partial`;
+    if (step === 9) return ' | completed later |';
+    if (step === 10) return '\n\nA body paragraph after the table. ';
     return 'More body text to close out this section. ';
   },
 };

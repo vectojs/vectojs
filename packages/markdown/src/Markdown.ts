@@ -2095,6 +2095,43 @@ export class Markdown extends UIComponent {
    * a rebuilt one about its marker or its entity decoding would make a streamed
    * document differ from the same source pasted at once.
    */
+  /**
+   * Inline spans for one table cell.
+   *
+   * Always returns at least one span. A cell whose markup collapses to nothing —
+   * an empty cell, but also a bare `<span>`, an image, or an HTML comment, none
+   * of which `collectSpans` emits for — falls back to its decoded source text,
+   * which is what the previous string-returning path rendered. That guarantee is
+   * what lets every cell be a `RichText`: an empty cell would otherwise become a
+   * `Text`, and since `Text` has `setText` while `RichText` has `setSpans` and
+   * nothing converts between them, a cell that starts empty and later gains
+   * content could not be updated in place. A streamed table needs exactly that,
+   * because `marked` materializes a partial row as a full row of empty cells and
+   * then fills them one at a time.
+   */
+  private tableCellSpans(cell: Tokens.TableCell, t: Required<MarkdownTheme>): StyledSpan[] {
+    const spans: StyledSpan[] = [];
+    collectSpans(cell.tokens, {}, t, spans);
+    if (spans.length === 0) spans.push({ text: decodeEntities(cell.text) });
+    return spans;
+  }
+
+  /** One table cell entity, shared by the render arm and the streamed-table path. */
+  private tableCellRichText(
+    cell: Tokens.TableCell,
+    header: boolean,
+    t: Required<MarkdownTheme>,
+  ): RichText {
+    return new RichText(this.tableCellSpans(cell, t), {
+      font: `${t.fontSize - 2}px ${t.bodyFont}`,
+      color: header ? t.headingColor : t.textColor,
+      baseStyle: header ? { bold: true } : undefined,
+      linkColor: '#38bdf8',
+      selectable: this.selectable,
+      onLinkClick: this.onLinkClick,
+    });
+  }
+
   private listItemSpans(token: Tokens.List, index: number): StyledSpan[] {
     const item = token.items[index];
     const num = Number(token.start ?? 1) + index;
@@ -2232,6 +2269,105 @@ export class Markdown extends UIComponent {
     // not hold.
     const last = stack.children.at(-1);
     if (last) stack.resizeLastChild(last);
+    return true;
+  }
+
+  /**
+   * Reuse a streamed table's `Table` entity instead of rebuilding every cell.
+   *
+   * Returns `false` to mean "rebuild instead", and every rejection happens before
+   * any mutation, so a refused reuse leaves the entity exactly as it was.
+   *
+   * A `table` token carries every row, so the rebuild path costs Θ(C·N²)
+   * `RichText` constructions across a stream — and a further 2×, because
+   * `Table.layout()` re-runs `fitCell` on every cell. This was the last block
+   * type without an in-place path.
+   *
+   * Two shapes have to be handled, because of how `marked` lexes a growing table
+   * (probed against 18.0.7): a partial row is materialized immediately as a FULL
+   * row padded with empty cells, and its cells are then filled one at a time. A
+   * 2×2 table passes through eleven distinct row states, of which only two are
+   * clean row appends. So handling appends alone would reject most chunks and
+   * leave the quadratic cost essentially in place:
+   *
+   * 1. the last row's cells are rewritten in place via `setSpans`, and
+   * 2. genuinely new rows go through `Table.appendRows`.
+   *
+   * Cells are compared by `text`, never `raw` — a table cell has no `raw` at all
+   * (its keys are `text`/`tokens`/`header`/`align`).
+   */
+  private updateStreamedTable(
+    entity: Entity,
+    oldToken: Tokens.Table,
+    newToken: Tokens.Table,
+  ): boolean {
+    if (!(entity instanceof Table)) return false;
+
+    // The column count is fixed when the delimiter row lexes: marked pads short
+    // rows and truncates long ones to `header.length`, so this can never fire in
+    // practice. It is what licenses indexing every row by the header's columns.
+    if (oldToken.header.length !== newToken.header.length) return false;
+    // `Table` has no header mutator, so a changed header must rebuild.
+    for (let c = 0; c < oldToken.header.length; c++) {
+      if (oldToken.header[c].text !== newToken.header[c].text) return false;
+    }
+
+    // Append-only. Unlike a list, an EMPTY old table is not rejected: a table is
+    // lexed with zero rows as soon as its delimiter row arrives, so that is the
+    // first state every streamed table is in and the first reuse opportunity.
+    if (newToken.rows.length < oldToken.rows.length) return false;
+    // This entity must be the one the render arm built for these tokens.
+    if (entity.rows.length !== oldToken.rows.length) return false;
+
+    // Every row before the last retained one must be untouched. Probed stable, so
+    // this is the cheap correctness net rather than an expected rejection.
+    const lastRetained = oldToken.rows.length - 1;
+    for (let r = 0; r < lastRetained; r++) {
+      const oldRow = oldToken.rows[r];
+      const newRow = newToken.rows[r];
+      for (let c = 0; c < oldToken.header.length; c++) {
+        if (oldRow[c]?.text !== newRow[c]?.text) return false;
+      }
+    }
+
+    // Every cell this arm built is a RichText, but the entity could have been
+    // constructed elsewhere; verify before mutating anything.
+    if (lastRetained >= 0) {
+      for (let c = 0; c < oldToken.header.length; c++) {
+        const cell = entity.rows[lastRetained]?.[c];
+        if (!(cell instanceof RichText)) return false;
+      }
+    }
+
+    // ── Past every guard; mutation starts here ──────────────────────────
+    const t = this.theme as Required<MarkdownTheme>;
+    let changed = false;
+
+    // 1. Rewrite the last retained row's cells whose text moved on.
+    if (lastRetained >= 0) {
+      const oldRow = oldToken.rows[lastRetained];
+      const newRow = newToken.rows[lastRetained];
+      for (let c = 0; c < oldToken.header.length; c++) {
+        if (oldRow[c]?.text === newRow[c]?.text) continue;
+        const cell = entity.rows[lastRetained][c] as RichText;
+        cell.setSpans(this.tableCellSpans(newRow[c], t));
+        changed = true;
+      }
+    }
+
+    // 2. Append the rows that actually arrived.
+    if (newToken.rows.length > oldToken.rows.length) {
+      const added = newToken.rows
+        .slice(oldToken.rows.length)
+        .map((row) => row.map((cell) => this.tableCellRichText(cell, false, t)));
+      // appendRows() ends in layout(), which also re-measures the cells rewritten
+      // above, so no separate relayout is needed on this path.
+      entity.appendRows(added);
+    } else if (changed) {
+      // Only cells changed, so nothing appended: re-measure them.
+      entity.layout();
+    }
+
     return true;
   }
 
@@ -2770,6 +2906,24 @@ export class Markdown extends UIComponent {
         matchLen++;
         this.content.resizeLastChild(existingEntity);
       }
+    } else if (lastTokenSameType && newTokens[matchLen]?.type === 'table') {
+      // The last block type to get an in-place path, and the most expensive one
+      // to rebuild: a table token carries every row, so the rebuild cost is
+      // Theta(C*N^2) cell constructions across a stream, plus a further 2x
+      // because Table.layout() re-runs fitCell on every cell.
+      const existingEntity = oldChildren[oldTokenToChild[matchLen]];
+      if (
+        existingEntity &&
+        this.updateStreamedTable(
+          existingEntity,
+          oldTokens[matchLen] as Tokens.Table,
+          newTokens[matchLen] as Tokens.Table,
+        )
+      ) {
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
+        this.content.resizeLastChild(existingEntity);
+      }
     }
 
     // Destroy excess old entities (from matchLen onward). destroy() (not just
@@ -3106,22 +3260,10 @@ export class Markdown extends UIComponent {
       case 'table': {
         const tblToken = token as Tokens.Table;
 
-        const buildCell = (cell: Tokens.TableCell, header: boolean) => {
-          const spans: StyledSpan[] = [];
-          collectSpans(cell.tokens, {}, t, spans);
-          if (spans.length === 0) return decodeEntities(cell.text);
-          return new RichText(spans, {
-            font: `${t.fontSize - 2}px ${t.bodyFont}`,
-            color: header ? t.headingColor : t.textColor,
-            baseStyle: header ? { bold: true } : undefined,
-            linkColor: '#38bdf8',
-            selectable: this.selectable,
-            onLinkClick: this.onLinkClick,
-          });
-        };
-
-        const headers = tblToken.header.map((cell) => buildCell(cell, true));
-        const rows = tblToken.rows.map((row) => row.map((cell) => buildCell(cell, false)));
+        const headers = tblToken.header.map((cell) => this.tableCellRichText(cell, true, t));
+        const rows = tblToken.rows.map((row) =>
+          row.map((cell) => this.tableCellRichText(cell, false, t)),
+        );
 
         return new Table({
           headers,
