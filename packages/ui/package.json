@@ -70,10 +70,10 @@
   "devDependencies": {
     "@vectojs/core": "workspace:*",
     "esbuild": "^0.28.1",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "tsup": "^8.3.5",
     "vitest": "^4.1.10",
-    "puppeteer-core": "^25.3.0",
+    "puppeteer-core": "^25.4.0",
     "axe-core": "4.12.1"
   }
 }
