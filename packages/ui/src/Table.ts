@@ -158,6 +158,16 @@ export class Table extends UIComponent {
   /** The cell that owns the roving tab stop / focus. `-1` row = the header. */
   private _activeRow = -1;
   private _activeCol = 0;
+  /**
+   * Every `Entity` cell handed to this table, header or body.
+   *
+   * A field rather than a constructor local because {@link appendRows} has to
+   * share it: `normalizeCell` rejects an `Entity` used twice, and without a
+   * persistent set an appended row could re-use a cell already mounted in the
+   * constructor. `Entity.add` silently re-parents, so that would move the cell
+   * out of its original slot instead of failing.
+   */
+  private readonly seenCells = new Set<Entity>();
 
   constructor(opts: TableOptions) {
     super();
@@ -177,13 +187,8 @@ export class Table extends UIComponent {
     this.viewportHeight = opts.viewportHeight ?? 0;
     this.colWidths = this.normalizeColumnWidths(opts.colWidths);
 
-    const seen = new Set<Entity>();
-    this.headerCells = this.headers.map((cell) => this.normalizeCell(cell, true, seen));
-    this.bodyCells = this.rows.map((row) =>
-      Array.from({ length: this.headers.length }, (_, column) =>
-        this.normalizeCell(row[column] ?? '', false, seen),
-      ),
-    );
+    this.headerCells = this.headers.map((cell) => this.normalizeCell(cell, true, this.seenCells));
+    this.bodyCells = this.rows.map((row) => this.normalizeRow(row));
     for (const cell of this.headerCells) this.add(cell);
 
     if (this.virtualized) {
@@ -552,6 +557,64 @@ export class Table extends UIComponent {
     const sum = widths.reduce((total, width) => total + width, 0);
     const scale = this.width / sum;
     return widths.map((width) => width * scale);
+  }
+
+  /**
+   * Normalize one source row to exactly {@link headers}.length cells.
+   *
+   * Short rows are padded with `''` and long ones truncated, which is what makes
+   * a ragged `rows` argument safe and keeps `bodyCells` rectangular — every
+   * layout and a11y path indexes it by column without bounds-checking.
+   */
+  private normalizeRow(row: TableCell[]): Entity[] {
+    return Array.from({ length: this.headers.length }, (_, column) =>
+      this.normalizeCell(row[column] ?? '', false, this.seenCells),
+    );
+  }
+
+  /**
+   * Append body rows, reusing the existing cells instead of rebuilding them.
+   *
+   * Reproduces exactly what the constructor does per row — normalize to the
+   * header's column count, reject a duplicate `Entity` cell, apply `selectable`,
+   * and mount to the right parent for the current mode — then re-resolves
+   * geometry through {@link layout}.
+   *
+   * Both `rows` and the private cell grid are written. That pairing is the whole
+   * point: `layout()` walks the cell grid while {@link getA11yAttributes} counts
+   * `rows`, so updating only one leaves a table that either renders rows it does
+   * not announce or announces rows it does not render.
+   *
+   * **Append-only by design.** Existing row indices keep their meaning, so the
+   * roving tab stop cannot be invalidated (`isGridTabStop` only ever clamps an
+   * active row that is now out of range, and growth cannot put one out of range)
+   * and no `detachA11y` bookkeeping is needed. A general `setRows` would need
+   * both, which is why it is deliberately absent.
+   *
+   * To change an existing cell, mutate the cell entity you passed in and call
+   * `layout()` — it re-measures from `cell.height`, so a `RichText` whose spans
+   * you replaced is picked up. That is the intended path for a streamed row
+   * whose content is still arriving.
+   */
+  public appendRows(rows: TableCell[][]): this {
+    if (rows.length === 0) return this;
+
+    for (const row of rows) {
+      const cells = this.normalizeRow(row);
+      this.rows.push(row);
+      this.bodyCells.push(cells);
+      // Virtualized mode mounts lazily in reconcileVirtualRows(), exactly as the
+      // constructor leaves its body cells unmounted; mounting here would put
+      // them on the table instead of inside the scrolling clip.
+      if (!this.virtualized) {
+        for (const cell of cells) this.add(cell);
+      }
+    }
+
+    // Recomputes rowHeights and height, repositions, and re-syncs the grid a11y
+    // hotspot pool so the new rows get their `gridcell` projection.
+    this.layout();
+    return this;
   }
 
   private normalizeCell(cell: TableCell, header: boolean, seen: Set<Entity>): Entity {

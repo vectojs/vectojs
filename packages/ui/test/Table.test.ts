@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Table } from '../src/Table';
+import { Text } from '../src/Text';
 import { Scene } from '@vectojs/core';
 
 describe('Table', () => {
@@ -262,6 +263,126 @@ describe('Table', () => {
       });
       t.handleGridKey({ key: 'End', ctrlKey: true, preventDefault() {} } as any, -1, 0);
       expect(t.isGridTabStop(2, 1)).toBe(true);
+    });
+  });
+
+  describe('appendRows', () => {
+    // The invariant the whole feature exists for: `layout()` walks the private
+    // cell grid while `getA11yAttributes()` counts the public `rows`, so a
+    // partial append renders rows it does not announce, or the reverse. Every
+    // test here asserts geometry and the announced count together.
+    const announced = (t: Table): number =>
+      Number(/and (\d+) rows/.exec(t.getA11yAttributes().label ?? '')?.[1] ?? -1);
+
+    it('grows to exactly what a rebuilt table would be', () => {
+      const grown = new Table({ headers: ['A', 'B'], rows: [['a1', 'b1']], width: 300 });
+      grown.appendRows([
+        ['a2', 'b2'],
+        ['a3', 'b3'],
+      ]);
+      const built = new Table({
+        headers: ['A', 'B'],
+        rows: [
+          ['a1', 'b1'],
+          ['a2', 'b2'],
+          ['a3', 'b3'],
+        ],
+        width: 300,
+      });
+
+      expect(grown.height).toBe(built.height);
+      expect(grown.rowHeights).toEqual(built.rowHeights);
+      expect(grown.children.length).toBe(built.children.length);
+      expect(announced(grown)).toBe(announced(built));
+    });
+
+    it('keeps the announced row count in step with the rendered rows', () => {
+      // This is the exact failure the feature replaces: pushing onto the public
+      // `rows` and calling the public `layout()` announces the new row while
+      // leaving it unrendered.
+      const t = new Table({ headers: ['A', 'B'], rows: [['a1', 'b1']], width: 300 });
+      t.appendRows([['a2', 'b2']]);
+      expect(announced(t)).toBe(2);
+      expect(t.rowHeights.length).toBe(2);
+    });
+
+    it('appends onto a table that started with no rows', () => {
+      // A markdown table is lexed with zero rows the moment its delimiter row
+      // arrives, so this is the first state a streamed table is ever in.
+      const t = new Table({ headers: ['A', 'B'], rows: [], width: 300 });
+      t.appendRows([['a1', 'b1']]);
+      const built = new Table({ headers: ['A', 'B'], rows: [['a1', 'b1']], width: 300 });
+      expect(t.height).toBe(built.height);
+      expect(announced(t)).toBe(1);
+    });
+
+    it('pads a short row and truncates a long one, as the constructor does', () => {
+      const grown = new Table({ headers: ['A', 'B'], rows: [], width: 300 });
+      grown.appendRows([['only'], ['x', 'y', 'z']]);
+      const built = new Table({
+        headers: ['A', 'B'],
+        rows: [['only'], ['x', 'y', 'z']],
+        width: 300,
+      });
+      expect(grown.height).toBe(built.height);
+      expect(grown.rowHeights).toEqual(built.rowHeights);
+      expect(grown.children.length).toBe(built.children.length);
+    });
+
+    it('still rejects a duplicate Entity cell', () => {
+      // The uniqueness set has to outlive the constructor for this to fire:
+      // `Entity.add` silently re-parents, so a reused cell would otherwise be
+      // moved out of the row it already occupies.
+      // Must be a cell the CALLER supplied: a string cell becomes a `Text` the
+      // table created itself, which never enters the uniqueness set.
+      const shared = new Text('dup', { font: '14px sans-serif' });
+      const t = new Table({ headers: ['A', 'B'], rows: [[shared, 'b1']], width: 300 });
+      expect(() => t.appendRows([[shared, 'b2']])).toThrow(
+        'Table Entity cells must be unique instances.',
+      );
+    });
+
+    it('is a no-op for an empty argument', () => {
+      const t = new Table({ headers: ['A', 'B'], rows: [['a', 'b']], width: 300 });
+      const before = { h: t.height, rows: t.rows.length, kids: t.children.length };
+      t.appendRows([]);
+      expect({ h: t.height, rows: t.rows.length, kids: t.children.length }).toEqual(before);
+    });
+
+    it('announces appended rows in index order', () => {
+      // Appended cells land after the hotspots the first layout() created, so
+      // visual child order differs from a rebuild. That must not reach an AT:
+      // the grid is projected from the hotspot pool, which is rebound by slot
+      // index on every layout.
+      const t = new Table({ headers: ['A', 'B'], rows: [['a1', 'b1']], width: 300 });
+      t.appendRows([['a2', 'b2']]);
+      t.appendRows([['a3', 'b3']]);
+
+      const rows: string[] = [];
+      const walk = (e: { children?: unknown[]; getA11yAttributes?: () => { role?: string } }) => {
+        const attrs = e.getA11yAttributes?.();
+        if (attrs?.role === 'row') {
+          const labels = (
+            e.children as Array<{ getA11yAttributes?: () => { label?: string } }>
+          ).map((c) => c.getA11yAttributes?.().label ?? '?');
+          rows.push(labels.join('|'));
+        }
+        for (const c of (e.children ?? []) as (typeof e)[]) walk(c);
+      };
+      walk(t as never);
+
+      expect(rows).toEqual(['A|B', 'a1|b1', 'a2|b2', 'a3|b3']);
+    });
+
+    it('re-measures a cell mutated after mounting', () => {
+      // The documented path for a streamed row whose content is still arriving:
+      // mutate the cell you passed in, then call layout(). No Table API needed.
+      const cell = new Text('a1', { font: '14px sans-serif' });
+      const t = new Table({ headers: ['A', 'B'], rows: [[cell, 'b1']], width: 300 });
+      const before = t.height;
+      cell.setText('a substantially longer value that must wrap across lines');
+      t.layout();
+      expect(t.height).toBeGreaterThan(before);
     });
   });
 });
