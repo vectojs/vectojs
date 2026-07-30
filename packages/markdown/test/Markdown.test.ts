@@ -4,7 +4,7 @@ import type { Tokens } from 'marked';
 import { lexer as markedLexer } from 'marked';
 import { CodeBlock, Markdown } from '../src/Markdown';
 import { VECTO_USER_TIMING } from '@vectojs/core';
-import { RichText, Text } from '@vectojs/ui';
+import { RichText, Stack, Text } from '@vectojs/ui';
 
 function clickFirstLink(entity: RichText): void {
   expect(entity.children.length).toBeGreaterThan(0);
@@ -920,6 +920,230 @@ Plain paragraph at the end.
         const full = new Markdown('# Two\n\ngamma\n\ndelta');
         expect(shapeOf(md)).toEqual(shapeOf(full));
         expect((md as any).tokenChildPrefix).toEqual((full as any).tokenChildPrefix);
+      });
+    });
+
+    describe('streamed list reuses its Stack', () => {
+      // A list is the worst rebuild case in this reconciler: the token carries
+      // EVERY item, so a list streamed to N items rebuilt 1+2+...+N RichTexts.
+      // These tests pin that the Stack survives and stays geometrically identical
+      // to a one-shot build.
+      const listStackOf = (md: Markdown) => md.content.children[0] as Stack;
+      const itemTexts = (md: Markdown) =>
+        listStackOf(md).children.map((c) =>
+          ((c as unknown as { spans: Array<{ text: string }> }).spans ?? [])
+            .map((s) => s.text)
+            .join(''),
+        );
+
+      it('keeps the same Stack instance across appended items', () => {
+        const md = new Markdown('- one');
+        const stack = listStackOf(md);
+
+        md.appendMarkdown('\n- two');
+        md.appendMarkdown('\n- three');
+
+        // Identity, not just shape: a rebuild would substitute a new Stack.
+        expect(listStackOf(md)).toBe(stack);
+        expect(stack.children.length).toBe(3);
+        expect(itemTexts(md)).toEqual(['• one', '• two', '• three']);
+      });
+
+      it('counts each appended item as an in-place update, rebuilding nothing', () => {
+        const md = new Markdown('- one') as unknown as Markdown & {
+          streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        };
+        const before = md.streamStats.inPlaceUpdates;
+        const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+        md.appendMarkdown('\n- two');
+        md.appendMarkdown('\n- three');
+
+        expect(md.streamStats.inPlaceUpdates).toBe(before + 2);
+        expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+      });
+
+      it('rewrites the last item in place while it is still growing', () => {
+        const md = new Markdown('- one\n- tw');
+        const stack = listStackOf(md);
+        const tail = stack.children[1];
+
+        md.appendMarkdown('o word');
+
+        // The growing item keeps its entity too, not only the Stack.
+        expect(listStackOf(md)).toBe(stack);
+        expect(stack.children[1]).toBe(tail);
+        expect(itemTexts(md)).toEqual(['• one', '• two word']);
+      });
+
+      it('produces the same geometry streamed as set at once', () => {
+        const streamed = new Markdown('- alpha');
+        streamed.appendMarkdown('\n- beta');
+        streamed.appendMarkdown('\n- gamma');
+        const atOnce = new Markdown('- alpha\n- beta\n- gamma');
+
+        const geom = (md: Markdown) => {
+          const s = listStackOf(md);
+          return {
+            n: s.children.length,
+            ys: s.children.map((c) => c.y),
+            xs: s.children.map((c) => c.x),
+            height: s.height,
+            width: s.width,
+            mdHeight: md.height,
+          };
+        };
+        expect(geom(streamed)).toEqual(geom(atOnce));
+        expect(itemTexts(streamed)).toEqual(itemTexts(atOnce));
+      });
+
+      it('keeps ordinals correct for an ordered list with a start offset', () => {
+        // The marker is position-derived (`start + index`), which is only safe
+        // because an append never changes an existing item's index.
+        const streamed = new Markdown('5. five');
+        streamed.appendMarkdown('\n6. six');
+        streamed.appendMarkdown('\n7. seven');
+
+        expect(itemTexts(streamed)).toEqual(['5. five', '6. six', '7. seven']);
+        expect(itemTexts(streamed)).toEqual(itemTexts(new Markdown('5. five\n6. six\n7. seven')));
+      });
+
+      it('rebuilds when a tight list becomes loose', () => {
+        // Adding a blank line flips `loose`, which re-lexes every item's children
+        // from `text` to `paragraph`. Item 0's own `text` is unchanged, so a guard
+        // that only compared item text would reuse and keep stale spans.
+        const md = new Markdown('- one\n- two') as unknown as Markdown & {
+          streamStats: { entitiesRebuilt: number };
+        };
+        const stack = listStackOf(md);
+        const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+        md.appendMarkdown('\n\n- three');
+
+        expect(listStackOf(md)).not.toBe(stack);
+        expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore + 1);
+        // And the rebuilt list is still correct.
+        expect(itemTexts(md)).toEqual(itemTexts(new Markdown('- one\n- two\n\n- three')));
+      });
+
+      it('resyncs the box when the tail item grows taller by wrapping', () => {
+        // The case the geometry resync exists for. A tail item that grows within
+        // one line leaves the stack's height unchanged, so it cannot detect a
+        // missing resync; only a wrap does. Measured here: the item goes 24px ->
+        // 264px at maxWidth 200.
+        const long = 'word '.repeat(40).trim();
+        const streamed = new Markdown('- one\n- start', { maxWidth: 200 });
+        const stack = streamed.content.children[0] as Stack;
+        const heightBefore = stack.height;
+
+        streamed.appendMarkdown(' ' + long);
+
+        const atOnce = new Markdown(`- one\n- start ${long}`, { maxWidth: 200 });
+        const reference = atOnce.content.children[0] as Stack;
+
+        expect(stack.height).toBeGreaterThan(heightBefore);
+        expect(stack.height).toBe(reference.height);
+        expect(streamed.height).toBe(atOnce.height);
+      });
+
+      describe('guards that reject reuse', () => {
+        // These reject states that `appendMarkdown` cannot produce on its own —
+        // `setContent` rebuilds from scratch and never reaches `updateTokens`, so
+        // the only real caller is append-only. They are tested directly against
+        // the private method rather than through a stream, because a test driven
+        // through `appendMarkdown` would silently pass without exercising them at
+        // all. Verified by mutation: removing any one of these fails its case here
+        // and nothing else.
+        type ListUpdater = {
+          updateStreamedList: (stack: unknown, oldT: Tokens.List, newT: Tokens.List) => boolean;
+        };
+        const listTokenOf = (src: string): Tokens.List =>
+          markedLexer(src).find((t) => t.type === 'list') as Tokens.List;
+
+        const attempt = (fromSrc: string, mutate: (t: Tokens.List) => Tokens.List): boolean => {
+          const md = new Markdown(fromSrc);
+          const stack = md.content.children[0];
+          const oldToken = listTokenOf(fromSrc);
+          return (md as unknown as ListUpdater).updateStreamedList(
+            stack,
+            oldToken,
+            mutate(listTokenOf(fromSrc)),
+          );
+        };
+
+        it('accepts an unchanged list, so the negative cases below mean something', () => {
+          // Baseline: without this, a guard test could pass because the whole
+          // method rejects everything.
+          expect(attempt('- one\n- two', (t) => t)).toBe(true);
+        });
+
+        it('rejects a change of `ordered`', () => {
+          expect(
+            attempt('- one\n- two', (t) => ({ ...t, ordered: !t.ordered }) as Tokens.List),
+          ).toBe(false);
+        });
+
+        it('rejects a change of `start`', () => {
+          // Reachable in principle: lexing `1. a` then `12. a` moves start 1 -> 12
+          // with the item text unchanged, so the marker would go stale.
+          expect(attempt('1. one\n2. two', (t) => ({ ...t, start: 5 }) as Tokens.List)).toBe(false);
+        });
+
+        it('rejects a shrinking list', () => {
+          expect(
+            attempt('- one\n- two', (t) => ({ ...t, items: t.items.slice(0, 1) }) as Tokens.List),
+          ).toBe(false);
+        });
+
+        it('rejects an edit to a retained item', () => {
+          expect(
+            attempt('- one\n- two\n- three', (t) => {
+              const items = t.items.map((i) => ({ ...i }));
+              items[0].text = 'EDITED';
+              return { ...t, items } as Tokens.List;
+            }),
+          ).toBe(false);
+        });
+
+        it('rejects a stack whose child count disagrees with the item count', () => {
+          // Guards against being handed an entity that some other path built, in
+          // which case indices would not line up and the wrong item would be
+          // rewritten.
+          const md = new Markdown('- one\n- two');
+          const stack = md.content.children[0] as Stack;
+          stack.add(new RichText([{ text: 'extra' }], { font: '16px sans-serif' }));
+          const token = listTokenOf('- one\n- two');
+          expect((md as unknown as ListUpdater).updateStreamedList(stack, token, token)).toBe(
+            false,
+          );
+        });
+
+        it('rejects a non-Stack entity', () => {
+          const md = new Markdown('- one');
+          const token = listTokenOf('- one');
+          expect(
+            (md as unknown as ListUpdater).updateStreamedList(
+              new RichText([{ text: 'x' }], { font: '16px sans-serif' }),
+              token,
+              token,
+            ),
+          ).toBe(false);
+        });
+      });
+
+      it('does not indent list items, and does not reserve width for an indent', () => {
+        // `Stack.appendFast` assigns `child.x = 0` for a vertical stack and
+        // declares x/y layout-controlled, so the old `itemRt.x = 12` was
+        // overwritten on add() and the matching `availableWidth - 24` reserved
+        // space for an indent that never rendered.
+        const md = new Markdown('- one\n- two');
+        const stack = listStackOf(md);
+
+        expect(stack.children.map((c) => c.x)).toEqual([0, 0]);
+        const maxWidths = stack.children.map(
+          (c) => (c as unknown as { maxWidth: number }).maxWidth,
+        );
+        expect(maxWidths).toEqual([md.maxWidth, md.maxWidth]);
       });
     });
   });
