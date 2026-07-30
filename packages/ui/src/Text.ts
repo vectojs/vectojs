@@ -1,5 +1,6 @@
 import {
   A11yAttributes,
+  EMPTY_GLYPH_ATLAS,
   IRenderer,
   LayoutEngine,
   type GlyphMeasurer,
@@ -116,7 +117,7 @@ export class Text extends UIComponent {
     // to the glyph-accurate render path when either is on. Left-aligned text
     // keeps the fast one-fillText-per-line default.
     this.perGlyph = this.engine.textAlign === 'justify' || !!opts.hyphenate;
-    this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
+    this.prepared = this.engine.prepare(this.text, EMPTY_GLYPH_ATLAS, this.fontSize);
     // Not interactive: static text's semantic presence is its content
     // projection. An interactive a11y div would sit ABOVE the selectable
     // projection with pointer-events: auto and eat the mousedown — native
@@ -256,7 +257,7 @@ export class Text extends UIComponent {
 
   public setText(text: string): this {
     this.text = text;
-    this.prepared = this.engine.prepare(this.text, {}, this.fontSize);
+    this.prepared = this.engine.prepare(this.text, EMPTY_GLYPH_ATLAS, this.fontSize);
     this.applyLayout();
     this.scene?.markDirty();
     return this;

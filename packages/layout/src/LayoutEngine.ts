@@ -16,6 +16,25 @@ export interface GlyphAtlas {
 }
 
 /**
+ * The shared "no pre-measured glyphs" atlas, for callers that measure entirely
+ * through a {@link GlyphMeasurer}.
+ *
+ * Exists because {@link LayoutEngine.prepare} and {@link LayoutEngine.prepareRich}
+ * drop every memoized paragraph when the atlas argument is not the SAME OBJECT as
+ * the previous call — glyph advances depend on it, so a changed atlas has to
+ * invalidate. Passing a fresh `{}` literal per call therefore cleared both caches
+ * on every layout, which is exactly what `Text` and `RichText` used to do: measured
+ * through the real `RichText`, five identical re-layouts produced 0 cache hits and
+ * 12 misses, so the memo was dead code on the only paths that used it. Reusing this
+ * frozen constant restores it (measured 2.68x on 200 re-layouts of 12 paragraphs:
+ * 88.03ms -> 32.82ms, hits 0 -> 2388).
+ *
+ * Frozen so a caller cannot accidentally make it non-empty and silently poison
+ * every other consumer's advances.
+ */
+export const EMPTY_GLYPH_ATLAS: GlyphAtlas = Object.freeze({}) as GlyphAtlas;
+
+/**
  * Resolves the pixel advance width of a single grapheme at a given font size,
  * for glyphs not present in a pre-baked {@link GlyphAtlas}.
  *
@@ -322,7 +341,20 @@ function styleRangeEquals(
       x.color !== y.color ||
       x.bold !== y.bold ||
       x.italic !== y.italic ||
-      x.href !== y.href
+      x.href !== y.href ||
+      // fontFamily is passed to glyphWidth(), so it changes advances and belongs in
+      // any style comparison used to decide reuse. Added 2026-07-30 alongside the
+      // styleSig fix.
+      //
+      // It is defence in depth rather than a reachable fix today: the cold
+      // single-paragraph path below consults `richParagraphCache` FIRST, and that
+      // key now carries fontFamily, so a family change is caught there before this
+      // comparison is ever asked about one. Verified by mutation — reverting this
+      // line alone changes no measured width. Kept because the two are supposed to
+      // agree on what "same style" means, and a future reordering that reached the
+      // streaming path first would otherwise silently reuse prefix shaping measured
+      // in a different family.
+      x.fontFamily !== y.fontFamily
     ) {
       return false;
     }
@@ -767,19 +799,28 @@ export class LayoutEngine {
     // A compact, *value*-based RLE signature of the styles over [start, start+len)
     // — so a cached paragraph is reused whether or not the caller reuses the same
     // style object instances (it just has to apply the same fontSize/color/…).
+    //
+    // EVERY field that can change a glyph advance must be in here, or two different
+    // paragraphs collide on one key. `fontFamily` was missing until 2026-07-30 even
+    // though glyphWidth() takes it (see the `style?.fontFamily` arguments below):
+    // measured with a stable atlas, a `fontFamily: 'wide'` paragraph was served the
+    // metrics of an identical-length 'serif' one — 48px where 144px was correct.
+    // It was latent only because the memo was never hit: Text/RichText passed a
+    // fresh `{}` atlas per call, which cleared it every time. Reviving the cache
+    // and fixing this key are therefore ONE change; doing either alone is wrong.
     const styleSig = (start: number, len: number): string => {
       let sig = '';
       let i = 0;
       while (i < len) {
         const s = styleAt[start + i];
         const fp = s
-          ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}`
+          ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}`
           : '';
         let run = 1;
         while (i + run < len) {
           const t = styleAt[start + i + run];
           const tfp = t
-            ? `${t.fontSize ?? ''}/${t.color ?? ''}/${t.bold ? 1 : 0}/${t.italic ? 1 : 0}/${t.href ?? ''}`
+            ? `${t.fontSize ?? ''}/${t.color ?? ''}/${t.bold ? 1 : 0}/${t.italic ? 1 : 0}/${t.href ?? ''}/${t.fontFamily ?? ''}`
             : '';
           if (tfp !== fp) break;
           run++;
@@ -1175,7 +1216,10 @@ export class LayoutEngine {
    * (no exclusions, no hyphenation, no per-glyph exclusion mask). Text that
    * needs any of those must use the full path.
    */
-  public measurePrepared(prepared: PreparedText): { lineCount: number; height: number } {
+  public measurePrepared(prepared: PreparedText): {
+    lineCount: number;
+    height: number;
+  } {
     const fontSize = prepared.fontSize;
     let lineCount = 0;
     let height = 0;

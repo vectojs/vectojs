@@ -1,5 +1,6 @@
 import {
   A11yAttributes,
+  EMPTY_GLYPH_ATLAS,
   IRenderer,
   LayoutEngine,
   sanitizeUrl,
@@ -313,7 +314,15 @@ export class RichText extends UIComponent {
   }
 
   private layout(): LayoutResult {
-    const prepared = this.engine.prepareRich(this.spans, {}, this.baseFontSize, this.baseStyle);
+    // EMPTY_GLYPH_ATLAS, not a fresh `{}`: the engine invalidates its memoized
+    // paragraphs whenever the atlas is not the same object as last call, so a
+    // literal here cleared the cache on every single layout. See its docstring.
+    const prepared = this.engine.prepareRich(
+      this.spans,
+      EMPTY_GLYPH_ATLAS,
+      this.baseFontSize,
+      this.baseStyle,
+    );
     const result = this.engine.layoutPrepared(prepared, undefined, this.exclusions);
     this.width = result.totalWidth;
     this.height = result.totalHeight;
