@@ -121,6 +121,23 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (step === 6) return '\n\nThe identity above converges. ';
     return 'Additional prose between formulas that keeps accumulating. ';
   },
+  // A list that GROWS one item at a time, which `mixed` never produces: it emits
+  // a whole two-item list in one chunk, so the list is complete on its first lex.
+  // This is the worst rebuild case in the reconciler, because a `list` token
+  // carries EVERY item — so before in-place reuse, a list streamed to N items
+  // rebuilt 1+2+...+N RichTexts, i.e. Theta(N^2). One cycle grows a 9-item list,
+  // including a two-chunk item so the shape also covers a growing tail rather than
+  // only appends, then a short body so the next cycle starts a fresh list.
+  list: (i) => {
+    const step = i % 12;
+    const n = Math.floor(i / 12);
+    if (step === 0) return `\n\n- item ${n}.0`;
+    if (step === 7) return `\n- item ${n}.7 begins`;
+    if (step === 8) return ' and continues to wrap onto a second line here';
+    if (step < 9) return `\n- item ${n}.${step}`;
+    if (step === 9) return '\n\nA body paragraph between lists. ';
+    return 'More body text to close out this section. ';
+  },
 };
 
 interface PhaseTotals {

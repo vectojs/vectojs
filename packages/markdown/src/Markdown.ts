@@ -2087,6 +2087,154 @@ export class Markdown extends UIComponent {
    * return has to leave the entity untouched, or a rejected reuse would leave a
    * half-updated quote on screen.
    */
+  /**
+   * Build one list item's spans: inline content plus its marker.
+   *
+   * Shared by the `list` render arm and the streamed-reuse path below, because
+   * the two must produce byte-identical spans — a reused list that disagreed with
+   * a rebuilt one about its marker or its entity decoding would make a streamed
+   * document differ from the same source pasted at once.
+   */
+  private listItemSpans(token: Tokens.List, index: number): StyledSpan[] {
+    const item = token.items[index];
+    const num = Number(token.start ?? 1) + index;
+    // Build the inline content spans first; the marker is placed after, on
+    // the side that matches the item's reading direction.
+    const contentSpans: StyledSpan[] = [];
+    if (item.tokens && item.tokens.length > 0) {
+      // List item tokens are block-level; dig into paragraph children
+      for (const inner of item.tokens) {
+        if (inner.type === 'text' && 'tokens' in inner && (inner as any).tokens?.length) {
+          collectSpans(
+            (inner as any).tokens,
+            {},
+            this.theme as Required<MarkdownTheme>,
+            contentSpans,
+          );
+        } else if ('tokens' in inner && (inner as any).tokens?.length) {
+          collectSpans(
+            (inner as any).tokens,
+            {},
+            this.theme as Required<MarkdownTheme>,
+            contentSpans,
+          );
+        } else if ('text' in inner) {
+          contentSpans.push({ text: decodeEntities((inner as any).text) });
+        }
+      }
+    } else {
+      contentSpans.push({ text: decodeEntities(item.text) });
+    }
+
+    // Place the marker on the reading-start side. An RTL item must show
+    // its marker at the visual RIGHT; a leading neutral bullet would
+    // bidi-reorder to the visual LEFT. Appending the marker as a TRAILING
+    // span fixes it: `" •"` reorders to visual `"• …"`, and `" .N"` to
+    // `"N. …"` — both flush-right in reading order. LTR keeps the marker
+    // leading as before.
+    const itemIsRtl = BidiResolver.getBaseLevel(contentSpans.map((s) => s.text).join('')) % 2 === 1;
+    return itemIsRtl
+      ? [...contentSpans, { text: token.ordered ? ` .${num}` : ' \u2022' }]
+      : [{ text: token.ordered ? `${num}. ` : '• ' }, ...contentSpans];
+  }
+
+  /** Construct the `RichText` for one list item. */
+  private listItemRichText(
+    token: Tokens.List,
+    index: number,
+    availableWidth: number,
+    t: Required<MarkdownTheme>,
+  ): RichText {
+    // No `x` offset and no width reserved for one. Until 2026-07-30 this set
+    // `itemRt.x = 12 // Indent` and passed `availableWidth - 24`, but the indent
+    // was dead: `Stack.appendFast` assigns `child.x = 0` for a vertical stack
+    // (packages/ui/src/Stack.ts:160) and `Stack` declares `x`/`y` as
+    // layout-controlled, so `add()` overwrote it. Probed: every item's `x` was 0.
+    // The 24px reserve therefore compensated for an indent that never rendered,
+    // shrinking the wrap width for no reason. A list nested in a blockquote is
+    // indented by the quote's own wrapper (`el.x = indentStart`), not here.
+    return new RichText(this.listItemSpans(token, index), {
+      font: `${t.fontSize}px ${t.bodyFont}`,
+      color: t.textColor,
+      maxWidth: availableWidth,
+      linkColor: '#38bdf8',
+      selectable: this.selectable,
+      onLinkClick: this.onLinkClick,
+    });
+  }
+
+  /**
+   * Reuse a streamed list's `Stack` instead of rebuilding every item.
+   *
+   * Returns `false` to mean "rebuild instead", exactly like
+   * {@link updateBlockquoteTail}, and every rejection path leaves the entity
+   * untouched so a refused reuse cannot leave a half-updated list on screen.
+   *
+   * This is the shape a stream actually produces: items are APPENDED, and only
+   * the last one grows. That matters for the ordinal marker, which is
+   * position-derived (`start + index`) — under append an already-rendered item's
+   * index never changes, so its marker stays correct. A mid-list insertion would
+   * shift every later ordinal, but no stream produces one.
+   *
+   * Two traps this guards, both found by probing marked 18.0.7 rather than by
+   * reading:
+   *
+   * - **A retained item's `raw` is NOT stable.** `items[1].raw` goes `"- two"` ->
+   *   `"- two\\n"` when item 3 arrives, so a byte-equality guard on `raw` fails on
+   *   every chunk and the fast path would never fire. `text` is stable; compare
+   *   that.
+   * - **A tight list can become loose.** Adding a blank line flips
+   *   `token.loose`, which re-lexes every item's children from `text` to
+   *   `paragraph`. Item 0's own `text` is unchanged, so a naive guard would reuse
+   *   and keep stale spans. Bail when `loose` flips.
+   */
+  private updateStreamedList(stack: Entity, oldToken: Tokens.List, newToken: Tokens.List): boolean {
+    if (!(stack instanceof Stack)) return false;
+    // A list may only have grown. Fewer items means an edit, not a stream.
+    if (newToken.items.length < oldToken.items.length || oldToken.items.length === 0) return false;
+    // `ordered` and `start` feed every marker; `loose` changes how items lex.
+    if (oldToken.ordered !== newToken.ordered) return false;
+    if ((oldToken.start ?? 1) !== (newToken.start ?? 1)) return false;
+    if (oldToken.loose !== newToken.loose) return false;
+    // The stack must be the one the render arm built for these items.
+    if (stack.children.length !== oldToken.items.length) return false;
+
+    // Every item before the last retained one must be unchanged. Compare `text`,
+    // not `raw` — see the trap note above.
+    const lastRetained = oldToken.items.length - 1;
+    for (let i = 0; i < lastRetained; i++) {
+      if (oldToken.items[i].text !== newToken.items[i].text) return false;
+    }
+
+    // Same derivation renderToken uses, so an appended item is measured exactly
+    // as a rebuilt one would be. A top-level list has no activeBlockMetrics, so
+    // this is `maxWidth`; the fallback is spelled out rather than assumed.
+    const availableWidth = this.activeBlockMetrics?.availableWidth ?? this.maxWidth;
+    const t = this.theme;
+
+    // The last retained item may have grown; rewrite its spans in place.
+    const tailEntity = stack.children[lastRetained];
+    if (oldToken.items[lastRetained].text !== newToken.items[lastRetained].text) {
+      if (!('setSpans' in tailEntity)) return false;
+      (tailEntity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
+        this.listItemSpans(newToken, lastRetained),
+      );
+    }
+
+    // Then append whatever arrived after it.
+    for (let i = oldToken.items.length; i < newToken.items.length; i++) {
+      stack.add(this.listItemRichText(newToken, i, availableWidth, t));
+    }
+
+    // `add()` already maintained the stack's box via its append fast path, but a
+    // grown tail item did not, so resync on that. Safe when nothing was appended
+    // too: resizeLastChild falls back to a full layout() when its invariants do
+    // not hold.
+    const last = stack.children.at(-1);
+    if (last) stack.resizeLastChild(last);
+    return true;
+  }
+
   private updateBlockquoteTail(container: Entity, oldInner: Token[], newInner: Token[]): boolean {
     // Only the tail block may differ: every earlier inner token must be
     // byte-identical, and no block may have been added or removed. `space` tokens
@@ -2604,6 +2752,24 @@ export class Markdown extends UIComponent {
         matchLen++;
         this.content.resizeLastChild(existingEntity);
       }
+    } else if (lastTokenSameType && newTokens[matchLen]?.type === 'list') {
+      // A list is the worst rebuild case in this reconciler, because the token
+      // keeps EVERY item: a list streamed to N items rebuilt 1+2+…+N RichTexts,
+      // i.e. Theta(N^2). Measured before this path existed, a 32-item list cost
+      // 528 constructions against 32 for the same list built once.
+      const existingEntity = oldChildren[oldTokenToChild[matchLen]];
+      if (
+        existingEntity &&
+        this.updateStreamedList(
+          existingEntity,
+          oldTokens[matchLen] as Tokens.List,
+          newTokens[matchLen] as Tokens.List,
+        )
+      ) {
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
+        this.content.resizeLastChild(existingEntity);
+      }
     }
 
     // Destroy excess old entities (from matchLen onward). destroy() (not just
@@ -2926,54 +3092,12 @@ export class Markdown extends UIComponent {
         return container;
       }
 
-      // ── Lists ────────────────────────────────────────────────────────
+      // ── Lists ────────────────────────────────────────────────
       case 'list': {
         const listToken = token as Tokens.List;
         const listStack = new Stack({ direction: 'vertical', gap: 6 });
         for (let i = 0; i < listToken.items.length; i++) {
-          const item = listToken.items[i];
-          const num = Number(listToken.start ?? 1) + i;
-          // Build the inline content spans first; the marker is placed after, on
-          // the side that matches the item's reading direction.
-          const contentSpans: StyledSpan[] = [];
-          if (item.tokens && item.tokens.length > 0) {
-            // List item tokens are block-level; dig into paragraph children
-            for (const inner of item.tokens) {
-              if (inner.type === 'text' && 'tokens' in inner && (inner as any).tokens?.length) {
-                collectSpans((inner as any).tokens, {}, t, contentSpans);
-              } else if ('tokens' in inner && (inner as any).tokens?.length) {
-                collectSpans((inner as any).tokens, {}, t, contentSpans);
-              } else if ('text' in inner) {
-                contentSpans.push({
-                  text: decodeEntities((inner as any).text),
-                });
-              }
-            }
-          } else {
-            contentSpans.push({ text: decodeEntities(item.text) });
-          }
-
-          // Place the marker on the reading-start side. An RTL item must show
-          // its marker at the visual RIGHT; a leading neutral bullet would
-          // bidi-reorder to the visual LEFT. Appending the marker as a TRAILING
-          // span fixes it: `" •"` reorders to visual `"• …"`, and `" .N"` to
-          // `"N. …"` — both flush-right in reading order. LTR keeps the marker
-          // leading as before.
-          const itemIsRtl =
-            BidiResolver.getBaseLevel(contentSpans.map((s) => s.text).join('')) % 2 === 1;
-          const itemSpans: StyledSpan[] = itemIsRtl
-            ? [...contentSpans, { text: listToken.ordered ? ` .${num}` : ' \u2022' }]
-            : [{ text: listToken.ordered ? `${num}. ` : '• ' }, ...contentSpans];
-          const itemRt = new RichText(itemSpans, {
-            font: bodyFont,
-            color: t.textColor,
-            maxWidth: Math.max(0, availableWidth - 24),
-            linkColor: '#38bdf8',
-            selectable: this.selectable,
-            onLinkClick: this.onLinkClick,
-          });
-          itemRt.x = 12; // Indent
-          listStack.add(itemRt);
+          listStack.add(this.listItemRichText(listToken, i, availableWidth, t));
         }
         return listStack;
       }
