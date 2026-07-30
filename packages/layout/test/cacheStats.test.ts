@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LayoutEngine } from '../src/LayoutEngine';
+import { EMPTY_GLYPH_ATLAS, LayoutEngine } from '../src/LayoutEngine';
 import type { GlyphAtlas } from '../src/LayoutEngine';
 
 /** A minimal atlas: every listed char has a known advance at baseSize 10. */
@@ -143,5 +143,76 @@ describe('PreparedGlyph.atlasMiss', () => {
     // a missing space must not be reported as a fallback cause.
     if (space) expect(space.atlasMiss).toBeUndefined();
     expect(prepared.fallbackToCanvas).toBeFalsy();
+  });
+});
+
+describe('the style signature covers every measurement-affecting field', () => {
+  // A measurer where fontFamily genuinely changes the advance, so a wrong cache
+  // hit is visible as a wrong width rather than only as a counter discrepancy.
+  const measurer = {
+    measure: (_c: string, fontSize: number, fontFamily?: string) =>
+      fontFamily === 'wide' ? fontSize * 1.5 : fontSize * 0.5,
+  };
+  // A newline disqualifies the single-paragraph streaming fast path, so this
+  // exercises richParagraphCache.
+  const spansWith = (fontFamily: string) => [{ text: 'abcdef\nabcdef', style: { fontFamily } }];
+  const widthOf = (e: LayoutEngine, fontFamily: string): number =>
+    e.layoutPrepared(
+      e.prepareRich(spansWith(fontFamily), EMPTY_GLYPH_ATLAS, 16, {}),
+      undefined,
+      undefined,
+    ).totalWidth;
+
+  it('does not serve one fontFamily the metrics of another', () => {
+    // Both engines share the SAME atlas object, so nothing invalidates the memo
+    // between the two prepares — which is exactly the condition under which the
+    // key has to do its job. With `fontFamily` absent from the signature this
+    // returned 48 (the serif width) instead of 144.
+    const shared = new LayoutEngine(10_000, 10_000, measurer);
+    const serif = widthOf(shared, 'serif');
+    const wideAfterSerif = widthOf(shared, 'wide');
+
+    const isolated = new LayoutEngine(10_000, 10_000, measurer);
+    const wideAlone = widthOf(isolated, 'wide');
+
+    expect(serif).toBe(48);
+    expect(wideAlone).toBe(144);
+    expect(wideAfterSerif).toBe(wideAlone);
+  });
+
+  it('still reuses the cache when the family is unchanged', () => {
+    // The negative test above would also pass if the key were made so specific
+    // that nothing ever hit. This pins that reuse still happens.
+    const e = new LayoutEngine(10_000, 10_000, measurer);
+    widthOf(e, 'serif');
+    const before = e.cacheStats().richParagraph.hits;
+    widthOf(e, 'serif');
+    expect(e.cacheStats().richParagraph.hits).toBeGreaterThan(before);
+  });
+});
+
+describe('EMPTY_GLYPH_ATLAS keeps the paragraph memo alive', () => {
+  it('is hit across repeated prepares, where a fresh literal is not', () => {
+    const text = 'alpha beta gamma\ndelta epsilon zeta';
+    const spans = [{ text }];
+
+    // What Text/RichText used to do: a new object each call, so the engine's
+    // atlas-identity check cleared the memo every time.
+    const withLiteral = new LayoutEngine(600, 10_000);
+    for (let i = 0; i < 4; i++) {
+      withLiteral.prepareRich(spans, {}, 16, {});
+    }
+    expect(withLiteral.cacheStats().richParagraph.hits).toBe(0);
+
+    // The shared frozen constant keeps identity stable, so repeats hit.
+    const withConstant = new LayoutEngine(600, 10_000);
+    for (let i = 0; i < 4; i++) {
+      withConstant.prepareRich(spans, EMPTY_GLYPH_ATLAS, 16, {});
+    }
+    expect(withConstant.cacheStats().richParagraph.hits).toBeGreaterThan(0);
+  });
+
+  it('is frozen, so one consumer cannot poison every other', () => {
+    expect(Object.isFrozen(EMPTY_GLYPH_ATLAS)).toBe(true);
   });
 });
