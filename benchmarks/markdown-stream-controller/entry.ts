@@ -45,10 +45,14 @@ interface TrialMetrics {
   sourceEqual: boolean;
 }
 
+// Both guards below check `value !== null` before the `typeof` check. The
+// reverse order is equivalent at runtime, but it narrows `value` to `object`
+// first, after which CodeQL's js/comparison-between-incompatible-types reads the
+// null comparison as impossible and reports a warning.
 function isInstrumentableMarkdown(value: unknown): value is InstrumentableMarkdown {
   return (
-    typeof value === 'object' &&
     value !== null &&
+    typeof value === 'object' &&
     'appendMarkdownCore' in value &&
     typeof value.appendMarkdownCore === 'function'
   );
@@ -56,8 +60,8 @@ function isInstrumentableMarkdown(value: unknown): value is InstrumentableMarkdo
 
 function isSourceMarkdown(value: unknown): value is SourceMarkdown {
   return (
-    typeof value === 'object' &&
     value !== null &&
+    typeof value === 'object' &&
     'rawMarkdown' in value &&
     typeof value.rawMarkdown === 'string'
   );
