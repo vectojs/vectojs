@@ -1,7 +1,22 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { CodeBlock, Markdown } from '../src/Markdown';
+import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
+import { CodeBlock, Markdown, preloadMathJax } from '../src/Markdown';
 import { Image } from '@vectojs/ui';
+
+/**
+ * Every test in this file is about WHAT gets typeset, not about when MathJax
+ * arrives, so it preloads once and then asserts synchronously as it always has.
+ *
+ * MathJax is imported lazily (see `preloadMathJax`), which means the first
+ * formula in a process cannot be typeset in the same tick. Preloading here keeps
+ * these assertions testing fence closure, caching, and entity shape rather than
+ * accidentally re-testing load timing. The lazy-arrival behaviour itself is
+ * covered separately in `lazyMathJax.test.ts`, which relies on vitest isolating
+ * module state per file so it still observes an unloaded MathJax.
+ */
+beforeAll(async () => {
+  await preloadMathJax();
+});
 
 /**
  * `renderMathToSVGDataURI` base64s the SVG with `btoa` on every REAL conversion

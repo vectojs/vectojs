@@ -78,12 +78,6 @@ marked.use({
   ],
 });
 
-import { mathjax } from 'mathjax-full/js/mathjax.js';
-import { TeX } from 'mathjax-full/js/input/tex.js';
-import { SVG } from 'mathjax-full/js/output/svg.js';
-import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
-import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
-import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
 import { measureText, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
 
 // @ts-ignore
@@ -91,11 +85,105 @@ import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
 
 // ── MathJax Setup ────────────────────────────────────────────────────────────
 
-const adaptor = liteAdaptor();
-RegisterHTMLHandler(adaptor);
-const tex = new TeX({ packages: AllPackages });
-const svg = new SVG({ fontCache: 'local' });
-const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
+/**
+ * MathJax is loaded on demand, the first time a document actually has a formula
+ * to typeset.
+ *
+ * It is by far the heaviest thing this package can pull in: measured 2026-07-30,
+ * a browser bundle of a consumer that imports `Markdown` and renders only prose
+ * is 2,157,251 bytes (723,602 gzipped), and excluding `mathjax-full` takes that
+ * to 337,894 (105,256 gzipped). MathJax is 85% of the bundle, and it used to be
+ * unconditional: these were six static imports and the `htmlMathJax` document
+ * below was constructed at module scope, so every consumer paid the bytes plus
+ * ~155 ms of module evaluation and ~6 ms of setup whether or not any document
+ * ever contained a fence. A dynamic import lets a bundler split it into its own
+ * chunk (verified with `bun build --splitting`: the entry chunk drops to 725
+ * bytes and MathJax lands in separate chunks fetched on first use).
+ *
+ * The cost of that is real and worth stating plainly: the FIRST formula on a
+ * page cannot be typeset synchronously any more. It renders as a CodeBlock of
+ * TeX source — the same honest "not typeset yet" state an unclosed fence already
+ * uses — and is replaced once the module resolves. Call `preloadMathJax()` and
+ * await it before constructing if you need the first formula to be typeset in
+ * the same tick. Every formula after the module resolves is synchronous again.
+ */
+type MathConverter = (formula: string, displayMode: boolean) => MathRender | null;
+
+let mathConverter: MathConverter | null = null;
+let mathLoad: Promise<void> | null = null;
+
+/**
+ * Begin (or join) loading MathJax, resolving once formulas typeset synchronously.
+ *
+ * Idempotent and safe to call from anywhere: the promise is cached, so N callers
+ * and N documents share one module load. Rejection is swallowed deliberately —
+ * a failed load must degrade to TeX source in a CodeBlock, not reject a caller's
+ * `await close()` or leave an unhandled rejection on the page. `mathConverter`
+ * simply stays null and every formula keeps rendering as source.
+ */
+
+/**
+ * Read a named export off a dynamically imported CommonJS module.
+ *
+ * `mathjax-full` ships CommonJS, and a dynamic import of it does NOT reliably
+ * put its exports on the namespace object. Bun's resolver hoists them, so
+ * `const { liteAdaptor } = await import(...)` works under vitest — but esbuild
+ * (and Rollup/webpack in the same situation) wraps the CJS module and emits only
+ * `export default require_liteAdaptor()`, no named exports at all. Verified by
+ * reading the generated chunk: `exports.liteAdaptor = liteAdaptor` inside the
+ * wrapper, `export default require_liteAdaptor()` outside it, nothing else.
+ *
+ * So destructuring the namespace directly typechecks, passes every unit test,
+ * and then fails in a real browser bundle with `liteAdaptor is not a function`.
+ * That is exactly what happened here, and only the real-browser e2e caught it.
+ * Prefer the named export when the bundler provided one, fall back to `default`.
+ */
+function interop<K extends string>(mod: unknown, key: K): Record<K, any> {
+  const ns = mod as Record<string, unknown> & {
+    default?: Record<string, unknown>;
+  };
+  if (typeof ns?.[key] !== 'undefined') return ns as Record<K, any>;
+  const fallback = ns?.default;
+  if (fallback && typeof fallback[key] !== 'undefined') return fallback as Record<K, any>;
+  throw new Error(`mathjax-full module is missing export "${key}"`);
+}
+
+export function preloadMathJax(): Promise<void> {
+  if (mathLoad) return mathLoad;
+  mathLoad = (async () => {
+    const [mathjaxMod, texMod, svgMod, adaptorMod, handlerMod, packagesMod] = await Promise.all([
+      import('mathjax-full/js/mathjax.js'),
+      import('mathjax-full/js/input/tex.js'),
+      import('mathjax-full/js/output/svg.js'),
+      import('mathjax-full/js/adaptors/liteAdaptor.js'),
+      import('mathjax-full/js/handlers/html.js'),
+      import('mathjax-full/js/input/tex/AllPackages.js'),
+    ]);
+    const { mathjax } = interop(mathjaxMod, 'mathjax');
+    const { TeX } = interop(texMod, 'TeX');
+    const { SVG } = interop(svgMod, 'SVG');
+    const { liteAdaptor } = interop(adaptorMod, 'liteAdaptor');
+    const { RegisterHTMLHandler } = interop(handlerMod, 'RegisterHTMLHandler');
+    const { AllPackages } = interop(packagesMod, 'AllPackages');
+    const adaptor = liteAdaptor();
+    RegisterHTMLHandler(adaptor as never);
+    const tex = new TeX({ packages: AllPackages });
+    const svg = new SVG({ fontCache: 'local' });
+    const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
+    mathConverter = (formula, displayMode) =>
+      convertMathToSVGDataURI(formula, displayMode, (f, d) =>
+        adaptor.innerHTML(htmlMathJax.convert(f, { display: d }) as never),
+      );
+  })().catch((e) => {
+    console.error('MathJax failed to load; formulas will render as TeX source', e);
+  });
+  return mathLoad;
+}
+
+/** Whether formulas can be typeset without waiting. Exposed for tests. */
+export function isMathJaxReady(): boolean {
+  return mathConverter !== null;
+}
 
 /** A converted formula: its SVG data URI and the intrinsic box scraped off it. */
 interface MathRender {
@@ -173,11 +261,29 @@ function rendersAsMath(token: Tokens.Code): boolean {
   );
 }
 
+/**
+ * A cached formula render, or null when one is not available *yet*.
+ *
+ * Null deliberately means two things at once — "MathJax is not loaded" and "the
+ * conversion failed" — because the caller's response to both is identical: show
+ * the TeX source in a CodeBlock. Keeping them one signal is what let the render
+ * arm stay unchanged when loading became lazy. A cache hit is answered even
+ * before MathJax loads, so a formula already converted once (the common case on
+ * a re-render, and for the closed fence whose `raw` grows by a trailing newline)
+ * never waits on the module.
+ *
+ * The cache lookup being ahead of the `mathConverter` check is intentional but
+ * currently unobservable: `mathConverter` only ever goes null -> set, so nothing
+ * can be in the cache while it is still null. Swapping the two lines changes no
+ * behaviour today (confirmed by mutation: no test fails). It is written this way
+ * so the cache stays authoritative if the converter ever becomes resettable.
+ */
 function renderMathToSVGDataURI(formula: string, displayMode: boolean): MathRender | null {
   const key = `${displayMode ? 1 : 0}\u0000${formula}`;
   const hit = mathCache.get(key);
   if (hit) return hit;
-  const converted = convertMathToSVGDataURI(formula, displayMode);
+  if (!mathConverter) return null;
+  const converted = mathConverter(formula, displayMode);
   if (converted) {
     if (mathCache.size >= MATH_CACHE_LIMIT) {
       const oldest = mathCache.keys().next().value;
@@ -188,10 +294,20 @@ function renderMathToSVGDataURI(formula: string, displayMode: boolean): MathRend
   return converted;
 }
 
-function convertMathToSVGDataURI(formula: string, displayMode: boolean): MathRender | null {
+/**
+ * Scrape a formula's SVG and intrinsic box out of a typeset call.
+ *
+ * `typeset` is injected rather than closed over so this stays free of any
+ * `mathjax-full` reference — a static one here would defeat the lazy import and
+ * pull the whole library back into the entry chunk.
+ */
+function convertMathToSVGDataURI(
+  formula: string,
+  displayMode: boolean,
+  typeset: (formula: string, displayMode: boolean) => string,
+): MathRender | null {
   try {
-    const node = htmlMathJax.convert(formula, { display: displayMode });
-    const svgString = adaptor.innerHTML(node);
+    const svgString = typeset(formula, displayMode);
 
     // Parse ex sizes (e.g. width="40.3ex" height="5.2ex")
     const wMatch = svgString.match(/width="([^"]+)ex"/);
@@ -1292,6 +1408,15 @@ export class Markdown extends UIComponent {
   private inStableCallback = false;
   /** Set by {@link destroy} so late settlement work skips a torn-down tree. */
   private isDestroyed = false;
+  /**
+   * True while this document is waiting on the lazy MathJax load.
+   *
+   * Tracked per instance rather than read off the module state because it also
+   * gates settlement: `await close()` and `onStable` must not resolve while a
+   * formula is still showing TeX source, or a caller doing expensive one-time
+   * work on a "final" document would measure and export placeholder boxes.
+   */
+  private mathLoadPending = false;
   private _userTiming: boolean;
   private tokens: Token[] = [];
   // At most one worker lex request in flight at a time. Required for the
@@ -1559,6 +1684,11 @@ export class Markdown extends UIComponent {
     this.pendingWorkerIds.clear();
     this.appendInFlight = false;
     this.appendPending = false;
+    // A pending MathJax load holds settlement open, and its continuation now
+    // returns early on `isDestroyed` without flushing. Clearing this first is
+    // what lets the flush below actually release, instead of leaving an awaiting
+    // `close()` pending forever against a torn-down tree.
+    this.mathLoadPending = false;
     // Nothing will reply now, so release any settlement waiter rather than
     // leaving a `close()` pending against a destroyed instance.
     this.flushAppendSettledWaiters();
@@ -2141,6 +2271,73 @@ export class Markdown extends UIComponent {
    * Idempotent and free when no guess is live, which is what lets `close()`,
    * `abort()`, and a mid-stream staleness check all call it unconditionally.
    */
+  /**
+   * Start the MathJax load, and re-typeset this document once it resolves.
+   *
+   * Called from two places, for two different reasons:
+   *
+   * - When an OPEN math fence is rendered. This is a prefetch, and it is what
+   *   makes the lazy load invisible while streaming: the module starts loading
+   *   the moment a formula begins arriving, several chunks before its closing
+   *   fence, so by the time the fence closes the converter is usually already
+   *   installed and the formula typesets synchronously on the normal path.
+   * - When a CLOSED fence could not be typeset because the module is not ready.
+   *   That is the case a rebuild actually exists for: a document constructed with
+   *   math already complete, or a stream that closed a fence faster than the
+   *   module loaded.
+   *
+   * Idempotent per instance. Concurrent callers coalesce onto the one cached
+   * module promise, and `mathLoadPending` keeps a second rebuild from being
+   * queued while the first is outstanding.
+   */
+  private ensureMathJax(): void {
+    if (mathConverter || this.mathLoadPending || this.isDestroyed) return;
+    this.mathLoadPending = true;
+    void preloadMathJax().then(() => {
+      this.mathLoadPending = false;
+      // Destroyed while the module was in flight: the tree this would rebuild
+      // is gone, and re-rendering into it would resurrect a detached subtree.
+      if (this.isDestroyed) return;
+      // A failed load leaves the converter null. Every formula stays TeX source,
+      // which is exactly what is on screen already, so a rebuild would be pure
+      // cost for an identical tree.
+      if (mathConverter) this.retypesetFromTokens();
+      // Settlement was held open for this; release it either way.
+      this.flushAppendSettledWaiters();
+    });
+  }
+
+  /**
+   * Rebuild every block from the tokens already lexed, without re-lexing.
+   *
+   * Used only when MathJax arrives after a formula has already been rendered as
+   * source. Rebuilding wholesale rather than surgically replacing the math blocks
+   * is the deliberate choice: `tokenChildPrefix` maps token indices to child
+   * slots positionally, so swapping one child in place would have to keep that
+   * mapping, the `Stack`'s cached box, and every following sibling's position in
+   * agreement by hand. Re-rendering the same token list in the same order leaves
+   * the mapping trivially correct, and this runs at most once per document — the
+   * same cost as the `setContent` rebuild that already exists.
+   *
+   * The optimistic tail is dropped first. Its `entity` is about to be destroyed,
+   * so the pointer would dangle; unwinding restores literal spans, and if the
+   * stream is still open the next chunk re-applies a guess.
+   */
+  private retypesetFromTokens(): void {
+    this.unwindOptimisticTail();
+    const tokens = this.tokens;
+    while (this.content.children.length > 0) {
+      this.content.children[this.content.children.length - 1].destroy();
+    }
+    for (const token of tokens) {
+      const el = this.renderToken(token);
+      if (el) this.content.add(el);
+    }
+    this.width = this.content.width;
+    this.height = this.content.height;
+    this.scene?.markDirty();
+  }
+
   private unwindOptimisticTail(): void {
     const tail = this.optimisticTail;
     this.optimisticTail = null;
@@ -2195,9 +2392,14 @@ export class Markdown extends UIComponent {
    * reaches `dispatchAppend()`, which `postMessage()`s and returns, and the reply
    * that runs `updateTokens()` lands later. Without waiting here, `close()` could
    * resolve — and `onStable` fire — against a document missing its last chunk.
+   *
+   * An outstanding lazy MathJax load counts as unsettled for the same reason. A
+   * document whose formulas are still TeX source is not final in any sense a
+   * caller of `onStable` cares about: the boxes are the wrong size, so measuring
+   * or exporting there would capture placeholders.
    */
   private waitForAppendSettled(): Promise<void> {
-    if (!this.appendInFlight) return Promise.resolve();
+    if (!this.appendInFlight && !this.mathLoadPending) return Promise.resolve();
     return new Promise<void>((resolve) => {
       this.appendSettledWaiters.push(resolve);
     });
@@ -2215,7 +2417,9 @@ export class Markdown extends UIComponent {
    * one chunk early.
    */
   private flushAppendSettledWaiters(): void {
-    if (this.appendInFlight || this.appendSettledWaiters.length === 0) return;
+    if (this.appendInFlight || this.mathLoadPending || this.appendSettledWaiters.length === 0) {
+      return;
+    }
     const waiters = this.appendSettledWaiters;
     this.appendSettledWaiters = [];
     for (const resolve of waiters) resolve();
@@ -2636,6 +2840,13 @@ export class Markdown extends UIComponent {
         // glyph nobody wants to see. As a CodeBlock it also gets the existing
         // `setCode` in-place update, so the growing source costs one mutator
         // call per chunk instead of a rebuild.
+        // Begin loading MathJax as soon as a math fence appears, even while it is
+        // still open. During a stream that prefetch is what hides the lazy load
+        // entirely: the module is fetched over the several chunks it takes the
+        // formula to arrive, so the closing fence typesets on the synchronous
+        // path below.
+        if (MATH_LANGS.has(lang)) this.ensureMathJax();
+
         if (rendersAsMath(codeToken)) {
           const mathData = renderMathToSVGDataURI(codeToken.text, true);
           if (mathData) {
