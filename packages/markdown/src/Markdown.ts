@@ -1854,6 +1854,84 @@ export class Markdown extends UIComponent {
   }
 
   /**
+   * Update a reused blockquote's tail child in place, or report that it cannot be.
+   *
+   * The render arm builds `container[border, innerStack]` where every inner block
+   * sits in its own single-child `wrapper`, so the tail entity is
+   * `innerStack.children.at(-1).children[0]`. Only the LAST inner block may be
+   * updated: the inner token list is prefix-stable exactly like the top level (a
+   * growing quote keeps its earlier blocks byte-identical), so anything before the
+   * tail is untouched and anything more complicated than a changed tail falls back
+   * to the caller's rebuild.
+   *
+   * Returns `false` without mutating anything when the shape is not the simple
+   * grow-the-tail case, which is the signal for the caller to rebuild. Every early
+   * return has to leave the entity untouched, or a rejected reuse would leave a
+   * half-updated quote on screen.
+   */
+  private updateBlockquoteTail(container: Entity, oldInner: Token[], newInner: Token[]): boolean {
+    // Only the tail block may differ: every earlier inner token must be
+    // byte-identical, and no block may have been added or removed. `space` tokens
+    // render nothing, so compare tokens and map to children separately.
+    if (oldInner.length !== newInner.length || newInner.length === 0) return false;
+    const tail = newInner.length - 1;
+    for (let i = 0; i < tail; i++) {
+      if (oldInner[i].raw !== newInner[i].raw) return false;
+    }
+    const oldTail = oldInner[tail];
+    const newTail = newInner[tail];
+    if (oldTail.type !== newTail.type) return false;
+
+    // container = [border, innerStack]; the render arm adds them in that order.
+    const innerStack = container.children[1];
+    if (!(innerStack instanceof Stack)) return false;
+    const wrapper = innerStack.children.at(-1);
+    if (!wrapper || wrapper.children.length !== 1) return false;
+    const entity = wrapper.children[0];
+
+    // The tail token must be the one that owns that last wrapper. A tail token
+    // that renders nothing (a trailing `space`) would leave the last wrapper owned
+    // by an earlier block, so updating it would write the wrong entity.
+    if (!this.producesEntity(newTail)) return false;
+
+    if (newTail.type === 'paragraph' && 'setSpans' in entity) {
+      // Literal spans only. The optimistic guess is reserved for the document's
+      // trailing paragraph; a paragraph nested in a quote is not it, and giving it
+      // a guess would need a second unwind path keyed on the nested entity.
+      (entity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
+        this.literalParagraphSpans(newTail as Tokens.Paragraph),
+      );
+    } else if (newTail.type === 'heading' && 'setSpans' in entity) {
+      // Same depth guard as the top-level heading path: `setSpans` cannot change
+      // `font`, and a heading's size comes from its depth.
+      if ((oldTail as Tokens.Heading).depth !== (newTail as Tokens.Heading).depth) {
+        return false;
+      }
+      (entity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
+        this.headingSpans(newTail as Tokens.Heading),
+      );
+    } else if (newTail.type === 'code' && entity instanceof CodeBlock) {
+      const codeToken = newTail as Tokens.Code;
+      entity.setCode(codeToken.text, codeToken.lang ?? undefined);
+    } else {
+      // Any other tail type (list, table, nested blockquote, a math fence that
+      // renders a container rather than a CodeBlock) has no mutator to call.
+      return false;
+    }
+
+    // Propagate the tail's new box outward by hand: wrapper, then the stack, then
+    // the border, then the container. The render arm computes all four the same
+    // way, so this keeps a reused quote geometrically identical to a rebuilt one.
+    wrapper.width = entity.x + entity.width;
+    wrapper.height = entity.height;
+    innerStack.resizeLastChild(wrapper);
+    const border = container.children[0];
+    if (border instanceof QuoteBorder) border.height = innerStack.height || 20;
+    container.height = Math.max(border?.height ?? 0, innerStack.height);
+    return true;
+  }
+
+  /**
    * Spans for a heading being updated in place.
    *
    * Kept in lockstep with the `heading` arm of {@link renderToken}, which builds
@@ -2193,6 +2271,24 @@ export class Markdown extends UIComponent {
         this.streamStats.inPlaceUpdates++;
         matchLen++;
         // Same O(1) tail resync as the paragraph and code paths.
+        this.content.resizeLastChild(existingEntity);
+      }
+    } else if (lastTokenSameType && newTokens[matchLen]?.type === 'blockquote') {
+      // A blockquote is the one reusable block that owns a subtree rather than a
+      // single entity, so reuse means descending to its tail child instead of
+      // calling a mutator on the block itself. A quote streamed line by line
+      // otherwise rebuilt every inner block plus the border on every chunk.
+      const existingEntity = oldChildren[oldTokenToChild[matchLen]];
+      const newInner = (newTokens[matchLen] as Tokens.Blockquote).tokens;
+      const oldInner = (oldTokens[matchLen] as Tokens.Blockquote).tokens;
+      if (
+        existingEntity instanceof MarkdownContainer &&
+        newInner &&
+        oldInner &&
+        this.updateBlockquoteTail(existingEntity, oldInner, newInner)
+      ) {
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
         this.content.resizeLastChild(existingEntity);
       }
     }
