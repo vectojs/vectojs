@@ -1,4 +1,22 @@
+import type { Entity } from '@vectojs/core';
+
 export type StreamControllerState = 'open' | 'closed' | 'aborted';
+
+/**
+ * How trailing, not-yet-closed inline Markdown syntax renders while a
+ * {@link StreamController} is open.
+ *
+ * `'literal'` is what every release before this option shipped: unclosed syntax
+ * characters render as the plain text `marked.lexer()` produces for them, so
+ * `**bo` reads as two asterisks and `bo` until the closing `**` arrives.
+ *
+ * `'optimistic'` guesses that the trailing paragraph's last unclosed
+ * strong/emphasis/inline-code/link construct will close, and renders it with the
+ * guessed formatting immediately. The guess is display-only — token state is
+ * never mutated — and is unwound on `close()`, so a `'literal'` and an
+ * `'optimistic'` stream of the same source end at an identical document.
+ */
+export type IncompleteMarkdownMode = 'literal' | 'optimistic';
 
 /** Fixed-rate typewriter pacing for a Markdown stream. */
 export interface StreamPacingOptions {
@@ -14,6 +32,31 @@ export interface StreamControllerOptions {
   pacing?: StreamPacingOptions;
   /** Aborts and discards uncommitted text when signalled. */
   signal?: AbortSignal;
+  /**
+   * Trailing-unclosed-syntax rendering policy. Default `'literal'`, which is
+   * byte-for-byte the behavior of every prior release.
+   *
+   * Interpreted by `Markdown`, not by the controller itself: the controller only
+   * owns buffering and pacing, while the guess is a render-time transform over
+   * the trailing paragraph. See {@link IncompleteMarkdownMode}.
+   */
+  incompleteMode?: IncompleteMarkdownMode;
+  /**
+   * Fires exactly once, after `close()` has committed the final text AND any
+   * in-flight worker parse has been applied, with a snapshot of the document's
+   * top-level block entities at that instant.
+   *
+   * Independent of {@link incompleteMode} — usable with the `'literal'` default.
+   * Intended for one-time post-stream work (baking a highlight cache, starting
+   * an entrance animation) that should not run mid-stream against content still
+   * likely to change. Never fired by `flush()`, `abort()`, or `destroy()`: none
+   * of those mean the content finished changing.
+   *
+   * Calling `appendMarkdown()` or `setContent()` from inside the callback throws
+   * synchronously. A throw from the callback rejects the `close()` promise; the
+   * controller is released either way.
+   */
+  onStable?: (blocks: readonly Entity[]) => void;
 }
 
 /** A frame-coalesced, lifecycle-bound writer for one Markdown instance. */
@@ -37,6 +80,18 @@ export interface StreamController {
 export interface MarkdownStreamHost {
   append(chunk: string): void;
   release(controller: BoundStreamController): void;
+  /**
+   * Awaited by `close()` after the final text is committed, before the close
+   * promise settles and before the controller is released.
+   *
+   * Exists because committing text is not the same as the document reflecting it:
+   * `append()` reaches the worker via `postMessage`, which returns immediately,
+   * so without this hook `await close()` could resolve while the last chunk was
+   * still being parsed off-thread. The host uses it to wait out its own in-flight
+   * parse and to run any end-of-stream callback. A rejection here rejects
+   * `close()`; the controller is still released.
+   */
+  onClose?(): void | Promise<void>;
 }
 
 /** @internal The controller shape retained by Markdown. */
@@ -111,7 +166,10 @@ class StreamControllerImpl implements BoundStreamController {
     this.onSignalAbort = () => this.abort(this.signal?.reason);
 
     if (this.signal?.aborted) this.abort(this.signal.reason);
-    else this.signal?.addEventListener('abort', this.onSignalAbort, { once: true });
+    else
+      this.signal?.addEventListener('abort', this.onSignalAbort, {
+        once: true,
+      });
   }
 
   public get state(): StreamControllerState {
@@ -188,11 +246,41 @@ class StreamControllerImpl implements BoundStreamController {
       return closePromise;
     }
 
+    // Closed to writes from here on, so nothing can slip in behind the host's
+    // settlement work. The controller stays attached until that work finishes,
+    // which is what keeps a second createStream() from racing this close.
     this.currentState = 'closed';
-    this.cleanup();
-    this.resolveClose?.();
-    this.resolveClose = null;
-    this.rejectClose = null;
+    let settled: void | Promise<void>;
+    try {
+      settled = this.host.onClose?.();
+    } catch (error) {
+      // A synchronous throw is the same failure as a rejection: the close failed,
+      // but the controller must still be released.
+      this.cleanup();
+      this.rejectPendingClose(error);
+      return closePromise;
+    }
+    // No hook, or a hook that finished synchronously: settle in the same task, so
+    // a host that needs nothing keeps the pre-existing timing exactly.
+    if (settled === undefined) {
+      this.cleanup();
+      this.resolveClose?.();
+      this.resolveClose = null;
+      this.rejectClose = null;
+      return closePromise;
+    }
+    void Promise.resolve(settled).then(
+      () => {
+        this.cleanup();
+        this.resolveClose?.();
+        this.resolveClose = null;
+        this.rejectClose = null;
+      },
+      (error: unknown) => {
+        this.cleanup();
+        this.rejectPendingClose(error);
+      },
+    );
     return closePromise;
   }
 
