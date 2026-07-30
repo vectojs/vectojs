@@ -710,7 +710,9 @@ Plain paragraph at the end.
         const stack = q.children[1];
         return stack.children
           .map((w) => {
-            const e = w.children[0] as unknown as { spans?: Array<{ text: string }> };
+            const e = w.children[0] as unknown as {
+              spans?: Array<{ text: string }>;
+            };
             return (e.spans ?? []).map((sp) => sp.text).join('');
           })
           .join('|');
@@ -1038,7 +1040,9 @@ Plain paragraph at the end.
 
         streamed.appendMarkdown(' ' + long);
 
-        const atOnce = new Markdown(`- one\n- start ${long}`, { maxWidth: 200 });
+        const atOnce = new Markdown(`- one\n- start ${long}`, {
+          maxWidth: 200,
+        });
         const reference = atOnce.content.children[0] as Stack;
 
         expect(stack.height).toBeGreaterThan(heightBefore);
@@ -1368,6 +1372,415 @@ Plain paragraph at the end.
 
         expect(tableOf(md).rows[0][1]).toBe(cell);
         expect(cellTexts(md)).toEqual([['a1', 'b1']]);
+      });
+    });
+
+    describe('streamed image paragraph reuses its Stack', () => {
+      // The last silent fallthrough in the reuse path. A paragraph containing an
+      // image renders as a Stack of alternating text runs and images rather than
+      // one RichText, so it has no setSpans and fell out of the paragraph branch
+      // with no `else` — invisible, because inPlaceUpdates simply stayed flat
+      // while entitiesRebuilt climbed, and every rebuild also re-created the
+      // Image and discarded its decoded bitmap.
+      //
+      // Reuse is deliberately narrow: only a growing trailing text run, which is
+      // the shape a stream actually produces once an image has closed (probed
+      // against marked@18.0.7 — the image token's raw and index are then stable
+      // and the token list settles at [..., image, text]).
+      const IMG = '![alt](https://e.com/a.png)';
+
+      const blockOf = (md: Markdown) => md.content.children.at(-1) as unknown as Entity;
+      const kindsOf = (md: Markdown) => (blockOf(md).children ?? []).map((c) => c.constructor.name);
+      const geometryOf = (md: Markdown) => {
+        const block = blockOf(md);
+        return {
+          height: md.height,
+          blockHeight: block.height,
+          kids: (block.children ?? []).map((k) => [
+            k.constructor.name,
+            k.x,
+            k.y,
+            k.width,
+            k.height,
+          ]),
+        };
+      };
+      const streamed = (chunks: string[], maxWidth = 400) => {
+        const md = new Markdown('', { maxWidth });
+        const stream = md.createStream();
+        for (const chunk of chunks) {
+          void stream.write(chunk);
+          stream.flush();
+        }
+        return md;
+      };
+
+      it('does not drop the image when a plain paragraph gains its first one', () => {
+        // A correctness bug, found while building the perf path and fixed with it.
+        // The setSpans branch dispatched on the ENTITY having setSpans and never
+        // asked whether the new token still renders as one RichText. So a plain
+        // paragraph that gained an image kept its RichText and was handed the image
+        // paragraph's spans — and collectSpans emits nothing for an image token, so
+        // the picture was silently dropped. Pre-existing; reproduced unchanged on
+        // the previous commit.
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+        void stream.write('Figure: ');
+        stream.flush();
+        expect(blockOf(md).constructor.name).toBe('RichText');
+
+        void stream.write(IMG);
+        stream.flush();
+
+        expect(blockOf(md).constructor.name).toBe('Stack');
+        expect(kindsOf(md)).toEqual(['RichText', 'Image']);
+        expect(geometryOf(md)).toEqual(
+          geometryOf(new Markdown(`Figure: ${IMG}`, { maxWidth: 400 })),
+        );
+      });
+
+      it('renders an image-bearing paragraph as a Stack of runs and images', () => {
+        // Establishes the shape the reuse path operates on, including that
+        // consecutive non-image tokens merge into ONE RichText — so children are
+        // not one-per-token, which is why the guards compare token runs.
+        expect(kindsOf(new Markdown(IMG, { maxWidth: 400 }))).toEqual(['Image']);
+        expect(kindsOf(new Markdown(`${IMG} tail`, { maxWidth: 400 }))).toEqual([
+          'Image',
+          'RichText',
+        ]);
+        expect(kindsOf(new Markdown(`lead ${IMG} tail`, { maxWidth: 400 }))).toEqual([
+          'RichText',
+          'Image',
+          'RichText',
+        ]);
+        // `*em*` and `` `code` `` are separate inline tokens but one run.
+        expect(kindsOf(new Markdown(`a *em* and \`c\` ${IMG} tail`, { maxWidth: 400 }))).toEqual([
+          'RichText',
+          'Image',
+          'RichText',
+        ]);
+      });
+
+      it('reuses the Stack and the Image as the trailing run grows', () => {
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+
+        void stream.write(`See ${IMG}`);
+        stream.flush();
+        const stack = blockOf(md);
+        const image = (stack.children ?? [])[1];
+        const rebuiltAfterFirst = md.streamStats.entitiesRebuilt;
+
+        void stream.write(' then trailing');
+        stream.flush();
+        void stream.write(' prose that keeps growing.');
+        stream.flush();
+
+        // Same Stack, same Image instance: the decoded bitmap survives.
+        expect(blockOf(md)).toBe(stack);
+        expect((blockOf(md).children ?? [])[1]).toBe(image);
+        expect(md.streamStats.entitiesRebuilt).toBe(rebuiltAfterFirst);
+        expect(md.streamStats.inPlaceUpdates).toBeGreaterThanOrEqual(2);
+      });
+
+      it('is geometrically identical to the same paragraph built at once', () => {
+        const source = `See ${IMG} then trailing prose that wraps a little.`;
+        const once = new Markdown(source, { maxWidth: 400 });
+        const stream = streamed([`See ${IMG}`, ' then trailing', ' prose that wraps a little.']);
+        expect(geometryOf(stream)).toEqual(geometryOf(once));
+      });
+
+      it('resyncs the Stack height when the trailing run wraps to a new line', () => {
+        // The case that makes the resync load-bearing rather than redundant.
+        // `RichText.setSpans` re-lays out the CHILD but does not touch its parent's
+        // cached box, and `Stack.add` happens to update the height itself — so a
+        // tail that grows within one line hides the bug. Only a tail that gains a
+        // LINE changes the child's height, and without `resizeLastChild` the Stack
+        // then keeps its old height: measured 320 where 368 is correct.
+        const tail =
+          ' and now a great deal more trailing prose that will certainly wrap onto several additional lines of text.';
+        const md = streamed([`See ${IMG} short`, tail]);
+        const once = new Markdown(`See ${IMG} short${tail}`, { maxWidth: 400 });
+
+        expect(blockOf(md).children?.at(-1)?.height).toBeGreaterThan(24);
+        expect(blockOf(md).height).toBe(blockOf(once).height);
+        expect(md.height).toBe(once.height);
+      });
+
+      it('appends a run when prose starts after an image-only paragraph', () => {
+        // The old token list has no trailing run at all, so this is the append
+        // branch rather than the setSpans branch.
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+        void stream.write(IMG);
+        stream.flush();
+        const stack = blockOf(md);
+        expect(kindsOf(md)).toEqual(['Image']);
+
+        void stream.write(' now prose appears');
+        stream.flush();
+
+        expect(blockOf(md)).toBe(stack);
+        expect(kindsOf(md)).toEqual(['Image', 'RichText']);
+        expect(geometryOf(md)).toEqual(
+          geometryOf(new Markdown(`${IMG} now prose appears`, { maxWidth: 400 })),
+        );
+      });
+
+      it('reuses across a multi-image paragraph whose final run grows', () => {
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+        void stream.write('A ![x](u1.png) mid ![y](u2.png) end');
+        stream.flush();
+        const stack = blockOf(md);
+
+        void stream.write(' more words');
+        stream.flush();
+
+        expect(blockOf(md)).toBe(stack);
+        expect(geometryOf(md)).toEqual(
+          geometryOf(
+            new Markdown('A ![x](u1.png) mid ![y](u2.png) end more words', {
+              maxWidth: 400,
+            }),
+          ),
+        );
+      });
+
+      it('rebuilds when a second image arrives', () => {
+        // A new image is a shape change, not a growing tail: the prefix through
+        // the last image is no longer identical, so reuse must be refused.
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+        void stream.write('A ![x](u1.png) mid');
+        stream.flush();
+        const before = blockOf(md);
+
+        void stream.write(' ![y](u2.png) end');
+        stream.flush();
+
+        expect(blockOf(md)).not.toBe(before);
+        expect(geometryOf(md)).toEqual(
+          geometryOf(
+            new Markdown('A ![x](u1.png) mid ![y](u2.png) end', {
+              maxWidth: 400,
+            }),
+          ),
+        );
+      });
+
+      it('rebuilds when the image token itself changes', () => {
+        // A partially-typed image closes into a DIFFERENT image token, so the
+        // href changes under a same-typed paragraph. Reusing would keep the old
+        // Image and paint the wrong picture.
+        const md = new Markdown('', { maxWidth: 400 });
+        const stream = md.createStream();
+        void stream.write('x ![a](u1.png) tail');
+        stream.flush();
+        const before = blockOf(md);
+        const beforeSrc = ((blockOf(md).children ?? [])[1] as unknown as { src: string }).src;
+
+        // setContent rather than a stream chunk: this is the guard under test, and
+        // an append cannot rewrite an already-closed image.
+        md.setContent('x ![a](u2.png) tail');
+
+        expect(blockOf(md)).not.toBe(before);
+        expect(((blockOf(md).children ?? [])[1] as unknown as { src: string }).src).not.toBe(
+          beforeSrc,
+        );
+      });
+
+      it('keeps every text run selectable and projected after reuse', () => {
+        // Selection is the thing most easily lost by an in-place path: a reused
+        // run that stopped projecting, or lost `selectable`, would still LOOK
+        // right on the canvas while becoming impossible to drag-select or copy.
+        // Asserted against a one-shot build so reuse cannot silently differ.
+        const projections = (md: Markdown) =>
+          (blockOf(md).children ?? []).map((child) => {
+            const projection = (
+              child as unknown as {
+                getContentProjection?: () => {
+                  text?: string;
+                  selectable?: boolean;
+                } | null;
+              }
+            ).getContentProjection?.();
+            return projection ? { text: projection.text, selectable: projection.selectable } : null;
+          });
+
+        const stream = streamed([`Lead text ${IMG}`, ' trailing caption words here']);
+        const once = new Markdown(`Lead text ${IMG} trailing caption words here`, {
+          maxWidth: 400,
+        });
+
+        expect(projections(stream)).toEqual(projections(once));
+        // Both runs, not just the mutated tail.
+        expect(projections(stream).filter((p) => p?.selectable === true)).toHaveLength(2);
+      });
+
+      it('honours selectable: false on the reuse path', () => {
+        const md = new Markdown('', { maxWidth: 400, selectable: false });
+        const stream = md.createStream();
+        void stream.write(`Lead ${IMG}`);
+        stream.flush();
+        void stream.write(' caption words');
+        stream.flush();
+
+        const runs = (blockOf(md).children ?? []).filter(
+          (c) => c.constructor.name === 'RichText',
+        ) as unknown as Array<{ selectable: boolean }>;
+        expect(runs).toHaveLength(2);
+        expect(runs.every((r) => r.selectable === false)).toBe(true);
+      });
+
+      it('leaves a plain paragraph on the ordinary setSpans path', () => {
+        // The image path must not capture paragraphs that have no image: those
+        // still reuse one RichText via setSpans, with no Stack involved.
+        const md = streamed(['Plain prose', ' that grows', ' further still.']);
+        expect(blockOf(md).constructor.name).toBe('RichText');
+        expect(md.streamStats.entitiesRebuilt).toBe(0);
+      });
+
+      describe('guards that reject reuse', () => {
+        // Tested directly against the private method, one guard per case.
+        //
+        // Driving these through a stream does NOT isolate them: the guards overlap
+        // on real input, so removing any single one still leaves another to reject
+        // the same paragraph. Measured — with the prefix-raw comparison deleted, a
+        // second image arriving is still refused by the child-count guard, so an
+        // end-to-end test passes while the guard under test is gone. That is
+        // defence in depth in production and a blind spot in a test, which is why
+        // each case below is chosen to be the FIRST guard that fires for it
+        // (verified by reimplementing the ladder and reporting which one rejects).
+        type ImageParagraphUpdater = {
+          updateImageParagraph: (
+            entity: unknown,
+            oldT: Tokens.Paragraph,
+            newT: Tokens.Paragraph,
+          ) => boolean;
+        };
+        const paragraphTokenOf = (src: string): Tokens.Paragraph =>
+          markedLexer(src).find((t) => t.type === 'paragraph') as Tokens.Paragraph;
+        /** The Stack the render arm builds for `src`, plus the updater. */
+        const setup = (src: string) => {
+          const md = new Markdown(src, { maxWidth: 400 });
+          return {
+            md,
+            stack: md.content.children.at(-1) as unknown,
+            update: md as unknown as ImageParagraphUpdater,
+          };
+        };
+
+        it('accepts the ordinary growing tail (baseline)', () => {
+          // A positive case first, so a guard test below cannot pass merely
+          // because the method rejects everything.
+          const { stack, update } = setup(`x ${IMG} ta`);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf(`x ${IMG} ta`),
+              paragraphTokenOf(`x ${IMG} tail`),
+            ),
+          ).toBe(true);
+        });
+
+        it('rejects a non-Stack entity', () => {
+          const { update } = setup(`x ${IMG} ta`);
+          const plain = new Markdown('plain', { maxWidth: 400 }).content.children[0];
+          expect(
+            update.updateImageParagraph(
+              plain,
+              paragraphTokenOf(`x ${IMG} ta`),
+              paragraphTokenOf(`x ${IMG} tail`),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects when neither side has an image', () => {
+          const { update } = setup(`x ${IMG} ta`);
+          const { stack } = setup(`x ${IMG} ta`);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf('plain text'),
+              paragraphTokenOf('plain text more'),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects when the last image moves index (a second image arrived)', () => {
+          const { stack, update } = setup('A ![x](u1.png) mid');
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf('A ![x](u1.png) mid'),
+              paragraphTokenOf('A ![x](u1.png) mid ![y](u2.png) end'),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects when the prefix through the last image changed', () => {
+          const { stack, update } = setup('x ![a](u1.png) tail');
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf('x ![a](u1.png) tail'),
+              paragraphTokenOf('x ![a](u2.png) tail'),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects when the new tokens have no trailing run', () => {
+          const { stack, update } = setup(`x ${IMG}`);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf(`x ${IMG}`),
+              paragraphTokenOf(`x ${IMG}`),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects a shrinking trailing run', () => {
+          const { stack, update } = setup(`x ${IMG} long tail here`);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf(`x ${IMG} long tail here`),
+              paragraphTokenOf(`x ${IMG} lo`),
+            ),
+          ).toBe(false);
+        });
+
+        it('rejects an entity whose child count does not match the old tokens', () => {
+          // The Stack was built for a DIFFERENT paragraph, so its children do not
+          // correspond to `oldT`. Reusing would mutate the wrong child.
+          const { stack } = setup(`${IMG} tail`); // 2 children: Image, RichText
+          const { update } = setup(`x ${IMG} ta`);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf(`x ${IMG} ta`), // expects 3 children
+              paragraphTokenOf(`x ${IMG} tail`),
+            ),
+          ).toBe(false);
+        });
+
+        it('counts children per text RUN, not per token', () => {
+          // `a *em* and \`c\`` is four inline tokens but ONE RichText, because the
+          // render arm merges consecutive non-image tokens. If the expected count
+          // were `tokens.length` this baseline would be rejected.
+          const src = `a *em* and \`c\` ${IMG} ta`;
+          const { stack, update } = setup(src);
+          expect((stack as Entity).children?.length).toBe(3);
+          expect(
+            update.updateImageParagraph(
+              stack,
+              paragraphTokenOf(src),
+              paragraphTokenOf(`a *em* and \`c\` ${IMG} tail`),
+            ),
+          ).toBe(true);
+        });
       });
     });
   });
