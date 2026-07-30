@@ -73,6 +73,18 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (i % 10 === 7) return '\n\n```ts\nconst x = 1;\n```\n\n';
     return 'Some prose that keeps accumulating in the current block. ';
   },
+  // A heading that GROWS a word at a time, which `mixed` never produces: it emits
+  // each heading whole in one chunk, so the heading is complete on its first lex
+  // and the reconciler only ever sees it as an unchanged prefix token. This shape
+  // is what exercises the in-place heading path — an 8-word heading, then a short
+  // body so the next heading starts a new block rather than growing forever.
+  headings: (i) => {
+    const step = i % 12;
+    if (step === 0) return `\n\n## Section ${Math.floor(i / 12)}`;
+    if (step < 8) return ` word${step}`;
+    if (step === 8) return '\n\nA short body paragraph under the heading. ';
+    return 'More body text to close out the section. ';
+  },
 };
 
 interface PhaseTotals {

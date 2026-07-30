@@ -1854,6 +1854,25 @@ export class Markdown extends UIComponent {
   }
 
   /**
+   * Spans for a heading being updated in place.
+   *
+   * Kept in lockstep with the `heading` arm of {@link renderToken}, which builds
+   * its `RichText` through `renderInlineToRichText`: same `collectSpans` call and
+   * the same `decodeEntities` fallback when a heading has no inline tokens (`##`
+   * with no text yet, which a stream produces before its first word arrives). A
+   * plain `token.text` fallback here would leave an entity-bearing heading
+   * undecoded on the in-place path but decoded on a fresh render.
+   */
+  private headingSpans(token: Tokens.Heading): StyledSpan[] {
+    const spans: StyledSpan[] = [];
+    if (token.tokens && token.tokens.length > 0) {
+      collectSpans(token.tokens, {}, this.theme, spans);
+    }
+    if (spans.length === 0) spans.push({ text: decodeEntities(token.text) });
+    return spans;
+  }
+
+  /**
    * Spans for the trailing paragraph with its last unclosed inline construct
    * rendered as though it had closed, or `null` when there is nothing to guess.
    *
@@ -2091,6 +2110,17 @@ export class Markdown extends UIComponent {
     // construction, so a block growing one line at a time paid that for every
     // chunk. `setCode()` already existed for live editing; the reconciler simply
     // never called it.
+    //
+    // `heading` is the third, and was the cheapest to add: it already renders to a
+    // `RichText` through the very same `renderInlineToRichText` a paragraph uses,
+    // so the mutator was there and only the dispatch below was missing. It carries
+    // an extra depth guard the other two do not need — see that branch.
+    //
+    // Still rebuilt every chunk: `blockquote` (a container of recursively rendered
+    // children, so it needs tail-child descent), and `list`/`table` (no mutator
+    // exists to call — `Table` exposes only `setSelectable`, so reuse there means
+    // new public @vectojs/ui API plus key-based row identity, since the ordinal
+    // marker is position-derived).
     const lastTokenSameType =
       matchLen === oldTokens.length - 1 &&
       matchLen < newTokens.length &&
@@ -2136,6 +2166,33 @@ export class Markdown extends UIComponent {
         // the container's cached width/height in O(1) instead of falling
         // through to the unconditional full `layout()` this used to run on
         // every single streamed chunk regardless of what actually changed.
+        this.content.resizeLastChild(existingEntity);
+      }
+    } else if (lastTokenSameType && newTokens[matchLen]?.type === 'heading') {
+      // A heading renders through the same `renderInlineToRichText` as a
+      // paragraph, so the entity it produced already has `setSpans` — the
+      // reconciler simply never dispatched to it, and a heading streamed a word
+      // at a time rebuilt its RichText and re-shaped its text on every chunk.
+      const existingEntity = oldChildren[oldTokenToChild[matchLen]];
+      const hToken = newTokens[matchLen] as Tokens.Heading;
+      const oldToken = oldTokens[matchLen] as Tokens.Heading;
+      // Depth must be unchanged to reuse. `RichText.setSpans` replaces the runs
+      // and re-lays out but does NOT touch `font`, which is constructor-only, and
+      // a heading's font size is derived from its depth. Streaming `#` and then
+      // `# T` lexes to `## T`: the same token index goes from depth 1 to depth 2
+      // while still being a `heading`, so reusing blindly would paint an h2 at
+      // h1's size. Fall through to the rebuild in that case.
+      if (existingEntity && 'setSpans' in existingEntity && oldToken?.depth === hToken.depth) {
+        (existingEntity as any).setSpans(this.headingSpans(hToken));
+        // No optimistic guess for headings. `optimisticParagraphSpans` reads
+        // `incompleteMode` for the trailing *paragraph*; a heading is a single
+        // short line whose unclosed emphasis closes within a chunk or two, so the
+        // guess would buy a frame of styling at the cost of another code path
+        // that has to be unwound on close(). Literal spans only.
+        spansWrittenTo = existingEntity;
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
+        // Same O(1) tail resync as the paragraph and code paths.
         this.content.resizeLastChild(existingEntity);
       }
     }

@@ -498,6 +498,109 @@ Plain paragraph at the end.
       expect(md.content.children[md.content.children.length - 1]).toBe(block);
     });
 
+    it('updates a growing heading in-place instead of rebuilding it', () => {
+      // A heading renders to a RichText through the same renderInlineToRichText a
+      // paragraph uses, so setSpans was always available; the reconciler dispatched
+      // on the literal string 'paragraph' and so rebuilt every streamed chunk.
+      const md = new Markdown('## Res');
+      const heading = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('ults');
+      expect(md.content.children[md.content.children.length - 1]).toBe(heading);
+
+      md.appendMarkdown(' and analysis');
+      expect(md.content.children[md.content.children.length - 1]).toBe(heading);
+    });
+
+    it('keeps reused heading text correct as it grows', () => {
+      const md = new Markdown('## Res');
+      md.appendMarkdown('ults');
+      md.appendMarkdown(' and analysis');
+
+      const heading = md.content.children[md.content.children.length - 1] as RichText;
+      // Reuse must not mean stale: the spans have to reflect every chunk, or the
+      // canvas and the projected a11y text disagree.
+      expect(heading.spans.map((s) => s.text).join('')).toBe('Results and analysis');
+    });
+
+    it('rebuilds rather than reuses when a streamed heading changes depth', () => {
+      // The hazard that makes this branch different from paragraph/code: streaming
+      // '#' and then '# T' lexes to '## T', so the SAME token index goes from
+      // depth 1 to depth 2 while still being a heading. RichText.setSpans replaces
+      // the runs but does NOT touch `font` (constructor-only), and a heading's font
+      // size is derived from its depth — so reusing would paint an h2 at h1's size.
+      const md = new Markdown('#');
+      const h1 = md.content.children[md.content.children.length - 1] as RichText;
+      const h1Font = h1.font;
+
+      md.appendMarkdown('# T');
+
+      const after = md.content.children[md.content.children.length - 1] as RichText;
+      expect(after).not.toBe(h1);
+      // The rebuilt entity must carry the h2 font, not h1's.
+      expect(after.font).not.toBe(h1Font);
+      expect(after.spans.map((s) => s.text).join('')).toBe('T');
+    });
+
+    it('reuses a heading at the same depth with the depth-derived font intact', () => {
+      const atOnce = new Markdown('### Full title here') as unknown as {
+        content: { children: RichText[] };
+      };
+      const expectedFont = atOnce.content.children[0].font;
+
+      const streamed = new Markdown('### Full');
+      streamed.appendMarkdown(' title here');
+      const heading = streamed.content.children[streamed.content.children.length - 1] as RichText;
+
+      // Streamed and at-once must agree on both font and text, otherwise the
+      // in-place path is a rendering difference rather than an optimisation.
+      expect(heading.font).toBe(expectedFont);
+      expect(heading.spans.map((s) => s.text).join('')).toBe('Full title here');
+    });
+
+    it('reuses a heading carrying inline emphasis', () => {
+      const md = new Markdown('## A **bo');
+      const heading = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('ld** word');
+
+      expect(md.content.children[md.content.children.length - 1]).toBe(heading);
+      const rt = heading as RichText;
+      expect(rt.spans.map((s) => s.text).join('')).toBe('A bold word');
+      // The closed strong run must actually be bold, not literal asterisks.
+      expect(rt.spans.some((s) => s.style?.bold)).toBe(true);
+    });
+
+    it('does not reuse a heading that is no longer the trailing token', () => {
+      // One coalesced append can close the heading and open a new block. The
+      // heading is then not the last token, so the in-place branch must not fire
+      // for it and the new block has to be rendered.
+      const md = new Markdown('## Title');
+      const heading = md.content.children[0];
+
+      md.appendMarkdown('\n\nBody text.');
+
+      // Heading kept as an untouched prefix entity, body appended after it.
+      expect(md.content.children[0]).toBe(heading);
+      expect(md.content.children.length).toBeGreaterThan(1);
+      expect((md.content.children[0] as RichText).spans.map((s) => s.text).join('')).toBe('Title');
+    });
+
+    it('counts a heading in-place update in streamStats', () => {
+      const md = new Markdown('## Res') as unknown as {
+        streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        appendMarkdown: (s: string) => void;
+      };
+      const before = md.streamStats.inPlaceUpdates;
+      const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+      md.appendMarkdown('ults');
+
+      // The fast path is what ran: one in-place update, nothing rebuilt.
+      expect(md.streamStats.inPlaceUpdates).toBe(before + 1);
+      expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+    });
+
     it('keeps the reused code block content correct as it grows', () => {
       const md = new Markdown('```ts\nline1');
       md.appendMarkdown('\nline2');
