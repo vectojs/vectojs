@@ -110,6 +110,31 @@ Calling `appendMarkdown()` or `setContent()` from inside the callback throws; a
 throw from the callback rejects the `close()` promise. `onStable` is independent
 of `incompleteMode` and works with the `'literal'` default.
 
+### Streamed TeX math
+
+A fenced math block is typeset only once its closing fence arrives:
+
+````md
+```math
+\int_0^1 x\,dx = \frac{1}{2}
+```
+````
+
+While the fence is still open the block renders as an ordinary code block showing
+the TeX source, then becomes the formula on the chunk that closes it. This is
+deliberate. `marked` lexes an unterminated fence as a _complete_ token as soon as
+it reads the info string, so a formula streamed a few characters at a time
+arrives as a long run of whole tokens, nearly all of them invalid TeX — typesetting
+each one spends the most expensive call in this package rendering an error glyph
+that is replaced by the next chunk. Showing the source is both cheaper and more
+honest: the formula genuinely is not finished.
+
+Converted formulas are cached (bounded, process-wide), so a repeated formula is
+converted once no matter how many documents or instances render it.
+
+Inline `$...$` math is a separate path: it is currently shown as styled source
+text, not typeset.
+
 > Migrating from `@vectojs/ui` ≤ 1.x? `Markdown` and `CodeBlock` used to be
 > exported from `@vectojs/ui`. As of `@vectojs/ui@2.0.0` they live here — change
 > `import { Markdown } from '@vectojs/ui'` to `from '@vectojs/markdown'`.

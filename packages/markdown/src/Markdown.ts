@@ -97,10 +97,98 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: 'local' });
 const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
 
-function renderMathToSVGDataURI(
-  formula: string,
-  displayMode: boolean,
-): { uri: string; width: number; height: number } | null {
+/** A converted formula: its SVG data URI and the intrinsic box scraped off it. */
+interface MathRender {
+  uri: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Converted formulas, keyed on `<displayMode>\u0000<formula>`.
+ *
+ * `htmlMathJax.convert()` is the most expensive single call in this package, and
+ * the same formula recurs constantly: a re-rendered document, a retried message,
+ * the same identity written twice in one proof, and — the case that motivated
+ * this — a closed fence whose `raw` grows by the newline that follows it, which
+ * invalidates the token without changing the formula.
+ *
+ * Bounded by insertion order (oldest evicted first) rather than true LRU. The
+ * access pattern is "convert once per formula, occasionally re-convert on a
+ * rebuild", not a long-lived working set with hot and cold halves, so per-hit
+ * recency bookkeeping would cost more than the eviction quality it buys.
+ */
+const mathCache = new Map<string, MathRender>();
+const MATH_CACHE_LIMIT = 256;
+
+const MATH_LANGS = new Set(['math', 'latex', 'tex']);
+
+/** Opening fence: up to three spaces, then three or more of ` or ~. */
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+/** Closing fence: the same run, at least as long, then nothing but whitespace. */
+const FENCE_CLOSE_RE = /^ {0,3}(`+|~+)[ \t]*$/;
+
+/**
+ * Whether a fenced-code token's source actually contains its closing fence.
+ *
+ * `marked` lexes an unterminated fence as a COMPLETE `code` token as soon as the
+ * info string is read, so a formula streamed a few characters at a time arrives
+ * as a long run of whole tokens, nearly all of them syntactically invalid TeX.
+ * The token carries no "closed" flag (probed against marked 18.0.7: the keys are
+ * exactly `type`, `raw`, `lang`, `text` whether or not the fence is closed), so
+ * `raw` is the only signal. Per CommonMark a closing fence is a line of at least
+ * as many of the SAME fence character as the opening, indented at most three
+ * spaces, followed by nothing but whitespace.
+ */
+function isFenceClosed(raw: string): boolean {
+  const lines = raw.split('\n');
+  const open = FENCE_OPEN_RE.exec(lines[0]);
+  if (!open) return false;
+  const marker = open[1][0];
+  const minLen = open[1].length;
+  for (let i = 1; i < lines.length; i++) {
+    const close = FENCE_CLOSE_RE.exec(lines[i]);
+    if (close && close[1][0] === marker && close[1].length >= minLen) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether this `code` token renders as a typeset formula rather than a CodeBlock.
+ *
+ * Single source of truth for that decision, because three places have to agree
+ * on it: the render arm, the top-level in-place update path, and the blockquote
+ * tail path. If the two update paths disagreed with the renderer they would call
+ * `setCode` on an entity that is not a CodeBlock, or leave a CodeBlock on screen
+ * where a formula belongs.
+ *
+ * An empty closed fence is deliberately NOT math: it renders as the empty
+ * CodeBlock any other empty fence would, rather than as a zero-width image.
+ */
+function rendersAsMath(token: Tokens.Code): boolean {
+  return (
+    MATH_LANGS.has((token.lang ?? '').toLowerCase()) &&
+    token.text.trim() !== '' &&
+    isFenceClosed(token.raw)
+  );
+}
+
+function renderMathToSVGDataURI(formula: string, displayMode: boolean): MathRender | null {
+  const key = `${displayMode ? 1 : 0}\u0000${formula}`;
+  const hit = mathCache.get(key);
+  if (hit) return hit;
+  const converted = convertMathToSVGDataURI(formula, displayMode);
+  if (converted) {
+    if (mathCache.size >= MATH_CACHE_LIMIT) {
+      const oldest = mathCache.keys().next().value;
+      if (oldest !== undefined) mathCache.delete(oldest);
+    }
+    mathCache.set(key, converted);
+  }
+  return converted;
+}
+
+function convertMathToSVGDataURI(formula: string, displayMode: boolean): MathRender | null {
   try {
     const node = htmlMathJax.convert(formula, { display: displayMode });
     const svgString = adaptor.innerHTML(node);
@@ -1910,12 +1998,17 @@ export class Markdown extends UIComponent {
       (entity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
         this.headingSpans(newTail as Tokens.Heading),
       );
-    } else if (newTail.type === 'code' && entity instanceof CodeBlock) {
+    } else if (
+      newTail.type === 'code' &&
+      entity instanceof CodeBlock &&
+      !rendersAsMath(newTail as Tokens.Code)
+    ) {
       const codeToken = newTail as Tokens.Code;
       entity.setCode(codeToken.text, codeToken.lang ?? undefined);
     } else {
-      // Any other tail type (list, table, nested blockquote, a math fence that
-      // renders a container rather than a CodeBlock) has no mutator to call.
+      // Any other tail type (list, table, nested blockquote) has no mutator to
+      // call. A math fence whose closing fence has arrived also lands here: it
+      // must become an Image, and no mutator turns a CodeBlock into one.
       return false;
     }
 
@@ -2207,10 +2300,26 @@ export class Markdown extends UIComponent {
     if (lastTokenSameType && newTokens[matchLen]?.type === 'code') {
       const existingEntity = oldChildren[oldTokenToChild[matchLen]];
       const codeToken = newTokens[matchLen] as Tokens.Code;
-      if (existingEntity instanceof CodeBlock) {
+      const oldCodeToken = oldTokens[matchLen] as Tokens.Code;
+      const isMath = rendersAsMath(codeToken);
+      if (isMath && rendersAsMath(oldCodeToken) && oldCodeToken.text === codeToken.text) {
+        // Both sides are the same typeset formula, so the rendered entity is
+        // already correct and there is nothing to mutate. This is the common
+        // shape right after a fence closes: the next chunk appends the newline
+        // that follows it, which changes `raw` (so the prefix match stops short)
+        // without changing the formula. Reusing here skips a rebuild and, more
+        // to the point, an SVG re-decode.
+        this.streamStats.inPlaceUpdates++;
+        matchLen++;
+      } else if (existingEntity instanceof CodeBlock && !isMath) {
         // Language can change mid-stream: ```` ``` ```` then the info string
         // arrives on the next chunk, so pass it through rather than assuming it
         // is stable.
+        //
+        // `!isMath` is what lets a closing fence land: while the fence is open a
+        // math block IS a CodeBlock, and the chunk that closes it must fall
+        // through to the rebuild path to become a formula. Without the guard
+        // `setCode` would keep the CodeBlock and the formula would never typeset.
         existingEntity.setCode(codeToken.text, codeToken.lang ?? undefined);
         this.streamStats.inPlaceUpdates++;
         matchLen++;
@@ -2518,7 +2627,16 @@ export class Markdown extends UIComponent {
         const codeToken = token as Tokens.Code;
         const lang = (codeToken.lang ?? '').toLowerCase();
 
-        if (lang === 'math' || lang === 'latex' || lang === 'tex') {
+        // A math fence is typeset only once its closing fence arrives. While it
+        // is still open it renders as an ordinary CodeBlock showing the TeX
+        // source, which is both the honest thing to show (the formula genuinely
+        // is not finished) and the cheap one: MathJax is the most expensive call
+        // in this package, and converting every prefix of a streamed formula
+        // spends all of it on syntactically invalid TeX that renders as an error
+        // glyph nobody wants to see. As a CodeBlock it also gets the existing
+        // `setCode` in-place update, so the growing source costs one mutator
+        // call per chunk instead of a rebuild.
+        if (rendersAsMath(codeToken)) {
           const mathData = renderMathToSVGDataURI(codeToken.text, true);
           if (mathData) {
             // Provide a generous default height, it will scale based on width
@@ -2526,6 +2644,12 @@ export class Markdown extends UIComponent {
               width: Math.min(availableWidth, mathData.width),
               height: mathData.height * Math.min(1, availableWidth / mathData.width),
               alt: codeToken.text,
+              // The SVG decodes asynchronously and Image paints a placeholder
+              // until it lands. Without this an `onDemand` scene, which repaints
+              // only when marked dirty, leaves the formula a blank slab forever.
+              onLoad: () => {
+                this.scene?.markDirty();
+              },
             });
             // Let the layout flow it as a block
             const wrapper = new MarkdownContainer();
