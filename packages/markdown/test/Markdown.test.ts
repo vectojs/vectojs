@@ -601,6 +601,137 @@ Plain paragraph at the end.
       expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
     });
 
+    it('updates a growing blockquote in place instead of rebuilding its subtree', () => {
+      // A blockquote owns a subtree (border + inner stack of wrapped blocks), so
+      // reuse means descending to the tail child rather than calling a mutator on
+      // the block. Streaming a quote line by line otherwise rebuilt every inner
+      // block and the border on every chunk.
+      const md = new Markdown('> First');
+      const quote = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown(' line');
+      expect(md.content.children[md.content.children.length - 1]).toBe(quote);
+
+      md.appendMarkdown('\n> second line');
+      expect(md.content.children[md.content.children.length - 1]).toBe(quote);
+    });
+
+    it('keeps reused blockquote text correct as it grows', () => {
+      const md = new Markdown('> First');
+      md.appendMarkdown(' line');
+      md.appendMarkdown('\n> second line');
+
+      const quote = md.content.children[md.content.children.length - 1];
+      const innerStack = quote.children[1];
+      const tail = innerStack.children[innerStack.children.length - 1].children[0] as RichText;
+      // Reuse must not mean stale.
+      expect(tail.spans.map((sp) => sp.text).join('')).toContain('second line');
+    });
+
+    it('matches a rebuilt blockquote geometrically after in-place growth', () => {
+      // The render arm computes wrapper/stack/border/container boxes by hand, so a
+      // reused quote has to end up with the same geometry as a fresh one or the
+      // accent bar and the following block drift.
+      const streamed = new Markdown('> First line');
+      streamed.appendMarkdown('\n> second line');
+      const atOnce = new Markdown('> First line\n> second line');
+
+      const sq = streamed.content.children[streamed.content.children.length - 1];
+      const aq = atOnce.content.children[atOnce.content.children.length - 1];
+
+      expect(sq.height).toBeCloseTo(aq.height, 5);
+      expect((sq.children[0] as { height: number }).height).toBeCloseTo(
+        (aq.children[0] as { height: number }).height,
+        5,
+      );
+      expect(sq.children[1].height).toBeCloseTo(aq.children[1].height, 5);
+    });
+
+    it('reuses a blockquote whose tail block is a heading at the same depth', () => {
+      const md = new Markdown('> intro\n>\n> ## a heading');
+      const quote = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown(' grows');
+
+      expect(md.content.children[md.content.children.length - 1]).toBe(quote);
+      const innerStack = quote.children[1];
+      const tail = innerStack.children[innerStack.children.length - 1].children[0] as RichText;
+      expect(tail.spans.map((sp) => sp.text).join('')).toBe('a heading grows');
+    });
+
+    it('rebuilds a blockquote whose tail heading changes depth', () => {
+      // Same hazard as the top-level heading path: setSpans cannot change `font`,
+      // and a heading's size comes from its depth.
+      const md = new Markdown('> intro\n>\n> #');
+      const quote = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('# T');
+
+      expect(md.content.children[md.content.children.length - 1]).not.toBe(quote);
+    });
+
+    it('reuses a blockquote whose tail block is a growing code fence', () => {
+      const md = new Markdown('> intro\n>\n> ```ts\n> const a = 1;');
+      const quote = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('\n> const b = 2;');
+
+      expect(md.content.children[md.content.children.length - 1]).toBe(quote);
+      const innerStack = quote.children[1];
+      const tail = innerStack.children[innerStack.children.length - 1].children[0] as unknown as {
+        source: string;
+      };
+      expect(tail.source).toContain('const b = 2;');
+    });
+
+    it('rebuilds when a blockquote gains a new inner block', () => {
+      // A new inner block changes the child list, which the tail-only fast path
+      // must refuse rather than write the wrong entity.
+      const md = new Markdown('> just a paragraph');
+      const quote = md.content.children[md.content.children.length - 1];
+
+      md.appendMarkdown('\n>\n> a second paragraph');
+
+      expect(md.content.children[md.content.children.length - 1]).not.toBe(quote);
+      // And the result must still be correct after the rebuild.
+      const rebuilt = md.content.children[md.content.children.length - 1];
+      expect(rebuilt.children[1].children.length).toBeGreaterThan(1);
+    });
+
+    it('produces the same blockquote whether streamed or set at once', () => {
+      const streamed = new Markdown('> First');
+      streamed.appendMarkdown(' line');
+      streamed.appendMarkdown('\n> second');
+      streamed.appendMarkdown(' line');
+      const atOnce = new Markdown('> First line\n> second line');
+
+      const textOf = (md: Markdown): string => {
+        const q = md.content.children[md.content.children.length - 1];
+        const stack = q.children[1];
+        return stack.children
+          .map((w) => {
+            const e = w.children[0] as unknown as { spans?: Array<{ text: string }> };
+            return (e.spans ?? []).map((sp) => sp.text).join('');
+          })
+          .join('|');
+      };
+      expect(textOf(streamed)).toBe(textOf(atOnce));
+    });
+
+    it('counts a blockquote in-place update in streamStats', () => {
+      const md = new Markdown('> First') as unknown as {
+        streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        appendMarkdown: (s: string) => void;
+      };
+      const before = md.streamStats.inPlaceUpdates;
+      const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+      md.appendMarkdown(' line');
+
+      expect(md.streamStats.inPlaceUpdates).toBe(before + 1);
+      expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+    });
+
     it('keeps the reused code block content correct as it grows', () => {
       const md = new Markdown('```ts\nline1');
       md.appendMarkdown('\nline2');

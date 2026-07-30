@@ -73,6 +73,20 @@ const SHAPES: Record<string, (i: number) => string> = {
     if (i % 10 === 7) return '\n\n```ts\nconst x = 1;\n```\n\n';
     return 'Some prose that keeps accumulating in the current block. ';
   },
+  // A blockquote that GROWS line by line, which `mixed` never produces. A quote
+  // owns a subtree (border + one wrapper per inner block), so before tail-child
+  // reuse every chunk rebuilt all of it. Mixes the three reusable tail types so
+  // the shape covers paragraph, heading, and code descent.
+  blockquote: (i) => {
+    const step = i % 12;
+    if (step === 0) return `\n\n> Quote ${Math.floor(i / 12)} opens here`;
+    if (step < 5) return `\n> continued line ${step}`;
+    if (step === 5) return '\n>\n> ## nested heading';
+    if (step < 8) return ` more${step}`;
+    if (step === 8) return '\n>\n> ```ts\n> const a = 1;';
+    if (step < 11) return `\n> const b${step} = ${step};`;
+    return '\n\nA body paragraph between quotes. ';
+  },
   // A heading that GROWS a word at a time, which `mixed` never produces: it emits
   // each heading whole in one chunk, so the heading is complete on its first lex
   // and the reconciler only ever sees it as an unchanged prefix token. This shape
