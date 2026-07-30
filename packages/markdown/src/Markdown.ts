@@ -19,6 +19,7 @@ import { marked, type Token, type Tokens, type TokensList } from 'marked';
 import {
   createStreamController,
   type BoundStreamController,
+  type IncompleteMarkdownMode,
   type StreamController,
   type StreamControllerOptions,
 } from './StreamController';
@@ -156,6 +157,13 @@ const workerCallbacks = new Map<
   {
     cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
     onNeedResync?: () => void;
+    /**
+     * This request produced no update at all and never will — the worker failed
+     * AND the main-thread fallback lexer threw too. The requester's in-flight
+     * bookkeeping has to be cleared by something, or a `close()` awaiting
+     * settlement would wait on a reply that can no longer come.
+     */
+    onDropped?: () => void;
     text: string;
     userTiming: boolean;
   }
@@ -173,6 +181,7 @@ const workerCallbacks = new Map<
  */
 function runSyncFallback(entry: {
   cb: (matchLen: number, tail: TokensList, local?: boolean, lex?: LexCost) => void;
+  onDropped?: () => void;
   text: string;
   userTiming: boolean;
 }): void {
@@ -182,6 +191,10 @@ function runSyncFallback(entry: {
     entry.cb(0, lexMarkdown(entry.text, entry.userTiming), true);
   } catch (err) {
     console.warn('Markdown sync fallback parse failed', err);
+    // Both paths are gone, so no update will ever land for this request. Tell the
+    // requester, or its in-flight flag stays set forever and anything awaiting
+    // settlement (a `close()`) never resolves.
+    entry.onDropped?.();
   }
 }
 
@@ -1008,6 +1021,79 @@ function collectSpans(
   }
 }
 
+/**
+ * One trailing inline construct that has opened but not closed yet.
+ *
+ * `at` is the index in the scanned text of the construct's first syntax
+ * character, so the caller can split there: everything before it keeps whatever
+ * `marked` already decided, everything after it is the construct's content.
+ */
+interface UnclosedInline {
+  kind: 'strong' | 'em' | 'codespan' | 'link';
+  /** Index of the opening marker's first character. */
+  at: number;
+  /** Index just past the opening marker, where the content starts. */
+  contentAt: number;
+}
+
+/**
+ * Find the last unclosed inline construct in one trailing text run.
+ *
+ * Only ever called with the text of the FINAL inline token of the document's
+ * final paragraph. That is the only place an unclosed construct can be: a
+ * construct that closed is already its own `strong`/`em`/`codespan`/`link`
+ * token, so whatever syntax characters survive into a plain text token are
+ * exactly the ones `marked` could not pair up.
+ *
+ * Returns `null` when nothing plausible is open, which is the common case and
+ * must stay cheap — this runs once per streamed chunk.
+ */
+function findUnclosedInline(text: string): UnclosedInline | null {
+  let best: UnclosedInline | null = null;
+
+  // Backtick first, and it wins outright. Inside a code span nothing else is
+  // syntax, so an emphasis marker to the right of an open backtick is content,
+  // not a competing candidate.
+  const tick = text.lastIndexOf('`');
+  if (tick !== -1 && tick < text.length - 1) {
+    return { kind: 'codespan', at: tick, contentAt: tick + 1 };
+  }
+  if (tick !== -1) return null;
+
+  // `**bo` / `*it`, and the `_` forms. Two requirements, both load-bearing:
+  // the marker run must be WHOLE (`\*{1,2}(?!\*)`), or `**` alone matches as a
+  // single `*` opening on a content of `*` and renders one italic asterisk; and
+  // it must be followed by a non-space, since CommonMark cannot open emphasis on
+  // `* ` and a marker with nothing after it has no content to style.
+  const emphasis = /(\*{1,2}(?!\*)|_{1,2}(?!_))(?=[^\s])/g;
+  for (let match = emphasis.exec(text); match !== null; match = emphasis.exec(text)) {
+    const marker = match[1];
+    const at = match.index;
+    // `_` cannot open emphasis intraword (`snake_case`, `a_b`), so requiring a
+    // boundary before it is what keeps identifiers from turning italic
+    // mid-stream. `*` has no such restriction in CommonMark.
+    if (marker[0] === '_' && at > 0 && /[\w]/.test(text[at - 1])) continue;
+    best = {
+      kind: marker.length === 2 ? 'strong' : 'em',
+      at,
+      contentAt: at + marker.length,
+    };
+  }
+
+  // `[label](url` — an unmatched `[` with no completed `](…)` after it. Checked
+  // last and only when it opens to the right of any emphasis candidate, for the
+  // same reason backticks win: the later opener is the one still collecting text.
+  const bracket = text.lastIndexOf('[');
+  if (bracket !== -1 && bracket < text.length - 1 && (best === null || bracket > best.at)) {
+    const closed = /\]\([^)]*\)/.test(text.slice(bracket));
+    if (!closed) {
+      best = { kind: 'link', at: bracket, contentAt: bracket + 1 };
+    }
+  }
+
+  return best;
+}
+
 /** Parse inline markdown tokens and produce a {@link RichText} entity. */
 function renderInlineToRichText(
   tokens: Token[] | undefined,
@@ -1090,6 +1176,34 @@ export class Markdown extends UIComponent {
   public onLayoutUpdated?: () => void;
   private rawMarkdown: string;
   private streamController: BoundStreamController | null = null;
+  /**
+   * Trailing-unclosed-syntax policy of the active stream, or `'literal'` when no
+   * stream is open.
+   *
+   * Held here rather than read back off the controller because it is a rendering
+   * concern: `StreamController` owns buffering and pacing and has no view of the
+   * entity tree, while the guess is a transform applied where spans are built.
+   */
+  private streamIncompleteMode: IncompleteMarkdownMode = 'literal';
+  /** End-of-stream callback of the active stream, if it supplied one. */
+  private streamOnStable: ((blocks: readonly Entity[]) => void) | null = null;
+  /**
+   * The trailing paragraph entity currently showing an optimistic guess, plus the
+   * token it was rendered from.
+   *
+   * Both halves are needed. The entity is what must be re-rendered to drop the
+   * guess; the token is what it must be re-rendered FROM, and it is the only
+   * copy — `this.tokens` has already moved on by the time an unwind is decided.
+   * `null` means no guess is live, which is the state every `'literal'` stream
+   * and every closed stream stays in.
+   */
+  private optimisticTail: { entity: Entity; token: Tokens.Paragraph } | null = null;
+  /** Resolvers waiting for every in-flight worker append to have been applied. */
+  private appendSettledWaiters: Array<() => void> = [];
+  /** True only inside an `onStable` callback, to reject reentrant mutation. */
+  private inStableCallback = false;
+  /** Set by {@link destroy} so late settlement work skips a torn-down tree. */
+  private isDestroyed = false;
   private _userTiming: boolean;
   private tokens: Token[] = [];
   // At most one worker lex request in flight at a time. Required for the
@@ -1256,17 +1370,48 @@ export class Markdown extends UIComponent {
       {
         append: (chunk) => this.appendMarkdownCore(chunk),
         release: (released) => {
-          if (this.streamController === released) this.streamController = null;
+          if (this.streamController !== released) return;
+          this.streamController = null;
+          this.streamIncompleteMode = 'literal';
+          this.streamOnStable = null;
+          // Covers abort()/destroy(), which release without ever running onClose:
+          // a guess must not outlive the stream that justified it. After a normal
+          // close() this is already a no-op — onClose unwound it.
+          this.unwindOptimisticTail();
+        },
+        onClose: async () => {
+          // The last committed chunk may still be in the worker. Waiting here is
+          // what makes `await close()` mean "the document reflects everything
+          // written", which onStable's contract depends on.
+          await this.waitForAppendSettled();
+          if (this.isDestroyed) return;
+          // Converge on marked's own output: a guess is never part of the final
+          // document, so a literal and an optimistic stream of the same source
+          // end identically.
+          this.unwindOptimisticTail();
+          const onStable = this.streamOnStable;
+          if (!onStable) return;
+          this.inStableCallback = true;
+          try {
+            onStable(Array.from(this.content.children));
+          } finally {
+            this.inStableCallback = false;
+          }
         },
       },
       options,
     );
-    if (controller.state === 'open') this.streamController = controller;
+    if (controller.state === 'open') {
+      this.streamController = controller;
+      this.streamIncompleteMode = options.incompleteMode ?? 'literal';
+      this.streamOnStable = options.onStable ?? null;
+    }
     return controller;
   }
 
   /** Replace all markdown content (full rebuild). */
   public setContent(markdown: string): this {
+    this.assertNotInStableCallback('setContent');
     this.streamController?.abort(new Error('Markdown content was replaced'));
     // Drop any in-flight worker request. Its `matchLen` is relative to a token
     // snapshot captured from the document being replaced, and its closure still
@@ -1283,6 +1428,9 @@ export class Markdown extends UIComponent {
     this.pendingWorkerIds.clear();
     this.appendInFlight = false;
     this.appendPending = false;
+    // The replies those callbacks would have delivered are gone, so anything
+    // awaiting settlement has to be released here or it waits forever.
+    this.flushAppendSettledWaiters();
     this.rawMarkdown = markdown;
     // The worker's copy of the source now describes a document that no longer
     // exists, so the next append must resend the text rather than a delta.
@@ -1313,11 +1461,19 @@ export class Markdown extends UIComponent {
    * content subtree via `super.destroy()` so every block's resources are freed.
    */
   public override destroy(): void {
+    // Set before the controller teardown below, which reaches this instance again
+    // through the host's `release` hook: settlement work must know the tree is
+    // going away rather than re-render into it.
+    this.isDestroyed = true;
+    this.optimisticTail = null;
     this.streamController?.destroy();
     for (const id of this.pendingWorkerIds) workerCallbacks.delete(id);
     this.pendingWorkerIds.clear();
     this.appendInFlight = false;
     this.appendPending = false;
+    // Nothing will reply now, so release any settlement waiter rather than
+    // leaving a `close()` pending against a destroyed instance.
+    this.flushAppendSettledWaiters();
     // Release this instance's prior-raws entry in the (shared) worker, so a page
     // that creates and drops many blocks doesn't retain their raws forever.
     markdownWorker?.postMessage({
@@ -1527,6 +1683,10 @@ export class Markdown extends UIComponent {
 
   /** Append a markdown chunk incrementally. Reuses unchanged prefix entities. */
   public appendMarkdown(chunk: string): this {
+    // An onStable callback is handed a snapshot of the finished document; mutating
+    // that document from inside it would make the snapshot a lie and re-enter the
+    // reconciler from within its own settlement path.
+    this.assertNotInStableCallback('appendMarkdown');
     this.streamController?.flush();
     return this.appendMarkdownCore(chunk);
   }
@@ -1622,6 +1782,12 @@ export class Markdown extends UIComponent {
           this.appendPending = false;
           this.dispatchAppend();
         }
+        // Last, deliberately: `appendInFlight` was cleared above and the
+        // re-dispatch just set it back to `true` if more text had arrived — both
+        // synchronously, so nothing watching the flag itself could see the gap.
+        // Checking only here is what makes a settlement waiter wait through a
+        // coalesced re-dispatch instead of resolving one chunk early.
+        this.flushAppendSettledWaiters();
       },
       // The worker can't trust what it holds for this request; retry it once with
       // the full text and raws attached. `this.tokens` is untouched (no
@@ -1632,6 +1798,21 @@ export class Markdown extends UIComponent {
         // Whatever the worker had is unusable, so the retry must not send a delta.
         this.workerSourceLen = 0;
         this.dispatchAppend(true);
+      },
+      // Neither the worker nor the fallback lexer could produce tokens for this
+      // request, so `this.tokens` stays as it was. Only the in-flight bookkeeping
+      // needs unwinding — including any coalesced chunk waiting behind it, which
+      // still has to be attempted.
+      onDropped: () => {
+        this.pendingWorkerIds.delete(id);
+        this.appendInFlight = false;
+        // Nothing proved the worker holds this source; force the next request full.
+        this.workerSourceLen = 0;
+        if (this.appendPending) {
+          this.appendPending = false;
+          this.dispatchAppend(true);
+        }
+        this.flushAppendSettledWaiters();
       },
       text: this.rawMarkdown,
       userTiming: this._userTiming,
@@ -1655,6 +1836,206 @@ export class Markdown extends UIComponent {
             oldRaws: oldTokensSnapshot.map((t) => t.raw),
           }),
     });
+  }
+
+  /**
+   * Spans for one paragraph token exactly as `marked` produced it.
+   *
+   * The literal baseline: what every release renders, and what an optimistic
+   * guess is unwound back to.
+   */
+  private literalParagraphSpans(token: Tokens.Paragraph): StyledSpan[] {
+    const spans: StyledSpan[] = [];
+    if (token.tokens && token.tokens.length > 0) {
+      collectSpans(token.tokens, {}, this.theme, spans);
+    }
+    if (spans.length === 0) spans.push({ text: token.text });
+    return spans;
+  }
+
+  /**
+   * Spans for the trailing paragraph with its last unclosed inline construct
+   * rendered as though it had closed, or `null` when there is nothing to guess.
+   *
+   * `null` is the answer for every `'literal'` stream, every closed or absent
+   * stream, and any trailing paragraph whose syntax is all balanced — so the
+   * caller falls back to {@link literalParagraphSpans} and pays nothing.
+   *
+   * Only the paragraph's LAST inline token is scanned. An unclosed construct can
+   * only be there: anything that closed is already its own `strong`/`em`/
+   * `codespan`/`link` token, so a syntax character surviving into a trailing
+   * plain-text run is one `marked` could not pair. Scanning the whole raw string
+   * instead would re-find the markers of already-closed constructs.
+   */
+  private optimisticParagraphSpans(token: Tokens.Paragraph): StyledSpan[] | null {
+    if (this.streamIncompleteMode !== 'optimistic') return null;
+    if (this.streamController?.state !== 'open') return null;
+
+    const inline = token.tokens;
+    if (!inline || inline.length === 0) return null;
+    // How many trailing tokens form the unstructured run, and its text. Normally
+    // one plain `text` token — but `[label](https://ex` lexes as a `text` token
+    // ending in `](` PLUS an autolink token for the bare URL, because marked
+    // autolinks a naked URL it finds there. Left as two tokens the `[` is invisible
+    // to the scan, so that pair is rejoined into one run.
+    let runLength = 1;
+    let runText: string;
+    const last = inline[inline.length - 1];
+    const prev = inline.length > 1 ? inline[inline.length - 2] : null;
+    const isFlatText = (token: Token): boolean =>
+      token.type === 'text' && !(token as unknown as { tokens?: Token[] }).tokens?.length;
+    if (
+      last.type === 'link' &&
+      last.raw === (last as Tokens.Link).text &&
+      prev !== null &&
+      isFlatText(prev) &&
+      (prev as Tokens.Text).text.endsWith('](')
+    ) {
+      runLength = 2;
+      runText = (prev as Tokens.Text).text + last.raw;
+    } else if (isFlatText(last)) {
+      runText = (last as Tokens.Text).text;
+    } else {
+      // A nested-token text run has structure inside it, so it is not the flat
+      // trailing run this scan is defined over.
+      return null;
+    }
+
+    const found = findUnclosedInline(runText);
+    if (!found) return null;
+
+    // Everything before the trailing run keeps exactly the styling `marked` gave
+    // it — those tokens are not what changed between chunks.
+    const spans: StyledSpan[] = [];
+    if (inline.length > runLength) {
+      collectSpans(inline.slice(0, -runLength), {}, this.theme, spans);
+    }
+    const head = runText.slice(0, found.at);
+    if (head) spans.push({ text: decodeEntities(head) });
+
+    let content = runText.slice(found.contentAt);
+    if (found.kind === 'link') {
+      // `[label](htt` — show the label only. With no closing paren there is no
+      // URL yet, so there is nothing safe to make clickable, and printing the
+      // half-typed destination is noise.
+      const close = content.indexOf('](');
+      if (close !== -1) content = content.slice(0, close);
+    }
+    if (!content) return null;
+
+    const style = this.optimisticStyle(found.kind);
+    spans.push({ text: decodeEntities(content), style });
+    return spans;
+  }
+
+  /** Display style for a guessed-closed construct. */
+  private optimisticStyle(kind: UnclosedInline['kind']): TextStyle | undefined {
+    switch (kind) {
+      case 'strong':
+        return { bold: true };
+      case 'em':
+        return { italic: true };
+      case 'codespan':
+        return { color: this.theme.codeColor, fontFamily: this.theme.codeFont };
+      // A link with no closing paren has no href, so it renders as plain text —
+      // no link color and no click affordance for a destination nobody has yet.
+      case 'link':
+        return undefined;
+    }
+  }
+
+  /**
+   * Re-render the paragraph currently showing a guess from its own tokens, with
+   * no overlay, and forget it.
+   *
+   * Idempotent and free when no guess is live, which is what lets `close()`,
+   * `abort()`, and a mid-stream staleness check all call it unconditionally.
+   */
+  private unwindOptimisticTail(): void {
+    const tail = this.optimisticTail;
+    this.optimisticTail = null;
+    if (!tail || this.isDestroyed) return;
+    const entity = tail.entity as Entity & {
+      setSpans?: (spans: StyledSpan[]) => unknown;
+    };
+    // Gone from the tree (destroyed by a later reconcile, or replaced wholesale
+    // by setContent) — nothing to unwind, and re-rendering it would resurrect
+    // spans on a detached entity.
+    if (!entity.setSpans || entity.parent !== this.content) return;
+    entity.setSpans(this.literalParagraphSpans(tail.token));
+    // Height changed, so the container's cached box has to follow. The O(1)
+    // resync is only valid while this really is the last child; once a later
+    // block exists, every sibling below it moves and a full reflow is required.
+    if (this.content.children.at(-1) === entity) {
+      this.content.resizeLastChild(entity);
+    } else {
+      this.content.layout();
+    }
+    this.width = this.content.width;
+    this.height = this.content.height;
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Drop a guess that is no longer on the document's trailing paragraph.
+   *
+   * A coalesced append can add a block after the paragraph that owns the guess,
+   * at which point the guess is frozen — the construct can never close, because
+   * no further text lands in that paragraph. Without this the stale styling would
+   * survive until `close()`.
+   *
+   * `writtenThisPass` is the entity whose spans this reconcile already rewrote,
+   * if any: for that one, literal spans are on screen already and re-rendering it
+   * would be wasted layout, so only the bookkeeping is cleared.
+   */
+  private dropStaleOptimisticTail(trailing: Entity | null, writtenThisPass: Entity | null): void {
+    const tail = this.optimisticTail;
+    if (!tail || tail.entity === trailing) return;
+    if (tail.entity === writtenThisPass) {
+      this.optimisticTail = null;
+      return;
+    }
+    this.unwindOptimisticTail();
+  }
+
+  /**
+   * Resolve once every in-flight worker append has actually been applied.
+   *
+   * Committing text is not the same as the document reflecting it: `append()`
+   * reaches `dispatchAppend()`, which `postMessage()`s and returns, and the reply
+   * that runs `updateTokens()` lands later. Without waiting here, `close()` could
+   * resolve — and `onStable` fire — against a document missing its last chunk.
+   */
+  private waitForAppendSettled(): Promise<void> {
+    if (!this.appendInFlight) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.appendSettledWaiters.push(resolve);
+    });
+  }
+
+  /**
+   * Release settlement waiters, but only once nothing is outstanding.
+   *
+   * Called at the very END of the worker callback, after its coalesced-re-dispatch
+   * check, rather than wherever `appendInFlight` goes false. Within that callback
+   * `appendInFlight` is cleared and then, if another chunk arrived while the
+   * request was in flight, set straight back to `true` by the re-dispatch — both
+   * synchronously, before anything watching the flag could observe the gap. Only
+   * checking here, after that, waits through the re-dispatch instead of resolving
+   * one chunk early.
+   */
+  private flushAppendSettledWaiters(): void {
+    if (this.appendInFlight || this.appendSettledWaiters.length === 0) return;
+    const waiters = this.appendSettledWaiters;
+    this.appendSettledWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  /** Throw if a public mutation is attempted from inside an `onStable` callback. */
+  private assertNotInStableCallback(method: string): void {
+    if (this.inStableCallback) {
+      throw new Error(`Markdown.${method}() cannot be called from an onStable callback`);
+    }
   }
 
   private updateTokens(newTokens: TokensList, knownMatchLen?: number): void {
@@ -1695,6 +2076,11 @@ export class Markdown extends UIComponent {
     // below mutates `matchLen`. Everything before it is unchanged, so the child
     // prefix sum stays valid there and only the suffix is recomputed.
     const rawMatchLen = matchLen;
+    // The guess this pass produced, and the entity whose spans it already wrote.
+    // Both are settled by one post-pass below rather than by each render site, so
+    // there is a single place that decides which entity may carry a guess.
+    let pendingTail: { entity: Entity; token: Tokens.Paragraph } | null = null;
+    let spansWrittenTo: Entity | null = null;
 
     // Handle the common streaming case: the last token changed but kept its type,
     // so its entity can be updated in place instead of destroyed and rebuilt.
@@ -1731,16 +2117,18 @@ export class Markdown extends UIComponent {
       if (existingEntity && 'setSpans' in existingEntity) {
         // Re-render the paragraph's inline tokens
         const pToken = newTokens[matchLen] as Tokens.Paragraph;
-        const t = this.theme;
-        // Build new spans from the token
-        const spans: StyledSpan[] = [];
-        if (pToken.tokens && pToken.tokens.length > 0) {
-          collectSpans(pToken.tokens, {}, t, spans);
-        }
-        if (spans.length === 0) {
-          spans.push({ text: pToken.text });
-        }
-        (existingEntity as any).setSpans(spans);
+        // `lastTokenSameType` is indexed off the OLD token list, so it does not
+        // imply this is the document's last block: one coalesced append can close
+        // this paragraph and start a new block in the same update. Only the real
+        // trailing paragraph may carry an optimistic guess.
+        const isTrailing = matchLen === newTokens.length - 1;
+        const optimistic = isTrailing ? this.optimisticParagraphSpans(pToken) : null;
+        // One setSpans either way: computing the guess instead of the literal
+        // spans, rather than writing literal spans and then overwriting them,
+        // keeps the streaming hot path at a single layout per chunk.
+        (existingEntity as any).setSpans(optimistic ?? this.literalParagraphSpans(pToken));
+        spansWrittenTo = existingEntity;
+        if (optimistic) pendingTail = { entity: existingEntity, token: pToken };
         this.streamStats.inPlaceUpdates++;
         matchLen++; // This token is now handled
         // Streaming's hot path: the growing paragraph is still the Stack's
@@ -1773,10 +2161,36 @@ export class Markdown extends UIComponent {
     }
 
     // Add new entities for tokens beyond matchLen
+    const lastIndex = newTokens.length - 1;
     for (let i = matchLen; i < newTokens.length; i++) {
       const el = this.renderToken(newTokens[i]);
-      if (el) this.content.add(el);
+      if (!el) continue;
+      this.content.add(el);
+      // A fresh trailing paragraph — the first one of a stream, or one following
+      // a block that just closed — gets the same guess the in-place branch above
+      // applies. `renderToken` is the documented subclass override seam, so the
+      // overlay is applied over its result here instead of by threading a mode
+      // parameter through that signature.
+      if (i === lastIndex && newTokens[i].type === 'paragraph' && 'setSpans' in el) {
+        const pToken = newTokens[i] as Tokens.Paragraph;
+        const optimistic = this.optimisticParagraphSpans(pToken);
+        if (optimistic) {
+          (el as any).setSpans(optimistic);
+          this.content.resizeLastChild(el);
+          pendingTail = { entity: el, token: pToken };
+          spansWrittenTo = el;
+        }
+      }
     }
+
+    // One place decides which entity may carry a guess. A coalesced append can
+    // add a block after the paragraph that owned the previous guess, and that
+    // guess is then frozen — no further text can land in that paragraph, so the
+    // construct can never close and the styling would otherwise survive to
+    // close(). `spansWrittenTo` is excluded from the re-render because literal
+    // spans are already on screen for it.
+    this.dropStaleOptimisticTail(pendingTail?.entity ?? null, spansWrittenTo);
+    if (pendingTail) this.optimisticTail = pendingTail;
 
     // The raw-equal prefix is unchanged, so its child-index entries stay valid;
     // only the suffix prefix-sum is recomputed.
