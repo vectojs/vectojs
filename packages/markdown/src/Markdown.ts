@@ -5,6 +5,7 @@ import {
   GlyphRasterAtlas,
   type GlyphRasterAtlasStats,
   IRenderer,
+  OBJECT_REPLACEMENT,
   prepareContentGrid,
   type ContentProjection,
   type PreparedContentGrid,
@@ -185,11 +186,82 @@ export function isMathJaxReady(): boolean {
   return mathConverter !== null;
 }
 
-/** A converted formula: its SVG data URI and the intrinsic box scraped off it. */
+/**
+ * MathJax's x-height ratio: how many em one `ex` is.
+ *
+ * Its SVG output uses 1000 internal units per em and reports the box in `ex`, so
+ * this is `unitsPerEx / 1000`. Measured 2026-07-31 against `mathjax-full` via
+ * `liteAdaptor`: units/ex came out 442.0 for every probed formula, consistently
+ * from both the width and height attributes (441.95–442.08). See
+ * `tmp/agents/probe-ex-to-px.ts`.
+ *
+ * This replaced a hardcoded `* 8` whose comment read "1ex is approx 8px in our
+ * font size". That constant is exact only near fontSize 18.1px, so it mis-sized
+ * every formula at any other size — +13% at this package's own 16px default,
+ * +51% at 12px, −43% at 32px.
+ */
+const EX_PER_EM = 0.4421;
+
+/** Convert a MathJax `ex` measurement to px at a given font size. */
+function exToPx(ex: number, fontSize: number): number {
+  return ex * fontSize * EX_PER_EM;
+}
+
+/**
+ * The px size out of a CSS font shorthand (`'bold 28px Inter, sans-serif'` → 28).
+ *
+ * `undefined` when there is no `px` size to read, so the caller can fall back to
+ * the theme rather than silently substituting a wrong number. `@vectojs/ui` has an
+ * equivalent `fontSizePx` in `measure.ts`, but it is not re-exported from that
+ * package's barrel and it returns a hardcoded 16 on failure, which would hide a
+ * malformed font behind a plausible-looking box.
+ *
+ * Deliberately not a regex. The obvious `/(\d+(?:\.\d+)?)px/` is polynomial: the
+ * digit run can backtrack from every start position when no `px` follows, so a
+ * font string of many digits costs O(n^2) — CodeQL flagged exactly that here
+ * (`js/polynomial-redos`, high), and `font` comes from caller-supplied theme
+ * input. Anchoring on `px` first and walking back over the digits is linear.
+ */
+function fontSizeFromFont(font: string): number | undefined {
+  const pxIndex = font.indexOf('px');
+  if (pxIndex <= 0) return undefined;
+
+  let start = pxIndex;
+  while (start > 0) {
+    const ch = font[start - 1];
+    if ((ch >= '0' && ch <= '9') || ch === '.') start--;
+    else break;
+  }
+  if (start === pxIndex) return undefined;
+
+  const size = parseFloat(font.slice(start, pxIndex));
+  return Number.isFinite(size) ? size : undefined;
+}
+
+/**
+ * A converted formula: its SVG data URI and the intrinsic box scraped off it.
+ *
+ * The box is in **`ex` units**, not px, because `ex` is font-relative and one
+ * cached conversion is reused across runs of different sizes (inline math in a
+ * heading versus body prose). Callers resolve to px with {@link exToPx} at the
+ * size of the run the formula actually sits in.
+ */
 interface MathRender {
   uri: string;
-  width: number;
-  height: number;
+  /** Intrinsic width in `ex`. */
+  widthEx: number;
+  /** Intrinsic height in `ex`, ascent + descent. */
+  heightEx: number;
+  /**
+   * How far the box descends below the text baseline, in `ex`, as a positive
+   * number.
+   *
+   * MathJax emits this as `style="vertical-align:-N ex"` on the root `<svg>`.
+   * Measured on 8 formulas spanning subscripts, superscripts, fractions, big
+   * operators and radicals, it equals the viewBox-derived depth exactly, so it
+   * is read straight off the attribute rather than computed from the viewBox.
+   */
+  depthEx: number;
 }
 
 /**
@@ -210,6 +282,37 @@ const mathCache = new Map<string, MathRender>();
 const MATH_CACHE_LIMIT = 256;
 
 const MATH_LANGS = new Set(['math', 'latex', 'tex']);
+
+/**
+ * Whether a token subtree contains an `inlineMath` token.
+ *
+ * Recursive because inline math nests: inside `strong`/`em`, a link's children, a
+ * list item's tokens, a blockquote, or a table cell. Used only to decide whether
+ * to start the lazy MathJax load, so a false negative delays typesetting rather
+ * than corrupting output — but a missed nesting site means a formula in, say, a
+ * table cell never typesets at all.
+ */
+function containsInlineMath(token: Token): boolean {
+  if (token.type === 'inlineMath') return true;
+  const anyToken = token as Tokens.Generic;
+  if (Array.isArray(anyToken.tokens) && anyToken.tokens.some(containsInlineMath)) {
+    return true;
+  }
+  // `list` holds items in `items`, and each item holds its own `tokens`.
+  if (Array.isArray(anyToken.items) && anyToken.items.some(containsInlineMath)) {
+    return true;
+  }
+  // `table` holds `header` cells and `rows` (an array of arrays of cells).
+  if (Array.isArray(anyToken.header) && anyToken.header.some(containsInlineMath)) {
+    return true;
+  }
+  if (Array.isArray(anyToken.rows)) {
+    for (const row of anyToken.rows as Token[][]) {
+      if (Array.isArray(row) && row.some(containsInlineMath)) return true;
+    }
+  }
+  return false;
+}
 
 /** Opening fence: up to three spaces, then three or more of ` or ~. */
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
@@ -357,13 +460,20 @@ function convertMathToSVGDataURI(
     const hMatch = svgString.match(/height="([^"]+)ex"/);
     const wEx = wMatch ? parseFloat(wMatch[1]) : 10;
     const hEx = hMatch ? parseFloat(hMatch[1]) : 2;
-    // 1ex is approx 8px in our font size
-    const width = wEx * 8;
-    const height = hEx * 8;
+    // Depth below the baseline, from `style="vertical-align:-0.486ex"`. Negative
+    // in the attribute (CSS raises a positive vertical-align), positive here.
+    // Absent for a formula that sits entirely on the baseline.
+    const vMatch = svgString.match(/vertical-align:\s*(-?[\d.]+)ex/);
+    const depthEx = vMatch ? Math.max(0, -parseFloat(vMatch[1])) : 0;
 
     // Use btoa since this executes in the browser
     const base64 = btoa(unescape(encodeURIComponent(svgString)));
-    return { uri: `data:image/svg+xml;base64,${base64}`, width, height };
+    return {
+      uri: `data:image/svg+xml;base64,${base64}`,
+      widthEx: wEx,
+      heightEx: hEx,
+      depthEx,
+    };
   } catch (e) {
     console.error('MathJax error', e);
     return null;
@@ -1158,13 +1268,22 @@ function collectSpans(
   inherited: TextStyle,
   theme: Required<MarkdownTheme>,
   out: StyledSpan[],
+  /**
+   * The size the enclosing block is drawn at, when it is not the theme body size.
+   *
+   * Only inline math uses it: `ex` is font-relative, so a formula's reserved box
+   * has to be resolved against the size of the run it sits in. A heading carries
+   * its size in its `font` string rather than in any span style, so it cannot be
+   * recovered from `inherited`.
+   */
+  blockFontSize?: number,
 ): void {
   for (const token of tokens) {
     switch (token.type) {
       case 'strong': {
         const t = token as Tokens.Strong;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out);
+          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out, blockFontSize);
         } else {
           out.push({
             text: decodeEntities(t.text),
@@ -1176,7 +1295,7 @@ function collectSpans(
       case 'em': {
         const t = token as Tokens.Em;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out);
+          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out, blockFontSize);
         } else {
           out.push({
             text: decodeEntities(t.text),
@@ -1217,10 +1336,34 @@ function collectSpans(
       }
       case 'inlineMath': {
         const t = token as any;
-        out.push({
-          text: decodeEntities(t.raw),
-          style: { ...inherited, color: '#fcd34d' },
-        }); // yellow/gold for inline math
+        // Typeset into a reserved inline box when MathJax is available. The run's
+        // own size drives the conversion, so `$x$` inside a heading scales with
+        // the heading rather than with body prose.
+        const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
+        const rendered = renderMathToSVGDataURI(t.text, false);
+        if (rendered) {
+          out.push({
+            text: OBJECT_REPLACEMENT,
+            style: inherited,
+            object: {
+              width: exToPx(rendered.widthEx, runSize),
+              height: exToPx(rendered.heightEx, runSize),
+              depth: exToPx(rendered.depthEx, runSize),
+              // The TeX source is the accessible name: without it a screen reader
+              // receives only the invisible U+FFFC sentinel.
+              alt: t.text,
+            },
+          });
+        } else {
+          // MathJax has not loaded yet, or conversion failed. Keep the previous
+          // styled-source rendering; `ensureMathJax()` retypesets from tokens once
+          // the library lands, so for a document that is merely waiting this is a
+          // transient state rather than the final output.
+          out.push({
+            text: decodeEntities(t.raw),
+            style: { ...inherited, color: '#fcd34d' },
+          }); // yellow/gold for inline math
+        }
         break;
       }
       case 'link': {
@@ -1232,7 +1375,7 @@ function collectSpans(
           color: '#38bdf8',
         };
         if (t.tokens && t.tokens.length > 0) {
-          collectSpans(t.tokens, linkStyle, theme, out);
+          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize);
         } else {
           out.push({ text: decodeEntities(t.text), style: linkStyle });
         }
@@ -1243,7 +1386,7 @@ function collectSpans(
         // Text tokens may themselves contain nested inline tokens (e.g. from
         // paragraph splitting).  Recurse when present.
         if ('tokens' in t && (t as any).tokens?.length) {
-          collectSpans((t as any).tokens, inherited, theme, out);
+          collectSpans((t as any).tokens, inherited, theme, out, blockFontSize);
         } else {
           const decoded = decodeEntities(t.text);
           if (decoded) {
@@ -1354,7 +1497,13 @@ function renderInlineToRichText(
 ): RichText {
   const spans: StyledSpan[] = [];
   if (tokens && tokens.length > 0) {
-    collectSpans(tokens, {}, theme, spans);
+    // `blockFontSize` carries the block's own size to the inline-math arm. A
+    // heading's size lives only in this `font` string — its spans carry no
+    // `fontSize` — so without it an `$x$` in an `h1` would reserve a body-sized
+    // box. Passed as its own argument rather than seeded into `inherited` so no
+    // text span gains an explicit fontSize it did not have before, which would
+    // change every heading's paragraph-memo key.
+    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font));
   }
   // Fallback: if no spans were produced, use the raw text
   if (spans.length === 0) {
@@ -3320,6 +3469,13 @@ export class Markdown extends UIComponent {
     };
     const availableWidth = metrics.availableWidth;
 
+    // Inline `$...$` needs MathJax just as a fence does, and only the `code` arm
+    // below used to ask for it — so a document whose only math was inline never
+    // started the load and its formulas stayed TeX source forever. Checked here
+    // rather than per-arm because inline math can appear in a heading, list item,
+    // blockquote, or table cell, not just a paragraph.
+    if (!mathConverter && containsInlineMath(token)) this.ensureMathJax();
+
     switch (token.type) {
       // ── Headings ─────────────────────────────────────────────────────
       case 'heading': {
@@ -3406,10 +3562,16 @@ export class Markdown extends UIComponent {
         if (rendersAsMath(codeToken)) {
           const mathData = renderMathToSVGDataURI(codeToken.text, true);
           if (mathData) {
+            // `ex` is font-relative, so resolve it against the theme's body size.
+            // This is what the old hardcoded `* 8` got wrong: it was exact only
+            // near 18.1px, so a block formula was ~13% oversized at the 16px
+            // default and far worse at other sizes.
+            const intrinsicW = exToPx(mathData.widthEx, t.fontSize);
+            const intrinsicH = exToPx(mathData.heightEx, t.fontSize);
             // Provide a generous default height, it will scale based on width
             const mathImg = new Image(mathData.uri, {
-              width: Math.min(availableWidth, mathData.width),
-              height: mathData.height * Math.min(1, availableWidth / mathData.width),
+              width: Math.min(availableWidth, intrinsicW),
+              height: intrinsicH * Math.min(1, availableWidth / intrinsicW),
               alt: codeToken.text,
               // The SVG decodes asynchronously and Image paints a placeholder
               // until it lands. Without this an `onDemand` scene, which repaints
