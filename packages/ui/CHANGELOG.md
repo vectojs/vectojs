@@ -1,5 +1,180 @@
 # @vectojs/ui
 
+## 2.6.0
+
+### Minor Changes
+
+- 967f3ca: Reserve inline advance for a non-text object in a `StyledSpan`
+
+  `RichText` could not hold horizontal space for anything it does not shape, so an
+  inline formula, icon, or embedded box had no way to sit mid-sentence. The only
+  workaround was a vertical `Stack` of alternating text runs and entities, which
+  block-breaks the line.
+
+  A span may now carry an `InlineObject`:
+
+  ```ts
+  import { OBJECT_REPLACEMENT, type StyledSpan } from "@vectojs/layout";
+
+  const spans: StyledSpan[] = [
+    { text: "the identity " },
+    {
+      text: OBJECT_REPLACEMENT,
+      object: { width: 42, height: 20, depth: 4, alt: "x+1" },
+    },
+    { text: " holds." },
+  ];
+  ```
+
+  The engine reserves `width` instead of measuring the character, sits the box on
+  the shared text baseline (`depth` is how far it hangs below, matching MathJax's
+  `vertical-align` with the sign flipped), and grows the line so a tall object is
+  not clipped. Read the positioned box back off `LayoutNode.object` and draw your
+  own content there — the engine never paints it, and `RichText` skips the
+  sentinel rather than drawing a tofu box.
+
+  `alt` supplies the accessible name and copied text in place of the sentinel.
+
+  New exports from `@vectojs/layout`: `OBJECT_REPLACEMENT`, `InlineObject`.
+  `StyledSpan`, `PreparedGlyph`, and `LayoutNode` each gain an optional `object`.
+  Existing callers are unaffected: a span without `object` takes exactly the paths
+  it did before.
+
+- 9f97b64: Paint inline objects, and cover inline math in the real-browser e2e
+
+  `InlineObject` gains an optional `paint(surface, box)` callback, invoked by
+  `RichText` once per render at the box the layout engine reserved. Two supporting
+  types are exported: `InlineObjectBox` (the resolved position, with `y` already
+  offset for the object's `depth`) and `InlineObjectSurface` (the two `drawImage`
+  overloads a painter needs — structurally a subset of `IRenderer`, declared in
+  `@vectojs/layout` because that package sits below `@vectojs/core`).
+
+  This fixes inline `$...$` math, which reserved its box correctly and then left it
+  empty: the engine does not draw objects, and the span carried the formula's
+  dimensions but not its raster. A correctly measured, positioned, and accessible
+  formula rendered as a blank gap.
+
+  The `@vectojs/markdown` change is a `patch` because it restores intended
+  behaviour rather than adding API. It supplies a painter that draws the typeset
+  SVG, decoding it once per formula into a module-level raster cache and
+  repainting when it lands.
+
+  `packages/markdown/e2e/lazy-math.e2e.ts` now covers inline math, including a
+  pixel sample inside the reserved box. That assertion is the only one that can
+  see this class of bug: no unit-test environment can: Bun has no `globalThis.Image`,
+  and jsdom has one that never settles a `data:` URI.
+
+- dc27a24: Reuse a streamed markdown table instead of rebuilding every cell.
+
+  `Table` gains a public append-only `appendRows(rows)`. It reproduces exactly what
+  the constructor does per row — normalize to the header's column count, reject a
+  duplicate `Entity` cell, apply `selectable`, mount to the right parent for the
+  current mode — then re-resolves geometry through `layout()`. It writes both the
+  public `rows` and the private cell grid: `layout()` walks the grid while
+  `getA11yAttributes()` counts `rows`, so updating only one produces a table that
+  either renders rows it does not announce or announces rows it does not render.
+
+  Append-only is deliberate. Existing row indices keep their meaning, so the roving
+  tab stop cannot be invalidated and no `detachA11y` bookkeeping is needed. To
+  change an existing cell, mutate the cell entity you passed in and call `layout()`,
+  which re-measures from `cell.height`.
+
+  `@vectojs/markdown` uses it for the last block type that still rebuilt. A `table`
+  token carries every row, so the old path cost Θ(C·N²) cell constructions across a
+  stream, plus a further 2× because `Table.layout()` re-runs `fitCell` on each one.
+  Measured on real Chrome and Firefox with a growing-table benchmark shape,
+  reuse-eligible on 27 of 36 chunks:
+
+  | growing table | reconcile              | total                   |
+  | ------------- | ---------------------- | ----------------------- |
+  | Chrome        | 156.6 → 44.8 ms (−73%) | 314.8 → 193.8 ms (−41%) |
+  | Firefox       | 98.0 → 29.3 ms (−70%)  | 250.5 → 177.1 ms (−28%) |
+
+  Total moves as well as reconcile, because the rebuild was discarding and
+  re-creating every cell entity.
+
+  Handling row appends alone would not have delivered this. `marked` materializes a
+  partially-arrived row immediately as a full row padded with empty cells and then
+  fills them one at a time — a 2×2 table passes through eleven distinct row states,
+  of which only two are clean appends. So the reuse path also rewrites the last
+  row's cells in place, and markdown now renders every table cell as a `RichText`
+  rather than letting an empty cell become a `Text`: `Text` has `setText`,
+  `RichText` has `setSpans`, and nothing converts between them, so a cell that
+  starts empty and later gains content could not otherwise be updated in place.
+
+### Patch Changes
+
+- ca20e66: Measure text correctly without a DOM
+
+  `ARCHITECTURE.md` advertises Node server-side SVG generation and the `Scene`
+  reference states that in SSR "headless layout / `toSVG()` still work". Layout did
+  run, but every glyph advance came from a flat `0.5em` guess, because all four
+  `GlyphMeasurer` factories return `null` without a canvas. Measured against Chrome
+  at 32px `sans-serif`, widths were wrong by **+125% on narrow text and −47% on
+  wide** — and `'iiiiiiiiii'` came out byte-identical to `'WWWWWWWWWW'`, since
+  advances were not proportional at all. Wrapping inherited it, so line breaks
+  landed in the wrong places too.
+
+  `@vectojs/text` now owns a font-metrics registry:
+
+  ```ts
+  import { registerMSDFFontMetrics } from "@vectojs/text";
+
+  // Only the JSON's advances, kerning, and metrics are read — the atlas image is
+  // irrelevant, so a metrics-only file works and nothing needs to decode.
+  registerMSDFFontMetrics("sans-serif", await Bun.file("inter.json").json());
+  ```
+
+  Any `msdf-atlas-gen` font works via `registerMSDFFontMetrics`, or supply a
+  `FontMetricsSource` directly with `registerFontMetrics`. Three measurement paths
+  consult it, all of which previously had their own hardcoded fallback: per-glyph
+  advances in `@vectojs/layout`, whole-string widths in `@vectojs/ui` (which size
+  `Button`, `Input`, `Link`, `Checkbox`, `ContextMenu`, and `ProgressBar`), and the
+  baseline in `cssLineBoxBaseline`.
+
+  **A real Canvas 2D context always wins**, so a browser is unaffected: verified in
+  Chromium that a deliberately absurd registration changes no measured width by a
+  single float. Registered metrics replace a fabricated guess; they never
+  second-guess the engine that will actually draw the text.
+
+  New in `@vectojs/layout`: `unmeasuredGlyphCount()` reports how many advances were
+  fabricated, and a one-time console warning names the fix. This is distinct from
+  `LayoutResult.fallbackToCanvas`, which only reports an _atlas_ miss and is true on
+  essentially every paragraph even in a browser.
+
+  One documented limit: the per-glyph `GlyphMeasurer` contract is
+  `measure(char, fontSize, family)`, which has no neighbouring character, so summed
+  advances cannot recover kerning — measured at ~10% on kern-heavy strings, against
+  125% before. Whole-string measurement goes through `measureEm` and is exact.
+
+- 4ab8aae: Revive the paragraph memo, and put `fontFamily` in its key.
+
+  `LayoutEngine.prepare`/`prepareRich` discard every memoized paragraph when the
+  atlas argument is not the **same object** as the previous call — glyph advances
+  depend on it, so a changed atlas must invalidate. But `Text` and `RichText` both
+  passed a fresh `{}` literal on every layout, so the memo was cleared each time and
+  never hit: measured through the real `RichText`, five identical re-layouts produced
+  **0 hits and 12 misses**. A cache with a 1000-entry bound, eviction counters, and
+  ~20 references was dead code on the only paths that used it.
+
+  Both now pass a new exported `EMPTY_GLYPH_ATLAS` (frozen, so one consumer cannot
+  poison another's advances). Measured through `RichText` on 20 paragraphs, 40
+  identical re-layouts: **54.52 ms → 26.78 ms**, hit rate **0 → 1.0**. Streaming
+  markdown is unchanged, as expected — it re-lays out _growing_ text, which is the
+  streaming shape cache's job, not the memo's.
+
+  Reviving the cache exposed a latent correctness bug, so both are fixed together:
+  `styleSig` fingerprinted `fontSize/color/bold/italic/href` but **not
+  `fontFamily`**, even though `fontFamily` is passed to `glyphWidth` and changes
+  advances. With a stable atlas, a `fontFamily: 'wide'` paragraph was served the
+  metrics of an identical-length `'serif'` one — 48px where 144px was correct.
+  Reachable in practice: `@vectojs/markdown` sets `fontFamily` on inline codespans,
+  so any paragraph containing `` `code` `` was the colliding shape. `fontFamily` is
+  now in the signature and in `styleRangeEquals`.
+
+  `@vectojs/layout` is a minor for the new `EMPTY_GLYPH_ATLAS` export; `@vectojs/ui`
+  is a patch (no API change, just correct cache usage).
+
 ## 2.5.0
 
 ### Minor Changes

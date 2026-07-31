@@ -1,5 +1,265 @@
 # @vectojs/markdown
 
+## 0.6.0
+
+### Minor Changes
+
+- a750002: Typeset inline `$...$` math instead of showing its TeX source.
+
+  Inline math previously rendered as gold (`#fcd34d`) source text with the `$`
+  delimiters visible, because `collectSpans` pushed `token.raw` and never called
+  MathJax — `ensureMathJax()` was only reached from the fenced-block arm, so a
+  document whose only math was inline never even started the lazy load. It now
+  reserves a real inline box via `StyledSpan.object` (added in `@vectojs/layout`
+  1.1.0), carrying the TeX source as the box's accessible name.
+
+  Also fixes a pre-existing mis-sizing of **block** math. The `ex`-to-px
+  conversion was a hardcoded `ex * 8`, which is exact only near a 18.1px font
+  size — so a block formula was ~13% oversized at this package's own 16px
+  default, +51% at 12px, and −43% at 32px. It is now
+  `ex * fontSize * 0.4421`, resolved against the size of the run the formula
+  actually sits in, so `$x$` in a heading scales with the heading.
+
+- b2f440e: add `incompleteMode` and `onStable` streaming options
+
+  `createStream()` accepts `incompleteMode: 'literal' | 'optimistic'`. The default
+  `'literal'` is unchanged from every prior release: trailing unclosed inline
+  syntax renders as the plain text `marked` produces for it. `'optimistic'` guesses
+  that the trailing paragraph's last unclosed strong/emphasis/inline-code construct
+  will close and renders it with that formatting immediately, hiding the syntax
+  characters; an unclosed link shows its label as plain, non-clickable text because
+  no URL is known yet. The guess is display-only, never touches `Markdown.tokens`,
+  applies only to the document's last paragraph while the stream is open, and is
+  unwound on `close()` — so a literal and an optimistic stream of the same source
+  end at an identical document.
+
+  `createStream()` also accepts `onStable`, which fires exactly once after a
+  successful `close()` with a snapshot of the top-level block entities. It is not
+  fired by `flush()`, `abort()`, or `destroy()`.
+
+  `close()` now resolves only after the final chunk's parse has actually been
+  applied. Previously it could resolve while the last chunk was still being lexed
+  in the worker, so the rendered document did not yet reflect everything written.
+
+- e68a69c: Load MathJax on demand instead of at module scope.
+
+  The six `mathjax-full` imports and the MathJax document construction were
+  top-level, so every consumer paid them whether or not any document contained a
+  formula. Measured on a browser bundle of a consumer that imports `Markdown` and
+  renders only prose: **2,157,295 bytes raw / 725,012 gzipped, down to 339,767 /
+  106,095** — MathJax was 85% of the bundle. Startup also drops roughly 150 ms of
+  module evaluation. Realising the size win requires code splitting in the
+  consumer's bundler.
+
+  New exports `preloadMathJax()` and `isMathJaxReady()`.
+
+  **Behaviour change:** the first formula on a page can no longer be typeset
+  synchronously. It renders as a code block of its TeX source — the state an
+  unclosed fence already used — and is replaced when the module resolves; later
+  formulas are synchronous. While streaming this is hidden by prefetching on the
+  opening fence, and `await close()` / `onStable` now wait for a pending load so a
+  final document is never handed an untypeset formula. Call `await preloadMathJax()`
+  before constructing to keep the first formula synchronous.
+
+### Patch Changes
+
+- 9f97b64: Paint inline objects, and cover inline math in the real-browser e2e
+
+  `InlineObject` gains an optional `paint(surface, box)` callback, invoked by
+  `RichText` once per render at the box the layout engine reserved. Two supporting
+  types are exported: `InlineObjectBox` (the resolved position, with `y` already
+  offset for the object's `depth`) and `InlineObjectSurface` (the two `drawImage`
+  overloads a painter needs — structurally a subset of `IRenderer`, declared in
+  `@vectojs/layout` because that package sits below `@vectojs/core`).
+
+  This fixes inline `$...$` math, which reserved its box correctly and then left it
+  empty: the engine does not draw objects, and the span carried the formula's
+  dimensions but not its raster. A correctly measured, positioned, and accessible
+  formula rendered as a blank gap.
+
+  The `@vectojs/markdown` change is a `patch` because it restores intended
+  behaviour rather than adding API. It supplies a painter that draws the typeset
+  SVG, decoding it once per formula into a module-level raster cache and
+  repainting when it lands.
+
+  `packages/markdown/e2e/lazy-math.e2e.ts` now covers inline math, including a
+  pixel sample inside the reserved box. That assertion is the only one that can
+  see this class of bug: no unit-test environment can: Bun has no `globalThis.Image`,
+  and jsdom has one that never settles a `data:` URI.
+
+- 5a5a35e: Reuse a streamed blockquote by updating its tail child in place.
+
+  A blockquote renders a subtree — an accent border plus one wrapper per inner
+  block — so unlike paragraph, code, and heading it has no single mutator to call.
+  Reuse now descends to the last inner block and dispatches to the existing
+  `setSpans`/`setCode` paths, so a quote streamed line by line no longer destroys
+  and rebuilds every inner block and its border on each chunk.
+
+  The fast path is deliberately narrow: it applies only when the inner block count
+  is unchanged, every earlier inner block is byte-identical, the tail block kept its
+  type, and that tail is a `paragraph`, `heading`, or `code`. A nested heading
+  carries the same depth guard as the top-level path, since `setSpans` cannot change
+  `font`. Anything else falls back to the existing rebuild, and every rejection path
+  leaves the entity untouched. Wrapper, inner-stack, border, and container boxes are
+  propagated by hand so a reused quote stays geometrically identical to a rebuilt
+  one.
+
+  Measured on real hardware (`benchmarks/markdown-stream-phases`, new `blockquote`
+  shape, two runs per arm): reconcile fell from 52.7/48.8ms to 21.4/23.2ms in Chrome
+  and 33.0ms to 15.3ms in Firefox. Total append+render time fell 31% (Chrome) and
+  27% (Firefox) — larger than the heading case, because a rebuild here discarded a
+  whole subtree.
+
+- 5d3de06: Update a streamed heading in place instead of rebuilding it.
+
+  A heading renders to a `RichText` through the same `renderInlineToRichText` a
+  paragraph uses, so `setSpans` was always available — the reconciler dispatched on
+  the literal string `'paragraph'` and so destroyed and rebuilt the heading entity on
+  every chunk, re-shaping its text and forcing a full `Stack.layout()`.
+
+  Reuse is guarded on unchanged heading depth: `RichText.setSpans` replaces the runs
+  but does not touch `font`, which is constructor-only, and a heading's font size is
+  derived from its depth. Streaming `#` then `# T` lexes to `## T`, moving the same
+  token index from depth 1 to depth 2, so that case still rebuilds.
+
+  Measured on real hardware (`benchmarks/markdown-stream-phases`, new `headings`
+  shape, two runs per arm): reconcile time for a word-at-a-time heading fell from
+  21.2/21.0ms to 11.1/10.7ms in Chrome and 12.2ms to 9.2ms in Firefox. Behaviour is
+  unchanged; this is purely a reuse path.
+
+- 0e4a423: Reuse a streamed image paragraph instead of rebuilding it, and stop dropping an
+  image that arrives after its text.
+
+  A paragraph containing an image renders as a `Stack` of alternating text runs and
+  `Image`s rather than a single `RichText`, so it had no `setSpans` and fell through
+  the in-place reuse path to a full rebuild — re-creating the `Image` on every
+  chunk. The trailing text run is now mutated in place, and a run arriving after the
+  image is appended. Measured on a growing figure-plus-caption stream, reconcile
+  time drops 65% in Chrome and 70% in Firefox (total 31% in both).
+
+  Also fixes a pre-existing correctness bug found by that work: the in-place branch
+  dispatched on the _entity_ having `setSpans` without asking whether the new token
+  still renders as one `RichText`, so a plain paragraph that gained its first image
+  kept its `RichText` and was handed spans that omit the image entirely — the
+  picture was silently dropped. Streaming `Figure: ` then `![a](u.png)` produced a
+  bare text run where a one-shot parse gives a `Stack` with the image.
+
+- 79e42d3: Reuse a streamed list's `Stack` instead of rebuilding every item.
+
+  A `list` token carries **every** item, so a list streamed to N items rebuilt
+  1+2+…+N `RichText` instances — Θ(N²). Measured before this change, a 32-item
+  list cost 528 constructions against 32 for the same list built once. The
+  reconciler now appends new items and rewrites only a growing tail item in place,
+  guarded so any state a stream cannot produce (a shrinking list, an edit to a
+  retained item, a tight→loose transition, a change of `ordered`/`start`) falls
+  back to the existing rebuild.
+
+  Real Chrome and Firefox, median of 7 trials, two runs per arm: reconcile for a
+  growing list **70.7 → 20.8 ms (Chrome, −71%)** and **39.3 → 12.0 ms (Firefox,
+  −66%)**, with total append+render **−37%** / **−17%**. The `mixed` shape also
+  improves −31% / −28%, because a list followed by more prose is a trailing token
+  that used to be rebuilt on every subsequent chunk.
+
+  Also fixes a dead indent in the list renderer: `itemRt.x = 12` was overwritten by
+  `Stack`'s append fast path (which assigns `x = 0` for a vertical stack and treats
+  `x`/`y` as layout-controlled), so list items were never indented — while
+  `maxWidth` still reserved 24px for that indent, shrinking the wrap width for no
+  reason. Items now use the full available width. A list nested in a blockquote is
+  still indented by the quote's own wrapper.
+
+- 9233db0: Defer TeX math conversion until the fence closes, and cache converted formulas.
+
+  `marked` lexes an unterminated fenced block as a complete `code` token as soon as
+  it reads the info string, so a math formula streamed a few characters at a time
+  arrived as a long run of whole tokens — nearly all of them syntactically invalid
+  TeX. Every one of them ran MathJax, the most expensive call in this package, and
+  each result was an error glyph immediately replaced by the next chunk.
+
+  A math fence now renders as an ordinary `CodeBlock` showing the TeX source while
+  it is open, and typesets on the chunk that closes it. As a `CodeBlock` it also
+  picks up the existing `setCode` in-place update, so the growing source costs one
+  mutator call per chunk instead of an entity rebuild.
+
+  Converted formulas are additionally memoized in a bounded process-wide cache, so a
+  repeated formula converts once — including the common case of a closed fence whose
+  `raw` grows by the newline that follows it.
+
+  Measured on the new `math` shape of `benchmarks/markdown-stream-phases` (a formula
+  streamed in six chunks, a fresh formula per cycle so the cache cannot flatter the
+  result), median of 7 trials, two runs per arm on real hardware:
+
+  | Engine  |       reconcile |            total |
+  | ------- | --------------: | ---------------: |
+  | Chrome  | 77.0ms → 12.8ms | 158.5ms → 85.2ms |
+  | Firefox | 91.5ms → 11.9ms | 173.3ms → 88.8ms |
+
+  MathJax invocations over 36 streamed chunks containing three distinct formulas
+  drop from 18 to 3.
+
+  Also fixes a latent bug on the same path: the formula `Image` decodes its SVG
+  asynchronously and had no `onLoad` handler, so under an `onDemand` scene — which
+  repaints only when marked dirty — a formula could stay a blank placeholder
+  indefinitely.
+
+- 0f2852c: Repaint a paragraph image whenever its bitmap settles, not only when the bitmap
+  reports a usable intrinsic size.
+
+  `paragraphImage`'s `onLoad` called `scene.markDirty()` from inside a
+  `naturalWidth && naturalHeight` check, so a source that loads successfully while
+  reporting a zero dimension left the scene unnotified. An `onDemand` scene
+  repaints only when marked, so nothing that changed at decode time was drawn. The
+  display-math sibling already called it unconditionally, with a comment naming
+  this exact hazard — the two call sites disagreed, and this aligns them.
+
+  The trigger was identified by measurement rather than assumption. An
+  `<svg width="0" height="0">` is the one shape that fires `onload` with
+  `naturalWidth === 0` on both Chromium and Firefox. A dimensionless SVG is not:
+  no `width`/`height`, `viewBox`-only, and `width="100%"` all fall back to the CSS
+  default 300x150 and pass the check. A cross-origin raster is not either. A broken
+  source reports zero but settles as `error`, so the callback never runs.
+
+  Sizing behaviour is unchanged: a bitmap with a usable intrinsic size still
+  corrects the box, and a zero-dimension bitmap still keeps its initial estimate.
+  Covered by a new real-browser gate, `e2e/paragraph-image-repaint.e2e.ts`.
+
+- dc27a24: Reuse a streamed markdown table instead of rebuilding every cell.
+
+  `Table` gains a public append-only `appendRows(rows)`. It reproduces exactly what
+  the constructor does per row — normalize to the header's column count, reject a
+  duplicate `Entity` cell, apply `selectable`, mount to the right parent for the
+  current mode — then re-resolves geometry through `layout()`. It writes both the
+  public `rows` and the private cell grid: `layout()` walks the grid while
+  `getA11yAttributes()` counts `rows`, so updating only one produces a table that
+  either renders rows it does not announce or announces rows it does not render.
+
+  Append-only is deliberate. Existing row indices keep their meaning, so the roving
+  tab stop cannot be invalidated and no `detachA11y` bookkeeping is needed. To
+  change an existing cell, mutate the cell entity you passed in and call `layout()`,
+  which re-measures from `cell.height`.
+
+  `@vectojs/markdown` uses it for the last block type that still rebuilt. A `table`
+  token carries every row, so the old path cost Θ(C·N²) cell constructions across a
+  stream, plus a further 2× because `Table.layout()` re-runs `fitCell` on each one.
+  Measured on real Chrome and Firefox with a growing-table benchmark shape,
+  reuse-eligible on 27 of 36 chunks:
+
+  | growing table | reconcile              | total                   |
+  | ------------- | ---------------------- | ----------------------- |
+  | Chrome        | 156.6 → 44.8 ms (−73%) | 314.8 → 193.8 ms (−41%) |
+  | Firefox       | 98.0 → 29.3 ms (−70%)  | 250.5 → 177.1 ms (−28%) |
+
+  Total moves as well as reconcile, because the rebuild was discarding and
+  re-creating every cell entity.
+
+  Handling row appends alone would not have delivered this. `marked` materializes a
+  partially-arrived row immediately as a full row padded with empty cells and then
+  fills them one at a time — a 2×2 table passes through eleven distinct row states,
+  of which only two are clean appends. So the reuse path also rewrites the last
+  row's cells in place, and markdown now renders every table cell as a `RichText`
+  rather than letting an empty cell become a `Text`: `Text` has `setText`,
+  `RichText` has `setSpans`, and nothing converts between them, so a cell that
+  starts empty and later gains content could not otherwise be updated in place.
+
 ## 0.5.0
 
 ### Minor Changes
