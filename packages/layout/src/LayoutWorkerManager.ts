@@ -1,27 +1,69 @@
 import { WORKER_SOURCE_STRING } from './LayoutWorkerSource';
 import { LayoutWorkerRequest, LayoutWorkerResponse } from './LayoutWorker';
+import { computeMSDFLayout } from './msdfLayout';
+import type { MSDFFontData } from '@vectojs/text';
+
+/**
+ * Consecutive worker failures tolerated before the manager stops trying to
+ * create one and serves every request from the main thread instead.
+ *
+ * A worker failure is not always transient. Measured 2026-07-31 on Chromium and
+ * Firefox: under `default-src 'self'`, `worker-src 'none'`, or a `script-src`
+ * without `blob:`, `new Worker(blob:…)` does **not** throw — it constructs and
+ * then fires `onerror`. So a CSP looks exactly like a crash, except it will
+ * never stop happening: six `queueLayout` calls spawned six Workers and
+ * delivered zero layouts on both engines. Recreating per request in that
+ * environment is pure waste, so give the worker a couple of chances (a genuinely
+ * transient OOM/crash deserves one) and then stay on the main thread.
+ */
+const MAX_CONSECUTIVE_WORKER_FAILURES = 2;
+
+/** A queued request plus its callback, kept so layout can be completed on the
+ *  main thread if the worker never answers. */
+interface PendingLayout {
+  request: LayoutWorkerRequest;
+  callback: (response: LayoutWorkerResponse) => void;
+}
 
 export class LayoutWorkerManager {
   private static instance: LayoutWorkerManager | undefined;
   private worker: Worker | null = null;
   private registeredFonts = new Set<string>();
-  private pendingCallbacks = new Map<string, (response: any) => void>();
+  private pendingCallbacks = new Map<string, PendingLayout>();
   private seqIdCounter = new Map<string, number>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Font metrics by id, retained for the lifetime of the manager.
+   *
+   * Distinct from {@link registeredFonts}, which tracks what the *current*
+   * worker has been sent and is cleared when that worker dies. This map is what
+   * lets a main-thread fallback lay out text whose `fontData` the caller only
+   * passed once — `MSDFTextEntity` passes it on every `queueLayout`, but the
+   * option is documented as optional and a caller that omits it after the first
+   * call would otherwise get no layout at all.
+   */
+  private fontDataById = new Map<string, MSDFFontData>();
+  private consecutiveWorkerFailures = 0;
+  /** Set once the worker is judged permanently unavailable (see
+   *  {@link MAX_CONSECUTIVE_WORKER_FAILURES}). */
+  private workerUnavailable = false;
 
   private constructor() {
     this.worker = this.createWorker();
   }
 
   /**
-   * Create the layout worker, or return `null` in an environment without the
-   * Worker/Blob/URL APIs (SSR, non-DOM). Mirrors the Markdown worker's
-   * `typeof Worker` guard so constructing an `MSDFTextEntity` server-side does
-   * not throw — layout simply stays pending until the entity is used in a real
-   * browser (`queueLayout` no-ops while `worker` is null).
+   * Create the layout worker, or return `null` when one cannot be had: an
+   * environment without the Worker/Blob/URL APIs (SSR, non-DOM), a `new Worker`
+   * that throws, or a worker already judged unavailable. Mirrors the Markdown
+   * worker's `typeof Worker` guard so constructing an `MSDFTextEntity`
+   * server-side does not throw. `null` is not a dead end — `queueLayout` lays
+   * out on the calling thread instead, so the worker is strictly an
+   * optimization.
    */
   private createWorker(): Worker | null {
     if (
+      this.workerUnavailable ||
       typeof Worker === 'undefined' ||
       typeof Blob === 'undefined' ||
       typeof URL === 'undefined' ||
@@ -36,6 +78,14 @@ export class LayoutWorkerManager {
     let worker: Worker;
     try {
       worker = new Worker(workerURL);
+    } catch {
+      // `new Worker` can throw outright (a blocked blob: URL, an exhausted
+      // worker pool). Returning null routes layout to the main thread; letting
+      // this escape would propagate out of `queueLayout` into
+      // `new MSDFTextEntity(...)` and take down the caller's whole scene
+      // construction over an optimization that is allowed to be unavailable.
+      this.workerUnavailable = true;
+      return null;
     } finally {
       URL.revokeObjectURL(workerURL);
     }
@@ -44,10 +94,13 @@ export class LayoutWorkerManager {
       if (this.worker !== worker) return;
       const response = e.data as LayoutWorkerResponse;
       const key = `${response.id}-${response.seqId}`;
-      const callback = this.pendingCallbacks.get(key);
-      if (callback) {
+      const pending = this.pendingCallbacks.get(key);
+      // A reply proves the worker is healthy, so a later isolated failure is
+      // still treated as transient rather than counting toward the cap.
+      this.consecutiveWorkerFailures = 0;
+      if (pending) {
         this.pendingCallbacks.delete(key);
-        callback(response);
+        pending.callback(response);
       }
     };
 
@@ -65,16 +118,47 @@ export class LayoutWorkerManager {
     if (this.worker !== worker) return;
     worker.terminate();
     this.worker = null;
-    this.pendingCallbacks.clear();
     this.registeredFonts.clear();
+    this.consecutiveWorkerFailures++;
+    if (this.consecutiveWorkerFailures >= MAX_CONSECUTIVE_WORKER_FAILURES) {
+      this.workerUnavailable = true;
+    }
+    // Finish the abandoned work here rather than dropping it. These callbacks
+    // are the only path by which an `MSDFTextEntity` ever receives geometry:
+    // `render()` returns early while `layoutResult` is null, and nothing
+    // re-queues on its own, so discarding them meant one transient worker error
+    // left the text permanently invisible while its layout, hit-testing, and
+    // a11y projection all still reported success.
+    this.resolvePendingOnMainThread();
+  }
+
+  /**
+   * Complete every queued request synchronously using {@link computeMSDFLayout},
+   * the same function the worker runs. Requests whose font metrics were never
+   * supplied are dropped (there is nothing to lay out against) rather than
+   * retained.
+   */
+  private resolvePendingOnMainThread(): void {
+    if (this.pendingCallbacks.size === 0) return;
+    const pending = [...this.pendingCallbacks.values()];
+    this.pendingCallbacks.clear();
+    for (const { request, callback } of pending) {
+      const font = request.fontData ?? this.fontDataById.get(request.fontId);
+      if (!font) continue;
+      callback(computeMSDFLayout(request, font));
+    }
   }
 
   public destroy(): void {
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);
     this.debounceTimers.clear();
+    // Deliberately dropped, not resolved on the main thread: destroy() is
+    // teardown, so the callers are going away and their callbacks would fire
+    // into disposed entities.
     this.pendingCallbacks.clear();
     this.seqIdCounter.clear();
     this.registeredFonts.clear();
+    this.fontDataById.clear();
     this.worker?.terminate();
     this.worker = null;
     if (LayoutWorkerManager.instance === this) LayoutWorkerManager.instance = undefined;
@@ -137,24 +221,29 @@ export class LayoutWorkerManager {
         textAlign: options.textAlign,
       };
 
+      // Retain the metrics independently of what the current worker knows, so a
+      // main-thread fallback can still lay this font out later.
+      if (options.fontData) this.fontDataById.set(options.fontId, options.fontData);
       if (!this.registeredFonts.has(options.fontId) && options.fontData) {
         request.fontData = options.fontData;
         this.registeredFonts.add(options.fontId);
       }
 
-      this.pendingCallbacks.set(`${entityId}-${nextSeqId}`, options.callback);
+      const key = `${entityId}-${nextSeqId}`;
+      this.pendingCallbacks.set(key, { request, callback: options.callback });
       const worker = this.ensureWorker();
       if (!worker) {
-        // SSR / no-Worker environment: nothing to post to. Drop the pending
-        // callback so it isn't retained; layout resolves when the entity is
-        // used in a real browser (a fresh queueLayout creates the worker then).
-        this.pendingCallbacks.delete(`${entityId}-${nextSeqId}`);
+        // No worker available (SSR, a CSP that blocks blob: workers, or a worker
+        // already judged unavailable). Lay out on this thread instead: the
+        // geometry is identical, only the thread differs.
+        this.resolvePendingOnMainThread();
         return;
       }
       try {
         worker.postMessage(request);
       } catch {
         if (this.worker) this.handleWorkerFailure(this.worker);
+        else this.resolvePendingOnMainThread();
       }
     };
 

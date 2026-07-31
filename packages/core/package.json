@@ -61,7 +61,7 @@
   "scripts": {
     "build": "(cd ../math && bun run build) && (cd ../text && bun run build) && (cd ../layout && bun run build) && (cd ../animation && bun run build) && tsup && tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts && bun e2e/svg-fallback.e2e.ts && bun e2e/msdf-atlas-decode.e2e.ts"
+    "test:e2e": "bun e2e/hidpi.e2e.ts && bun e2e/text-projection.e2e.ts && bun e2e/svg-fallback.e2e.ts && bun e2e/msdf-atlas-decode.e2e.ts && bun e2e/layout-worker-fallback.e2e.ts"
   },
   "dependencies": {
     "@vectojs/animation": "^0.1.1",
