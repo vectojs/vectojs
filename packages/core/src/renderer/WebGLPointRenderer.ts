@@ -628,6 +628,47 @@ function grow(data: Float32Array, needed: number): Float32Array {
 }
 
 /**
+ * Does `source` currently hold pixels worth uploading?
+ *
+ * `setTexture`/`setMSDFTexture` cache on source **identity**, so an upload of a
+ * not-yet-decoded raster is not merely wasted — it is permanent. `texImage2D`
+ * would store a 0×0 texture, `source` would be recorded as the current one, and
+ * every later frame would take the identity fast path and never re-upload. The
+ * atlas then decodes and nothing samples it: layout, hit-testing, and the a11y
+ * projection are all correct while the text is invisible forever.
+ *
+ * That is not hypothetical. Measured on Chromium and Firefox (2026-07-31) with
+ * a network-served MSDF atlas: `img.complete === false` at the first
+ * `addGlyph`, `naturalWidth === 64` once decoded, and **0 ink after 150
+ * frames** with exactly one `texImage2D` call. `MSDFTextEntityOptions.texture`
+ * is caller-supplied and there is no loader helper, so the obvious
+ * `const img = new Image(); img.src = url;` hits it every time.
+ *
+ * Duck-typed rather than `instanceof`: this module must stay usable where
+ * `HTMLImageElement`/`HTMLVideoElement` are not globals (SSR, workers), and the
+ * set of `TexImageSource` types grows over time. Anything without decode state
+ * — `ImageBitmap`, `HTMLCanvasElement`, `OffscreenCanvas`, `ImageData`,
+ * `VideoFrame` — has no readiness to check and is always ready.
+ */
+function isSourceReady(source: TexImageSource): boolean {
+  const candidate = source as {
+    complete?: unknown;
+    naturalWidth?: unknown;
+    readyState?: unknown;
+  };
+  // HTMLImageElement / SVGImageElement. `complete` alone is not enough: a 404
+  // or a decode failure also reports `complete === true`, with no pixels.
+  if (typeof candidate.complete === 'boolean') {
+    if (!candidate.complete) return false;
+    if (typeof candidate.naturalWidth === 'number' && candidate.naturalWidth === 0) return false;
+    return true;
+  }
+  // HTMLVideoElement: HAVE_CURRENT_DATA (2) is the first state with a frame.
+  if (typeof candidate.readyState === 'number') return candidate.readyState >= 2;
+  return true;
+}
+
+/**
  * Create a WebGL2-backed {@link PointRenderer} on `canvas`, or `null` when WebGL2
  * (or shader compilation) is unavailable — callers fall back to Canvas2D.
  *
@@ -932,6 +973,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
 
     setTexture(source) {
       if (source === textureSource && texture) return; // atlas unchanged: free
+      // Same identity-cache hazard as setMSDFTexture: uploading a raster that
+      // has not decoded would pin an empty texture forever. Skip so the next
+      // frame retries. No in-repo caller passes an undecoded source today, but
+      // this is public API and the sprite path has the identical shape.
+      if (!isSourceReady(source)) return;
       if (!texture) {
         texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -975,6 +1021,14 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       if (source === msdfSource && msdfTexture) {
         distanceRange = range;
         return; // same atlas re-set (entities do this every render): free
+      }
+      // Still decoding? Record nothing and upload nothing, so the next frame
+      // retries. Caching an undecoded source here is what made MSDF text
+      // permanently invisible — see isSourceReady. `distanceRange` is still
+      // applied so the value is current the moment the atlas does land.
+      if (!isSourceReady(source)) {
+        distanceRange = range;
+        return;
       }
       // Different atlas: glyphs already batched belong to the previous font —
       // draw them with it before the upload replaces the texture contents.

@@ -43,6 +43,11 @@ export class MSDFTextEntity extends Entity {
 
   private text: string = '';
   private lastRenderedSeqId: number = 0;
+  // Atlas-decode subscription (see watchAtlasDecode). Held so `destroy()` can
+  // release it: the handler closes over `this`, so leaving it attached to a
+  // long-lived shared atlas image would retain the whole entity.
+  private atlasDecodeTarget: EventTarget | null = null;
+  private atlasDecodeHandler: (() => void) | null = null;
   private rgbColorCache: Map<number, string> = new Map();
   private fontStringCache: string[] = [];
 
@@ -67,7 +72,66 @@ export class MSDFTextEntity extends Entity {
     this.maxWidth = options.maxWidth ?? 1000;
     this.maxHeight = options.maxHeight ?? 1000;
     this.textAlign = options.textAlign ?? 'left';
+    this.watchAtlasDecode();
     this.setText(text);
+  }
+
+  /**
+   * Repaint once the atlas raster decodes.
+   *
+   * The WebGL backend refuses to upload a not-yet-decoded atlas (it would pin an
+   * empty texture in its identity cache forever), so the upload has to happen on
+   * a LATER frame — and nothing else schedules one. Layout marks the scene dirty
+   * when the worker replies, which for a network-served atlas is long before the
+   * image lands, so the scene is already idle by then.
+   *
+   * Measured on Chromium and Firefox (2026-07-31) with a 600 ms atlas: the
+   * scene's own rAF loop never uploaded a decoded atlas in EITHER render mode.
+   * `onDemand` skips idle frames outright; `always` throttles to 2 FPS when
+   * idle, so whether it recovers is down to whether a throttled tick happens to
+   * land after the decode — Chromium got one, Firefox did not. Neither is a
+   * mechanism, which is why this listener exists rather than relying on the
+   * frame loop to come back around.
+   *
+   * Only `HTMLImageElement`-shaped sources have a decode to wait for; a canvas,
+   * `ImageBitmap`, or `VideoFrame` atlas is ready on arrival.
+   */
+  private watchAtlasDecode(): void {
+    const source = this.texture as {
+      addEventListener?: unknown;
+      removeEventListener?: unknown;
+      complete?: unknown;
+      naturalWidth?: unknown;
+    };
+    if (
+      typeof source.complete !== 'boolean' ||
+      typeof source.addEventListener !== 'function' ||
+      typeof source.removeEventListener !== 'function'
+    ) {
+      return;
+    }
+    // Already decoded: the first render uploads it, nothing to wait for.
+    if (source.complete && typeof source.naturalWidth === 'number' && source.naturalWidth > 0) {
+      return;
+    }
+    const target = this.texture as unknown as EventTarget;
+    this.atlasDecodeHandler = () => {
+      this.detachAtlasDecodeListener();
+      this.scene?.markDirty();
+    };
+    // `error` is registered too, purely so the listener is released on a 404
+    // instead of being retained for the entity's lifetime.
+    target.addEventListener('load', this.atlasDecodeHandler);
+    target.addEventListener('error', this.atlasDecodeHandler);
+    this.atlasDecodeTarget = target;
+  }
+
+  private detachAtlasDecodeListener(): void {
+    if (!this.atlasDecodeTarget || !this.atlasDecodeHandler) return;
+    this.atlasDecodeTarget.removeEventListener('load', this.atlasDecodeHandler);
+    this.atlasDecodeTarget.removeEventListener('error', this.atlasDecodeHandler);
+    this.atlasDecodeTarget = null;
+    this.atlasDecodeHandler = null;
   }
 
   /** Change the wrap boundary and re-run layout for the current text. */
@@ -282,6 +346,7 @@ export class MSDFTextEntity extends Entity {
     // Static guard: never resurrect the worker singleton (or throw in SSR)
     // just to cancel — if no manager exists, nothing is queued for this entity.
     LayoutWorkerManager.cancelLayoutForEntity(this.id);
+    this.detachAtlasDecodeListener();
     super.destroy();
   }
 }

@@ -563,6 +563,96 @@ describe('createWebGLPointRenderer', () => {
     expect(captures.texUploads).toBe(3); // sprite path caches too
   });
 
+  it('refuses to upload an atlas that has not decoded, and retries once it has', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    // An HTMLImageElement-shaped source that is still loading. Uploading it
+    // would commit an empty texture AND record it as the current source, so the
+    // identity fast path would never re-upload it — permanently invisible text.
+    const atlas = {
+      complete: false,
+      naturalWidth: 0,
+    } as unknown as TexImageSource;
+
+    r.setMSDFTexture(atlas, 4);
+    r.setMSDFTexture(atlas, 4);
+    expect(captures.texUploads).toBe(0);
+
+    // Same object, now decoded: the retry must go through.
+    (atlas as unknown as { complete: boolean; naturalWidth: number }).complete = true;
+    (atlas as unknown as { complete: boolean; naturalWidth: number }).naturalWidth = 64;
+    r.setMSDFTexture(atlas, 4);
+    expect(captures.texUploads).toBe(1);
+
+    // And it is cached from then on, exactly as before.
+    r.setMSDFTexture(atlas, 4);
+    expect(captures.texUploads).toBe(1);
+  });
+
+  it('treats a decoded-but-empty raster as not ready (a 404 also reports complete)', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    // `complete` alone is not sufficient: a failed fetch also sets it, with no
+    // pixels behind it. Uploading here would pin a 0x0 texture forever.
+    const broken = {
+      complete: true,
+      naturalWidth: 0,
+    } as unknown as TexImageSource;
+    r.setMSDFTexture(broken, 4);
+    expect(captures.texUploads).toBe(0);
+  });
+
+  it('uploads sources that have no decode state at all', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    // A canvas / ImageBitmap / VideoFrame atlas has no readiness to check, so
+    // the guard must not make it wait for something that never happens.
+    r.setMSDFTexture({} as TexImageSource, 4);
+    expect(captures.texUploads).toBe(1);
+
+    // A video source is ready from HAVE_CURRENT_DATA (2) onwards.
+    const video = { readyState: 0 } as unknown as TexImageSource;
+    r.setMSDFTexture(video, 4);
+    expect(captures.texUploads).toBe(1);
+    (video as unknown as { readyState: number }).readyState = 2;
+    r.setMSDFTexture(video, 4);
+    expect(captures.texUploads).toBe(2);
+  });
+
+  it('applies the sprite-path readiness guard too', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const sprite = {
+      complete: false,
+      naturalWidth: 0,
+    } as unknown as TexImageSource;
+    r.setTexture(sprite);
+    expect(captures.texUploads).toBe(0);
+    (sprite as unknown as { complete: boolean; naturalWidth: number }).complete = true;
+    (sprite as unknown as { complete: boolean; naturalWidth: number }).naturalWidth = 32;
+    r.setTexture(sprite);
+    expect(captures.texUploads).toBe(1);
+  });
+
+  it('does not count a skipped upload as an atlas switch', () => {
+    const { gl, captures } = mockGL();
+    const r = createWebGLPointRenderer(mockCanvas(gl))!;
+    const atlas = {
+      complete: false,
+      naturalWidth: 0,
+    } as unknown as TexImageSource;
+
+    r.begin();
+    r.setMSDFTexture(atlas, 4);
+    r.setMSDFTexture(atlas, 4);
+    r.flush();
+    // The readiness check returns before `atlasSwitches++` and `drawGlyphs()`,
+    // so a deferred upload neither inflates the switch counter nor forces an
+    // empty mid-frame batch commit.
+    expect(r.stats?.().atlasSwitches ?? -1).toBe(0);
+    expect(captures.texUploads).toBe(0);
+  });
+
   it('draws pending glyphs before switching to a different MSDF atlas', () => {
     const { gl, captures } = mockGL();
     const r = createWebGLPointRenderer(mockCanvas(gl))!;
