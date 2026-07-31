@@ -215,10 +215,27 @@ function exToPx(ex: number, fontSize: number): number {
  * equivalent `fontSizePx` in `measure.ts`, but it is not re-exported from that
  * package's barrel and it returns a hardcoded 16 on failure, which would hide a
  * malformed font behind a plausible-looking box.
+ *
+ * Deliberately not a regex. The obvious `/(\d+(?:\.\d+)?)px/` is polynomial: the
+ * digit run can backtrack from every start position when no `px` follows, so a
+ * font string of many digits costs O(n^2) — CodeQL flagged exactly that here
+ * (`js/polynomial-redos`, high), and `font` comes from caller-supplied theme
+ * input. Anchoring on `px` first and walking back over the digits is linear.
  */
 function fontSizeFromFont(font: string): number | undefined {
-  const m = /(\d+(?:\.\d+)?)px/.exec(font);
-  return m ? parseFloat(m[1]) : undefined;
+  const pxIndex = font.indexOf('px');
+  if (pxIndex <= 0) return undefined;
+
+  let start = pxIndex;
+  while (start > 0) {
+    const ch = font[start - 1];
+    if ((ch >= '0' && ch <= '9') || ch === '.') start--;
+    else break;
+  }
+  if (start === pxIndex) return undefined;
+
+  const size = parseFloat(font.slice(start, pxIndex));
+  return Number.isFinite(size) ? size : undefined;
 }
 
 /**
