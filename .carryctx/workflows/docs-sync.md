@@ -25,9 +25,9 @@ User asks to "update docs", "publish documentation changes", or after any edit t
 
    - The website holds lines `vectojs-docs` does not, so a recursive copy **deletes** published content.
    - It clobbers the 408 localized files under `src/content/i18n/`, which have no source in `vectojs-docs` — that repo has no `i18n/` directory at all.
-   - A raw diff is not a drift signal. The website runs prettier in CI (`format:check`) and `vectojs-docs` has none, so the same content differs on disk permanently. Of 10 files a raw diff flagged, 8 were formatting.
+   - A raw diff is not a drift signal. The website enforces formatting in CI (`format:check`) and `vectojs-docs` has none, so the same content differs on disk permanently. Of 10 files a raw diff flagged, 8 were formatting.
 
-   The script normalizes both sides with the website's own locked prettier before comparing, excludes `i18n/`, and never deletes. It exits 1 when real content differs, so it also works as a gate. This is a one-way publish — never edit `vectojs-website/src/content/` directly and copy backward; fix it in `vectojs-docs/` and re-sync.
+   The script normalizes both sides with the website's own locked formatter (oxfmt) before comparing, excludes `i18n/`, and never deletes. It exits 1 when real content differs, so it also works as a gate. This is a one-way publish — never edit `vectojs-website/src/content/` directly and copy backward; fix it in `vectojs-docs/` and re-sync.
 
 4. **Run the website's gates.** In `vectojs-website/`: `bun run check:docs`, `bun run check:anchors`, `bun run format`, then `bunx astro build`. `check:anchors` is the one that matters most here — it resolves every cross-page fragment and compares heading structure against English, so it catches both a dead anchor and an English section that has no localized counterpart yet. A new English `##` section will fail it with one error per locale until the translations land; that is correct, not a bug to work around. Note `bun run build` also runs `fetch:assets`, which hard-fails on a 403 from an external video host — use `bunx astro build` directly.
 5. **Commit in `vectojs-docs/`** with a message describing the doc change (e.g. `docs: update WASM architecture status`).
