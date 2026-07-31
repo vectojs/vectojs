@@ -1,5 +1,118 @@
 # @vectojs/core
 
+## 1.25.0
+
+### Minor Changes
+
+- 2e73417: Upload an MSDF atlas once it decodes, instead of pinning an empty texture
+
+  `WebGLPointRenderer.setMSDFTexture` cached the atlas on source **identity** with
+  no decode guard. An `HTMLImageElement` handed over while still loading was
+  uploaded once as a 0×0 texture, recorded as the current source, and never
+  re-uploaded — so the atlas decoded and nothing sampled it. Layout, hit-testing,
+  and the accessibility projection were all correct while the text was invisible,
+  permanently. `MSDFTextEntityOptions.texture` is caller-supplied and there is no
+  loader helper, so the obvious code hit it every time:
+
+  ```ts
+  const atlas = new Image();
+  atlas.src = "/fonts/inter-msdf.png"; // not awaited
+  scene.add(new MSDFTextEntity("Hello", { font, texture: atlas }));
+  ```
+
+  Both `setMSDFTexture` and `setTexture` now skip a source that has no pixels yet
+  (`complete`/`naturalWidth` for image-shaped sources, `readyState >= 2` for video)
+  and, critically, do not record it — so a later frame retries. A decoded-but-empty
+  raster is treated as not ready too, because a failed fetch also reports
+  `complete === true`.
+
+  Skipping the upload alone would still have left the text blank: the correct
+  upload has to happen on a later frame, and nothing scheduled one. Measured on
+  Chromium and Firefox, the scene's own frame loop never uploaded a decoded atlas
+  in either render mode — `onDemand` skips idle frames, and `always` throttles to
+  2 FPS when idle, so recovery depended on a throttled tick happening to land after
+  the decode. `MSDFTextEntity` now subscribes to the atlas's `load` and marks the
+  scene dirty, releasing the listener in `destroy()`.
+
+  Sources with no decode state — a canvas, `ImageBitmap`, or `VideoFrame` atlas —
+  are unaffected and still upload on first use.
+
+- 321642e: Make `SVGEntity` visible when a source cannot be rasterized, and repair sources
+  that omit the SVG namespace.
+
+  `render()` previously had no branch after its bitmap/element checks, so any
+  raster failure left a permanently blank box of correct size — indistinguishable
+  from correct output. Two changes:
+
+  - Markup written without `xmlns="http://www.w3.org/2000/svg"` is now repaired.
+    It parses as well-formed XML and yields correct dimensions, but the browser's
+    image decoder rejects the blob, so it used to render nothing. It now
+    rasterizes the real artwork. This is reachable from ordinary Markdown: a raw
+    inline `<svg>` block becomes an `SVGEntity`, and hand-written SVG commonly
+    omits the namespace.
+  - Genuinely undecodable input now draws a fallback marker (box outline plus a
+    diagonal cross) instead of nothing, configurable via the new `fallbackStroke`
+    and `fallbackFill` properties — set both to `'transparent'` to opt out. Both
+    async failure handlers now also call `scene.markDirty()`, without which an
+    `onDemand` scene never repainted.
+
+  New `hasRasterBitmap()` and `hasRasterFailed()` accessors report raster state.
+  Covered by `e2e/svg-fallback.e2e.ts`, which counts real pixels on Chromium and
+  Firefox.
+
+### Patch Changes
+
+- ca20e66: Measure text correctly without a DOM
+
+  `ARCHITECTURE.md` advertises Node server-side SVG generation and the `Scene`
+  reference states that in SSR "headless layout / `toSVG()` still work". Layout did
+  run, but every glyph advance came from a flat `0.5em` guess, because all four
+  `GlyphMeasurer` factories return `null` without a canvas. Measured against Chrome
+  at 32px `sans-serif`, widths were wrong by **+125% on narrow text and −47% on
+  wide** — and `'iiiiiiiiii'` came out byte-identical to `'WWWWWWWWWW'`, since
+  advances were not proportional at all. Wrapping inherited it, so line breaks
+  landed in the wrong places too.
+
+  `@vectojs/text` now owns a font-metrics registry:
+
+  ```ts
+  import { registerMSDFFontMetrics } from "@vectojs/text";
+
+  // Only the JSON's advances, kerning, and metrics are read — the atlas image is
+  // irrelevant, so a metrics-only file works and nothing needs to decode.
+  registerMSDFFontMetrics("sans-serif", await Bun.file("inter.json").json());
+  ```
+
+  Any `msdf-atlas-gen` font works via `registerMSDFFontMetrics`, or supply a
+  `FontMetricsSource` directly with `registerFontMetrics`. Three measurement paths
+  consult it, all of which previously had their own hardcoded fallback: per-glyph
+  advances in `@vectojs/layout`, whole-string widths in `@vectojs/ui` (which size
+  `Button`, `Input`, `Link`, `Checkbox`, `ContextMenu`, and `ProgressBar`), and the
+  baseline in `cssLineBoxBaseline`.
+
+  **A real Canvas 2D context always wins**, so a browser is unaffected: verified in
+  Chromium that a deliberately absurd registration changes no measured width by a
+  single float. Registered metrics replace a fabricated guess; they never
+  second-guess the engine that will actually draw the text.
+
+  New in `@vectojs/layout`: `unmeasuredGlyphCount()` reports how many advances were
+  fabricated, and a one-time console warning names the fix. This is distinct from
+  `LayoutResult.fallbackToCanvas`, which only reports an _atlas_ miss and is true on
+  essentially every paragraph even in a browser.
+
+  One documented limit: the per-glyph `GlyphMeasurer` contract is
+  `measure(char, fontSize, family)`, which has no neighbouring character, so summed
+  advances cannot recover kerning — measured at ~10% on kern-heavy strings, against
+  125% before. Whole-string measurement goes through `measureEm` and is exact.
+
+- Updated dependencies [ca20e66]
+- Updated dependencies [967f3ca]
+- Updated dependencies [9f97b64]
+- Updated dependencies [566f9d0]
+- Updated dependencies [4ab8aae]
+  - @vectojs/text@0.3.0
+  - @vectojs/layout@0.5.0
+
 ## 1.24.0
 
 ### Minor Changes
