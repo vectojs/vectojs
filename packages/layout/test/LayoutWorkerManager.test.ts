@@ -1,6 +1,27 @@
 // @vitest-environment jsdom
 import { test, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { LayoutWorkerManager } from '../src/LayoutWorkerManager';
+import type { LayoutWorkerRequest, LayoutWorkerResponse } from '../src/LayoutWorker';
+
+/**
+ * Font metrics good enough for the main-thread fallback to produce real
+ * geometry. The pre-existing tests pass `{ glyphs: [], metrics: {} }`, which the
+ * MockWorker ignores; `computeMSDFLayout` actually reads these, so the fallback
+ * assertions need real advances.
+ */
+const metricsFont = {
+  atlas: { type: 'msdf', distanceRange: 4, size: 32, width: 256, height: 256, yOrigin: 'bottom' },
+  metrics: { emSize: 1, lineHeight: 1, ascender: 0.8, descender: -0.2 },
+  glyphs: [
+    { unicode: 0x61, advance: 0.5 }, // a
+    { unicode: 0x46, advance: 0.6 }, // F
+    { unicode: 0x69, advance: 0.3 }, // i
+    { unicode: 0x72, advance: 0.4 }, // r
+    { unicode: 0x73, advance: 0.4 }, // s
+    { unicode: 0x74, advance: 0.3 }, // t
+    { unicode: 0x20, advance: 0.25 },
+  ],
+} as unknown as LayoutWorkerRequest['fontData'];
 
 // Mock Worker and URL.createObjectURL since they are not supported in JSDOM/Node environment
 class MockWorker {
@@ -107,7 +128,7 @@ test('cancelLayout drops an in-flight callback for that entity', async () => {
   expect(callback).not.toHaveBeenCalled();
 });
 
-test('a worker error releases pending callbacks and recreates before the next request', () => {
+test('a worker error completes the abandoned layout on the main thread and recreates', () => {
   const manager = (activeManager = LayoutWorkerManager.getInstance());
   const abandoned = vi.fn();
   manager.queueLayout('first', 'First', {
@@ -115,7 +136,7 @@ test('a worker error releases pending callbacks and recreates before the next re
     fontSize: 16,
     maxWidth: 200,
     maxHeight: 200,
-    fontData: { glyphs: [], metrics: {} },
+    fontData: metricsFont,
     callback: abandoned,
   });
   const failedWorker = MockWorker.instances[0];
@@ -128,14 +149,177 @@ test('a worker error releases pending callbacks and recreates before the next re
     fontSize: 16,
     maxWidth: 200,
     maxHeight: 200,
-    fontData: { glyphs: [], metrics: {} },
+    fontData: metricsFont,
     callback: next,
   });
 
-  expect(abandoned).not.toHaveBeenCalled();
+  // The whole point of the fix: the in-flight request is finished here rather
+  // than dropped. Dropping it left `MSDFTextEntity.layoutResult` null forever,
+  // and `render()` early-returns on that — permanently invisible text.
+  expect(abandoned).toHaveBeenCalledTimes(1);
+  const res = abandoned.mock.calls[0][0] as LayoutWorkerResponse;
+  expect(res.id).toBe('first');
+  expect(res.codePoints).toHaveLength(5); // 'First'
+  expect(res.width).toBeGreaterThan(0);
+  expect(res.height).toBeGreaterThan(0);
+
   expect(failedWorker.terminated).toBe(true);
   expect(MockWorker.instances).toHaveLength(2);
   expect(MockWorker.instances[1].posts).toHaveLength(1);
+});
+
+test('a second consecutive worker failure stops recreation and stays on the main thread', () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const results: LayoutWorkerResponse[] = [];
+  const opts = {
+    fontId: 'font-a',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: (r: LayoutWorkerResponse) => results.push(r),
+  };
+
+  // Fail the first worker, then the one that replaces it.
+  manager.queueLayout('e1', 'aa', opts);
+  MockWorker.instances[0].onerror?.(new Event('error'));
+  manager.queueLayout('e2', 'aa', opts);
+  MockWorker.instances[1].onerror?.(new Event('error'));
+
+  const workersAfterTwoFailures = MockWorker.instances.length;
+
+  // Every later request is served synchronously, with no further Worker churn.
+  manager.queueLayout('e3', 'aa', opts);
+  manager.queueLayout('e4', 'aa', opts);
+
+  expect(MockWorker.instances).toHaveLength(workersAfterTwoFailures);
+  expect(results.map((r) => r.id)).toEqual(['e1', 'e2', 'e3', 'e4']);
+});
+
+test('a healthy reply resets the failure count so an isolated error stays transient', async () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const opts = {
+    fontId: 'font-a',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: vi.fn(),
+  };
+
+  manager.queueLayout('a', 'aa', opts);
+  MockWorker.instances[0].onerror?.(new Event('error')); // failure 1
+
+  // Let the replacement worker answer successfully.
+  manager.queueLayout('b', 'aa', opts);
+  await new Promise((r) => setTimeout(r, 30));
+
+  MockWorker.instances[1].onerror?.(new Event('error')); // failure 1 again, not 2
+  manager.queueLayout('c', 'aa', opts);
+
+  // Still recreating: the successful reply cleared the streak, so this is not
+  // treated as a permanently worker-hostile environment.
+  expect(MockWorker.instances).toHaveLength(3);
+});
+
+test('no Worker at all: layout is computed on the calling thread, not dropped', () => {
+  const savedWorker = globalThis.Worker;
+  (globalThis as { Worker?: unknown }).Worker = undefined;
+  try {
+    const manager = (activeManager = LayoutWorkerManager.getInstance());
+    const cb = vi.fn();
+    manager.queueLayout('ssr', 'aa', {
+      fontId: 'font-a',
+      fontSize: 16,
+      maxWidth: 200,
+      maxHeight: 200,
+      fontData: metricsFont,
+      callback: cb,
+    });
+
+    expect(MockWorker.instances).toHaveLength(0);
+    expect(cb).toHaveBeenCalledTimes(1);
+    const res = cb.mock.calls[0][0] as LayoutWorkerResponse;
+    expect(res.codePoints).toHaveLength(2);
+    expect(res.width).toBeGreaterThan(0);
+  } finally {
+    globalThis.Worker = savedWorker;
+  }
+});
+
+test('a throwing Worker constructor does not escape queueLayout', () => {
+  const savedWorker = globalThis.Worker;
+  globalThis.Worker = class {
+    constructor() {
+      throw new DOMException('Blocked', 'SecurityError');
+    }
+  } as unknown as typeof Worker;
+  try {
+    let manager!: LayoutWorkerManager;
+    expect(() => {
+      manager = activeManager = LayoutWorkerManager.getInstance();
+    }).not.toThrow();
+    const cb = vi.fn();
+    // Measured 2026-07-31: a real CSP fires onerror rather than throwing here,
+    // but `new Worker` can still throw (exhausted pool, rejected URL) and that
+    // exception used to propagate out of `new MSDFTextEntity(...)`.
+    expect(() => {
+      manager.queueLayout('throws', 'aa', {
+        fontId: 'font-a',
+        fontSize: 16,
+        maxWidth: 200,
+        maxHeight: 200,
+        fontData: metricsFont,
+        callback: cb,
+      });
+    }).not.toThrow();
+    expect(cb).toHaveBeenCalledTimes(1);
+  } finally {
+    globalThis.Worker = savedWorker;
+  }
+});
+
+test('main-thread fallback reuses font metrics from an earlier request', () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  // First request carries the metrics and is answered by the worker.
+  manager.queueLayout('e1', 'aa', {
+    fontId: 'font-cached',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: vi.fn(),
+  });
+
+  const cb = vi.fn();
+  // Second request omits fontData (the option is optional) and the worker dies.
+  manager.queueLayout('e2', 'aa', {
+    fontId: 'font-cached',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    callback: cb,
+  });
+  MockWorker.instances[0].onerror?.(new Event('error'));
+
+  expect(cb).toHaveBeenCalledTimes(1);
+  expect((cb.mock.calls[0][0] as LayoutWorkerResponse).width).toBeGreaterThan(0);
+});
+
+test('a pending request with no font metrics anywhere is dropped, not retained', () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const cb = vi.fn();
+  manager.queueLayout('nofont', 'aa', {
+    fontId: 'font-never-supplied',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    callback: cb,
+  });
+  MockWorker.instances[0].onerror?.(new Event('error'));
+
+  // Nothing to lay out against, so no callback — but also no retained closure.
+  expect(cb).not.toHaveBeenCalled();
 });
 
 test('destroy clears singleton ownership so getInstance returns a live manager', () => {
