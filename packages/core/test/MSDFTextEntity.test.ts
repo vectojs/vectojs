@@ -330,3 +330,106 @@ test('MSDFTextEntity exposes its text and font for the DOM content mirror', () =
   expect(proj.font).toBe('32px sans-serif');
   expect(proj.lineHeight).toBe(40);
 });
+
+/**
+ * A minimal HTMLImageElement stand-in whose listeners can be fired on demand.
+ * jsdom has `Image`, but a blob-backed one fires neither `load` nor `error`
+ * (measured: 400 ms produced neither), so the decode has to be simulated.
+ */
+function fakeAtlas(complete = false) {
+  const listeners = new Map<string, Set<() => void>>();
+  return {
+    complete,
+    naturalWidth: complete ? 64 : 0,
+    addEventListener(type: string, fn: () => void) {
+      let set = listeners.get(type);
+      if (!set) {
+        set = new Set();
+        listeners.set(type, set);
+      }
+      set.add(fn);
+    },
+    removeEventListener(type: string, fn: () => void) {
+      listeners.get(type)?.delete(fn);
+    },
+    listenerCount(type: string) {
+      return listeners.get(type)?.size ?? 0;
+    },
+    fire(type: string) {
+      // No snapshot needed: the handler under test removes itself from this very
+      // Set, and deleting the current element mid-iteration is well-defined.
+      const set = listeners.get(type);
+      if (set) for (const fn of set) fn();
+    },
+  };
+}
+
+test('MSDFTextEntity repaints when a still-decoding atlas finishes loading', () => {
+  const font = new MSDFFont(fontJson);
+  const atlas = fakeAtlas();
+  const entity = new MSDFTextEntity('Atlas', {
+    font,
+    texture: atlas as unknown as TexImageSource,
+    fontSize: 24,
+  });
+  const markDirty = vi.fn();
+  (entity as any)._scene = { markDirty };
+
+  // The WebGL backend refuses to upload an undecoded atlas, so the upload has
+  // to happen on a later frame — and nothing else schedules one. Measured in
+  // both engines, the scene's own loop never came back for it.
+  expect(atlas.listenerCount('load')).toBe(1);
+  atlas.fire('load');
+  expect(markDirty).toHaveBeenCalledOnce();
+
+  // One-shot: the listener releases itself so a shared atlas image does not
+  // accumulate a handler (and a `this` reference) per entity.
+  expect(atlas.listenerCount('load')).toBe(0);
+  entity.destroy();
+});
+
+test('MSDFTextEntity does not subscribe to an atlas that is already decoded', () => {
+  const font = new MSDFFont(fontJson);
+  const atlas = fakeAtlas(true);
+  const entity = new MSDFTextEntity('Atlas', {
+    font,
+    texture: atlas as unknown as TexImageSource,
+    fontSize: 24,
+  });
+  expect(atlas.listenerCount('load')).toBe(0);
+  expect(atlas.listenerCount('error')).toBe(0);
+  entity.destroy();
+});
+
+test('MSDFTextEntity releases its atlas listener on destroy', () => {
+  const font = new MSDFFont(fontJson);
+  const atlas = fakeAtlas();
+  const entity = new MSDFTextEntity('Atlas', {
+    font,
+    texture: atlas as unknown as TexImageSource,
+    fontSize: 24,
+  });
+  expect(atlas.listenerCount('load')).toBe(1);
+  expect(atlas.listenerCount('error')).toBe(1);
+
+  entity.destroy();
+
+  // Both must go: the handler closes over the entity, so a long-lived shared
+  // atlas would otherwise retain the whole tree after destroy().
+  expect(atlas.listenerCount('load')).toBe(0);
+  expect(atlas.listenerCount('error')).toBe(0);
+});
+
+test('MSDFTextEntity tolerates a texture with no decode state', () => {
+  const font = new MSDFFont(fontJson);
+  // A canvas / ImageBitmap atlas has no `complete` and no listener API; the
+  // subscription must be skipped rather than throwing.
+  expect(
+    () =>
+      new MSDFTextEntity('Atlas', {
+        font,
+        texture: {} as TexImageSource,
+        fontSize: 24,
+      }),
+  ).not.toThrow();
+});
