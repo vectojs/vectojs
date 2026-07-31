@@ -5,6 +5,8 @@ import {
   GlyphRasterAtlas,
   type GlyphRasterAtlasStats,
   IRenderer,
+  type InlineObjectBox,
+  type InlineObjectSurface,
   OBJECT_REPLACEMENT,
   prepareContentGrid,
   type ContentProjection,
@@ -280,6 +282,77 @@ interface MathRender {
  */
 const mathCache = new Map<string, MathRender>();
 const MATH_CACHE_LIMIT = 256;
+
+/**
+ * Decoded raster for each inline formula's SVG, keyed by data URI.
+ *
+ * Module-level rather than per-instance because {@link collectSpans} is a free
+ * function with no access to the owning entity, and because the same formula in
+ * two documents decodes to the same bitmap. An entry is created on first paint
+ * attempt, not eagerly: a formula that never scrolls into view is never decoded.
+ *
+ * Unbounded on purpose, unlike {@link mathCache}. Entries are `HTMLImageElement`
+ * handles keyed by the URI already held in that bounded cache, so this map cannot
+ * outgrow it by more than the formulas a document currently displays. A cap here
+ * would evict a bitmap that is still on screen and make it flash back to blank.
+ */
+const inlineMathRasters = new Map<string, InlineMathRaster>();
+
+interface InlineMathRaster {
+  /** `undefined` when this environment has no `Image` (SSR, plain unit tests). */
+  bitmap?: HTMLImageElement;
+  decoded: boolean;
+}
+
+/**
+ * Called after an inline formula's raster decodes, so the owner can repaint.
+ *
+ * The paint callback cannot request its own repaint: it is handed a draw surface,
+ * not the scene. Every live document subscribes, because a raster decoded for one
+ * may be the bitmap another is waiting on — they share {@link inlineMathRasters}.
+ */
+const inlineMathRasterWaiters = new Set<() => void>();
+
+/**
+ * Ensure the raster for `uri` is decoding, and return it.
+ *
+ * Synchronous and idempotent: the paint path calls it on every frame the formula
+ * is visible, and only the first call starts a decode.
+ */
+function ensureInlineMathRaster(uri: string): InlineMathRaster {
+  const existing = inlineMathRasters.get(uri);
+  if (existing) return existing;
+
+  const entry: InlineMathRaster = { decoded: false };
+  inlineMathRasters.set(uri, entry);
+
+  // Guarded for the same reason `Image` guards it: jsdom and SSR have no
+  // `globalThis.Image`, and a formula must degrade to a blank box rather than
+  // throwing out of a layout.
+  if (typeof globalThis.Image !== 'undefined') {
+    const bitmap = new globalThis.Image();
+    bitmap.onload = () => {
+      entry.decoded = true;
+      for (const notify of inlineMathRasterWaiters) notify();
+    };
+    bitmap.src = uri;
+    entry.bitmap = bitmap;
+  }
+  return entry;
+}
+
+/**
+ * Paint one inline formula into the box the layout engine reserved for it.
+ *
+ * Draws nothing until the raster has decoded — one frame of blank box, then a
+ * repaint via {@link inlineMathRasterWaiters}. Drawing a placeholder slab instead
+ * would flash a grey rectangle mid-sentence on every first paint.
+ */
+function paintInlineMath(uri: string, surface: InlineObjectSurface, box: InlineObjectBox): void {
+  const raster = ensureInlineMathRaster(uri);
+  if (!raster.decoded || !raster.bitmap) return;
+  surface.drawImage(raster.bitmap, box.x, box.y, box.width, box.height);
+}
 
 const MATH_LANGS = new Set(['math', 'latex', 'tex']);
 
@@ -1342,6 +1415,9 @@ function collectSpans(
         const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
         const rendered = renderMathToSVGDataURI(t.text, false);
         if (rendered) {
+          // Bound outside the painter so the closure captures the URI rather than
+          // the whole `MathRender`, and so it cannot see a later loop iteration's.
+          const uri = rendered.uri;
           out.push({
             text: OBJECT_REPLACEMENT,
             style: inherited,
@@ -1352,6 +1428,9 @@ function collectSpans(
               // The TeX source is the accessible name: without it a screen reader
               // receives only the invisible U+FFFC sentinel.
               alt: t.text,
+              // Without this the box is reserved and stays empty. The engine does
+              // not draw objects, and nothing else in the tree holds the raster.
+              paint: (surface, box) => paintInlineMath(uri, surface, box),
             },
           });
         } else {
@@ -1600,6 +1679,14 @@ export class Markdown extends UIComponent {
   private inStableCallback = false;
   /** Set by {@link destroy} so late settlement work skips a torn-down tree. */
   private isDestroyed = false;
+  /**
+   * This instance's entry in {@link inlineMathRasterWaiters}, or `undefined` if it
+   * has never rendered inline math.
+   *
+   * Subscribed lazily so a document without formulas costs nothing, and held as a
+   * field only so {@link destroy} can remove the exact closure it added.
+   */
+  private inlineMathRepaint?: () => void;
   /**
    * True while this document is waiting on the lazy MathJax load.
    *
@@ -1865,6 +1952,22 @@ export class Markdown extends UIComponent {
    * the whole subtree alive until the worker replied), then recurse into the
    * content subtree via `super.destroy()` so every block's resources are freed.
    */
+  /**
+   * Repaint this document when an inline formula's raster finishes decoding.
+   *
+   * Idempotent — called on every render of a math-bearing token, and the set holds
+   * one closure per instance.
+   */
+  private subscribeInlineMathRepaint(): void {
+    if (this.inlineMathRepaint || this.isDestroyed) return;
+    const repaint = () => {
+      if (this.isDestroyed) return;
+      this.scene?.markDirty();
+    };
+    this.inlineMathRepaint = repaint;
+    inlineMathRasterWaiters.add(repaint);
+  }
+
   public override destroy(): void {
     // Set before the controller teardown below, which reaches this instance again
     // through the host's `release` hook: settlement work must know the tree is
@@ -1884,6 +1987,13 @@ export class Markdown extends UIComponent {
     // Nothing will reply now, so release any settlement waiter rather than
     // leaving a `close()` pending against a destroyed instance.
     this.flushAppendSettledWaiters();
+    // Unsubscribe from inline-formula decodes. The set is module-level and lives
+    // as long as the page, so leaving the closure in it would retain this whole
+    // entity tree after destroy.
+    if (this.inlineMathRepaint) {
+      inlineMathRasterWaiters.delete(this.inlineMathRepaint);
+      this.inlineMathRepaint = undefined;
+    }
     // Release this instance's prior-raws entry in the (shared) worker, so a page
     // that creates and drops many blocks doesn't retain their raws forever.
     markdownWorker?.postMessage({
@@ -3474,7 +3584,14 @@ export class Markdown extends UIComponent {
     // started the load and its formulas stayed TeX source forever. Checked here
     // rather than per-arm because inline math can appear in a heading, list item,
     // blockquote, or table cell, not just a paragraph.
-    if (!mathConverter && containsInlineMath(token)) this.ensureMathJax();
+    if (containsInlineMath(token)) {
+      if (!mathConverter) this.ensureMathJax();
+      // A typeset formula paints from a raster that decodes asynchronously, and
+      // the paint callback has no way to ask for a repaint itself. Subscribed here
+      // rather than at span-collection time because that is a free function with
+      // no access to this instance.
+      this.subscribeInlineMathRepaint();
+    }
 
     switch (token.type) {
       // ── Headings ─────────────────────────────────────────────────────

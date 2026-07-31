@@ -151,3 +151,73 @@ describe('currency is still not typeset', () => {
     expect(objectSpans(md)).toHaveLength(0);
   });
 });
+
+/**
+ * Painting the reserved box.
+ *
+ * The reservation shipped first and nothing drew into it, so a correctly measured,
+ * positioned, accessible formula rendered as a blank gap. These pin the wiring
+ * that fills it.
+ *
+ * What they deliberately do NOT assert is a decoded raster. Measured: Bun has no
+ * `globalThis.Image`, and jsdom has one that never settles a `data:` URI — a probe
+ * awaiting `onload`/`onerror` on an SVG data URI got neither within 400ms. The
+ * decoded branch is therefore unobservable under vitest in either environment, and
+ * `e2e/lazy-math.e2e.ts` is the only gate that can see real pixels.
+ */
+describe('inline math painting', () => {
+  it('attaches a painter to the reserved box', () => {
+    const md = new Markdown('Given $x+1$ we proceed.');
+    const [span] = objectSpans(md);
+    expect(span).toBeDefined();
+    // Without this the box is reserved and stays empty forever.
+    expect(typeof span.object?.paint).toBe('function');
+  });
+
+  it('draws into the box once the raster has decoded', () => {
+    const md = new Markdown('Given $x+1$ we proceed.');
+    const paint = objectSpans(md)[0]?.object?.paint;
+    expect(paint).toBeDefined();
+
+    const drawn: Array<{ dx: number; dy: number; dw: number; dh: number }> = [];
+    const surface = {
+      drawImage: (_s: CanvasImageSource, dx: number, dy: number, dw: number, dh: number) =>
+        drawn.push({ dx, dy, dw, dh }),
+    };
+    const box = { x: 11, y: 22, width: 33, height: 44 };
+
+    // jsdom never settles the data URI, so this is the still-loading path: draw
+    // nothing rather than a placeholder slab, which would flash a grey rectangle
+    // mid-sentence on every first paint.
+    paint!(surface, box);
+    expect(drawn).toHaveLength(0);
+  });
+
+  it('does not throw when the environment has no Image constructor', () => {
+    const original = globalThis.Image;
+    // SSR and plain (non-jsdom) unit runs. A formula must degrade to a blank box
+    // rather than throwing out of a paint.
+    // @ts-expect-error deliberately removing a global for the duration of the test
+    delete globalThis.Image;
+    try {
+      const md = new Markdown('Given $x+1$ we proceed.');
+      const paint = objectSpans(md)[0]?.object?.paint;
+      expect(paint).toBeDefined();
+      expect(() =>
+        paint!({ drawImage: () => {} }, { x: 0, y: 0, width: 10, height: 10 }),
+      ).not.toThrow();
+    } finally {
+      globalThis.Image = original;
+    }
+  });
+
+  it('releases its repaint subscription on destroy', () => {
+    // The waiter set is module-level and lives as long as the page, so a retained
+    // closure would keep the whole destroyed entity tree alive.
+    const md = new Markdown('Given $x+1$ we proceed.');
+    const held = md as unknown as { inlineMathRepaint?: () => void };
+    expect(typeof held.inlineMathRepaint).toBe('function');
+    md.destroy();
+    expect(held.inlineMathRepaint).toBeUndefined();
+  });
+});

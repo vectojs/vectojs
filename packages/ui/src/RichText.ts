@@ -640,11 +640,21 @@ export class RichText extends UIComponent {
           continue;
         }
         if (node.object) {
-          // A reserved inline box: the engine held space for it, and whoever
-          // supplied the object paints it. Painting the U+FFFC sentinel here
-          // would draw a tofu box in the gap. Breaks the run for the same reason
-          // whitespace does — the pen has advanced past reserved space.
+          // A reserved inline box. Painting the U+FFFC sentinel as text would draw
+          // a tofu box in the gap, so hand the box to the object's own painter.
+          // Breaks the run for the same reason whitespace does — the pen has
+          // advanced past reserved space.
+          //
+          // An object without a painter draws nothing, which is a blank gap. That
+          // is not hypothetical: inline math shipped that way, correctly measured,
+          // positioned, and accessible, and invisible.
           flushRun();
+          node.object.paint?.(r, {
+            x: node.x,
+            y: node.y,
+            width: node.width,
+            height: node.height,
+          });
           continue;
         }
         const size = node.height;

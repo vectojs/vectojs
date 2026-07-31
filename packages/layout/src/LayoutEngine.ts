@@ -89,8 +89,11 @@ export const OBJECT_REPLACEMENT = '\ufffc';
  * an embedded entity).
  *
  * The engine reserves the space and reports where it landed; it never draws the
- * object. The owner reads the positioned {@link OBJECT_REPLACEMENT} glyph back
- * out of the layout result and places its own content there.
+ * object. Two ways to fill the box: give the object a {@link InlineObject.paint}
+ * callback and let the text renderer invoke it, or read the positioned
+ * {@link OBJECT_REPLACEMENT} glyph back out of the layout result and place a
+ * separate entity there. Prefer `paint` — it travels with the span, so it cannot
+ * be forgotten at one construction site out of several.
  *
  * All three values are in px at final size — already resolved by the caller, not
  * scaled by the run's `fontSize`. An object is a fixed box, unlike a glyph whose
@@ -119,6 +122,72 @@ export interface InlineObject {
    * substitute this for the sentinel.
    */
   alt?: string;
+  /**
+   * Draws the object's content into the box the engine reserved for it.
+   *
+   * The engine never calls this — it does not render. A text renderer painting a
+   * laid-out result calls it once per object node, passing the resolved box, and
+   * skips painting the {@link OBJECT_REPLACEMENT} sentinel itself.
+   *
+   * Supplying the painter with the object rather than registering it on the
+   * renderer is deliberate. The painter then travels with the span through
+   * flattening, caching, and reuse, so it cannot be forgotten at one of the
+   * several places a consumer constructs styled text. Inline math shipped without
+   * it and rendered a blank gap: the box was reserved, positioned, and
+   * accessible, and nothing ever drew in it.
+   *
+   * Called during a paint, so it must be synchronous and cheap. An object whose
+   * content is still loading should draw nothing and request a repaint when it is
+   * ready.
+   *
+   * Deliberately NOT part of the paragraph memo key, unlike `alt`. Measured: two
+   * objects with identical metrics and identical `alt` but different `paint`
+   * closures share a cached paragraph, and the second is served the FIRST's
+   * closure. That is safe when the drawing is a function of `alt` — inline math's
+   * URI is a pure function of its TeX source, so both closures draw the same
+   * thing. A consumer whose painter draws something `alt` does not determine must
+   * distinguish the two through `alt`, because adding the closure to the key would
+   * defeat the memo entirely: a fresh closure per call never compares equal.
+   */
+  paint?: (surface: InlineObjectSurface, box: InlineObjectBox) => void;
+}
+
+/**
+ * Where {@link InlineObject.paint} lands, in the text's local coordinate space.
+ *
+ * `y` is the box's top, already resolved against the line's baseline and the
+ * object's {@link InlineObject.depth} — a painter does not repeat that
+ * arithmetic.
+ */
+export interface InlineObjectBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The drawing surface {@link InlineObject.paint} receives.
+ *
+ * Structurally a subset of `@vectojs/core`'s `IRenderer`, declared here because
+ * this package sits *below* `core` and cannot import from it. It is deliberately
+ * the two blit calls and nothing else: this package is a layout engine and has no
+ * business describing a renderer beyond what an inline object needs to draw
+ * itself. A real renderer satisfies it without being adapted.
+ */
+export interface InlineObjectSurface {
+  drawImage(source: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void;
+  drawImageRect?(
+    source: CanvasImageSource,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+  ): void;
 }
 
 /**
