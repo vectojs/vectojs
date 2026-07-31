@@ -83,6 +83,11 @@ async function main() {
   }
   const result = await reportResult({
     name: 'table-virtual',
+    // LoAF is withheld: this benchmark advances the scene with `scene.step()` in a
+    // synchronous loop, so there are no real animation frames to observe and the
+    // observer would only report the harness's own blocking. See
+    // `ResultInput.syntheticFrames`.
+    syntheticFrames: true,
     params: { ROWS, TRIALS, VIEWPORT },
     rows: rowsRows,
     durationMs: +(performance.now() - startedAt).toFixed(1),

@@ -93,10 +93,17 @@ export interface LongAnimationFrameRecord {
   scripts: LongAnimationFrameScriptAttribution[];
 }
 
-/** Bounded LoAF summary attached to every benchmark result. */
+/**
+ * Bounded LoAF summary attached to every benchmark result.
+ *
+ * `reason: 'synthetic-frames'` means the benchmark drove frames itself with
+ * `scene.step()` instead of `requestAnimationFrame`, so LoAF was measuring the
+ * harness rather than the framework and the numbers are deliberately withheld.
+ * See {@link ResultInput.syntheticFrames}.
+ */
 export interface LongAnimationFrameObservation {
   status: 'supported' | 'unavailable';
-  reason: 'unsupported' | 'observer-error' | null;
+  reason: 'unsupported' | 'observer-error' | 'synthetic-frames' | null;
   entryCount: number;
   totalDurationMs: number;
   totalBlockingDurationMs: number;

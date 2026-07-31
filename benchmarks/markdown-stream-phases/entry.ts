@@ -503,6 +503,11 @@ async function main(): Promise<void> {
   await postResults(
     {
       name: 'markdown-stream-phases',
+      // LoAF is withheld: this benchmark advances the scene with `scene.step()` in
+      // a synchronous loop, so there are no real animation frames to observe and
+      // the observer would only report the harness's own blocking. See
+      // `ResultInput.syntheticFrames`.
+      syntheticFrames: true,
       params: {
         chunks: CHUNKS,
         trials: TRIALS,
