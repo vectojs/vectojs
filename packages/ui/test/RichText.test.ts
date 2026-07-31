@@ -324,6 +324,67 @@ describe('RichText inline objects', () => {
     expect(calls.some((c) => c.text.includes(OBJ))).toBe(false);
   });
 
+  it('invokes the object painter at the box the engine reserved', () => {
+    const { r, calls } = recordingRenderer();
+    const boxes: Array<{
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }> = [];
+    const rt = new RichText([
+      { text: 'a ' },
+      {
+        text: OBJ,
+        object: {
+          width: 40,
+          height: 20,
+          alt: 'x+1',
+          paint: (_surface, box) => boxes.push({ ...box }),
+        },
+      },
+      { text: ' b' },
+    ]);
+    rt.render(r);
+
+    // Exactly once per render — not per line, and not once per glyph in the run.
+    expect(boxes).toHaveLength(1);
+    // The box is the reservation, passed through unchanged.
+    expect(boxes[0].width).toBe(40);
+    expect(boxes[0].height).toBe(20);
+    // And it sits where the text stopped: 'a ' is two 8px glyphs in the stub
+    // measurer, so the box starts at 16 and the following ' b' starts after it.
+    expect(boxes[0].x).toBeCloseTo(16, 5);
+    const after = calls.find((c) => c.text.includes('b'));
+    expect(after).toBeDefined();
+    expect(after!.x).toBeGreaterThanOrEqual(boxes[0].x + boxes[0].width - 0.01);
+  });
+
+  it('passes the renderer through as the paint surface', () => {
+    const { r } = recordingRenderer();
+    let surface: unknown;
+    new RichText([
+      {
+        text: OBJ,
+        object: { width: 40, height: 20, paint: (s) => (surface = s) },
+      },
+    ]).render(r);
+    // The painter draws through the same renderer the text does, rather than a
+    // wrapper it would have to be taught about.
+    expect(surface).toBe(r);
+  });
+
+  it('renders an object without a painter as a blank gap rather than throwing', () => {
+    const { r, calls } = recordingRenderer();
+    // The pre-fix inline-math behaviour. Kept as a test because it is the
+    // degradation path for any consumer that reserves a box and paints it itself
+    // by reading the layout result back.
+    expect(() =>
+      new RichText([{ text: 'a' }, { text: OBJ, object: { width: 40, height: 20 } }]).render(r),
+    ).not.toThrow();
+    expect(calls.some((c) => c.text.includes(OBJ))).toBe(false);
+  });
+
   it('breaks the coalesced run at the object', () => {
     const { r, calls } = recordingRenderer();
     new RichText([

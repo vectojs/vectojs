@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer, { type Browser } from 'puppeteer-core';
-import type { LazyMathBrowserResult } from './lazy-math.fixture';
+import type { InlineMathBrowserResult, LazyMathBrowserResult } from './lazy-math.fixture';
 
 /**
  * The lazy MathJax load, in a real browser.
@@ -49,7 +49,36 @@ function isLazyMathResult(value: unknown): value is LazyMathBrowserResult {
     'secondFormulaSynchronous' in value &&
     typeof value.secondFormulaSynchronous === 'boolean' &&
     'stableSawTypeset' in value &&
-    typeof value.stableSawTypeset === 'boolean'
+    typeof value.stableSawTypeset === 'boolean' &&
+    'inline' in value &&
+    isInlineMathResult(value.inline)
+  );
+}
+
+function isInlineMathResult(value: unknown): value is InlineMathBrowserResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const numbers = [
+    'objectsBeforeLoad',
+    'objectsAfterLoad',
+    'goldSpansAfterLoad',
+    'boxWidth',
+    'boxHeight',
+    'paintedPixelsInBox',
+    'paintedPixelsBelowBox',
+  ] as const;
+  const booleans = [
+    'visibleTextHasDollar',
+    'nextGlyphClearsBox',
+    'prevGlyphClearsBox',
+    'boxWithinParagraph',
+    'sourceTextHasSentinel',
+    'accessibleTextHasFormula',
+    'headingBoxWiderThanBody',
+  ] as const;
+  const record = value as Record<string, unknown>;
+  return (
+    numbers.every((key) => typeof record[key] === 'number') &&
+    booleans.every((key) => typeof record[key] === 'boolean')
   );
 }
 
@@ -115,6 +144,72 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       true,
       `${browserCase.name}: onStable must not observe an untypeset formula`,
     );
+    // ── Inline `$...$` ────────────────────────────────────────────────────────
+    const inline = result.inline;
+    const where = `${browserCase.name} inline math`;
+
+    assert.equal(
+      inline.objectsBeforeLoad,
+      0,
+      `${where}: a formula must not reserve a box before MathJax lands`,
+    );
+    assert.equal(inline.objectsAfterLoad, 1, `${where}: one formula must reserve exactly one box`);
+    assert.equal(
+      inline.goldSpansAfterLoad,
+      0,
+      `${where}: no gold TeX-source span may survive the typeset`,
+    );
+    assert.equal(
+      inline.visibleTextHasDollar,
+      false,
+      `${where}: the $ delimiters must not be painted`,
+    );
+    assert.ok(inline.boxWidth > 0, `${where}: the reserved box must have width`);
+    assert.ok(inline.boxHeight > 0, `${where}: the reserved box must have height`);
+    assert.equal(
+      inline.prevGlyphClearsBox,
+      true,
+      `${where}: the box must start where the preceding text ended`,
+    );
+    assert.equal(
+      inline.nextGlyphClearsBox,
+      true,
+      `${where}: following text must resume after the box, not overlap it`,
+    );
+    assert.equal(
+      inline.boxWithinParagraph,
+      true,
+      `${where}: the box must sit inside the paragraph, not above it`,
+    );
+    assert.equal(
+      inline.sourceTextHasSentinel,
+      true,
+      `${where}: sourceText must keep U+FFFC so sourceIndex stays aligned`,
+    );
+    assert.equal(
+      inline.accessibleTextHasFormula,
+      true,
+      `${where}: accessibleText must substitute the TeX source for the sentinel`,
+    );
+    assert.equal(
+      inline.headingBoxWiderThanBody,
+      true,
+      `${where}: a formula in a heading must reserve a wider box than in body text`,
+    );
+
+    // The one assertion nothing else in the suite can make. A reserved box that
+    // nothing paints is a blank gap, and that is what shipped before this check
+    // existed: measured, positioned, accessible, invisible.
+    assert.ok(
+      inline.paintedPixelsInBox > 0,
+      `${where}: the reserved box must contain painted pixels, not a blank gap`,
+    );
+    assert.equal(
+      inline.paintedPixelsBelowBox,
+      0,
+      `${where}: the control strip below the line must be empty, or the sampler is reading the wrong region`,
+    );
+
     assert.deepEqual(pageErrors, []);
     console.log(`✓ ${browserCase.name}: ${JSON.stringify(result)}`);
   } finally {
