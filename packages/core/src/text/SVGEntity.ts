@@ -1,6 +1,8 @@
 import { Entity } from '../tree/Entity';
 import { IRenderer } from '../renderer/IRenderer';
 
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+
 function isSvgWhitespace(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
@@ -40,12 +42,22 @@ function readSvgAttribute(source: string, name: string): string | null {
 }
 
 export class SVGEntity extends Entity {
+  /**
+   * Stroke colour of the fallback marker drawn when the source cannot be
+   * rasterized. Set to `'transparent'` to opt out and keep the box empty.
+   * Default `'rgba(248,113,113,0.9)'`.
+   */
+  public fallbackStroke: string = 'rgba(248,113,113,0.9)';
+  /** Fill behind the fallback marker. Default `'rgba(248,113,113,0.12)'`. */
+  public fallbackFill: string = 'rgba(248,113,113,0.12)';
+
   private svgSource: string = '';
   private imageBitmap: ImageBitmap | null = null;
   private imageElement: HTMLImageElement | null = null;
   private blobURL: string | null = null;
   private currentImg: HTMLImageElement | null = null;
   private lodTimeout: any = null;
+  private rasterFailed: boolean = false;
 
   private cachedDoc: Document | null = null;
 
@@ -79,6 +91,7 @@ export class SVGEntity extends Entity {
         const parserError = doc.querySelector('parsererror');
         if (parserError) {
           console.error('SVG Parsing error:', parserError.textContent);
+          this.rasterFailed = true;
         } else {
           this.cachedDoc = doc;
           const svgEl = doc.documentElement;
@@ -99,6 +112,7 @@ export class SVGEntity extends Entity {
         }
       } catch (e) {
         console.error('Failed parsing SVG via DOMParser, falling back to attribute scan:', e);
+        this.rasterFailed = true;
       }
     } else {
       const wAttr = readSvgAttribute(this.svgSource, 'width');
@@ -126,6 +140,9 @@ export class SVGEntity extends Entity {
   private triggerRasterization(scale: number): void {
     if (typeof window === 'undefined' || typeof Blob === 'undefined') return;
 
+    // A fresh attempt starts optimistic; the handlers below re-raise the flag.
+    this.rasterFailed = false;
+
     if (this.currentImg) {
       this.currentImg.onload = null;
       this.currentImg.onerror = null;
@@ -152,6 +169,7 @@ export class SVGEntity extends Entity {
           'SVG Parsing validation error in triggerRasterization:',
           parserError.textContent,
         );
+        this.rasterFailed = true;
       } else {
         const clonedDoc = doc.cloneNode(true) as Document;
         const svgEl = clonedDoc.documentElement;
@@ -167,10 +185,27 @@ export class SVGEntity extends Entity {
 
           const serializer = new XMLSerializer();
           processedSource = serializer.serializeToString(clonedDoc);
+
+          // Markup written without `xmlns` parses as well-formed XML and yields
+          // correct dimensions, but `namespaceURI` is null and the browser's
+          // IMAGE DECODER — not the XML parser — then rejects the blob, which
+          // used to leave a permanently blank box. Declaring the namespace makes
+          // the real artwork rasterize instead.
+          //
+          // This must be done on the SERIALIZED TEXT, not via the DOM. Measured
+          // across both engines: `setAttribute('xmlns', …)` works in Chromium but
+          // Firefox silently ignores it and serializes byte-identical markup, so
+          // the blob still fails to decode there. `setAttributeNS` with the xmlns
+          // namespace is a no-op in both. Injecting after serialization is the
+          // only form that repairs it on Chromium *and* Firefox.
+          if (svgEl.namespaceURI === null && !/\sxmlns\s*=/.test(processedSource)) {
+            processedSource = processedSource.replace(/<svg/i, `<svg xmlns="${SVG_NAMESPACE}"`);
+          }
         }
       }
     } catch (e) {
       console.error('Failed to apply LOD scaling to SVG XML:', e);
+      this.rasterFailed = true;
     }
 
     const blob = new Blob([processedSource], { type: 'image/svg+xml;charset=utf-8' });
@@ -206,14 +241,41 @@ export class SVGEntity extends Entity {
         .catch((e) => {
           console.error('Failed to create ImageBitmap from SVG:', e);
           this.currentImg = null;
+          // `imageElement` is already set by the onload above, so this path
+          // still paints; only flag failure when there is nothing to draw.
+          if (!this.imageElement) this.rasterFailed = true;
+          if (this.scene) this.scene.markDirty();
         });
     };
     img.onerror = (e) => {
       if (this.currentImg !== img) return;
       console.error('Failed to load SVG Image element:', e);
       this.currentImg = null;
+      this.rasterFailed = true;
+      // Without this an onDemand scene never repaints, so the fallback marker
+      // would never reach the canvas.
+      if (this.scene) this.scene.markDirty();
     };
     img.src = this.blobURL;
+  }
+
+  /**
+   * Whether the source genuinely rasterized to a bitmap.
+   *
+   * Distinguishes "drew the real artwork" from "drew the fallback marker",
+   * which pixel counts alone cannot tell apart — both are non-blank.
+   */
+  public hasRasterBitmap(): boolean {
+    return this.imageBitmap !== null;
+  }
+
+  /**
+   * Whether rasterization failed, so {@link render} draws the fallback marker.
+   *
+   * `false` while a raster is still in flight; only a settled failure sets it.
+   */
+  public hasRasterFailed(): boolean {
+    return this.rasterFailed;
   }
 
   isPointInside(globalX: number, globalY: number): boolean {
@@ -246,9 +308,41 @@ export class SVGEntity extends Entity {
 
     if (this.imageBitmap) {
       r.drawImage(this.imageBitmap, 0, 0, this.width, this.height);
-    } else if (this.imageElement) {
-      r.drawImage(this.imageElement, 0, 0, this.width, this.height);
+      return;
     }
+    if (this.imageElement) {
+      r.drawImage(this.imageElement, 0, 0, this.width, this.height);
+      return;
+    }
+    // Nothing to blit. If rasterization FAILED (as opposed to merely being
+    // in flight) draw a marker rather than leaving a blank box: a silent gap
+    // is indistinguishable from correct output, so the defect reaches
+    // production unnoticed. Mirrors SVGRenderer.drawImage, which already
+    // draws a visible rect when it has no usable href.
+    if (this.rasterFailed) this.drawFallback(r);
+  }
+
+  /** Box outline plus a diagonal cross — the conventional "broken image" mark. */
+  private drawFallback(r: IRenderer): void {
+    const w = this.width;
+    const h = this.height;
+    if (w <= 0 || h <= 0) return;
+
+    r.beginPath();
+    r.roundRect(0, 0, w, h, 0);
+    r.fill(this.fallbackFill);
+
+    r.beginPath();
+    r.roundRect(0, 0, w, h, 0);
+    r.stroke(this.fallbackStroke, 1);
+
+    const inset = Math.min(w, h) * 0.2;
+    r.beginPath();
+    r.moveTo(inset, inset);
+    r.lineTo(w - inset, h - inset);
+    r.moveTo(w - inset, inset);
+    r.lineTo(inset, h - inset);
+    r.stroke(this.fallbackStroke, 1);
   }
 
   destroy(): void {
