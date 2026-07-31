@@ -24,6 +24,8 @@ declare global {
 export interface MsdfCaseResult {
   name: string;
   renderMode: 'always' | 'onDemand';
+  /** WebGL2 unavailable, so `Scene` fell back to Canvas2D: nothing to sample. */
+  skipped: boolean;
   /** Painted pixels inside the text box (alpha > 8). */
   ink: number;
   /** Painted pixels in a control strip below the text — must be 0. */
@@ -177,10 +179,29 @@ async function runCase(
   entity.y = 10;
   scene.add(entity);
 
+  // No WebGL2 means `Scene` legitimately fell back to Canvas2D and there is no
+  // GL layer to sample — a documented capability path, not a defect, and the
+  // shape CI's headless Firefox is in. Report the case as skipped rather than
+  // failing; the runner separately requires that at least one engine really did
+  // exercise the WebGL path, so this cannot degrade into a vacuous pass.
   const glCanvas = host.querySelector('canvas[style*="absolute"]') as HTMLCanvasElement | null;
-  if (!glCanvas) throw new Error(`${name}: the WebGL layer was not created`);
-  const gl = glCanvas.getContext('webgl2') as WebGL2RenderingContext | null;
-  if (!gl) throw new Error(`${name}: no WebGL2 context`);
+  const gl = (glCanvas?.getContext('webgl2') ?? null) as WebGL2RenderingContext | null;
+  if (!glCanvas || !gl) {
+    scene.destroy();
+    host.remove();
+    return {
+      name,
+      renderMode,
+      skipped: true,
+      ink: -1,
+      inkBelow: -1,
+      completeAtFirstRender: null,
+      uploads: -1,
+      uploadsBeforeRepaint: -1,
+      dirtyBeforeDecode: false,
+      dirtyAfterDecode: false,
+    };
+  }
 
   // Record the atlas's decode state at the moment glyphs are first submitted:
   // if it is already decoded the case is not exercising the race.
@@ -252,6 +273,7 @@ async function runCase(
     renderMode,
     ink,
     inkBelow,
+    skipped: false,
     completeAtFirstRender,
     uploads,
     uploadsBeforeRepaint,

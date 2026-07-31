@@ -103,6 +103,16 @@ function buildAtlasPng(): Buffer {
 
 const ATLAS_PNG = buildAtlasPng();
 
+/**
+ * The only atlas latencies the fixture ever asks for, keyed by their literal
+ * query value. Serving a delay from this map keeps request data out of the
+ * `setTimeout` duration entirely.
+ */
+const ATLAS_DELAYS_MS = new Map<string, number>([
+  ['0', 0],
+  ['300', 300],
+]);
+
 function executable(candidates: string[], label: string): string {
   for (const candidate of candidates) {
     if (candidate && existsSync(candidate)) return candidate;
@@ -131,7 +141,7 @@ function caseByName(result: MsdfDecodeBrowserResult, name: string): MsdfCaseResu
   return found;
 }
 
-async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> {
+async function verifyCase(browserCase: BrowserCase, url: string): Promise<boolean> {
   const browser: Browser = await puppeteer.launch({
     browser: browserCase.browser,
     executablePath: browserCase.executablePath,
@@ -152,6 +162,19 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
 
     const result: unknown = await page.evaluate(() => window.__msdfDecodeResult);
     assert.ok(isResult(result), `${browserCase.name} returned an invalid result`);
+
+    // WebGL2 unavailable (headless Firefox on a bare CI runner): `Scene` fell
+    // back to Canvas2D, so there is no GL layer and nothing here is measurable.
+    // Skip rather than fail — the fallback is documented behaviour — and report
+    // it so a silently-degraded run is visible in the log.
+    if (result.cases.every((entry) => entry.skipped)) {
+      console.log(`  - ${browserCase.name}: no WebGL2, MSDF GL path not exercised (skipped)`);
+      return false;
+    }
+    assert.ok(
+      result.cases.every((entry) => !entry.skipped),
+      `${browserCase.name}: WebGL2 was available for some cases but not others, which makes the comparison meaningless`,
+    );
 
     // Sampling sanity first: ink in the control strip means the sample region is
     // wrong, which would make every positive count below meaningless.
@@ -232,6 +255,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       )
       .join(', ');
     console.log(`  ✓ ${browserCase.name}: ${summary}`);
+    return true;
   } finally {
     await browser.close();
   }
@@ -269,15 +293,20 @@ async function main(): Promise<void> {
     if (pathname === '/atlas.png') {
       // Latency is the whole point: it must exceed the layout-worker round-trip
       // so the entity's first render sees an undecoded image.
-      const delay = Number(requestUrl.searchParams.get('delay') ?? '0');
-      setTimeout(
-        () => {
-          response.setHeader('content-type', 'image/png');
-          response.setHeader('cache-control', 'no-store');
-          response.end(ATLAS_PNG);
-        },
-        Number.isFinite(delay) ? Math.max(0, Math.min(delay, 5_000)) : 0,
-      );
+      //
+      // The delay is picked from a fixed allowlist rather than computed from the
+      // query value. Clamping the parsed number would be equally safe in
+      // practice, but it still carries request data into a timer duration, which
+      // CodeQL flags as `js/resource-exhaustion` — and rightly in shape, even
+      // for a loopback test server. An allowlist removes the data flow instead
+      // of arguing about its bounds.
+      const requested = requestUrl.searchParams.get('delay') ?? '0';
+      const delay = ATLAS_DELAYS_MS.has(requested) ? (ATLAS_DELAYS_MS.get(requested) as number) : 0;
+      setTimeout(() => {
+        response.setHeader('content-type', 'image/png');
+        response.setHeader('cache-control', 'no-store');
+        response.end(ATLAS_PNG);
+      }, delay);
       return;
     }
     response.statusCode = 404;
@@ -312,8 +341,19 @@ async function main(): Promise<void> {
   ];
 
   try {
-    for (const browserCase of cases) await verifyCase(browserCase, url);
-    console.log('\nMSDF atlas-decode e2e: all checks passed on both engines');
+    let exercised = 0;
+    for (const browserCase of cases) {
+      if (await verifyCase(browserCase, url)) exercised++;
+    }
+    // A skip per engine is legitimate, but a run where NO engine could test the
+    // WebGL path proves nothing and must not report success.
+    assert.ok(
+      exercised > 0,
+      'no engine provided WebGL2, so the MSDF atlas-decode path was never verified',
+    );
+    console.log(
+      `\nMSDF atlas-decode e2e: all checks passed (${exercised}/${cases.length} engines exercised the WebGL path)`,
+    );
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
