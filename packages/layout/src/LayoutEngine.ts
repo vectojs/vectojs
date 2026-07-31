@@ -2,6 +2,54 @@ import { ArabicShaper } from '@vectojs/text';
 import { BidiResolver } from '@vectojs/text';
 
 /**
+ * Glyphs sized by the engine's own `0.5em` guess — no atlas entry and no
+ * measurer at all. See {@link unmeasuredGlyphCount}.
+ */
+let unmeasuredGlyphs = 0;
+let warnedUnmeasured = false;
+let warnUnmeasured = true;
+
+/**
+ * How many glyphs have been sized by the `0.5em` guess in this process.
+ *
+ * Non-zero means some text is laid out with fabricated metrics: line widths,
+ * wrap points, and justification are all wrong for those glyphs. Distinct from
+ * {@link LayoutResult.fallbackToCanvas}, which only reports that a glyph was
+ * missing from the *atlas* — that is the normal path for `Text`/`RichText`
+ * (both pass an empty atlas), so it is true on essentially every paragraph even
+ * in a browser and says nothing about measurement quality.
+ *
+ * The usual cause is a DOM-free environment (Node SSR, a worker with no canvas)
+ * with no font metrics registered. Register them with `registerFontMetrics` or
+ * `registerMSDFFontMetrics` from `@vectojs/text`.
+ *
+ * Counts only glyphs for which no measurer could be consulted. A measurer that
+ * is present but has no entry for one glyph applies its own per-glyph fallback,
+ * which this does not see — zero here means "every advance came from some real
+ * metrics source", not "every glyph was found in its font".
+ */
+export function unmeasuredGlyphCount(): number {
+  return unmeasuredGlyphs;
+}
+
+/** Reset {@link unmeasuredGlyphCount} and re-arm the one-time warning. */
+export function resetUnmeasuredGlyphCount(): void {
+  unmeasuredGlyphs = 0;
+  warnedUnmeasured = false;
+}
+
+/**
+ * Silence the one-time console warning about unmeasured glyphs.
+ *
+ * For a caller that has decided the `0.5em` approximation is acceptable — a
+ * layout whose text is never displayed, say. {@link unmeasuredGlyphCount} keeps
+ * counting either way.
+ */
+export function setUnmeasuredGlyphWarning(enabled: boolean): void {
+  warnUnmeasured = enabled;
+}
+
+/**
  * Map from a single grapheme character to its pre-measured glyph metrics.
  *
  * Each entry provides the glyph's pixel `width` at `baseSize`, and an `ast`
@@ -699,6 +747,22 @@ export class LayoutEngine {
     const glyphInfo = fontFamily === undefined ? fontAtlas[char] : undefined;
     if (glyphInfo) return glyphInfo.width * (fontSize / glyphInfo.baseSize);
     if (this.measurer) return this.measurer.measure(char, fontSize, fontFamily);
+
+    // Neither source can answer, so this advance is fabricated. Count it and say
+    // so once: the failure is otherwise completely silent — layout, hit-testing
+    // and a11y all keep reporting success against widths that can be off by
+    // +125% on narrow text and -47% on wide (measured against Chrome at 32px).
+    unmeasuredGlyphs++;
+    if (warnUnmeasured && !warnedUnmeasured) {
+      warnedUnmeasured = true;
+      console.warn(
+        '[@vectojs/layout] No font metrics available, so glyph advances are a flat ' +
+          '0.5em guess and text will be measured and wrapped incorrectly. In a ' +
+          'DOM-free environment (Node SSR, a worker without a canvas), register ' +
+          'metrics with registerFontMetrics/registerMSDFFontMetrics from ' +
+          '@vectojs/text. Silence this with setUnmeasuredGlyphWarning(false).',
+      );
+    }
     return fontSize * 0.5;
   }
 

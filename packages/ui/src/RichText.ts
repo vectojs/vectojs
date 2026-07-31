@@ -10,9 +10,10 @@ import {
   type StyledSpan,
   type ContentProjection,
   type TextStyle,
+  createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { fontSizePx, measureText } from './measure';
+import { familyOf, fontSizePx, measureText } from './measure';
 
 /** Construction options for {@link RichText}. */
 export interface RichTextOptions {
@@ -148,31 +149,17 @@ class LinkHotspot extends UIComponent {
   }
 }
 
-/** Extract the family portion of a CSS font shorthand (drops a leading `<n>px`). */
-function familyOf(font: string): string {
-  const pxIndex = font.indexOf('px');
-  if (pxIndex < 0) return font.trim() || 'sans-serif';
-
-  let rest = font.slice(pxIndex + 2).trimStart();
-  if (rest.startsWith('/')) {
-    let i = 1;
-    while (i < rest.length && rest[i] !== ' ' && rest[i] !== '\t') i++;
-    rest = rest.slice(i).trimStart();
-  }
-
-  return rest || 'sans-serif';
-}
-
 /**
- * A {@link GlyphMeasurer} that measures with the base CSS `font`. Returns `null`
- * without a DOM so the engine keeps its portable 0.5em fallback. (Bold/italic
+ * A {@link GlyphMeasurer} that measures with the base CSS `font`. Without a DOM
+ * it falls back to metrics registered via `registerFontMetrics`, and only with
+ * none of those does the engine keep its portable 0.5em fallback. (Bold/italic
  * runs are measured at the base weight — a small, documented width approximation;
  * size differences ARE honored via the per-run font size.)
  */
 function baseMeasurer(font: string): GlyphMeasurer | null {
-  if (typeof document === 'undefined') return null;
+  if (typeof document === 'undefined') return createMetricsMeasurer(familyOf(font));
   const ctx = document.createElement('canvas').getContext('2d');
-  if (!ctx) return null;
+  if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
     measure(char: string, fontSize: number, fontFamily?: string): number {

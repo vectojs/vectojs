@@ -1,4 +1,4 @@
-import { ArabicShaper } from '@vectojs/core';
+import { ArabicShaper, fontMetricsVersion, getFontMetrics } from '@vectojs/core';
 
 /**
  * Shared text measurement utilities backed by a single lazily-created offscreen
@@ -44,6 +44,52 @@ export function fontSizePx(font: string): number {
   return Number.isFinite(size) ? size : 16;
 }
 
+/**
+ * Extract the family portion of a CSS font shorthand (drops a leading
+ * `<n>px` and an optional `/<line-height>`).
+ *
+ * Sibling of {@link fontSizePx}: together they decompose a shorthand into the
+ * two things a DOM-free metrics lookup needs.
+ *
+ * @param font - A CSS font shorthand, e.g. `'600 16px/1.4 Inter, sans-serif'`.
+ * @returns The family portion, or `'sans-serif'` when none is found.
+ */
+export function familyOf(font: string): string {
+  const pxIndex = font.indexOf('px');
+  if (pxIndex < 0) return font.trim() || 'sans-serif';
+
+  let rest = font.slice(pxIndex + 2).trimStart();
+  if (rest.startsWith('/')) {
+    let i = 1;
+    while (i < rest.length && rest[i] !== ' ' && rest[i] !== '\t') i++;
+    rest = rest.slice(i).trimStart();
+  }
+
+  return rest || 'sans-serif';
+}
+
+/**
+ * Measure `text` from DOM-free metrics registered via `registerFontMetrics`.
+ *
+ * Prefers the source's whole-string `measureEm`, which honors kerning, and falls
+ * back to summing per-grapheme advances. Returns `undefined` when the family has
+ * no registration, so the caller keeps its own fallback.
+ */
+function measureWithRegisteredMetrics(text: string, font: string): number | undefined {
+  const source = getFontMetrics(familyOf(font));
+  if (!source) return undefined;
+
+  const size = fontSizePx(font);
+  const whole = source.measureEm?.(text);
+  if (whole !== undefined) return whole * size;
+
+  let em = 0;
+  // Iterate by code point, not UTF-16 unit, so an astral character is one
+  // advance rather than two half-measured surrogates.
+  for (const char of text) em += source.advanceEm(char) ?? 0.5;
+  return em * size;
+}
+
 // Cache `(font, text) → width`. Native `measureText` forces a layout/context
 // switch each call — wasteful for hot paths that re-measure the same strings
 // every frame: `wrapLines` (per-word candidates) and `Input` caret positioning
@@ -57,6 +103,19 @@ if (typeof document !== 'undefined' && document.fonts) {
   const clearCache = () => measureCache.clear();
   document.fonts.ready.then(clearCache);
   document.fonts.addEventListener('loadingdone', clearCache);
+}
+
+// Registering font metrics changes what a measurement should return, exactly as
+// a webfont finishing its load does above — so the cached answers computed
+// before it are stale and must be dropped. Compared lazily rather than
+// subscribed to, because this module has no teardown hook to unsubscribe from.
+let cachedMetricsVersion = fontMetricsVersion();
+function invalidateOnMetricsChange(): void {
+  const current = fontMetricsVersion();
+  if (current !== cachedMetricsVersion) {
+    cachedMetricsVersion = current;
+    measureCache.clear();
+  }
 }
 
 /**
@@ -76,6 +135,7 @@ export function measureText(text: string, font: string): number {
   // majority, where it returns the input unchanged but still allocates an
   // index map. Two raws that shape identically now occupy two entries — correct,
   // just marginally less dense.
+  invalidateOnMetricsChange();
   const key = `${font} ${text}`;
   const cached = measureCache.get(key);
   if (cached !== undefined) {
@@ -89,11 +149,11 @@ export function measureText(text: string, font: string): number {
   const shaped = ArabicShaper.shapeArabic(text).shapedText;
   const ctx = getCtx();
   let width: number;
-  if (!ctx) {
-    width = shaped.length * fontSizePx(font) * 0.5;
-  } else {
+  if (ctx) {
     ctx.font = font;
     width = ctx.measureText(shaped).width;
+  } else {
+    width = measureWithRegisteredMetrics(shaped, font) ?? shaped.length * fontSizePx(font) * 0.5;
   }
 
   measureCache.set(key, width);
