@@ -305,3 +305,79 @@ describe('RichText', () => {
     });
   });
 });
+
+describe('RichText inline objects', () => {
+  const OBJ = '\ufffc';
+
+  it('does not paint the object replacement sentinel', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([
+      { text: 'a' },
+      { text: OBJ, object: { width: 40, height: 20, alt: 'x+1' } },
+      { text: 'b' },
+    ]).render(r);
+    // The surrounding text still draws…
+    expect(calls.some((c) => c.text.includes('a'))).toBe(true);
+    expect(calls.some((c) => c.text.includes('b'))).toBe(true);
+    // …but the sentinel must never reach fillText, or it paints a tofu box in
+    // the gap that was reserved for someone else's content.
+    expect(calls.some((c) => c.text.includes(OBJ))).toBe(false);
+  });
+
+  it('breaks the coalesced run at the object', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([
+      { text: 'ab' },
+      { text: OBJ, object: { width: 40, height: 20 } },
+      { text: 'cd' },
+    ]).render(r);
+    // 'ab' and 'cd' are the same style but not contiguous — the reserved box sits
+    // between them, so they must not be coalesced into one 'abcd' fillText.
+    expect(calls.some((c) => c.text === 'abcd')).toBe(false);
+    const texts = calls.map((c) => c.text);
+    expect(texts).toContain('ab');
+    expect(texts).toContain('cd');
+  });
+
+  it('uses the object alt for the accessible name, not the sentinel', () => {
+    const rt = new RichText([
+      { text: 'see ' },
+      { text: OBJ, object: { width: 40, height: 20, alt: 'x+1' } },
+    ]);
+    expect(rt.getA11yAttributes().label).toBe('see x+1');
+    expect(rt.getA11yAttributes().label).not.toContain(OBJ);
+  });
+
+  it('contributes nothing to the accessible name when alt is absent', () => {
+    const rt = new RichText([{ text: 'ab' }, { text: OBJ, object: { width: 40, height: 20 } }]);
+    expect(rt.getA11yAttributes().label).toBe('ab');
+  });
+
+  it('reserves horizontal space so following text is pushed right', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([
+      { text: 'a' },
+      { text: OBJ, object: { width: 40, height: 20 } },
+      { text: 'b' },
+    ]).render(r);
+    // The stub measurer in this suite reports 8px per character, so 'a' advances
+    // to 8 and the 40px reservation puts 'b' at 48.
+    //
+    // Deliberately an absolute assertion, not a diff against an object-free
+    // render: without the object, 'a' and 'b' are contiguous same-style glyphs and
+    // coalesce into ONE fillText('ab') at x=0, so there is no 'b' call to diff
+    // against and the comparison silently measures the wrong thing.
+    expect(calls.find((c) => c.text === 'b')!.x).toBeCloseTo(48, 5);
+  });
+
+  it('grows the line box for an object taller than the text', () => {
+    const { r: rShort, calls: short } = recordingRenderer();
+    new RichText([{ text: 'a' }]).render(rShort);
+    const { r: rTall, calls: tall } = recordingRenderer();
+    new RichText([{ text: 'a' }, { text: OBJ, object: { width: 10, height: 40 } }]).render(rTall);
+    // A taller line pushes the shared baseline down, so the text's draw y moves.
+    expect(tall.find((c) => c.text === 'a')!.y).toBeGreaterThan(
+      short.find((c) => c.text.includes('a'))!.y,
+    );
+  });
+});
