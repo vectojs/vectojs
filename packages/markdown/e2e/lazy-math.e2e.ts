@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer, { type Browser } from 'puppeteer-core';
+import { type BrowserCase, bothEngines, closeServer } from '../../core/e2e/_shared/browsers';
 import type { InlineMathBrowserResult, LazyMathBrowserResult } from './lazy-math.fixture';
 
 /**
@@ -17,18 +17,6 @@ import type { InlineMathBrowserResult, LazyMathBrowserResult } from './lazy-math
  * decodes the SVG data URI, so `imageDecoded` is what proves the typeset formula
  * is a real raster rather than a placeholder slab.
  */
-
-interface BrowserCase {
-  name: string;
-  browser: 'chrome' | 'firefox';
-  executablePath: string;
-}
-
-function executable(candidates: string[], label: string): string {
-  const path = candidates.find((candidate) => candidate.length > 0 && existsSync(candidate));
-  if (!path) throw new Error(`No ${label} executable found (${candidates.join(', ')})`);
-  return path;
-}
 
 function isLazyMathResult(value: unknown): value is LazyMathBrowserResult {
   return (
@@ -291,35 +279,12 @@ async function main(): Promise<void> {
   if (!address || typeof address === 'string') throw new Error('Fixture server has no TCP port');
   const url = `http://127.0.0.1:${address.port}/`;
 
-  const cases: BrowserCase[] = [
-    {
-      name: 'chromium',
-      browser: 'chrome',
-      executablePath: executable(
-        [
-          process.env.PUPPETEER_EXECUTABLE_PATH ?? '',
-          '/usr/bin/chromium',
-          '/usr/bin/google-chrome',
-        ],
-        'Chromium',
-      ),
-    },
-    {
-      name: 'firefox',
-      browser: 'firefox',
-      executablePath: executable(
-        [process.env.FIREFOX_EXECUTABLE_PATH ?? '', '/usr/bin/firefox'],
-        'Firefox',
-      ),
-    },
-  ];
+  const cases: BrowserCase[] = bothEngines();
 
   try {
     for (const browserCase of cases) await verifyCase(browserCase, url);
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
+    await closeServer(server);
   }
 }
 
