@@ -30,18 +30,12 @@
 import puppeteer, { type Browser } from 'puppeteer-core';
 import { build } from 'esbuild';
 import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { type BrowserCase, bothEngines, closeServer } from './_shared/browsers';
 import type { MsdfCaseResult, MsdfDecodeBrowserResult } from './msdf-atlas-decode.fixture';
-
-interface BrowserCase {
-  name: string;
-  browser: 'chrome' | 'firefox';
-  executablePath: string;
-}
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -112,13 +106,6 @@ const ATLAS_DELAYS_MS = new Map<string, number>([
   ['0', 0],
   ['300', 300],
 ]);
-
-function executable(candidates: string[], label: string): string {
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  throw new Error(`No ${label} found. Set its *_EXECUTABLE_PATH environment variable.`);
-}
 
 function isResult(value: unknown): value is MsdfDecodeBrowserResult {
   if (typeof value !== 'object' || value === null) return false;
@@ -317,28 +304,7 @@ async function main(): Promise<void> {
   if (!address || typeof address === 'string') throw new Error('Fixture server has no TCP port');
   const url = `http://127.0.0.1:${address.port}/`;
 
-  const cases: BrowserCase[] = [
-    {
-      name: 'chromium',
-      browser: 'chrome',
-      executablePath: executable(
-        [
-          process.env.PUPPETEER_EXECUTABLE_PATH ?? '',
-          '/usr/bin/chromium',
-          '/usr/bin/google-chrome',
-        ],
-        'Chromium',
-      ),
-    },
-    {
-      name: 'firefox',
-      browser: 'firefox',
-      executablePath: executable(
-        [process.env.FIREFOX_EXECUTABLE_PATH ?? '', '/usr/bin/firefox'],
-        'Firefox',
-      ),
-    },
-  ];
+  const cases: BrowserCase[] = bothEngines();
 
   try {
     let exercised = 0;
@@ -355,9 +321,7 @@ async function main(): Promise<void> {
       `\nMSDF atlas-decode e2e: all checks passed (${exercised}/${cases.length} engines exercised the WebGL path)`,
     );
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
+    await closeServer(server);
   }
 }
 

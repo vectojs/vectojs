@@ -28,29 +28,16 @@
 import puppeteer, { type Browser } from 'puppeteer-core';
 import { build } from 'esbuild';
 import { createServer } from 'node:http';
-import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { type BrowserCase, bothEngines } from './_shared/browsers';
 import type {
   LayoutCaseResult,
   LayoutFallbackBrowserResult,
 } from './layout-worker-fallback.fixture';
 
-interface BrowserCase {
-  name: string;
-  browser: 'chrome' | 'firefox';
-  executablePath: string;
-}
-
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-function executable(candidates: string[], label: string): string {
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  throw new Error(`No ${label} found. Set its *_EXECUTABLE_PATH environment variable.`);
-}
 
 function isResult(value: unknown): value is LayoutFallbackBrowserResult {
   if (typeof value !== 'object' || value === null) return false;
@@ -78,28 +65,7 @@ function isResult(value: unknown): value is LayoutFallbackBrowserResult {
 const BLOCKING_CSP = "default-src 'self'; script-src 'unsafe-inline'";
 
 async function main(): Promise<void> {
-  const browsers: BrowserCase[] = [
-    {
-      name: 'chromium',
-      browser: 'chrome',
-      executablePath: executable(
-        [
-          process.env.PUPPETEER_EXECUTABLE_PATH ?? '',
-          '/usr/bin/chromium',
-          '/usr/bin/google-chrome',
-        ],
-        'Chromium',
-      ),
-    },
-    {
-      name: 'firefox',
-      browser: 'firefox',
-      executablePath: executable(
-        [process.env.FIREFOX_EXECUTABLE_PATH ?? '', '/usr/bin/firefox'],
-        'Firefox',
-      ),
-    },
-  ];
+  const browsers: BrowserCase[] = bothEngines();
 
   const bundle = await build({
     entryPoints: [join(packageRoot, 'e2e/layout-worker-fallback.fixture.ts')],

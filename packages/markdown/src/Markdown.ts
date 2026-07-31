@@ -2460,6 +2460,23 @@ export class Markdown extends UIComponent {
    * known until the browser has the bitmap; `onLoad` corrects both from
    * `naturalWidth`/`naturalHeight`. Extracted from the render arm so the streamed
    * path reuses this exact entity rather than constructing a second variant.
+   *
+   * `markDirty()` is unconditional, matching the display-math sibling. It used
+   * to sit inside the `naturalWidth && naturalHeight` check, which meant a
+   * source that loads successfully while reporting a zero dimension left the
+   * scene un-notified. `Image` sets `loaded` before invoking this callback, so
+   * its `render()` starts drawing the bitmap either way — the cost was not a
+   * stale placeholder but a box frozen at the guess: measured on Chromium and
+   * Firefox, an `<svg width="0" height="0">` paragraph image kept 800x480 of
+   * reserved layout forever while a normal raster corrected to 80x60. An
+   * `onDemand` scene repaints only when marked, so nothing reclaimed it.
+   *
+   * The box is deliberately left at the guess when the bitmap reports zero.
+   * Collapsing it to 0x0 would make the paragraph reflow correctly but would
+   * also silently delete a reserved region on the strength of one browser
+   * quirk, and `Image.render()` still blits whatever the bitmap holds. Sizing
+   * policy for a zero-dimension source is a separate decision from notifying
+   * the scene, which is the actual defect here.
    */
   private paragraphImage(imgToken: Tokens.Image, availableWidth: number): Image {
     const initialWidth = Math.min(800, availableWidth);
@@ -2475,8 +2492,8 @@ export class Markdown extends UIComponent {
           const aspect = bmp.naturalHeight / bmp.naturalWidth;
           img.width = Math.min(bmp.naturalWidth, availableWidth);
           img.height = Math.round(img.width * aspect);
-          if (this.scene) this.scene.markDirty();
         }
+        this.scene?.markDirty();
       },
     });
     return img;
