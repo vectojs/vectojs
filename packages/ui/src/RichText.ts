@@ -397,9 +397,30 @@ export class RichText extends UIComponent {
     }
   }
 
-  /** The full text content, used as the accessible name. */
-  private fullText(): string {
+  /**
+   * The concatenated span text exactly as the engine saw it.
+   *
+   * Offsets into this string are what `LayoutNode.sourceIndex` indexes, so it
+   * must stay byte-for-byte aligned with the spans — including a one-character
+   * U+FFFC for each inline object. Use {@link accessibleText} for anything
+   * user-facing.
+   */
+  private sourceText(): string {
     return this.spans.map((s) => s.text).join('');
+  }
+
+  /**
+   * The text content for the accessible name.
+   *
+   * An inline-object span contributes its `alt` rather than the raw U+FFFC
+   * sentinel, which is meaningless to a screen reader and copies as an invisible
+   * character. A span with no `alt` contributes nothing.
+   *
+   * Deliberately NOT usable for `sourceIndex` slicing: substituting an `alt` of
+   * any length other than one shifts every later offset.
+   */
+  private accessibleText(): string {
+    return this.spans.map((s) => (s.object ? (s.object.alt ?? '') : s.text)).join('');
   }
 
   /** Rebuild styled DOM runs from a logical UTF-16 source interval. */
@@ -435,7 +456,7 @@ export class RichText extends UIComponent {
   private positionedRuns(
     nodes: LayoutResult['nodes'],
   ): Array<{ text: string; font: string; x: number; width: number }> {
-    const source = this.fullText();
+    const source = this.sourceText();
     // Visual order. One carrier PER GLYPH: justify widens the gaps between words
     // (and the engine can even reorder a trailing space around a wrap boundary),
     // so only a per-glyph carrier positioned at each glyph's own visual x keeps
@@ -490,7 +511,7 @@ export class RichText extends UIComponent {
       else previous.push(node);
     }
 
-    const source = this.fullText();
+    const source = this.sourceText();
     return groups.map((nodes, index) => {
       const largest = Math.max(...nodes.map((node) => node.height));
       const font = this.nodeFont(undefined, largest);
@@ -545,12 +566,12 @@ export class RichText extends UIComponent {
   }
 
   public getA11yAttributes(): A11yAttributes {
-    return { label: this.fullText() };
+    return { label: this.accessibleText() };
   }
 
   /** Mirror the concatenated span text into the DOM content layer. */
   public override getContentProjection(): ContentProjection | null {
-    const text = this.fullText();
+    const text = this.sourceText();
     if (!text) return null;
     // The engine advances lines by fontSize × 1.5; without matching the DOM
     // line-height, multi-line selection highlights drift off the glyphs.
@@ -615,6 +636,14 @@ export class RichText extends UIComponent {
         if (node.char.trim().length === 0) {
           // Whitespace is not painted, but it DOES advance the pen, so a run
           // cannot span it — the next glyph's x is not `runStart + runWidth`.
+          flushRun();
+          continue;
+        }
+        if (node.object) {
+          // A reserved inline box: the engine held space for it, and whoever
+          // supplied the object paints it. Painting the U+FFFC sentinel here
+          // would draw a tofu box in the gap. Breaks the run for the same reason
+          // whitespace does — the pen has advanced past reserved space.
           flushRun();
           continue;
         }

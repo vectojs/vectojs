@@ -73,10 +73,73 @@ export interface TextStyle {
   href?: string;
 }
 
-/** A run of text sharing one {@link TextStyle}, the input unit of {@link LayoutEngine.prepareRich}. */
+/**
+ * The character an {@link InlineObject} span must consist of: U+FFFC OBJECT
+ * REPLACEMENT CHARACTER.
+ *
+ * Using the standard Unicode sentinel rather than a private-use codepoint means
+ * a caller that ignores `object` still gets sane behavior — the character is
+ * defined to render as nothing meaningful and carries no width of its own.
+ */
+export const OBJECT_REPLACEMENT = '\ufffc';
+
+/**
+ * A non-text box occupying inline space: the metrics the engine needs to
+ * reserve advance for something it does not shape (a typeset formula, an icon,
+ * an embedded entity).
+ *
+ * The engine reserves the space and reports where it landed; it never draws the
+ * object. The owner reads the positioned {@link OBJECT_REPLACEMENT} glyph back
+ * out of the layout result and places its own content there.
+ *
+ * All three values are in px at final size — already resolved by the caller, not
+ * scaled by the run's `fontSize`. An object is a fixed box, unlike a glyph whose
+ * advance scales with its size.
+ */
+export interface InlineObject {
+  /** Horizontal advance to reserve. Must be finite and >= 0. */
+  width: number;
+  /** Total box height, ascent + descent. Feeds the line's height calculation. */
+  height: number;
+  /**
+   * How far the box extends *below* the text baseline, as a positive number.
+   * `0` sits the box entirely on the baseline; `height` hangs it entirely below.
+   *
+   * This mirrors CSS `vertical-align` with the sign flipped: MathJax emits
+   * `vertical-align: -0.486ex`, which is `depth: 0.486 * exToPx`.
+   */
+  depth?: number;
+  /**
+   * Text equivalent for the accessible name, selection, and copy — the object's
+   * alt text (a formula's TeX source, an icon's label).
+   *
+   * Without this the raw {@link OBJECT_REPLACEMENT} sentinel reaches the
+   * accessibility layer, where it is meaningless to a screen reader and copies as
+   * an invisible character. Consumers that assemble text from spans should
+   * substitute this for the sentinel.
+   */
+  alt?: string;
+}
+
+/**
+ * A run of text sharing one {@link TextStyle}, the input unit of
+ * {@link LayoutEngine.prepareRich}.
+ *
+ * A span is either text or a single inline object, never both. When `object` is
+ * set, `text` must be exactly one {@link OBJECT_REPLACEMENT}; the engine reserves
+ * `object.width` instead of measuring the character.
+ */
 export interface StyledSpan {
   text: string;
   style?: TextStyle;
+  /**
+   * Reserve inline space for a non-text box instead of shaping `text`.
+   *
+   * Requires `text === OBJECT_REPLACEMENT`. A span whose `text` is anything else
+   * ignores this field, because the engine keys the reservation on the sentinel
+   * character so it survives the flattening into the per-character style map.
+   */
+  object?: InlineObject;
 }
 
 /**
@@ -90,6 +153,13 @@ export interface LayoutNode {
   height: number;
   /** Inline style carried from rich text; `undefined` for plain (single-style) layout. */
   style?: TextStyle;
+  /**
+   * Set when this node is a reserved {@link InlineObject} rather than a glyph.
+   * `char` is {@link OBJECT_REPLACEMENT}, `width`/`height` are the object's box,
+   * and `x`/`y` are its top-left — draw the real content there and skip painting
+   * the character.
+   */
+  object?: InlineObject;
   sourceIndex?: number;
   sourceLength?: number;
   isRTL?: boolean;
@@ -130,6 +200,14 @@ export interface PreparedGlyph {
   width: number;
   /** Inline style (rich text only); drives per-glyph size, color and baseline. */
   style?: TextStyle;
+  /**
+   * Set when this glyph is a reserved {@link InlineObject} box rather than a
+   * character. `width` is the object's reserved advance, and `char` is
+   * {@link OBJECT_REPLACEMENT}.
+   *
+   * Read this off the positioned result to find where to draw the real content.
+   */
+  object?: InlineObject;
   level: number;
   sourceIndex: number;
   sourceLength: number;
@@ -325,6 +403,40 @@ export function isComplexScript(text: string): boolean {
  * undefined` (identity), and only genuinely styled runs pay a field compare —
  * no allocation (unlike an RLE signature string).
  */
+/**
+ * Value-equality of two per-character inline-object maps over `[0, len)`.
+ *
+ * Needed for the same reason as {@link styleRangeEquals}: an object's `width` is
+ * an advance, so a prefix whose object metrics changed cannot have its shaping
+ * reused. Compared by value, not identity, because a caller that rebuilds its
+ * span array per chunk hands over a fresh object each time even when the formula
+ * is unchanged — comparing by identity would defeat streaming reuse entirely.
+ *
+ * Both sides absent is the common case and exits on the `=== ` identity check.
+ */
+function objectRangeEquals(
+  a: Array<InlineObject | undefined> | undefined,
+  b: Array<InlineObject | undefined> | undefined,
+  len: number,
+): boolean {
+  if (a === b) return true; // both undefined, or literally the same array
+  for (let i = 0; i < len; i++) {
+    const x = a?.[i];
+    const y = b?.[i];
+    if (x === y) continue;
+    if (!x || !y) return false;
+    if (
+      x.width !== y.width ||
+      x.height !== y.height ||
+      (x.depth ?? 0) !== (y.depth ?? 0) ||
+      x.alt !== y.alt
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function styleRangeEquals(
   a: Array<TextStyle | undefined>,
   b: Array<TextStyle | undefined>,
@@ -403,6 +515,13 @@ export class LayoutEngine {
     fontSize: number;
     atlas: GlyphAtlas;
     styleAt: Array<TextStyle | undefined>;
+    /**
+     * Reserved inline objects over the cached prefix, compared on reuse for the
+     * same reason `styleAt` is: an object's width is an advance, so a prefix whose
+     * object changed is not a valid prefix to reuse. Undefined when the cached
+     * paragraph had no objects, which is the overwhelmingly common case.
+     */
+    objectAt?: Array<InlineObject | undefined>;
     text: string;
     // The engine's own mutable arrays, distinct from anything stored in the
     // value-keyed memo (richParagraphCache), so the streaming extension can
@@ -789,11 +908,24 @@ export class LayoutEngine {
     // Flatten to text + a per-UTF16-unit style map (one shared object per run).
     let fullText = '';
     const styleAt: Array<TextStyle | undefined> = [];
+    // Parallel to styleAt: the inline object reserved at this index, if any. Kept
+    // separate from TextStyle because an object is content, not style — merging it
+    // would make it inherit from baseStyle, which is meaningless for a box.
+    const objectAt: Array<InlineObject | undefined> = [];
+    let hasObject = false;
     for (const span of spans) {
       const merged: TextStyle | undefined =
         span.style || baseStyle ? { ...baseStyle, ...span.style } : undefined;
       fullText += span.text;
-      for (let i = 0; i < span.text.length; i++) styleAt.push(merged);
+      // An object span is keyed on the sentinel character, so it survives this
+      // flattening; a span that sets `object` without it is treated as plain text.
+      const obj =
+        span.object !== undefined && span.text === OBJECT_REPLACEMENT ? span.object : undefined;
+      if (obj) hasObject = true;
+      for (let i = 0; i < span.text.length; i++) {
+        styleAt.push(merged);
+        objectAt.push(obj);
+      }
     }
 
     // A compact, *value*-based RLE signature of the styles over [start, start+len)
@@ -808,21 +940,31 @@ export class LayoutEngine {
     // It was latent only because the memo was never hit: Text/RichText passed a
     // fresh `{}` atlas per call, which cleared it every time. Reviving the cache
     // and fixing this key are therefore ONE change; doing either alone is wrong.
+    // An inline object's metrics are part of the fingerprint for the same reason
+    // fontFamily is: they change the advance. They are MORE dangerous than a style
+    // field, because every object span flattens to the identical text (one U+FFFC)
+    // and often an identical style — so with the metrics omitted, two differently
+    // sized formulas in the same paragraph position produce byte-identical keys and
+    // the second is served the first's layout. `text` alone cannot disambiguate them.
+    const fingerprint = (idx: number): string => {
+      const s = styleAt[idx];
+      const base = s
+        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}`
+        : '';
+      const o = objectAt[idx];
+      // `alt` is in the key even though it changes no advance: it reaches the
+      // accessible name, so two formulas that differ only in alt text must not
+      // share a cached paragraph or the second is announced as the first.
+      return o ? `${base}/@${o.width},${o.height},${o.depth ?? 0},${o.alt ?? ''}` : base;
+    };
     const styleSig = (start: number, len: number): string => {
       let sig = '';
       let i = 0;
       while (i < len) {
-        const s = styleAt[start + i];
-        const fp = s
-          ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}`
-          : '';
+        const fp = fingerprint(start + i);
         let run = 1;
         while (i + run < len) {
-          const t = styleAt[start + i + run];
-          const tfp = t
-            ? `${t.fontSize ?? ''}/${t.color ?? ''}/${t.bold ? 1 : 0}/${t.italic ? 1 : 0}/${t.href ?? ''}/${t.fontFamily ?? ''}`
-            : '';
-          if (tfp !== fp) break;
+          if (fingerprint(start + i + run) !== fp) break;
           run++;
         }
         sig += `${fp}:${run};`;
@@ -859,7 +1001,8 @@ export class LayoutEngine {
         fullText.length > cache.text.length &&
         cache.words.length > 0 &&
         fullText.startsWith(cache.text) &&
-        styleRangeEquals(styleAt, cache.styleAt, cache.text.length)
+        styleRangeEquals(styleAt, cache.styleAt, cache.text.length) &&
+        objectRangeEquals(objectAt, cache.objectAt, cache.text.length)
       ) {
         // Re-segment the whole trailing SAME-CATEGORY (whitespace vs
         // non-whitespace) run, not just the last cached word. Intl.Segmenter can
@@ -884,7 +1027,14 @@ export class LayoutEngine {
         while (keep < cache.wordSrcEnds.length && cache.wordSrcEnds[keep] <= reshapeFrom) {
           keep++;
         }
-        const tail = this.shapeSimpleRun(fullText, reshapeFrom, styleAt, baseFontSize, fontAtlas);
+        const tail = this.shapeSimpleRun(
+          fullText,
+          reshapeFrom,
+          styleAt,
+          baseFontSize,
+          fontAtlas,
+          objectAt,
+        );
         for (let i = keep; i < cache.wordFallbacks.length; i++) {
           if (cache.wordFallbacks[i]) cache.fallbackCount--;
         }
@@ -899,6 +1049,7 @@ export class LayoutEngine {
         }
         cache.text = fullText;
         cache.styleAt = styleAt;
+        cache.objectAt = hasObject ? objectAt : undefined;
         const pFallback = cache.fallbackCount > 0;
         return {
           paragraphs: [
@@ -929,7 +1080,7 @@ export class LayoutEngine {
           fallbackToCanvas: cached.fallbackToCanvas,
         };
       }
-      const shaped = this.shapeSimpleRun(fullText, 0, styleAt, baseFontSize, fontAtlas);
+      const shaped = this.shapeSimpleRun(fullText, 0, styleAt, baseFontSize, fontAtlas, objectAt);
       const pFallback = shaped.wordFallbacks.some(Boolean);
       const prepared: PreparedParagraph = {
         words: shaped.words,
@@ -950,6 +1101,9 @@ export class LayoutEngine {
         fontSize: baseFontSize,
         atlas: fontAtlas,
         styleAt,
+        // Stored only when present, so the no-object case compares by identity
+        // (undefined === undefined) and costs nothing.
+        ...(hasObject ? { objectAt } : {}),
         text: fullText,
         words: shaped.words.slice(),
         wordSrcEnds: shaped.wordSrcEnds.slice(),
@@ -1025,19 +1179,24 @@ export class LayoutEngine {
 
           const style = styleAt[offset + rawStart];
           const gfs = style?.fontSize ?? baseFontSize;
+          const obj = objectAt[offset + rawStart];
 
-          const hasGlyph = !!fontAtlas[glyphKey];
+          // An object reserves its own advance and is never shaped, so it is also
+          // not an atlas miss: the atlas is not expected to hold U+FFFC, and
+          // counting it would report a canvas fallback that never happened.
+          const hasGlyph = obj !== undefined || !!fontAtlas[glyphKey];
           if (char.trim().length > 0 && !hasGlyph) {
             pFallback = true;
             fallbackToCanvas = true;
           }
 
-          const w = this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
+          const w = obj ? obj.width : this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
 
           glyphs.push({
             char,
             width: w,
             style,
+            ...(obj ? { object: obj } : {}),
             level,
             sourceIndex,
             sourceLength,
@@ -1112,6 +1271,7 @@ export class LayoutEngine {
     styleAt: Array<TextStyle | undefined>,
     baseFontSize: number,
     fontAtlas: GlyphAtlas,
+    objectAt?: Array<InlineObject | undefined>,
   ): {
     words: PreparedWord[];
     wordSrcEnds: number[];
@@ -1139,13 +1299,16 @@ export class LayoutEngine {
         const glyphKey = this.glyphKeyFor(char, fontAtlas);
         const style = styleAt[charIdx];
         const gfs = style?.fontSize ?? baseFontSize;
-        const inAtlas = !!fontAtlas[glyphKey];
+        const obj = objectAt?.[charIdx];
+        // See the full-shaping path: a reserved object is not an atlas miss.
+        const inAtlas = obj !== undefined || !!fontAtlas[glyphKey];
         if (char.trim().length > 0 && !inAtlas) wordFallback = true;
-        const w = this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
+        const w = obj ? obj.width : this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
         glyphs.push({
           char,
           width: w,
           style,
+          ...(obj ? { object: obj } : {}),
           level: 0,
           sourceIndex: charIdx,
           sourceLength: char.length,
@@ -1467,7 +1630,24 @@ export class LayoutEngine {
           if (gfs > pMax) pMax = gfs;
         }
       }
-      const lineHeight = pMax * 1.5;
+      // An inline object is a fixed box, not a scaled em: the part of it ABOVE the
+      // baseline is `height - depth`, and the baseline sits `pMax * 0.8` below the
+      // line top (see the glyph `y` below). Grow pMax until that ascent fits, or a
+      // formula taller than its surrounding text would be clipped by the line box.
+      let objDescent = 0;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const o = glyph.object;
+          if (!o) continue;
+          const depth = o.depth ?? 0;
+          const ascent = o.height - depth;
+          if (ascent > pMax * 0.8) pMax = ascent / 0.8;
+          if (depth > objDescent) objDescent = depth;
+        }
+      }
+      // Default leading (0.5 * pMax) already covers a normal glyph's descender; an
+      // object may hang further, so extend the line only by the excess.
+      const lineHeight = Math.max(pMax * 1.5, pMax * 0.8 + objDescent);
       if (!startLine(lineHeight)) break; // out of vertical bounds
 
       const wordQueue = paragraph.words.slice();
@@ -1581,10 +1761,17 @@ export class LayoutEngine {
             // top used by the renderer. Offset smaller runs by their baseline
             // delta, not by their full em-box delta, so mixed-size glyphs share
             // one real baseline in every Canvas 2D implementation.
-            y: currentY + (pMax - gfs) * 0.8,
+            //
+            // An object is a fixed box rather than a scaled em, so it is placed by
+            // sitting its BOTTOM at `baseline + depth`: its top is therefore
+            // `baseline - (height - depth)`. The baseline is at `pMax * 0.8`.
+            y: glyph.object
+              ? currentY + pMax * 0.8 - (glyph.object.height - (glyph.object.depth ?? 0))
+              : currentY + (pMax - gfs) * 0.8,
             width: charWidth,
-            height: gfs,
+            height: glyph.object ? glyph.object.height : gfs,
             style: glyph.style,
+            ...(glyph.object ? { object: glyph.object } : {}),
             level: glyph.level,
             sourceIndex: glyph.sourceIndex,
             sourceLength: glyph.sourceLength,
