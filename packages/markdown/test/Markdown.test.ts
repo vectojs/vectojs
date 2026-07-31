@@ -1861,6 +1861,11 @@ Plain paragraph at the end.
     });
 
     it('still tokenizes genuine inline math "$x+1$" as a math span', () => {
+      // Gold source text is now the PRE-TYPESET state, not the final rendering:
+      // with MathJax loaded this span becomes a reserved inline object instead
+      // (see inlineMathTypeset.test.ts). This file never preloads MathJax, so the
+      // fallback branch is what runs here — which is exactly what makes this a
+      // tokenizer assertion rather than a rendering one.
       const md = new Markdown('The equation $x+1$ holds.');
       expect(hasMathSpan(md)).toBe(true);
     });
