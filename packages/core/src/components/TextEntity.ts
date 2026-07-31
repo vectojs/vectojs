@@ -3,16 +3,22 @@ import {
   LayoutEngine,
   type GlyphMeasurer,
   type PreparedText,
-  createCanvasMeasurer,
+  resolveGlyphMeasurer,
 } from '@vectojs/layout';
 import { IRenderer } from '../renderer/IRenderer';
 
 // Shared across all TextEntity instances so the per-glyph measurement cache is
 // reused. Matches the `sans-serif` family used by the native fillText fallback
 // in render(), so measured widths agree with what's actually drawn.
-let sharedMeasurer: GlyphMeasurer | null | undefined;
+//
+// Only a resolved measurer is memoized. Caching a `null` would pin the very
+// first answer for the process, so a DOM-free app that registers font metrics
+// after constructing its first TextEntity would be stuck on the 0.5em fallback
+// forever. Re-resolving while null costs a `typeof document` check plus a Map
+// lookup, and stops as soon as either source can answer.
+let sharedMeasurer: GlyphMeasurer | null = null;
 function defaultMeasurer(): GlyphMeasurer | null {
-  if (sharedMeasurer === undefined) sharedMeasurer = createCanvasMeasurer('sans-serif');
+  sharedMeasurer ??= resolveGlyphMeasurer('sans-serif');
   return sharedMeasurer;
 }
 

@@ -6,9 +6,10 @@ import {
   type GlyphMeasurer,
   type LayoutNode,
   type PreparedText,
+  createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { fontSizePx } from './measure';
+import { familyOf, fontSizePx } from './measure';
 import type { ContentProjection, ContentProjectionRun } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
@@ -43,13 +44,17 @@ export interface TextOptions {
 
 /**
  * A {@link GlyphMeasurer} that measures with the exact CSS `font` (so width
- * matches what the renderer draws, weights included). Returns `null` without a
- * DOM, so the {@link LayoutEngine} keeps its portable 0.5em fallback.
+ * matches what the renderer draws, weights included).
+ *
+ * Without a DOM it falls back to metrics registered via `registerFontMetrics`,
+ * and only when there are none does the {@link LayoutEngine} keep its portable
+ * 0.5em fallback. Canvas is preferred whenever it exists: it is the only source
+ * that measures the font actually being drawn.
  */
 function fontMeasurer(font: string): GlyphMeasurer | null {
-  if (typeof document === 'undefined') return null;
+  if (typeof document === 'undefined') return createMetricsMeasurer(familyOf(font));
   const ctx = document.createElement('canvas').getContext('2d');
-  if (!ctx) return null;
+  if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
     measure(char: string): number {
