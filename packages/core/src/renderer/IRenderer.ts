@@ -336,3 +336,99 @@ export interface IRenderer {
    */
   onContextRestored?(cb: () => void): void;
 }
+
+/**
+ * Canvas2D style properties that have no equivalent on {@link IRenderer}, mapped
+ * to the method to call instead.
+ *
+ * `IRenderer` is deliberately method-based: style travels *with* the draw call
+ * (`stroke(color, width)`), which lets a batching backend coalesce runs and
+ * gives a GPU backend a defined boundary. A mutable style *property* is
+ * Canvas2D-specific statefulness that WebGL/WebGPU cannot honour cheaply, so
+ * these are not going to be added.
+ *
+ * The failure mode is what makes this worth trapping: assigning one is not a
+ * type error against a structural interface when the code is untranspiled JS,
+ * it just attaches an expando, and the draw silently uses the context default.
+ * Two `@vectojs` demos shipped that way — a bloom-intensity slider that moved
+ * its halo metric by 1.07 instead of 17.0, and a panel rim that drew as a black
+ * hairline instead of `rgba(255,255,255,0.25)` at 1.5px.
+ */
+const RENDERER_STYLE_PROPERTY_HINTS: Record<string, string> = {
+  globalAlpha: 'setGlobalAlpha(alpha)',
+  strokeStyle: 'stroke(color, lineWidth)',
+  lineWidth: 'stroke(color, lineWidth)',
+  fillStyle: 'fill(color) — or fillText(text, x, y, font, color)',
+  font: 'fillText(text, x, y, font, color)',
+  lineCap: 'stroke(color, lineWidth) (cap is backend-chosen)',
+  lineJoin: 'stroke(color, lineWidth) (join is backend-chosen)',
+  globalCompositeOperation: 'no equivalent — composite via a separate canvas',
+  shadowBlur: 'no equivalent — draw the shadow explicitly',
+  shadowColor: 'no equivalent — draw the shadow explicitly',
+  textAlign: 'no equivalent — measure and offset x yourself',
+  textBaseline: 'no equivalent — measure and offset y yourself',
+};
+
+/**
+ * Whether dev-mode renderer diagnostics are active.
+ *
+ * This lives here rather than being read from `Scene` because the dependency
+ * runs `Scene → renderer`: a renderer importing `Scene` would close a cycle.
+ * `Scene` publishes its own dev state here via {@link setRendererDevMode} as
+ * part of construction, so `Scene.devMode`, `globalThis.__DEV__`, and
+ * `NODE_ENV=development` all reach the renderer without an import.
+ */
+let rendererDevMode = false;
+
+/**
+ * Publish dev-mode state to the renderer layer. Called by `Scene`; also usable
+ * directly when a renderer is constructed without one.
+ */
+export function setRendererDevMode(active: boolean): void {
+  rendererDevMode = active;
+}
+
+/** Whether renderer dev diagnostics are currently enabled. */
+export function isRendererDevMode(): boolean {
+  if (rendererDevMode) return true;
+  const g = typeof globalThis !== 'undefined' ? (globalThis as any) : undefined;
+  if (g?.__DEV__) return true;
+  return g?.process?.env?.NODE_ENV === 'development';
+}
+
+/**
+ * Install dev-mode-only accessors that warn when Canvas2D style *properties* are
+ * assigned on a renderer instead of calling the corresponding method.
+ *
+ * Call once per renderer instance, from its constructor. No-ops outside dev
+ * mode, so the accessors never exist in production.
+ * Each trapped property warns on its **first** write only — a per-frame
+ * assignment would otherwise flood the console at 240fps — and then stores and
+ * returns the value like a plain field, so a warned write is never a hard break
+ * for code that assigns and reads back.
+ *
+ * Skips any property the instance genuinely defines, so a backend that really
+ * does expose one keeps its own behavior.
+ */
+export function installRendererDevTraps(renderer: object, label: string): void {
+  if (!isRendererDevMode()) return;
+  for (const [prop, hint] of Object.entries(RENDERER_STYLE_PROPERTY_HINTS)) {
+    if (prop in renderer) continue;
+    let stored: unknown;
+    let warned = false;
+    Object.defineProperty(renderer, prop, {
+      configurable: true,
+      enumerable: false,
+      get: () => stored,
+      set: (value: unknown) => {
+        stored = value;
+        if (warned) return;
+        warned = true;
+        console.warn(
+          `[vectojs/dev] \`${prop}\` is not a renderer property — assigning it on ` +
+            `${label} has no effect on what is drawn. Call \`${hint}\` instead.`,
+        );
+      },
+    });
+  }
+}

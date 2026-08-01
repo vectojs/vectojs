@@ -1,4 +1,4 @@
-import { IRenderer } from './IRenderer';
+import { installRendererDevTraps, IRenderer } from './IRenderer';
 import { sanitizeUrl } from './url';
 
 export interface SVGLinearGradient {
@@ -129,6 +129,7 @@ export class SVGRenderer implements IRenderer {
   constructor(width: number, height: number) {
     this.width = width;
     this.height = height;
+    installRendererDevTraps(this, 'SVGRenderer');
   }
 
   public clear(): void {

@@ -1,4 +1,4 @@
-import { type DrawCounters, IRenderer } from './IRenderer';
+import { type DrawCounters, installRendererDevTraps, IRenderer } from './IRenderer';
 
 /** A zeroed counter set. `overdrawRatio` is derived on read, so it starts at 0. */
 function emptyDrawCounters(): DrawCounters {
@@ -131,6 +131,7 @@ export class CanvasRenderer implements IRenderer {
     if (ctx) ctx.scale(dpr, dpr);
     this.canvas = canvas;
     this.setupContextLossRecovery();
+    installRendererDevTraps(this, 'CanvasRenderer');
   }
 
   /** Register a callback fired after a lost 2D context is restored + re-scaled,
