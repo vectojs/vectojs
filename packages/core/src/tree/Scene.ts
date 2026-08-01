@@ -439,6 +439,103 @@ export interface SceneOptions {
    * (`'rtl'`). Also settable later via {@link Scene.readingDirection}.
    */
   readingDirection?: 'ltr' | 'rtl';
+  /**
+   * When to repaint:
+   * - `'always'` (default): drive a continuous rAF loop, throttling to 2 FPS
+   *   while the scene is idle if {@link SceneOptions.autoThrottle} is on.
+   * - `'onDemand'`: paint only after {@link Scene.markDirty} (or an active
+   *   transition), so a genuinely static scene costs zero frames.
+   *
+   * Also settable later via {@link Scene.renderMode}. Prefer this option when
+   * the mode is known at construction: it applies before the first frame, so an
+   * `onDemand` scene never pays for the initial always-on frames.
+   */
+  renderMode?: 'always' | 'onDemand';
+}
+
+/**
+ * Every recognized {@link SceneOptions} key, used only to warn about unknown
+ * ones in dev mode.
+ *
+ * This exists because `SceneOptions` is structural: passing a key it does not
+ * declare is a **silent** no-op, and TypeScript only catches it when the object
+ * is written inline at the call site. Code that builds options dynamically, or
+ * plain untranspiled JS, gets no diagnostic at all. `renderMode` was a public
+ * field with no matching option for several releases, and four `@vectojs` demos
+ * shipped `new Scene(canvas, { renderMode: 'onDemand' })` — reading correctly,
+ * doing nothing, and sitting on the 2 FPS idle floor.
+ *
+ * Kept as a literal rather than derived from a type: `keyof SceneOptions` does
+ * not survive to runtime, so this list is the only form a constructor can check
+ * against. A new option must be added here too — the test suite asserts the two
+ * stay in sync.
+ */
+export const SCENE_OPTION_KEYS = [
+  'a11ySyncInterval',
+  'autoThrottle',
+  'contentProjection',
+  'contentProjectionMargin',
+  'debugA11y',
+  'disableWindowResize',
+  'maxDPR',
+  'maxFPS',
+  'particleBackend',
+  'pointBackend',
+  'readingDirection',
+  'renderer',
+  'renderMode',
+  'respectReducedMotion',
+  'userTiming',
+] as const;
+
+/**
+ * Public `Scene` fields that are commonly mistaken for constructor options, and
+ * the message to show instead of a generic "unknown key". A near-miss
+ * suggestion is what makes the warning actionable; naming the assignment form
+ * is what makes it fixable.
+ */
+const SCENE_FIELD_NOT_OPTION: Record<string, string> = {
+  devMode: 'set the static `Scene.devMode = true` before constructing',
+};
+
+/** Levenshtein distance, bounded — only used for dev-mode key suggestions. */
+function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0 || n === 0) return Math.max(m, n);
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  const curr = Array.from<number>({ length: n + 1 });
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+    }
+    prev = curr.slice();
+  }
+  return prev[n]!;
+}
+
+/**
+ * The closest recognized option key to `key`, or `undefined` when nothing is
+ * near enough to be worth suggesting. The threshold scales with length so short
+ * keys don't match everything.
+ */
+function closestOptionKey(key: string): string | undefined {
+  const lower = key.toLowerCase();
+  let best: string | undefined;
+  let bestScore = Infinity;
+  for (const candidate of SCENE_OPTION_KEYS) {
+    // Case-only differences are the most common mistake and should always win.
+    if (candidate.toLowerCase() === lower) return candidate;
+    const d = editDistance(lower, candidate.toLowerCase());
+    if (d < bestScore) {
+      bestScore = d;
+      best = candidate;
+    }
+  }
+  const limit = Math.max(2, Math.floor(key.length / 3));
+  return bestScore <= limit ? best : undefined;
 }
 
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
@@ -2281,6 +2378,40 @@ export class Scene {
     console.warn(`[vectojs/dev] ${message}`);
   }
 
+  /**
+   * Warn (dev mode only) about `SceneOptions` keys this version does not read.
+   *
+   * A structural type makes an unrecognized key a silent no-op, and TypeScript
+   * only rejects one when the object literal sits inline at the call site — not
+   * when options are built dynamically, and never in plain JS. Since the
+   * failure mode is "the option appears to work", a runtime check is the only
+   * thing that surfaces it.
+   *
+   * Dev-mode only on purpose: the loop is O(keys × known keys) with an edit
+   * distance per pair, which is nothing at construction but is still pure
+   * overhead in production, where the value has already been shipped.
+   */
+  private _warnUnknownOptions(options: SceneOptions): void {
+    if (!this._devActive) return;
+    const known = new Set<string>(SCENE_OPTION_KEYS);
+    for (const key of Object.keys(options)) {
+      if (known.has(key)) continue;
+      const fieldHint = SCENE_FIELD_NOT_OPTION[key];
+      if (fieldHint) {
+        this._devWarn(
+          `SceneOptions: \`${key}\` is not a constructor option — ${fieldHint}. ` +
+            `Passing it here has no effect.`,
+        );
+        continue;
+      }
+      const suggestion = closestOptionKey(key);
+      this._devWarn(
+        `SceneOptions: unknown option \`${key}\` is ignored.` +
+          (suggestion ? ` Did you mean \`${suggestion}\`?` : ''),
+      );
+    }
+  }
+
   /** @internal Periodic dev checks — called once per frame in dev mode. */
   private _devRunChecks(): void {
     this._devFrameCount++;
@@ -2375,7 +2506,11 @@ export class Scene {
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
     this.readingDirection = options.readingDirection ?? 'ltr';
+    this.renderMode = options.renderMode ?? 'always';
     this._devActive = Scene._devModeDetected();
+    // Validate before anything else uses the options, so a typo is reported
+    // even if a later step throws on the resulting bad state.
+    this._warnUnknownOptions(options);
     this.reducedMotionQuery =
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         ? window.matchMedia('(prefers-reduced-motion: reduce)')

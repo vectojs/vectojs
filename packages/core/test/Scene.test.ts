@@ -1153,6 +1153,48 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  describe('renderMode as a constructor option', () => {
+    // Regression: `renderMode` was a public field with no matching SceneOptions
+    // key, so this call silently kept 'always' and the scene sat on core's 2fps
+    // idle auto-throttle. Four @vectojs demos shipped that way.
+    it('honours renderMode passed at construction', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas, { renderMode: 'onDemand' });
+      expect(scene.renderMode).toBe('onDemand');
+      expect(scene.frameStats.renderMode).toBe('onDemand');
+    });
+
+    it('still defaults to always when the option is omitted', () => {
+      const canvas = document.createElement('canvas');
+      expect(new Scene(canvas).renderMode).toBe('always');
+    });
+
+    it('leaves the field writable after construction', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas, { renderMode: 'onDemand' });
+      scene.renderMode = 'always';
+      expect(scene.renderMode).toBe('always');
+    });
+
+    it('does not render an idle onDemand scene built from the option alone', () => {
+      const canvas = document.createElement('canvas');
+      const scene = new Scene(canvas, { renderMode: 'onDemand', maxFPS: 0 });
+      (scene as any).isRunning = true;
+      const spy = new SpyEntity('e', null);
+      scene.add(spy);
+
+      // First loop paints (initial frame), then idle must stay silent.
+      (scene as any).loop(1000);
+      const after = spy.renders;
+      for (let t = 1016; t <= 1200; t += 16) (scene as any).loop(t);
+      expect(spy.renders).toBe(after);
+
+      scene.markDirty();
+      (scene as any).loop(1216);
+      expect(spy.renders).toBeGreaterThan(after);
+    });
+  });
+
   describe('frameStats telemetry', () => {
     const loopAt = (scene: Scene, t: number) =>
       (scene as unknown as { loop: (t: number) => void }).loop(t);
