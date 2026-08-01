@@ -114,22 +114,6 @@ The `lefthook` pre-commit hook auto-runs `oxfmt --write`, `oxlint --fix`, and
 `markdownlint-cli2 --fix` on staged files, so formatting is applied for you at
 commit time.
 
-### Backlog context loading
-
-The authoritative living docs are in the sibling local repository
-`../vectojs-docs/`. Load only the document required by the task:
-
-- `TODO.md`: current executable work; start here for task selection.
-- `ROADMAP.md`: capability sequencing and dependency planning.
-- `KNOWN_ISSUES.md`: active defects, false positives, and workarounds.
-- `forge/decisions/` or `forge/baselines/`: one focused rationale or
-  measurement when needed.
-- `forge/archive/`: frozen history; never load routinely.
-
-`TODO.md` stays below 300 lines with at most five **Now** tasks. Detailed
-completion findings belong in CarryCtx, a focused baseline, or a decision
-record—not in the active backlog.
-
 ---
 
 ## 3. Agent Rules & Constraints
