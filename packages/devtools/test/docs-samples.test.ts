@@ -1,17 +1,43 @@
-// Verifies every code sample destined for the new docs/skills against the
-// PUBLISHED packages (core 1.9.2, ui 1.9.5, devtools 0.4.2) — exactly what a
-// reader installs. Each describe block maps to one doc section.
+// Executes every code sample and factual claim the reference docs make, so a
+// page cannot drift from the API it documents. Each describe block maps to one
+// doc section; the block name is the page.
+//
+// Vitest aliases @vectojs/* to the sibling `src/`, so these run against working
+// source rather than the last publish — a doc claim breaks here before it can
+// reach a reader. Current at core 1.25.0, ui 2.6.0, devtools 0.11.0,
+// markdown 0.6.0.
 import { describe, it, expect } from 'vitest';
 import { Scene, Entity, Circle, Rect } from '@vectojs/core';
 import { Text, ScrollView, Card } from '@vectojs/ui';
 import { Markdown } from '@vectojs/markdown';
 import {
+  auditA11y,
+  auditAccelerators,
+  auditGpu,
   auditScene,
   captureSnapshot,
+  clearDevtoolsPlugins,
+  createDevtoolsBackend,
+  createDevtoolsClient,
+  createDirectTransportPair,
+  DEVTOOLS_CHANNEL,
+  DEVTOOLS_PROTOCOL_VERSION,
+  diagnoseDirty,
   diffSnapshots,
-  inspectEntity,
   entityPath,
+  explainHitTest,
+  formatHitExplanation,
+  highlightGeometry,
+  inspectAccelerators,
+  inspectEntity,
+  inspectMarkdownStream,
+  isMarkdownEntity,
   pickInScene,
+  registerDevtoolsPlugin,
+  runPluginAudits,
+  runPluginCommand,
+  runPluginInspector,
+  sampleHitRegion,
 } from '@vectojs/devtools/headless';
 import type { IRenderer } from '@vectojs/core';
 
@@ -432,5 +458,267 @@ describe('ui-text doc: Text component', () => {
     const h1 = label.height;
     label.setMaxWidth(100);
     expect(label.height).toBeGreaterThan(h1);
+  });
+});
+
+// --- devtools-perf.md ------------------------------------------------------
+
+describe('devtools-perf doc: the 0.11.0 Markdown metric rename', () => {
+  it('exposes the current field names and none of the removed ones', () => {
+    const scene = makeScene();
+    const md = new Markdown('# Title\n\nA paragraph.', 400);
+    scene.add(md);
+    md.appendMarkdown(' More text.');
+
+    const info = inspectMarkdownStream(md);
+    expect(info).not.toBeNull();
+
+    // Documented as current in 0.11.0.
+    expect(info).toHaveProperty('tokensPrefixMatched');
+    expect(info).toHaveProperty('tokensReturned');
+    expect(info).toHaveProperty('tokenPrefixReuseRatio');
+    expect(info).toHaveProperty('lexerMs');
+    expect(info).toHaveProperty('sourceCharsLexed');
+
+    // Documented as REMOVED, not aliased. If any of these comes back, the
+    // reference page's migration table is wrong.
+    expect(info).not.toHaveProperty('tokensReused');
+    expect(info).not.toHaveProperty('tokensRelexed');
+    expect(info).not.toHaveProperty('reuseRatio');
+  });
+
+  it('isMarkdownEntity duck-types on the descriptor, not instanceof', () => {
+    const md = new Markdown('text', 200);
+    expect(isMarkdownEntity(md)).toBe(true);
+    expect(isMarkdownEntity(new Box(10, 10))).toBe(false);
+  });
+
+  it('auditGpu is silent until draw counting is enabled', () => {
+    const scene = makeScene();
+    scene.add(new Box(50, 50));
+    scene.step(16.67);
+    // The documented trap: a clean result here is absence of data, not health.
+    expect(auditGpu(scene)).toEqual([]);
+  });
+
+  it('diagnoseDirty reports tracking-off rather than throwing', () => {
+    const scene = makeScene();
+    const diag = diagnoseDirty(scene);
+    expect(diag.causes).toEqual([]);
+    expect(diag.summary).toContain('setDirtyTracking');
+  });
+
+  it('inspectAccelerators always reports all four, with faulted = rejected only', () => {
+    const scene = makeScene();
+    const info = inspectAccelerators(scene);
+    expect(info.accelerators.map((a) => a.accelerator)).toEqual([
+      'transform',
+      'animation',
+      'hitTest',
+      'particle',
+    ]);
+    for (const a of info.accelerators) {
+      expect(a.faulted).toBe(a.reason === 'rejected');
+    }
+    // A JS-only scene audits clean: a shut gate is not a fault.
+    expect(auditAccelerators(scene)).toEqual([]);
+  });
+});
+
+// --- devtools-extend.md ---------------------------------------------------
+
+describe('devtools-extend doc: bridge wiring', () => {
+  it('the documented direct-pair example round-trips', async () => {
+    const scene = makeScene();
+    scene.add(new Box(40, 40));
+
+    const { backend, frontend } = createDirectTransportPair();
+    const server = createDevtoolsBackend(scene, backend);
+    const client = createDevtoolsClient(frontend, { timeoutMs: 500 });
+
+    const { version } = await client.request<{ version: number }>('protocol.version');
+    expect(version).toBe(DEVTOOLS_PROTOCOL_VERSION);
+    expect(DEVTOOLS_PROTOCOL_VERSION).toBe(1);
+    expect(DEVTOOLS_CHANNEL).toBe('vectojs-devtools');
+
+    const tree = await client.request<{ truncated: boolean }>('tree.get');
+    expect(tree.truncated).toBe(false);
+
+    server.dispose();
+    client.dispose();
+  });
+
+  it('rejects an unknown method instead of resolving undefined', async () => {
+    const scene = makeScene();
+    const { backend, frontend } = createDirectTransportPair();
+    const server = createDevtoolsBackend(scene, backend);
+    const client = createDevtoolsClient(frontend, { timeoutMs: 500 });
+
+    await expect(
+      client.request('does.not.exist' as Parameters<typeof client.request>[0]),
+    ).rejects.toThrow(/unknown method/);
+
+    server.dispose();
+    client.dispose();
+  });
+
+  it('scene.diff advances its own baseline, as documented', async () => {
+    const scene = makeScene();
+    const box = new Box(30, 30);
+    scene.add(box);
+
+    const { backend, frontend } = createDirectTransportPair();
+    const server = createDevtoolsBackend(scene, backend);
+    const client = createDevtoolsClient(frontend, { timeoutMs: 500 });
+
+    await client.request('scene.snapshot');
+    box.setPosition(10, 0);
+    const first = await client.request<unknown[]>('scene.diff');
+    expect(first.length).toBeGreaterThan(0);
+    // Nothing moved since; the baseline advanced, so this is empty rather
+    // than repeating the first diff.
+    const second = await client.request<unknown[]>('scene.diff');
+    expect(second).toEqual([]);
+
+    server.dispose();
+    client.dispose();
+  });
+});
+
+describe('devtools-extend doc: plugin protocol', () => {
+  it('namespaces audit findings and contains a throwing audit', () => {
+    clearDevtoolsPlugins();
+    const scene = makeScene();
+    const unregister = registerDevtoolsPlugin({
+      id: 'my-chart',
+      audits: [
+        {
+          id: 'data',
+          run: () => [{ kind: 'empty-series', message: 'no data' }],
+        },
+        {
+          id: 'boom',
+          run: () => {
+            throw new Error('plugin bug');
+          },
+        },
+      ],
+    });
+
+    const findings = runPluginAudits({ scene, selection: null });
+    expect(findings.map((f) => f.kind)).toContain('my-chart/empty-series');
+    const failed = findings.find((f) => f.kind === 'my-chart/audit-failed');
+    expect(failed?.severity).toBe('error');
+
+    unregister();
+    expect(runPluginAudits({ scene, selection: null })).toEqual([]);
+    clearDevtoolsPlugins();
+  });
+
+  it('an inspector with no selection returns the sentinel row, not a throw', () => {
+    const scene = makeScene();
+    const inspector = {
+      id: 'chart',
+      label: 'Chart',
+      rows: () => [{ label: 'series', value: '3' }],
+    };
+    const rows = runPluginInspector(inspector, { scene, selection: null });
+    expect(rows).toEqual([{ label: '—', value: 'no selection' }]);
+  });
+
+  it("an unknown command throws rather than silently no-op'ing", () => {
+    const scene = makeScene();
+    clearDevtoolsPlugins();
+    expect(() => runPluginCommand('nope/nope', { scene, selection: null })).toThrow(
+      /no DevTools command/,
+    );
+  });
+});
+
+// --- devtools-inspect.md --------------------------------------------------
+
+describe('devtools-inspect doc: highlight geometry and hit explanation', () => {
+  it("'hit' is not a default layer, and layers come back in fixed order", () => {
+    const scene = makeScene();
+    const box = new Box(60, 40);
+    scene.add(box);
+
+    const kinds = highlightGeometry(scene, box).map((l) => l.kind);
+    expect(kinds).not.toContain('hit');
+    // Requesting in a different order still returns the canonical order.
+    const asked = highlightGeometry(scene, box, { layers: ['clip', 'aabb'] });
+    expect(asked.map((l) => l.kind)).toEqual(['aabb', 'clip']);
+  });
+
+  it('sampleHitRegion diverges on a shape that fills its box by area, not extent', () => {
+    const circle = new Circle({ radius: 30 });
+    circle.setPosition(0, 0);
+    const layer = sampleHitRegion(circle, { step: 4 });
+    // An inscribed circle has the box's full extent but ~79% of its area.
+    expect(layer.divergesFromLayout).toBe(true);
+
+    const box = new Box(60, 60);
+    expect(sampleHitRegion(box, { step: 4 }).divergesFromLayout).toBeUndefined();
+  });
+
+  it('refuses to sample past its probe budget instead of hanging', () => {
+    const huge = new Box(4000, 4000);
+    const layer = sampleHitRegion(huge, { step: 1 });
+    expect(layer.polygons).toEqual([]);
+    expect(layer.unavailable).toMatch(/budget/);
+  });
+
+  it('explainHitTest rewrites a loser under the winner as occluded', () => {
+    const scene = makeScene();
+    const under = new Box(100, 100);
+    const over = new Box(100, 100);
+    under.interactive = true;
+    over.interactive = true;
+    scene.add(under);
+    scene.add(over); // later sibling paints on top
+
+    const why = explainHitTest(scene, 50, 50);
+    expect(why.hitId).toBe(over.id);
+    expect(why.root).toBe('main');
+    const loser = why.candidates.find((c) => c.entityId === under.id);
+    expect(loser?.verdict).toBe('occluded');
+    // The documented header shape: `hit test (x, y) -> <path> [<root>]`.
+    expect(formatHitExplanation(why)[0]).toBe(`hit test (50, 50) → ${why.hitPath} [main]`);
+    // Documented: lines carry `type`, not the path, prefixed by a verdict glyph.
+    expect(formatHitExplanation(why).some((l) => l.includes('· Box —'))).toBe(true);
+  });
+
+  it('inspectEntity omits absent optional fields rather than setting undefined', () => {
+    const scene = makeScene();
+    const box = new Box(20, 20);
+    scene.add(box);
+    const info = inspectEntity(box);
+    // A Box has no text, so the key is absent — which is how a caller tells
+    // "no text" from "empty text".
+    expect('text' in info).toBe(false);
+  });
+});
+
+// --- devtools-audit.md ---------------------------------------------------
+
+describe('devtools-audit doc: sorting and a11y findings', () => {
+  it('auditScene sorts by kind then path, deterministically', () => {
+    const scene = makeScene();
+    for (let i = 0; i < 3; i++) {
+      const b = new Box(100, 40);
+      b.setPosition(0, i * 20); // each overlaps the next
+      scene.add(b);
+    }
+    const kinds = auditScene(scene).map((f) => f.kind);
+    expect([...kinds].sort((a, b) => a.localeCompare(b))).toEqual(kinds);
+  });
+
+  it('auditA11y reports an interactive entity with no accessible name', () => {
+    const scene = makeScene();
+    const box = new Box(40, 40);
+    box.interactive = true;
+    scene.add(box);
+    const findings = auditA11y(scene);
+    expect(findings.some((f) => f.kind === 'no-accessible-name')).toBe(true);
   });
 });
