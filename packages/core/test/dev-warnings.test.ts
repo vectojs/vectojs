@@ -74,13 +74,16 @@ HTMLCanvasElement.prototype.getContext = function (type: string) {
   return null;
 } as any;
 
-import { Scene, Entity } from '../src/index';
+import { Scene, Entity, SCENE_OPTION_KEYS } from '../src/index';
 
 function makeScene() {
   const canvas = document.createElement('canvas');
   canvas.width = 400;
   canvas.height = 300;
-  const scene = new Scene(canvas, { contentProjection: false, disableWindowResize: true });
+  const scene = new Scene(canvas, {
+    contentProjection: false,
+    disableWindowResize: true,
+  });
   scene.resize(400, 300);
   return { canvas, scene };
 }
@@ -233,6 +236,101 @@ describe('dev warnings — Scene.devMode', () => {
       c[0]?.toString().includes('exceeds projectable entities'),
     );
     expect(strayWarnings.length).toBeGreaterThan(0);
+  });
+
+  it('warns on an unknown SceneOptions key and names the closest real one', () => {
+    const canvas = document.createElement('canvas');
+    // `renderMode` is a field, not an option — the exact mistake that shipped
+    // four motif demos repainting at core's 2fps idle floor while their source
+    // read `renderMode: 'onDemand'`.
+    new Scene(canvas, {
+      disableWindowResize: true,
+      contentProjection: false,
+      rendreMode: 'onDemand',
+    } as never);
+
+    const msg = warnSpy.mock.calls.map((c) => c[0]).join(' ');
+    expect(msg).toContain('rendreMode');
+    // A bare "unknown key" warning is not enough to act on; the suggestion is
+    // what turns it into a fix.
+    expect(msg).toContain('renderMode');
+  });
+
+  it('does NOT warn for renderMode, which is now a real option', () => {
+    const canvas = document.createElement('canvas');
+    new Scene(canvas, {
+      disableWindowResize: true,
+      contentProjection: false,
+      renderMode: 'onDemand',
+    });
+
+    const optionWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('SceneOptions'),
+    );
+    expect(optionWarnings).toHaveLength(0);
+  });
+
+  it('points at the assignment form for a field mistaken as an option', () => {
+    const canvas = document.createElement('canvas');
+    new Scene(canvas, {
+      disableWindowResize: true,
+      contentProjection: false,
+      devMode: true,
+    } as never);
+
+    const msg = warnSpy.mock.calls.map((c) => c[0]).join(' ');
+    expect(msg).toContain('devMode');
+    expect(msg).toContain('Scene.devMode');
+  });
+
+  it('keeps SCENE_OPTION_KEYS in sync with what the constructor accepts', () => {
+    // A new option added to the interface but missing from the list would warn
+    // on legitimate use; the reverse would stay silent on a typo.
+    const canvas = document.createElement('canvas');
+    const everyKey: Record<string, unknown> = {
+      a11ySyncInterval: 0,
+      autoThrottle: false,
+      contentProjection: false,
+      contentProjectionMargin: 10,
+      debugA11y: false,
+      disableWindowResize: true,
+      maxDPR: 2,
+      maxFPS: 30,
+      particleBackend: 'cpu',
+      pointBackend: 'canvas',
+      readingDirection: 'ltr',
+      renderMode: 'onDemand',
+      respectReducedMotion: false,
+      userTiming: false,
+    };
+    // `renderer` is omitted deliberately: it needs a real IRenderer instance.
+    expect(Object.keys(everyKey).length).toBe(SCENE_OPTION_KEYS.length - 1);
+    for (const k of Object.keys(everyKey)) {
+      expect(SCENE_OPTION_KEYS).toContain(k);
+    }
+
+    new Scene(canvas, everyKey as never);
+    const optionWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('SceneOptions'),
+    );
+    expect(optionWarnings).toHaveLength(0);
+  });
+
+  it('does NOT warn for a fully valid option set', () => {
+    const canvas = document.createElement('canvas');
+    new Scene(canvas, {
+      disableWindowResize: true,
+      contentProjection: false,
+      maxFPS: 30,
+      autoThrottle: false,
+      readingDirection: 'rtl',
+      maxDPR: 2,
+    });
+
+    const optionWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('SceneOptions'),
+    );
+    expect(optionWarnings).toHaveLength(0);
   });
 
   it('does not warn when a11yFullViewport entities are projected', () => {
