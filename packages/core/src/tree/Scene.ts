@@ -32,7 +32,7 @@ import {
 import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
-import { IRenderer } from '../renderer/IRenderer';
+import { IRenderer, setRendererDevMode } from '../renderer/IRenderer';
 import type { PointRenderer, WebGLDrawStats } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
@@ -2359,11 +2359,29 @@ export class Scene {
   // Checks run once every ~120 frames (~2s at 60fps) to keep overhead
   // negligible even when dev mode is on.
 
-  /** Toggle development-mode runtime warnings globally. */
-  public static devMode: boolean = false;
+  private static _devMode = false;
+
+  /**
+   * Toggle development-mode runtime warnings globally.
+   *
+   * An accessor rather than a plain field so the renderer layer learns about it
+   * immediately: renderers cannot import `Scene` (the dependency runs
+   * `Scene → renderer`), and their diagnostics are installed per instance at
+   * construction. A plain field would only reach them the next time a `Scene`
+   * happened to be built, which made a directly-constructed `CanvasRenderer`
+   * silently untrapped.
+   */
+  public static get devMode(): boolean {
+    return Scene._devMode;
+  }
+
+  public static set devMode(active: boolean) {
+    Scene._devMode = active;
+    setRendererDevMode(active);
+  }
 
   private static _devModeDetected(): boolean {
-    if (Scene.devMode) return true;
+    if (Scene._devMode) return true;
     const gp = typeof globalThis !== 'undefined' ? (globalThis as any) : undefined;
     if (gp?.__DEV__) return true;
     if (gp?.process?.env?.NODE_ENV === 'development') return true;
@@ -2508,6 +2526,9 @@ export class Scene {
     this.readingDirection = options.readingDirection ?? 'ltr';
     this.renderMode = options.renderMode ?? 'always';
     this._devActive = Scene._devModeDetected();
+    // The renderer layer cannot import Scene (the dependency runs the other
+    // way), so publish dev state to it instead of having it reach back.
+    setRendererDevMode(this._devActive);
     // Validate before anything else uses the options, so a typo is reported
     // even if a later step throws on the resulting bad state.
     this._warnUnknownOptions(options);

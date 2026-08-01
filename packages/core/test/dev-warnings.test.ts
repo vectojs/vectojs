@@ -74,7 +74,7 @@ HTMLCanvasElement.prototype.getContext = function (type: string) {
   return null;
 } as any;
 
-import { Scene, Entity, SCENE_OPTION_KEYS } from '../src/index';
+import { Scene, Entity, SCENE_OPTION_KEYS, CanvasRenderer, setRendererDevMode } from '../src/index';
 
 function makeScene() {
   const canvas = document.createElement('canvas');
@@ -358,5 +358,133 @@ describe('dev warnings — Scene.devMode', () => {
       c[0]?.toString().includes('exceeds projectable entities'),
     );
     expect(leakWarnings).toHaveLength(0);
+  });
+});
+
+describe('dev warnings — property-shaped writes to a renderer', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeAll(() => {
+    Scene.devMode = true;
+  });
+
+  afterAll(() => {
+    Scene.devMode = false;
+  });
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  function makeRenderer() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 100;
+    canvas.height = 100;
+    return new CanvasRenderer(canvas, { width: 100, height: 100 });
+  }
+
+  it('warns on `globalAlpha =` and names setGlobalAlpha', () => {
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    // The exact mistake that shipped in two motif demos: this attaches an
+    // expando and the draw keeps the context default, so a slider bound to it
+    // does nothing visible.
+    r.globalAlpha = 0.5;
+
+    const msg = warnSpy.mock.calls.map((c) => c[0]).join(' ');
+    expect(msg).toContain('globalAlpha');
+    expect(msg).toContain('setGlobalAlpha');
+  });
+
+  it('warns on `strokeStyle =` and `lineWidth =`, naming stroke()', () => {
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    r.strokeStyle = 'rgba(255,255,255,0.25)';
+    r.lineWidth = 1.5;
+
+    const msg = warnSpy.mock.calls.map((c) => c[0]).join(' ');
+    expect(msg).toContain('strokeStyle');
+    expect(msg).toContain('lineWidth');
+    expect(msg).toContain('stroke(');
+  });
+
+  it('warns once per property, not once per write', () => {
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    for (let i = 0; i < 10; i++) r.globalAlpha = i / 10;
+
+    const alphaWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('globalAlpha'),
+    );
+    // A per-frame assignment would otherwise flood the console at 240fps.
+    expect(alphaWarnings).toHaveLength(1);
+  });
+
+  it('does NOT warn for correct method calls', () => {
+    const r = makeRenderer();
+    r.setGlobalAlpha(0.5);
+    r.beginPath();
+    r.moveTo(0, 0);
+    r.lineTo(10, 10);
+    r.stroke('rgba(255,255,255,0.25)', 1.5);
+    r.fill('#fff');
+
+    const rendererWarnings = warnSpy.mock.calls.filter((c) =>
+      c[0]?.toString().includes('is not a renderer property'),
+    );
+    expect(rendererWarnings).toHaveLength(0);
+  });
+
+  it('still reads back what was assigned, so a warned write is not a hard break', () => {
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    r.globalAlpha = 0.42;
+    // The trap must not change behavior beyond warning: code that assigns and
+    // then reads its own value keeps working, it just also gets told.
+    expect(r.globalAlpha).toBe(0.42);
+  });
+
+  it('does not warn when dev mode is off', () => {
+    Scene.devMode = false;
+    // The renderer layer holds its own published flag (it cannot import Scene),
+    // so clearing dev mode means clearing both.
+    setRendererDevMode(false);
+    try {
+      const r = makeRenderer() as unknown as Record<string, unknown>;
+      r.globalAlpha = 0.5;
+      expect(warnSpy).not.toHaveBeenCalled();
+      // And the property must behave as a plain field, not vanish.
+      expect(r.globalAlpha).toBe(0.5);
+    } finally {
+      Scene.devMode = true;
+      setRendererDevMode(true);
+    }
+  });
+
+  it('arms a renderer built without any Scene', () => {
+    // `Scene.devMode = true` must reach a directly-constructed renderer, which
+    // is why devMode is an accessor that publishes rather than a plain field.
+    // With a field, this only worked when some earlier test happened to build a
+    // Scene first — the trap silently did nothing for standalone renderer use.
+    setRendererDevMode(false);
+    Scene.devMode = true;
+
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    r.globalAlpha = 0.5;
+    expect(warnSpy.mock.calls.map((c) => c[0]).join(' ')).toContain('setGlobalAlpha');
+  });
+
+  it('warns for each of the six lines that actually shipped in motif', () => {
+    const r = makeRenderer() as unknown as Record<string, unknown>;
+    // frosted-glass/demo.js:137,139 + glow-bloom/demo.js:61,63
+    r.globalAlpha = 0.6;
+    // frosted-glass/demo.js:142,143
+    r.strokeStyle = 'rgba(255,255,255,0.25)';
+    r.lineWidth = 1.5;
+
+    const msgs = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(msgs.some((m) => m.includes('setGlobalAlpha'))).toBe(true);
+    expect(msgs.filter((m) => m.includes('stroke(color, lineWidth)'))).toHaveLength(2);
+    expect(msgs).toHaveLength(3);
   });
 });
