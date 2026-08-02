@@ -6,6 +6,7 @@ import type { BenchmarkServer } from '../_shared/server';
 import { browserAdapter } from './browser';
 import { terminateProfileProcessesDetailed } from './processes';
 import { aggregateSuite, findResult, starvationWarnings, type ResultMatch } from './results';
+import { ENGINE_WORKSPACE } from './schema';
 import { startRunnerServer } from './server';
 import type {
   BrowserAdapter,
@@ -146,6 +147,10 @@ export async function runOne(
   dependencies: RunOneDependencies = defaultRunOneDependencies,
 ): Promise<ResultMatch | null> {
   const runId = `${currentSuiteRunId}-${adapter.name}-i${iteration}`;
+  // Each engine gets its own dedicated workspace unless `--workspace` overrode
+  // it, so running both browsers never tiles two windows onto one workspace and
+  // halves the viewport each is measuring.
+  const workspace = config.workspace ?? ENGINE_WORKSPACE[adapter.name];
   const profiler = config.mode === 'profile' ? adapter.profiler : null;
   if (config.mode === 'profile' && !profiler) {
     throw new Error(`${adapter.name} profile mode is not implemented`);
@@ -182,17 +187,17 @@ export async function runOne(
   const failures: unknown[] = [];
   try {
     result = await (async () => {
-      console.log(`  launching ${adapter.name} on workspace ${config.workspace} (incognito)…`);
-      await windows.launch(config.workspace, spec);
+      console.log(`  launching ${adapter.name} on workspace ${workspace} (incognito)…`);
+      await windows.launch(workspace, spec);
       if (profileOptions && profiler) {
         profileSession = await profiler.start(profileOptions);
       }
-      await windows.focusWorkspace(config.workspace);
+      await windows.focusWorkspace(workspace);
 
       const windowDeadline = Date.now() + 30_000;
       while (Date.now() < windowDeadline) {
         checkInterrupted(signal);
-        address = await windows.find(config.workspace, spec.windowClass, 'vectojs');
+        address = await windows.find(workspace, spec.windowClass, 'vectojs');
         if (address) {
           if (windows.processId) {
             try {
@@ -217,7 +222,7 @@ export async function runOne(
           console.log(`  ${adapter.name} -> ${finished.path}`);
           return finished;
         }
-        console.error(`  ${adapter.name}: no window appeared on workspace ${config.workspace}`);
+        console.error(`  ${adapter.name}: no window appeared on workspace ${workspace}`);
         return null;
       }
 
@@ -251,7 +256,7 @@ export async function runOne(
           }
         }
         if (now >= nextFocus) {
-          await safely(() => windows.focusWorkspace(config.workspace));
+          await safely(() => windows.focusWorkspace(workspace));
           await safely(() => windows.focusWindow(address));
           nextFocus = now + 20_000;
         }

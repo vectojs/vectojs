@@ -2,6 +2,25 @@ import type { BrowserName, RunnerConfig, Viewport } from './types';
 
 const USAGE = 'usage: run-browsers.sh <bench-dir> <port> [options] [chrome|firefox ...]';
 
+/**
+ * Dedicated test workspace per engine on this host.
+ *
+ * Both are reserved for testing, so a benchmark window is never occluded by real
+ * work and never steals focus from it — which matters because an unfocused
+ * window on an inactive Hyprland workspace loses compositor frame callbacks and
+ * its rAF silently drops to a ~60Hz timer. Measured on the 240Hz panel: the same
+ * page reported 59.88Hz unfocused against 240.1Hz focused, while
+ * `document.hasFocus()` returned `true` in both, so the page cannot detect it.
+ *
+ * One workspace *per engine* rather than one shared: two browser windows on the
+ * same workspace tile side by side, which halves each viewport and silently
+ * changes the workload being measured.
+ */
+export const ENGINE_WORKSPACE: Readonly<Record<BrowserName, number>> = {
+  chrome: 5,
+  firefox: 6,
+};
+
 export class RunnerUsageError extends Error {}
 
 function optionValue(args: readonly string[], index: number, option: string): string {
@@ -58,7 +77,12 @@ export function parseRunnerArgs(
   const port = positiveInteger(portText, 'port');
   if (port > 65_535) throw new RunnerUsageError(`port must be at most 65535, got '${portText}'`);
 
-  let workspace = 3;
+  // `null` means "use the per-engine default" (see ENGINE_WORKSPACE): Chrome on
+  // 5, Firefox on 6. Both are reserved for testing on this host, so a benchmark
+  // window cannot be occluded by real work — and giving each engine its own
+  // workspace stops the two tiling side by side, which halves each window and
+  // changes the viewport being measured. `--workspace N` overrides both.
+  let workspace: number | null = null;
   let keepGoing = false;
   let configuredViewport: Viewport | null = null;
   let iterations = 1;
@@ -111,6 +135,8 @@ export function parseRunnerArgs(
 
   const browserArgs = args.slice(index);
   const browsers = browserArgs.length === 0 ? ['chrome' as const] : browserArgs.map(browser);
+  // Resolved per engine at launch time, not here: one invocation can run both
+  // browsers, so a single number cannot serve them.
   return {
     benchDir,
     port,

@@ -13,7 +13,7 @@ import {
 } from './processes';
 import { findResult, starvationWarnings } from './results';
 import { runOne } from './runner';
-import { parseRunnerArgs, parseRunnerResult, RunnerUsageError } from './schema';
+import { ENGINE_WORKSPACE, parseRunnerArgs, parseRunnerResult, RunnerUsageError } from './schema';
 import { startRunnerServer } from './server';
 import type {
   BrowserAdapter,
@@ -39,7 +39,8 @@ describe('runner CLI schema', () => {
     expect(parseRunnerArgs(['ondemand-raf', '8178'], {})).toEqual({
       benchDir: 'ondemand-raf',
       port: 8178,
-      workspace: 3,
+      // null = use the per-engine default (ENGINE_WORKSPACE): chrome 5, firefox 6.
+      workspace: null,
       keepGoing: false,
       viewport: null,
       iterations: 1,
@@ -80,6 +81,19 @@ describe('runner CLI schema', () => {
       timeoutMs: 5_000,
       extendMs: 0,
     });
+  });
+
+  test('gives each engine its own dedicated workspace', () => {
+    // Two windows on one workspace tile side by side, which halves each
+    // viewport and silently changes the workload being measured.
+    expect(ENGINE_WORKSPACE.chrome).not.toBe(ENGINE_WORKSPACE.firefox);
+    expect(ENGINE_WORKSPACE).toEqual({ chrome: 5, firefox: 6 });
+  });
+
+  test('leaves workspace unresolved so the runner can pick per engine', () => {
+    // A single number cannot serve an invocation that runs both browsers, so the
+    // default must stay null until an adapter is in hand.
+    expect(parseRunnerArgs(['ondemand-raf', '8178', 'chrome', 'firefox'], {}).workspace).toBeNull();
   });
 
   test('rejects profile aggregation before starting a server', () => {
