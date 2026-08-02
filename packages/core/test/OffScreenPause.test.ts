@@ -17,6 +17,11 @@ function installIntersectionObserver() {
     constructor(public cb: IntersectionObserverCallback) {}
     observe(el: Element) {
       instances.push({ cb: this.cb, el, io: this });
+      // A real IntersectionObserver always delivers an initial callback, and
+      // for a detached element it reports isIntersecting=false (verified in
+      // real Chromium). Modelling that is what makes the detached-canvas tests
+      // meaningful rather than tautological.
+      this.cb([{ isIntersecting: el.isConnected } as IntersectionObserverEntry], this as never);
     }
     unobserve() {}
     disconnect() {
@@ -125,6 +130,34 @@ describe('off-screen rAF pause (IntersectionObserver)', () => {
     expect(rafCbs.length).toBe(1);
     pump(64);
     expect(rafCbs.length).toBe(1); // looping again
+    scene.stop();
+  });
+
+  // A canvas used purely as a texture source (@vectojs/three's ThreeAdapter
+  // wraps one in a CanvasTexture) is never appended to the document. An
+  // IntersectionObserver reports a detached element as not intersecting, which
+  // would pause the loop with no possible resume path — verified in real
+  // Chromium: a detached element's first callback is isIntersecting=false.
+  it('does not observe a canvas that is not in the document', () => {
+    const io = installIntersectionObserver();
+    const canvas = document.createElement('canvas'); // deliberately not appended
+    const scene = new Scene(canvas);
+    scene.start();
+    expect(io.instances.length).toBe(0);
+    scene.stop();
+  });
+
+  it('keeps looping forever for a detached canvas', () => {
+    installIntersectionObserver();
+    const canvas = document.createElement('canvas'); // deliberately not appended
+    const scene = new Scene(canvas);
+    scene.start();
+    // Without the guard the observer's first callback would set
+    // _canvasOnScreen = false and this loop would die after one frame.
+    for (let i = 1; i <= 5; i++) {
+      pump(i * 16);
+      expect(rafCbs.length).toBe(1);
+    }
     scene.stop();
   });
 

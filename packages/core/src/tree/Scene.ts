@@ -3371,10 +3371,26 @@ export class Scene {
    * resume when it returns — instead of running the full update/render every
    * frame for a scene nobody can see. No-op (stays "on screen") where
    * `IntersectionObserver` is unavailable, so SSR/jsdom behavior is unchanged.
+   *
+   * Also a no-op for a canvas that is not in the document. An offscreen canvas
+   * used purely as a texture source — `@vectojs/three`'s `ThreeAdapter` wraps
+   * one in a `CanvasTexture`, and the same pattern shows up in any
+   * render-to-texture setup — is never appended anywhere, and an
+   * `IntersectionObserver` reports a detached element as not intersecting.
+   * Observing it would therefore set `_canvasOnScreen = false` on the first
+   * callback, and since {@link loop} returns without rescheduling in that
+   * state, the loop would stop permanently: the only resume path is an
+   * `isIntersecting` transition, which a detached element can never produce.
+   * Such a canvas is always "visible" as far as this scene is concerned,
+   * because whether its output is seen depends on the consumer sampling the
+   * texture, which this scene cannot observe.
    */
   private watchCanvasVisibility(): void {
     if (this._canvasObserver || typeof IntersectionObserver === 'undefined') return;
     if (!this.canvas || typeof this.canvas.getBoundingClientRect !== 'function') return;
+    // `isConnected` is undefined on a non-Node canvas mock; only skip when it
+    // is explicitly false, so test doubles keep their previous behavior.
+    if (this.canvas.isConnected === false) return;
     this._canvasObserver = new IntersectionObserver((entries) => {
       const entry = entries[entries.length - 1];
       if (!entry) return;
