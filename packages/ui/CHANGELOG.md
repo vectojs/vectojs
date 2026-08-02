@@ -1,5 +1,71 @@
 # @vectojs/ui
 
+## 2.9.0
+
+### Minor Changes
+
+- f55a409: Let `ScrollView` content be selected, and make its scroll physics configurable.
+
+  `ScrollView` never overrode `getA11yAttributes()`, so it inherited `Entity`'s
+  empty object. Being `interactive` (it needs wheel and pointer events) it still
+  got a viewport-sized semantic mirror from `Scene`, and with no `pointerEvents`
+  declared that mirror defaulted to `'auto'` and was ordered by `renderOrder`,
+  while content projections are pinned to `zIndex: 0`. The transparent div
+  therefore sat above the very text it wraps: a drag-select inside any
+  `ScrollView` returned `""`. It now declares `pointerEvents: 'none'`, which is
+  what the attribute was added for — structural containers whose descendants own
+  the pointer surface. Wheel scrolling is unaffected, because `Scene` binds its
+  wheel listener to the _content_ projection and dispatches to the owning node
+  rather than to this mirror. Pointer-_drag_ scrolling directly over selectable
+  text is the deliberate trade: a drag over text means "select this" everywhere
+  else.
+
+  Scrolling also always used the default spring (`stiffness: 180`,
+  `damping: 12`), which is underdamped — ζ ≈ 0.447 against a critical 26.83. One
+  240px wheel tick was measured overshooting 47.45px (19.8%) with 5 direction
+  reversals, settling to ±0.5px only at 801ms and reporting pending animations for
+  every one of 181 sampled frames, so a single tick cost roughly 0.8s of
+  full-rate rendering plus a long tail. That reads as liveliness on a short list
+  and as a bounce on a document, and there was no public knob. `ScrollViewOptions`
+  now takes `scrollPhysics?: MotionConfig`, defaulting to today's `'spring'` so
+  existing behaviour is unchanged, and the package exports
+  `DOCUMENT_SCROLL_PHYSICS` (`{ stiffness: 180, damping: 27 }`, ζ ≈ 1.006) as the
+  critically-damped document preset — measured at 0.00px overshoot and 0
+  reversals over the same travel.
+
+### Patch Changes
+
+- 0987d47: Measure text on an attached canvas so Firefox advances match the painted glyphs.
+
+  `RichText.baseMeasurer` and `measure.ts`'s shared context both created a canvas
+  and never appended it, while the engine paints on the page's real attached
+  canvas. Firefox resolves a generic CSS family (`monospace`, `sans-serif`)
+  through a per-language font preference that is only reachable from a document
+  style context, so the detached measurer fell back to a hardcoded 0.5em advance:
+  it advanced every run 20% short of the glyphs actually drawn, and the following
+  run landed on the tail of the previous one. The reported symptom was inline code
+  overlapping the CJK text after it.
+
+  Measured in a real `lang="zh"` document with the default code font, run
+  `TextArea` followed by CJK, painted ink as ground truth (advance 76.8, last
+  inked pixel x = 75):
+
+  | engine   | detached (before) | attached (after) | overlap before → after |
+  | -------- | ----------------- | ---------------- | ---------------------- |
+  | Firefox  | 64.0              | 76.8             | **12.8px (16.7%) → 0** |
+  | Chromium | 76.8              | 76.8             | 0 → 0                  |
+
+  Both sites now go through a shared `createMeasuringContext()`, which appends a
+  hidden 1×1 `aria-hidden` canvas. The invariant is _measure where you paint_
+  rather than "get 76.8": in a document with no `<html lang>` Firefox genuinely
+  paints at the 0.5em fallback, and the helper correctly reports 64 there too. The
+  helper agreed with the real rendering canvas in all six engine × document
+  combinations tested, where a detached context disagrees in Firefox whenever a
+  `lang` is present. This also corrects `TextArea`'s wrap measurement, which used
+  the same shared context.
+
+  Chromium was self-consistent and is unaffected.
+
 ## 2.8.0
 
 ### Minor Changes
