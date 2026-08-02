@@ -52,6 +52,36 @@ function lexMarkdown(text: string, userTiming: boolean): TokensList {
 marked.use({
   extensions: [
     {
+      name: 'blockMath',
+      level: 'block',
+      start(src) {
+        return src.match(/^ {0,3}\$\$/m)?.index;
+      },
+      tokenizer(src) {
+        // Display math: `$$...$$`, opening at the start of a line (up to three
+        // spaces of indent, as CommonMark allows for other block starts). The
+        // content may span lines; the first closing `$$` ends it.
+        //
+        // This must exist as a *block* rule. The inline `inlineMath` rule below
+        // deliberately refuses `$$` to protect currency ("$5 to $10"), so with
+        // no block rule marked's text tokenizer consumes the leading `$`, the
+        // inline rule then matches the inner `$...$` pair, and the outer two
+        // dollars are painted as literal text on either side of the formula.
+        const match = /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+        if (match) {
+          return {
+            type: 'blockMath',
+            raw: match[0],
+            text: match[1].trim(),
+          };
+        }
+        return undefined;
+      },
+      renderer(token) {
+        return token.raw;
+      },
+    },
+    {
       name: 'inlineMath',
       level: 'inline',
       start(src) {
@@ -110,7 +140,7 @@ import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
  * await it before constructing if you need the first formula to be typeset in
  * the same tick. Every formula after the module resolves is synchronous again.
  */
-type MathConverter = (formula: string, displayMode: boolean) => MathRender | null;
+type MathConverter = (formula: string, displayMode: boolean, color: string) => MathRender | null;
 
 let mathConverter: MathConverter | null = null;
 let mathLoad: Promise<void> | null = null;
@@ -173,9 +203,12 @@ export function preloadMathJax(): Promise<void> {
     const tex = new TeX({ packages: AllPackages });
     const svg = new SVG({ fontCache: 'local' });
     const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
-    mathConverter = (formula, displayMode) =>
-      convertMathToSVGDataURI(formula, displayMode, (f, d) =>
-        adaptor.innerHTML(htmlMathJax.convert(f, { display: d }) as never),
+    mathConverter = (formula, displayMode, color) =>
+      convertMathToSVGDataURI(
+        formula,
+        displayMode,
+        (f, d) => adaptor.innerHTML(htmlMathJax.convert(f, { display: d }) as never),
+        color,
       );
   })().catch((e) => {
     console.error('MathJax failed to load; formulas will render as TeX source', e);
@@ -497,12 +530,20 @@ function rendersAsMath(token: Tokens.Code): boolean {
  * behaviour today (confirmed by mutation: no test fails). It is written this way
  * so the cache stays authoritative if the converter ever becomes resettable.
  */
-function renderMathToSVGDataURI(formula: string, displayMode: boolean): MathRender | null {
-  const key = `${displayMode ? 1 : 0}\u0000${formula}`;
+function renderMathToSVGDataURI(
+  formula: string,
+  displayMode: boolean,
+  color: string,
+): MathRender | null {
+  // The color is part of the key because it is baked into the cached SVG bytes.
+  // Keying on the formula alone would serve a re-themed document the previous
+  // theme's bitmap, which is invisible rather than merely wrong when the two
+  // themes are light and dark.
+  const key = `${displayMode ? 1 : 0}\u0000${color}\u0000${formula}`;
   const hit = mathCache.get(key);
   if (hit) return hit;
   if (!mathConverter) return null;
-  const converted = mathConverter(formula, displayMode);
+  const converted = mathConverter(formula, displayMode, color);
   if (converted) {
     if (mathCache.size >= MATH_CACHE_LIMIT) {
       const oldest = mathCache.keys().next().value;
@@ -511,6 +552,37 @@ function renderMathToSVGDataURI(formula: string, displayMode: boolean): MathRend
     mathCache.set(key, converted);
   }
   return converted;
+}
+
+/**
+ * Give a MathJax SVG an explicit color so it survives base64 encoding.
+ *
+ * MathJax paints glyphs with `fill="currentColor"` and `stroke="currentColor"`,
+ * which inherits the surrounding CSS color in an inline SVG. This package does
+ * not inline it: {@link convertMathToSVGDataURI} base64s the markup into a
+ * `data:image/svg+xml` URI and hands it to an `Image`. A data URI is a separate
+ * document, so nothing is inherited and `currentColor` falls back to its initial
+ * value — black. Against this package's own dark default theme
+ * (`textColor: '#e2e8f0'` on a dark surface) that renders every formula
+ * invisible, which is what dogfooding an editor demo surfaced.
+ *
+ * Setting `color` on the root establishes the value `currentColor` resolves to
+ * *inside* that isolated document, so the existing `fill`/`stroke` attributes
+ * are left untouched and MathJax keeps control of which parts paint.
+ *
+ * A root `style` already exists on MathJax output (it carries
+ * `vertical-align`), so the color is prepended to it when present rather than
+ * added as a second attribute — two `style` attributes would leave the second
+ * ignored.
+ */
+function applyMathColor(svg: string, color: string): string {
+  const openTag = svg.match(/<svg\b[^>]*>/);
+  if (!openTag) return svg;
+  const tag = openTag[0];
+  const colored = /\bstyle="/.test(tag)
+    ? tag.replace(/\bstyle="/, `style="color:${color};`)
+    : tag.replace(/^<svg\b/, `<svg style="color:${color}"`);
+  return svg.replace(tag, colored);
 }
 
 /**
@@ -524,9 +596,10 @@ function convertMathToSVGDataURI(
   formula: string,
   displayMode: boolean,
   typeset: (formula: string, displayMode: boolean) => string,
+  color: string,
 ): MathRender | null {
   try {
-    const svgString = typeset(formula, displayMode);
+    const svgString = applyMathColor(typeset(formula, displayMode), color);
 
     // Parse ex sizes (e.g. width="40.3ex" height="5.2ex")
     const wMatch = svgString.match(/width="([^"]+)ex"/);
@@ -1413,7 +1486,10 @@ function collectSpans(
         // own size drives the conversion, so `$x$` inside a heading scales with
         // the heading rather than with body prose.
         const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
-        const rendered = renderMathToSVGDataURI(t.text, false);
+        // Inherit the surrounding run's color, so `$x$` in a heading or a
+        // blockquote matches the prose around it rather than the body default.
+        const runColor = inherited.color ?? theme.textColor;
+        const rendered = renderMathToSVGDataURI(t.text, false, runColor);
         if (rendered) {
           // Bound outside the painter so the closure captures the URI rather than
           // the whole `MathRender`, and so it cannot see a later loop iteration's.
@@ -3585,6 +3661,45 @@ export class Markdown extends UIComponent {
     }
   }
 
+  /**
+   * Build a centered display-math block, or `null` if MathJax cannot typeset yet.
+   *
+   * Shared by the `$$..$$` block token and a closed ```` ```math ```` fence:
+   * both are display math and must render identically, differing only in how
+   * they were spelled in the source.
+   *
+   * `ex` is font-relative, so the intrinsic box is resolved against the theme's
+   * body size. This is what a previously hardcoded `* 8` got wrong -- exact only
+   * near fontSize 18.1px, so a formula was ~13% oversized at the 16px default
+   * and far worse at other sizes.
+   */
+  private renderDisplayMath(formula: string, availableWidth: number): Entity | null {
+    const t = this.theme;
+    const mathData = renderMathToSVGDataURI(formula, true, t.textColor);
+    if (!mathData) return null;
+    const intrinsicW = exToPx(mathData.widthEx, t.fontSize);
+    const intrinsicH = exToPx(mathData.heightEx, t.fontSize);
+    const mathImg = new Image(mathData.uri, {
+      width: Math.min(availableWidth, intrinsicW),
+      height: intrinsicH * Math.min(1, availableWidth / intrinsicW),
+      alt: formula,
+      // The SVG decodes asynchronously and Image paints a placeholder until it
+      // lands. Without this an `onDemand` scene, which repaints only when marked
+      // dirty, leaves the formula a blank slab forever.
+      onLoad: () => {
+        this.scene?.markDirty();
+      },
+    });
+    // Let the layout flow it as a block.
+    const wrapper = new MarkdownContainer();
+    mathImg.x = 16;
+    mathImg.y = 8;
+    wrapper.add(mathImg);
+    wrapper.width = mathImg.width + 16;
+    wrapper.height = mathImg.height + 16;
+    return wrapper;
+  }
+
   protected renderToken(token: Token): Entity | null {
     const t = this.theme;
     const bodyFont = `${t.fontSize}px ${t.bodyFont}`;
@@ -3672,6 +3787,18 @@ export class Markdown extends UIComponent {
         return stack;
       }
 
+      // ── Display math (`$$..$$`) ──────────────────────────────────────
+      case 'blockMath': {
+        const mathToken = token as Tokens.Generic & { text: string };
+        const mathBlock = this.renderDisplayMath(mathToken.text, availableWidth);
+        if (mathBlock) return mathBlock;
+        // MathJax has not loaded yet. `ensureMathJax` retypesets from tokens
+        // once it lands, so showing the TeX source is transient rather than
+        // final -- and it is the honest thing to show meanwhile.
+        this.ensureMathJax();
+        return new CodeBlock(mathToken.text, 'latex', availableWidth, t, this.selectable);
+      }
+
       // ── Code blocks ──────────────────────────────────────────────────
       case 'code': {
         const codeToken = token as Tokens.Code;
@@ -3694,35 +3821,8 @@ export class Markdown extends UIComponent {
         if (MATH_LANGS.has(lang)) this.ensureMathJax();
 
         if (rendersAsMath(codeToken)) {
-          const mathData = renderMathToSVGDataURI(codeToken.text, true);
-          if (mathData) {
-            // `ex` is font-relative, so resolve it against the theme's body size.
-            // This is what the old hardcoded `* 8` got wrong: it was exact only
-            // near 18.1px, so a block formula was ~13% oversized at the 16px
-            // default and far worse at other sizes.
-            const intrinsicW = exToPx(mathData.widthEx, t.fontSize);
-            const intrinsicH = exToPx(mathData.heightEx, t.fontSize);
-            // Provide a generous default height, it will scale based on width
-            const mathImg = new Image(mathData.uri, {
-              width: Math.min(availableWidth, intrinsicW),
-              height: intrinsicH * Math.min(1, availableWidth / intrinsicW),
-              alt: codeToken.text,
-              // The SVG decodes asynchronously and Image paints a placeholder
-              // until it lands. Without this an `onDemand` scene, which repaints
-              // only when marked dirty, leaves the formula a blank slab forever.
-              onLoad: () => {
-                this.scene?.markDirty();
-              },
-            });
-            // Let the layout flow it as a block
-            const wrapper = new MarkdownContainer();
-            mathImg.x = 16;
-            mathImg.y = 8;
-            wrapper.add(mathImg);
-            wrapper.width = mathImg.width + 16;
-            wrapper.height = mathImg.height + 16;
-            return wrapper;
-          }
+          const mathBlock = this.renderDisplayMath(codeToken.text, availableWidth);
+          if (mathBlock) return mathBlock;
         }
 
         return new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable);
