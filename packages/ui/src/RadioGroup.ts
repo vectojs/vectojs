@@ -56,6 +56,17 @@ export interface RadioOption {
 export interface RadioGroupOptions {
   options: RadioOption[];
   value?: string;
+  /**
+   * Accessible name for the group itself, projected as the `radiogroup`'s
+   * label. Each option carries its own name, but the group's name is what says
+   * which choice is being made — so a screen with more than one group needs
+   * this to tell them apart. Without it every group announces as the generic
+   * default below, and a user hears "Radio group" repeatedly with no way to
+   * know which is which. Set it whenever the visual heading that identifies the
+   * group is drawn on the canvas rather than being part of the group
+   * (WCAG 4.1.2).
+   */
+  label?: string;
   direction?: 'horizontal' | 'vertical';
   gap?: number;
   size?: number;
@@ -89,6 +100,8 @@ export class RadioGroup extends UIComponent {
   public color: string;
   public accent: string;
   public border: string;
+  /** Accessible name for the group. See {@link RadioGroupOptions.label}. */
+  public label: string;
 
   private _hoverIdx: number = -1;
   /** One `role="radio"` hotspot per option, kept in sync with the layout. */
@@ -105,6 +118,7 @@ export class RadioGroup extends UIComponent {
     this.color = opts.color ?? '#e2e8f0';
     this.accent = opts.accent ?? '#2563eb';
     this.border = opts.border ?? '#475569';
+    this.label = opts.label ?? 'Radio group';
     this.interactive = true;
 
     this._layout();
@@ -344,7 +358,7 @@ export class RadioGroup extends UIComponent {
   public getA11yAttributes(): A11yAttributes {
     return {
       role: 'radiogroup',
-      label: 'Radio group',
+      label: this.label,
     };
   }
 }

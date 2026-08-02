@@ -78,6 +78,16 @@ export interface TabsOptions {
    * hit region) reappears as soon as a second tab is added. Default `false`.
    */
   autoHideTabBar?: boolean;
+  /**
+   * Accessible name for the tab bar itself, projected as the `tablist`'s label.
+   * Each tab carries its own name, but the tablist's name is what says what the
+   * tabs are switching between — so a screen with more than one tablist needs
+   * this to tell them apart. Without it every tablist announces as the generic
+   * default below. Set it whenever the visual heading that identifies the group
+   * of tabs is drawn on the canvas rather than being part of the tablist
+   * (WCAG 4.1.2).
+   */
+  label?: string;
   onChange?: (value: string) => void;
   onClose?: (value: string) => void;
 }
@@ -114,6 +124,8 @@ export class Tabs extends UIComponent {
   public tabWidth: number;
   public minTabWidth: number;
   public autoHideTabBar: boolean;
+  /** Accessible name for the tab bar. See {@link TabsOptions.label}. */
+  public label: string;
 
   private _hoverIdx: number = -1;
   private _hoverClose: boolean = false;
@@ -137,6 +149,7 @@ export class Tabs extends UIComponent {
     this.tabWidth = opts.tabWidth ?? 160;
     this.minTabWidth = opts.minTabWidth ?? 96;
     this.autoHideTabBar = opts.autoHideTabBar ?? false;
+    this.label = opts.label ?? 'Tab switching panel';
     this.interactive = true;
 
     this._updateContentVisibility();
@@ -449,7 +462,7 @@ export class Tabs extends UIComponent {
   public getA11yAttributes(): A11yAttributes {
     return {
       role: 'tablist',
-      label: 'Tab switching panel',
+      label: this.label,
     };
   }
 }
