@@ -117,6 +117,14 @@ export interface TextStyle {
    * run uses the component's base family.
    */
   fontFamily?: string;
+  /**
+   * Strike a line through this run (rendering only; advances are unchanged).
+   *
+   * Distinct from the underline a link gets, which is implied by {@link href}
+   * rather than requested: a struck run is a semantic state of the content (GFM
+   * `~~deleted~~`), so it must be expressible independently of any destination.
+   */
+  lineThrough?: boolean;
   /** Hyperlink destination; carried through to the positioned nodes for hit-testing / a11y. */
   href?: string;
 }

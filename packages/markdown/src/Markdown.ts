@@ -1450,6 +1450,21 @@ function collectSpans(
         }
         break;
       }
+      case 'del': {
+        // GFM `~~deleted~~`. Without this arm the token fell to `default:`, which
+        // pushes its text unstyled — the content rendered, so the omission looked
+        // like plain text rather than a missing feature.
+        const t = token as Tokens.Del;
+        if (t.tokens) {
+          collectSpans(t.tokens, { ...inherited, lineThrough: true }, theme, out, blockFontSize);
+        } else {
+          out.push({
+            text: decodeEntities(t.text),
+            style: { ...inherited, lineThrough: true },
+          });
+        }
+        break;
+      }
       case 'codespan': {
         const t = token as Tokens.Codespan;
         out.push({
@@ -2628,10 +2643,22 @@ export class Markdown extends UIComponent {
     // span fixes it: `" •"` reorders to visual `"• …"`, and `" .N"` to
     // `"N. …"` — both flush-right in reading order. LTR keeps the marker
     // leading as before.
+    // A GFM task item shows a checkbox where the bullet would go — GitHub's own
+    // stylesheet suppresses the bullet for a task list — while an ordered task
+    // item keeps its number and gains a box after it.
+    //
+    // The box is a glyph in the same run rather than a drawn entity because a
+    // list item is ONE `RichText`. Splitting it into a Stack of [box, text]
+    // would lose both the reading-direction handling below and the span identity
+    // the streamed path depends on (see this method's docstring).
+    const box = item.task ? (item.checked ? '\u2611 ' : '\u2610 ') : '';
+    const leadingMarker = token.ordered ? `${num}. ${box}` : box || '• ';
+    const trailingMarker = token.ordered ? ` ${box}.${num}` : box ? ` ${box.trimEnd()}` : ' \u2022';
+
     const itemIsRtl = BidiResolver.getBaseLevel(contentSpans.map((s) => s.text).join('')) % 2 === 1;
     return itemIsRtl
-      ? [...contentSpans, { text: token.ordered ? ` .${num}` : ' \u2022' }]
-      : [{ text: token.ordered ? `${num}. ` : '• ' }, ...contentSpans];
+      ? [...contentSpans, { text: trailingMarker }]
+      : [{ text: leadingMarker }, ...contentSpans];
   }
 
   /** Construct the `RichText` for one list item. */
@@ -2899,6 +2926,13 @@ export class Markdown extends UIComponent {
     // `Table` has no header mutator, so a changed header must rebuild.
     for (let c = 0; c < oldToken.header.length; c++) {
       if (oldToken.header[c].text !== newToken.header[c].text) return false;
+    }
+    // Alignment is fixed at construction (`Table` has no align mutator), and a
+    // streamed table is first lexed the moment its delimiter row arrives — the
+    // very row that carries alignment. Reusing across a change would keep the
+    // stale columns silently, so rebuild.
+    for (let c = 0; c < oldToken.header.length; c++) {
+      if (oldToken.align?.[c] !== newToken.align?.[c]) return false;
     }
 
     // Append-only. Unlike a list, an EMPTY old table is not rejected: a table is
@@ -3900,6 +3934,9 @@ export class Markdown extends UIComponent {
         return new Table({
           headers,
           rows,
+          // `| :--- | :---: | ---: |` already resolves to this on the token; it
+          // was previously discarded, so every column rendered left-aligned.
+          align: tblToken.align,
           width: availableWidth,
           textColor: t.textColor,
           headerTextColor: t.headingColor,
