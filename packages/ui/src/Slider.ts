@@ -20,6 +20,16 @@ export class Slider extends UIComponent {
    */
   public label?: string;
 
+  /**
+   * Focus-ring color, stroked 2px around the handle while focused. Default
+   * `'#00f0ff'`. Ignored under forced-colors mode, which uses the system
+   * `Highlight` color.
+   */
+  public focusColor: string;
+
+  /** True while this slider holds keyboard focus. */
+  public focused = false;
+
   constructor(props: any = {}) {
     super();
     this.label = props.label;
@@ -30,10 +40,20 @@ export class Slider extends UIComponent {
     this.trackColor = props.trackColor ?? 'rgba(255, 255, 255, 0.15)';
     this.progressColor = props.progressColor ?? '#00f0ff';
     this.handleColor = props.handleColor ?? '#fff';
+    this.focusColor = props.focusColor ?? '#00f0ff';
 
     this.width = props.width ?? 200;
     this.height = props.height ?? 24;
     this.interactive = true;
+
+    this.on('focus', () => {
+      this.focused = true;
+      this.scene?.markDirty();
+    });
+    this.on('blur', () => {
+      this.focused = false;
+      this.scene?.markDirty();
+    });
 
     this.on('pointerdown', (e: any) => {
       this.isDragging = true;
@@ -168,5 +188,14 @@ export class Slider extends UIComponent {
     r.beginPath();
     r.arc(progressWidth, centerY, handleRadius, 0, Math.PI * 2);
     r.fill(this.handleColor);
+
+    // Focus ring. A role="slider" is keyboard-operable (arrows/Home/End), so it
+    // needs a visible focus indicator (WCAG 2.4.7); it previously drew none.
+    if (this.focused) {
+      const forced = this.scene?.forcedColors ?? false;
+      r.beginPath();
+      r.arc(progressWidth, centerY, handleRadius + 3, 0, Math.PI * 2);
+      r.stroke(forced ? 'Highlight' : this.focusColor, 2);
+    }
   }
 }
