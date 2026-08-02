@@ -6,12 +6,59 @@ import { ArabicShaper, fontMetricsVersion, getFontMetrics } from '@vectojs/core'
  * core math stays portable (no `document` access at module load).
  */
 
+/**
+ * Create a 2D context for measuring, attached to the document.
+ *
+ * The canvas is **appended** rather than left detached, and that is
+ * load-bearing rather than tidiness. The rule is *measure where you paint*:
+ * Firefox resolves a generic CSS family (`monospace`, `sans-serif`) through a
+ * per-language font preference that is only reachable from a document style
+ * context, so a canvas outside any document falls back to a hardcoded 0.5em
+ * advance. The engine paints on a real attached canvas, so a detached measurer
+ * advanced every run 20% short of the glyphs actually drawn and the next run
+ * landed on the tail of the previous one.
+ *
+ * Measured with `16px monospace` on `iiiiWWWW`, against the painted ink as
+ * ground truth (`actualBoundingBoxRight` 77.2, last inked pixel x = 76):
+ *
+ * | document      | engine's real canvas | this helper | detached |
+ * | ------------- | -------------------- | ----------- | -------- |
+ * | Firefox, lang | 76.8                 | **76.8**    | **64.0** |
+ * | Firefox, none | 64.0                 | **64.0**    | 64.0     |
+ * | Chromium, any | 76.8                 | **76.8**    | 76.8     |
+ *
+ * Note the second row: in a document with no `<html lang>` Firefox genuinely
+ * paints at the 0.5em fallback, and the helper correctly reports 64 there. What
+ * matters is not the absolute number but that this context always agrees with
+ * the one being painted on — which it did in 6/6 engine × document combinations,
+ * while a detached context disagrees in Firefox whenever a `lang` is present.
+ *
+ * Attachment is the only factor that mattered; forcing a reflow, `display:none`
+ * vs `opacity:0`, and awaiting `document.fonts.ready` all measured identically.
+ * It must be attached **before** the first `measureText`, or a width cache holds
+ * the wrong values for the rest of the session.
+ *
+ * @returns A measuring context, or `null` in a DOM-free environment.
+ */
+export function createMeasuringContext(): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
+  // Kept out of layout and off-screen; never painted, only measured against.
+  canvas.style.cssText = 'position:absolute;opacity:0;left:-9999px;top:0;pointer-events:none';
+  canvas.setAttribute('aria-hidden', 'true');
+  // A DOM-free document (or one without a body yet) still measures correctly on
+  // Chromium and simply keeps Firefox's old behaviour, so this is best-effort.
+  document.body?.appendChild(canvas);
+  return canvas.getContext('2d');
+}
+
 let sharedCtx: CanvasRenderingContext2D | null | undefined;
 
 function getCtx(): CanvasRenderingContext2D | null {
   if (sharedCtx !== undefined) return sharedCtx;
-  sharedCtx =
-    typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+  sharedCtx = createMeasuringContext();
   return sharedCtx;
 }
 
