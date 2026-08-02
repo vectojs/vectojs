@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Entity } from '@vectojs/core';
-import { ScrollView } from '../src/index';
+import { DOCUMENT_SCROLL_PHYSICS, ScrollView } from '../src/index';
 
 /** A fixed-size leaf so the ScrollView has measurable content. */
 class Box extends Entity {
@@ -29,7 +29,10 @@ function wheelEvent(deltaY: number): {
 }
 
 /** A pointer-event stand-in carrying a localY. */
-function pointer(localY: number): { localY: number; preventDefault: () => void } {
+function pointer(localY: number): {
+  localY: number;
+  preventDefault: () => void;
+} {
   return { localY, preventDefault: () => {} };
 }
 
@@ -181,6 +184,80 @@ describe('ScrollView', () => {
     expect(sv.content.hasPendingAnimations()).toBe(true);
     settle(sv);
     expect(sv.content.hasPendingAnimations()).toBe(false);
+  });
+
+  it('opts its semantic mirror out of pointer hit testing so content stays selectable', () => {
+    // ScrollView is interactive (it needs wheel/pointer events) but draws
+    // nothing, so Scene projects a viewport-sized transparent mirror for it.
+    // With the inherited default that mirror is pointerEvents:'auto' and, being
+    // ordered by renderOrder while content projections are pinned to zIndex 0,
+    // it covers its own text and a drag-select returns "". Declaring 'none'
+    // is what lets the pointer reach the text underneath.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    expect(sv.getA11yAttributes().pointerEvents).toBe('none');
+  });
+
+  it('defaults to the bouncy spring, preserving existing behaviour', () => {
+    // Guards the compatibility half of scrollPhysics: omitting the option must
+    // keep the underdamped default (stiffness 180, damping 12 → ζ ≈ 0.447),
+    // which overshoots its target before settling.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 1000)); // maxScroll = 900, room to overshoot
+    sv.emit('wheel', wheelEvent(240).evt);
+
+    let overshoot = 0;
+    for (let i = 0; i < 600; i++) {
+      sv.update(16, i * 16);
+      sv.content.update(16, i * 16);
+      overshoot = Math.max(overshoot, -sv.content.y - 240);
+    }
+    expect(overshoot).toBeGreaterThan(10); // measured ~47px in a real browser
+    expect(sv.content.y).toBeCloseTo(-240, 0); // still lands on target
+  });
+
+  it('accepts scrollPhysics and reaches the target without overshoot or reversal', () => {
+    // One wheel tick under the default spring was measured overshooting 47.45px
+    // (19.8%) with 5 direction reversals, settling only at 801ms and keeping
+    // hasPendingAnimations() true for 181/181 sampled frames. The critically
+    // damped preset removes the bounce entirely at the same travel.
+    const sv = new ScrollView({
+      width: 200,
+      height: 100,
+      scrollPhysics: DOCUMENT_SCROLL_PHYSICS,
+    });
+    sv.add(new Box(50, 1000));
+    sv.emit('wheel', wheelEvent(240).evt);
+
+    let overshoot = 0;
+    let reversals = 0;
+    let prev = sv.content.y;
+    let prevDir = 0;
+    for (let i = 0; i < 600; i++) {
+      sv.update(16, i * 16);
+      sv.content.update(16, i * 16);
+      overshoot = Math.max(overshoot, -sv.content.y - 240);
+      const delta = sv.content.y - prev;
+      if (Math.abs(delta) > 1e-6) {
+        const dir = Math.sign(delta);
+        if (prevDir !== 0 && dir !== prevDir) reversals++;
+        prevDir = dir;
+      }
+      prev = sv.content.y;
+    }
+    expect(overshoot).toBeLessThanOrEqual(0);
+    expect(reversals).toBe(0);
+    expect(sv.content.y).toBeCloseTo(-240, 0); // same destination as the default
+  });
+
+  it('exports DOCUMENT_SCROLL_PHYSICS as a critically damped config', () => {
+    // ζ = damping / (2·√(stiffness·mass)); mass defaults to 1.
+    const cfg = DOCUMENT_SCROLL_PHYSICS as {
+      stiffness: number;
+      damping: number;
+    };
+    const zeta = cfg.damping / (2 * Math.sqrt(cfg.stiffness));
+    expect(zeta).toBeGreaterThanOrEqual(1);
+    expect(zeta).toBeLessThan(1.1); // critically damped, not sluggishly over-damped
   });
 
   it('stays stable when targetY is set to a massive out-of-range value', () => {
