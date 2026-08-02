@@ -12,10 +12,23 @@ interface SelectableCell {
 }
 
 /** Construction options for {@link Table}. */
+/** Horizontal placement of a column's cells. `null` means the default, `'left'`. */
+export type ColumnAlign = 'left' | 'center' | 'right' | null;
+
 export interface TableOptions {
   headers: TableCell[];
   rows: TableCell[][];
   colWidths?: number[];
+  /**
+   * Per-column horizontal alignment, one entry per column; a short or malformed
+   * array falls back to all-`'left'`.
+   *
+   * Applied by positioning each cell entity inside its column, not by a text
+   * alignment property — the text components accept only `'left' | 'justify'`,
+   * so there is nothing to set. A consequence: for a cell that wrapped to
+   * several lines this aligns the block, not each line within it.
+   */
+  align?: ColumnAlign[];
   width?: number;
   /** Minimum height for header and body rows. Default `36`. */
   rowHeight?: number;
@@ -111,10 +124,21 @@ class GridCellHotspot extends UIComponent {
  * owns exactly one content projection. Geometry is resolved by {@link layout}
  * before rendering; {@link render} only paints the table chrome.
  */
+/**
+ * Horizontal padding reserved inside each cell, per side.
+ *
+ * `fitCell` wraps cell text at `colWidths[column] - 2 * CELL_PADDING_PX`, and the
+ * three positioning sites inset by one of these. That symmetry is what makes
+ * right-alignment computable, so the two must move together.
+ */
+const CELL_PADDING_PX = 12;
+
 export class Table extends UIComponent {
   public headers: TableCell[];
   public rows: TableCell[][];
   public colWidths: number[];
+  /** Per-column horizontal alignment, normalized to one entry per column. */
+  public align: ColumnAlign[];
   public rowHeights: number[] = [];
   public headerHeight: number = 0;
   public bg: string;
@@ -186,6 +210,7 @@ export class Table extends UIComponent {
     this.width = opts.width ?? 600;
     this.viewportHeight = opts.viewportHeight ?? 0;
     this.colWidths = this.normalizeColumnWidths(opts.colWidths);
+    this.align = this.normalizeColumnAlign(opts.align);
 
     this.headerCells = this.headers.map((cell) => this.normalizeCell(cell, true, this.seenCells));
     this.bodyCells = this.rows.map((row) => this.normalizeRow(row));
@@ -328,7 +353,7 @@ export class Table extends UIComponent {
           this.fitCell(cell, column);
           clip.add(cell);
         }
-        cell.setPosition(x + 12, rowTop + (rh - cell.height) / 2);
+        cell.setPosition(this.cellX(x, column, cell.width), rowTop + (rh - cell.height) / 2);
         x += this.colWidths[column];
       }
       this.mountedRows.add(rowIndex);
@@ -545,6 +570,35 @@ export class Table extends UIComponent {
     }
   }
 
+  /**
+   * The x of one cell inside its column, honouring that column's alignment.
+   *
+   * Shared by the header, the plain body, and the virtualized body. All three
+   * must use it: a virtualized table that aligned differently from a plain one
+   * would be a difference visible only past the scroll threshold.
+   */
+  private cellX(columnLeft: number, column: number, cellWidth: number): number {
+    const columnWidth = this.colWidths[column];
+    switch (this.align[column]) {
+      case 'right':
+        return columnLeft + columnWidth - CELL_PADDING_PX - cellWidth;
+      case 'center':
+        return columnLeft + (columnWidth - cellWidth) / 2;
+      default:
+        return columnLeft + CELL_PADDING_PX;
+    }
+  }
+
+  private normalizeColumnAlign(align: ColumnAlign[] | undefined): ColumnAlign[] {
+    const columns = this.headers.length;
+    if (!align || align.length !== columns) {
+      return Array.from({ length: columns }, () => null);
+    }
+    return align.map((value) =>
+      value === 'center' || value === 'right' || value === 'left' ? value : null,
+    );
+  }
+
   private normalizeColumnWidths(widths: number[] | undefined): number[] {
     const columns = this.headers.length;
     if (
@@ -640,7 +694,7 @@ export class Table extends UIComponent {
   }
 
   private fitCell(cell: Entity, column: number): void {
-    const maxWidth = Math.max(1, this.colWidths[column] - 24);
+    const maxWidth = Math.max(1, this.colWidths[column] - 2 * CELL_PADDING_PX);
     const candidate = cell as unknown as SizableCell;
     candidate.setMaxWidth?.(maxWidth);
   }
@@ -669,7 +723,7 @@ export class Table extends UIComponent {
     let x = 0;
     for (let column = 0; column < this.headerCells.length; column++) {
       const cell = this.headerCells[column];
-      cell.setPosition(x + 12, (this.headerHeight - cell.height) / 2);
+      cell.setPosition(this.cellX(x, column, cell.width), (this.headerHeight - cell.height) / 2);
       x += this.colWidths[column];
     }
 
@@ -712,7 +766,7 @@ export class Table extends UIComponent {
       x = 0;
       for (let column = 0; column < row.length; column++) {
         const cell = row[column];
-        cell.setPosition(x + 12, y + (rowHeight - cell.height) / 2);
+        cell.setPosition(this.cellX(x, column, cell.width), y + (rowHeight - cell.height) / 2);
         x += this.colWidths[column];
       }
       y += rowHeight;

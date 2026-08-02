@@ -87,6 +87,79 @@ describe('Table', () => {
     expect(strokeSpy).toHaveBeenCalled();
   });
 
+  describe('column alignment', () => {
+    // Alignment is applied by POSITIONING the cell entity: the text components
+    // accept only 'left' | 'justify', so there is no alignment property to set.
+    const headerXs = (t: Table) => (t as any).headerCells.map((c: any) => c.x);
+    const bodyXs = (t: Table) => (t as any).bodyCells[0].map((c: any) => c.x);
+    const cellWidths = (t: Table) => (t as any).headerCells.map((c: any) => c.width);
+
+    function makeTable(align?: Array<'left' | 'center' | 'right' | null>) {
+      return new Table({
+        headers: ['aa', 'bb', 'cc'],
+        rows: [['1', '2', '3']],
+        width: 300,
+        align,
+      });
+    }
+
+    it('defaults every column to the left inset', () => {
+      const t = makeTable();
+      expect(headerXs(t)).toEqual([12, 112, 212]);
+      expect(bodyXs(t)).toEqual([12, 112, 212]);
+    });
+
+    it('centers and right-aligns against the column box', () => {
+      const t = makeTable(['left', 'center', 'right']);
+      const [w0, w1, w2] = cellWidths(t);
+      const [x0, x1, x2] = headerXs(t);
+      // 100px columns, 12px padding per side.
+      expect(x0).toBe(12);
+      expect(x1).toBeCloseTo(100 + (100 - w1) / 2, 5);
+      expect(x2).toBeCloseTo(200 + 100 - 12 - w2, 5);
+      // Left is unchanged from the default, so w0 is unused beyond this guard.
+      expect(w0).toBeGreaterThan(0);
+    });
+
+    it('keeps a right-aligned cell inside its column', () => {
+      const t = makeTable([null, null, 'right']);
+      const x = headerXs(t)[2];
+      const w = cellWidths(t)[2];
+      expect(x).toBeGreaterThanOrEqual(200);
+      expect(x + w).toBeLessThanOrEqual(300 - 12 + 0.001);
+    });
+
+    it('falls back to all-left when the array length does not match', () => {
+      // A short array would otherwise leave trailing columns undefined.
+      const t = makeTable(['right'] as Array<'right'>);
+      expect(headerXs(t)).toEqual([12, 112, 212]);
+    });
+
+    it('aligns a virtualized body the same way as a plain one', () => {
+      // Three positioning sites exist (header, plain body, virtualized body). A
+      // virtualized table aligning differently would only show past the scroll
+      // threshold, so this is the arm that catches a partial fix.
+      const plain = new Table({
+        headers: ['aa', 'bb'],
+        rows: Array.from({ length: 3 }, (_, i) => [`r${i}`, `v${i}`]),
+        width: 200,
+        rowHeight: 30,
+        align: [null, 'right'],
+      });
+      const virtual = new Table({
+        headers: ['aa', 'bb'],
+        rows: Array.from({ length: 40 }, (_, i) => [`r${i}`, `v${i}`]),
+        width: 200,
+        rowHeight: 30,
+        viewportHeight: 200,
+        align: [null, 'right'],
+      });
+      const plainFirstRowX = (plain as any).bodyCells[0].map((c: any) => c.x);
+      const virtualFirstRowX = (virtual as any).bodyCells[0].map((c: any) => c.x);
+      expect(virtualFirstRowX).toEqual(plainFirstRowX);
+    });
+  });
+
   describe('virtualization (viewportHeight)', () => {
     function makeTable(rowCount: number) {
       return new Table({

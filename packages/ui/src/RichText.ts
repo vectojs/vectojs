@@ -583,6 +583,8 @@ export class RichText extends UIComponent {
       let runFont = '';
       let runColor = '';
       let runWidth = 0;
+      let runStruck = false;
+      let runSize = 0;
 
       /**
        * Emit the pending run as ONE `fillText`, or fall back to per-character
@@ -601,8 +603,29 @@ export class RichText extends UIComponent {
        * majority and false exactly where it must be, and it is one `measureText`
        * per run (memoized) against what was one `fillText` per character.
        */
+      /**
+       * Strike one line across the whole flushed run.
+       *
+       * Cheaper than the link underline's per-glyph path, and correct for the
+       * same reason a run can be coalesced at all: the glyphs are contiguous, so
+       * one segment spans them. Struck-ness joins the coalescing key below, so a
+       * run is never part struck.
+       */
+      const strikeRun = (x: number, width: number, color: string, size: number): void => {
+        // Sit the line on the visual middle of lowercase rather than the text
+        // centre: `baseline - size * 0.5` would cut the ascenders of a run like
+        // "TALL", and a descender-relative offset drifts with font size.
+        const y = baseline - size * 0.28;
+        r.beginPath();
+        r.moveTo(x, y);
+        r.lineTo(x + width, y);
+        // Scale with the run so a 32px heading is not struck by a hairline.
+        r.stroke(color, Math.max(1, size / 14));
+      };
+
       const flushRun = (): void => {
         if (runStart < 0) return;
+        if (runStruck) strikeRun(runStart, runWidth, runColor, runSize);
         if (runText.length === 1) {
           r.fillText(runText, runStart, baseline, runFont, runColor);
         } else {
@@ -663,6 +686,12 @@ export class RichText extends UIComponent {
           r.moveTo(node.x, uy);
           r.lineTo(node.x + node.width, uy);
           r.stroke(color, 1);
+          // `~~[gone](url)~~` lexes to a `del` wrapping a `link`, so a struck
+          // link is reachable and must get its line here too — this branch
+          // never reaches `flushRun`'s strike.
+          if (node.style?.lineThrough) {
+            strikeRun(node.x, node.width, color, size);
+          }
           continue;
         }
 
@@ -670,10 +699,14 @@ export class RichText extends UIComponent {
         // where the previous one ended. A positional gap means layout moved it
         // (justification, a tab, a bidi reorder), and concatenating would close
         // the gap.
+        const struck = !!node.style?.lineThrough;
         const contiguous =
           runStart >= 0 &&
           font === runFont &&
           color === runColor &&
+          // Struck-ness is part of the key, or one line would be stroked across
+          // a run that is only partly struck.
+          struck === runStruck &&
           Math.abs(node.x - (runStart + runWidth)) <= COALESCE_TOLERANCE_PX;
 
         if (!contiguous) {
@@ -681,6 +714,8 @@ export class RichText extends UIComponent {
           runStart = node.x;
           runFont = font;
           runColor = color;
+          runStruck = struck;
+          runSize = size;
         }
         runText += node.char;
         runWidth = node.x + node.width - runStart;

@@ -68,6 +68,50 @@ describe('Markdown', () => {
       return (list.children[i] as { spans: { text: string }[] }).spans;
     };
 
+    it('renders a GFM task item as a checkbox instead of a bullet', () => {
+      // GitHub suppresses the bullet for a task list, so the box replaces it.
+      const md = new Markdown('- [ ] todo\n- [x] done');
+      expect(itemSpans(md, 0)[0].text).toBe('\u2610 ');
+      expect(itemSpans(md, 1)[0].text).toBe('\u2611 ');
+      // The box replaces the bullet rather than joining it.
+      expect(itemSpans(md, 0)[0].text).not.toContain('\u2022');
+    });
+
+    it('places a task box after the number in an ordered list', () => {
+      const md = new Markdown('1. [ ] first\n2. [x] second');
+      expect(itemSpans(md, 0)[0].text).toBe('1. \u2610 ');
+      expect(itemSpans(md, 1)[0].text).toBe('2. \u2611 ');
+    });
+
+    it('renders a LOOSE task list identically to a tight one', () => {
+      // `marked` unshifts its `checkbox` token into the item for a tight list but
+      // into the first paragraph for a loose one, so the two reach the span
+      // builder at different depths. Reading item.task/checked instead of that
+      // token is what makes them agree.
+      const tight = new Markdown('- [ ] todo\n- [x] done');
+      const loose = new Markdown('- [ ] todo\n\n- [x] done');
+      expect(itemSpans(loose, 0).map((s) => s.text)).toEqual(
+        itemSpans(tight, 0).map((s) => s.text),
+      );
+      expect(itemSpans(loose, 1).map((s) => s.text)).toEqual(
+        itemSpans(tight, 1).map((s) => s.text),
+      );
+    });
+
+    it('leaves a non-task list on its bullet', () => {
+      const md = new Markdown('- alpha\n- beta');
+      expect(itemSpans(md, 0)[0].text).toBe('\u2022 ');
+    });
+
+    it('trails the task box for an RTL item', () => {
+      // The box must follow the same reading-direction rule as the bullet, or an
+      // Arabic task item shows its box on the visual left.
+      const md = new Markdown('- [x] \u0639\u0631\u0628\u064a');
+      const spans = itemSpans(md, 0);
+      expect(spans[0].text).not.toContain('\u2611');
+      expect(spans[spans.length - 1].text).toBe(' \u2611');
+    });
+
     it('LTR unordered item keeps the bullet as a LEADING span', () => {
       const md = new Markdown('- hello world');
       const spans = itemSpans(md, 0);
@@ -334,6 +378,36 @@ Plain paragraph at the end.
     const italicSpan = rt.spans.find((s) => s.style?.italic);
     expect(italicSpan).toBeDefined();
     expect(italicSpan!.text).toBe('italic');
+  });
+
+  it('renders GFM strikethrough as a lineThrough span', () => {
+    // `marked` already emits a `del` token; before this the token fell to the
+    // default arm and its text rendered unstyled, so the omission looked like
+    // plain text rather than a missing feature.
+    const md = new Markdown('This is ~~gone~~ text.');
+    const rt = md.content.children[0] as RichText;
+    const struck = rt.spans.find((s) => s.style?.lineThrough);
+    expect(struck).toBeDefined();
+    expect(struck!.text).toBe('gone');
+    // Surrounding prose must not inherit the line.
+    expect(rt.spans.find((s) => s.text.includes('This is'))?.style?.lineThrough).toBeUndefined();
+  });
+
+  it('keeps nested emphasis inside a strikethrough', () => {
+    const md = new Markdown('~~**both**~~');
+    const rt = md.content.children[0] as RichText;
+    const span = rt.spans.find((s) => s.text === 'both');
+    expect(span?.style?.lineThrough).toBe(true);
+    expect(span?.style?.bold).toBe(true);
+  });
+
+  it('strikes a link inside a strikethrough', () => {
+    // `~~[x](url)~~` lexes to a `del` wrapping a `link`, so both apply.
+    const md = new Markdown('~~[gone](https://x.com)~~');
+    const rt = md.content.children[0] as RichText;
+    const span = rt.spans.find((s) => s.text === 'gone');
+    expect(span?.style?.lineThrough).toBe(true);
+    expect(span?.style?.href).toBe('https://x.com');
   });
 
   it('renders inline code with code styling', () => {
@@ -1186,6 +1260,36 @@ Plain paragraph at the end.
           ['a2', 'b2'],
           ['a3', 'b3'],
         ]);
+      });
+
+      it('carries the delimiter row alignment onto the Table', () => {
+        const md = new Markdown('| A | B | C |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |');
+        expect(tableOf(md).align).toEqual(['left', 'center', 'right']);
+      });
+
+      it('defaults alignment to null per column when the delimiter is plain', () => {
+        const md = new Markdown(`${HEAD}\n| a1 | b1 |`);
+        expect(tableOf(md).align).toEqual([null, null]);
+      });
+
+      it('rebuilds rather than reusing when a streamed delimiter gains a colon', () => {
+        // Alignment is fixed at construction (`Table` has no align mutator), so
+        // reuse across a change would silently keep the stale columns.
+        //
+        // This IS reachable while streaming, which is not obvious: the table token
+        // materializes as soon as the delimiter row has enough cells, and a colon
+        // arriving in the NEXT chunk re-lexes that same table with new alignment.
+        // Probed against marked 18.0.7: `| --- | ---` lexes to a table with
+        // [null, null], and appending just `:` gives [null, 'right'].
+        const md = new Markdown('| A | B |\n| --- | ---');
+        const before = tableOf(md);
+        expect(before.align).toEqual([null, null]);
+
+        md.appendMarkdown(':');
+        const after = tableOf(md);
+        expect(after.align).toEqual([null, 'right']);
+        // A reused instance would still carry [null, null].
+        expect(after).not.toBe(before);
       });
 
       it('fills a partially-arrived row in place rather than rebuilding', () => {

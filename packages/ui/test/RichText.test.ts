@@ -442,3 +442,102 @@ describe('RichText inline objects', () => {
     );
   });
 });
+
+describe('strikethrough (GFM del)', () => {
+  /** Records fillText plus the moveTo/lineTo/stroke triples a strike emits. */
+  function strikeRecordingRenderer(): {
+    r: IRenderer;
+    text: DrawCall[];
+    lines: Array<{ x1: number; y1: number; x2: number; y2: number; width: number }>;
+  } {
+    const text: DrawCall[] = [];
+    const lines: Array<{ x1: number; y1: number; x2: number; y2: number; width: number }> = [];
+    let from: { x: number; y: number } | null = null;
+    let to: { x: number; y: number } | null = null;
+    const r = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          switch (prop) {
+            case 'fillText':
+              return (t: string, x: number, y: number, font: string, color: string) =>
+                text.push({ text: t, x, y, font, color });
+            case 'moveTo':
+              return (x: number, y: number) => {
+                from = { x, y };
+              };
+            case 'lineTo':
+              return (x: number, y: number) => {
+                to = { x, y };
+              };
+            case 'stroke':
+              return (_color: string, width: number) => {
+                if (from && to) lines.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, width });
+                from = null;
+                to = null;
+              };
+            default:
+              return () => {};
+          }
+        },
+      },
+    ) as unknown as IRenderer;
+    return { r, text, lines };
+  }
+
+  it('strokes one line across a struck run, not one per glyph', () => {
+    // The link underline needs a segment per glyph; a strike does not, and the run
+    // is already coalesced, so one segment must span it.
+    const rt = new RichText([{ text: 'gone', style: { lineThrough: true } }]);
+    const { r, lines } = strikeRecordingRenderer();
+    rt.render(r);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].x2).toBeGreaterThan(lines[0].x1);
+    expect(lines[0].y1).toBe(lines[0].y2);
+  });
+
+  it('draws no line when nothing is struck', () => {
+    const rt = new RichText([{ text: 'plain' }]);
+    const { r, lines } = strikeRecordingRenderer();
+    rt.render(r);
+    expect(lines).toHaveLength(0);
+  });
+
+  it('does not coalesce a struck run with an unstruck neighbour', () => {
+    // Struck-ness is part of the coalescing key. Without that, one line would be
+    // stroked across the whole run and strike the unstruck half too.
+    const rt = new RichText([{ text: 'keep' }, { text: 'gone', style: { lineThrough: true } }]);
+    const { r, text, lines } = strikeRecordingRenderer();
+    rt.render(r);
+    expect(lines).toHaveLength(1);
+    const struckCall = text.find((c) => c.text === 'gone');
+    expect(struckCall).toBeDefined();
+    // The line must start at the struck run, not at the start of the text.
+    expect(lines[0].x1).toBeCloseTo(struckCall!.x, 0);
+    const keepCall = text.find((c) => c.text === 'keep');
+    expect(lines[0].x1).toBeGreaterThanOrEqual(keepCall!.x + 8 * 'keep'.length - 1);
+  });
+
+  it('strikes a struck link, which takes the per-glyph path', () => {
+    // `~~[gone](url)~~` lexes to a `del` wrapping a `link`, so this is reachable.
+    // The link branch returns before flushRun, so it needs its own strike call.
+    const rt = new RichText([{ text: 'ab', style: { lineThrough: true, href: 'http://x.com' } }]);
+    const { r, lines } = strikeRecordingRenderer();
+    rt.render(r);
+    // Two glyphs: each emits an underline AND a strike, so 4 segments.
+    expect(lines).toHaveLength(4);
+    const ys = [...new Set(lines.map((l) => l.y1))].sort((a, b) => a - b);
+    expect(ys).toHaveLength(2); // strike above baseline, underline below
+    expect(ys[0]).toBeLessThan(ys[1]);
+  });
+
+  it('scales the line weight with the run size so a heading is not hairlined', () => {
+    const small = new RichText([{ text: 'x', style: { lineThrough: true, fontSize: 14 } }]);
+    const large = new RichText([{ text: 'x', style: { lineThrough: true, fontSize: 32 } }]);
+    const a = strikeRecordingRenderer();
+    const b = strikeRecordingRenderer();
+    small.render(a.r);
+    large.render(b.r);
+    expect(b.lines[0].width).toBeGreaterThan(a.lines[0].width);
+  });
+});
