@@ -35,7 +35,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.27.0",
+      "version": "1.27.1",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.5.0",
@@ -158,7 +158,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.7.0",
+      "version": "2.8.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.12.1",
