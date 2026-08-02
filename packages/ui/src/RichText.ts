@@ -13,7 +13,7 @@ import {
   createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { familyOf, fontSizePx, measureText } from './measure';
+import { createMeasuringContext, familyOf, fontSizePx, measureText } from './measure';
 
 /** Construction options for {@link RichText}. */
 export interface RichTextOptions {
@@ -158,7 +158,11 @@ class LinkHotspot extends UIComponent {
  */
 function baseMeasurer(font: string): GlyphMeasurer | null {
   if (typeof document === 'undefined') return createMetricsMeasurer(familyOf(font));
-  const ctx = document.createElement('canvas').getContext('2d');
+  // Attached, not detached — see createMeasuringContext: Firefox resolves
+  // generic font families against the document, so a detached canvas measures
+  // monospace 20% narrow while the engine paints at the real width, and the
+  // following run overlaps the tail of this one.
+  const ctx = createMeasuringContext();
   if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
