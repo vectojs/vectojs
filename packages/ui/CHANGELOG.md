@@ -1,5 +1,41 @@
 # @vectojs/ui
 
+## 2.8.0
+
+### Minor Changes
+
+- b74f5d1: Allow naming the `RadioGroup` and `Tabs` container nodes.
+
+  `RadioGroup` projected `role="radiogroup"` with the fixed label `Radio group`,
+  and `Tabs` projected `role="tablist"` with `Tab switching panel`. Each option
+  and each tab was already nameable, but the container was not — so a screen
+  holding several groups announced them identically, and the name that says
+  _which_ choice is being made was unavailable. Both now accept an optional
+  `label`, defaulting to the previous literals, so existing consumers are
+  unaffected.
+
+### Patch Changes
+
+- 324d0e7: Correct the `@vectojs/core` peer range to the version that actually satisfies
+  its imports.
+
+  `@vectojs/ui` declared `>=1.8.0 <2.0.0`, but `src/measure.ts` imports
+  `getFontMetrics` and `fontMetricsVersion`. Those live in `@vectojs/text` and
+  reach `@vectojs/core` only through its `export * from '@vectojs/text'`, so they
+  appear no earlier than the core release that depends on text `0.3.0` —
+  `@vectojs/core@1.25.0`. Verified by resolving both versions: on core `1.24.0`
+  the two symbols are `undefined`, on `1.25.0` every symbol `@vectojs/ui` imports
+  is present.
+
+  Installing `@vectojs/ui@2.7.0` against a core in `1.8.0 … 1.24.0` therefore
+  satisfied the declared range and then failed at import time with
+  `SyntaxError: Export named 'getFontMetrics' not found in module @vectojs/core`,
+  taking down any suite that touched the UI. The range now states the real floor,
+  so a package manager reports the conflict up front. `@vectojs/markdown` already
+  declared `>=1.25.0` for the same reason.
+
+  No runtime code changed — this is a metadata fix.
+
 ## 2.7.0
 
 ### Minor Changes
