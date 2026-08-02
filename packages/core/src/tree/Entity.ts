@@ -445,8 +445,39 @@ export type VectoEvent =
   // Mouse-wheel / trackpad scroll over the entity's shadow node; payload is the
   // native `WheelEvent` (call `preventDefault()` to stop the page scrolling).
   | 'wheel'
+  // The entity's shadow node scrolled itself — a wheel gesture, a drag on its
+  // scrollbar, or the browser scrolling a caret back into view. Payload is a
+  // {@link ScrollEventPayload}. This is the only way an entity can observe the
+  // scroll offset the browser chose for its mirror, which a canvas mirroring a
+  // native editor must follow or its drawn text drifts from the offsets the
+  // element reports for a click.
+  | 'scroll'
   | 'keydown'
   | 'keyup';
+
+/**
+ * Payload of the {@link VectoEvent} `'scroll'`: the scroll geometry of an
+ * entity's accessibility/automation shadow node, in CSS pixels.
+ *
+ * An entity that paints its own view of scrollable content (a text editor, a
+ * list) should treat these as authoritative while the mirror exists — the
+ * browser resolved them against the same content, and any offset the element
+ * reports (`selectionStart` from a click) is relative to them.
+ */
+export interface ScrollEventPayload {
+  /** The mirror's vertical scroll offset. */
+  scrollTop: number;
+  /** The mirror's horizontal scroll offset. */
+  scrollLeft: number;
+  /** Full scrollable content height, including the part out of view. */
+  scrollHeight: number;
+  /** Full scrollable content width, including the part out of view. */
+  scrollWidth: number;
+  /** Visible height inside the mirror's padding box (excludes any scrollbar). */
+  clientHeight: number;
+  /** Visible width inside the mirror's padding box (excludes any scrollbar). */
+  clientWidth: number;
+}
 
 /** Options for {@link Entity.on} / {@link Entity.off}. */
 export interface ListenerOptions {

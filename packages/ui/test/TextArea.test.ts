@@ -69,7 +69,11 @@ function fakeCtx(): CanvasRenderingContext2D {
   ) as unknown as CanvasRenderingContext2D;
 }
 
-function makeScene(): { scene: Scene; root: HTMLElement; tick: (n?: number) => void } {
+function makeScene(): {
+  scene: Scene;
+  root: HTMLElement;
+  tick: (n?: number) => void;
+} {
   const ctx = fakeCtx();
   HTMLCanvasElement.prototype.getContext = (() => ctx) as never;
   const host = document.createElement('div');
@@ -88,7 +92,12 @@ describe('TextArea component', () => {
   it('projects a real <textarea> shadow node with placeholder + value', () => {
     const { scene, root, tick } = makeScene();
     scene.add(
-      new TextArea({ width: 200, height: 80, placeholder: 'Notes', value: 'hi' }).setPosition(0, 0),
+      new TextArea({
+        width: 200,
+        height: 80,
+        placeholder: 'Notes',
+        value: 'hi',
+      }).setPosition(0, 0),
     );
     tick();
     const ta = root.querySelector('textarea') as HTMLTextAreaElement;
@@ -113,7 +122,11 @@ describe('TextArea component', () => {
 
   it('renders multiple frames without throwing for multi-line content', () => {
     const { scene, tick } = makeScene();
-    const area = new TextArea({ width: 120, height: 80, value: 'alpha beta gamma\ndelta' });
+    const area = new TextArea({
+      width: 120,
+      height: 80,
+      value: 'alpha beta gamma\ndelta',
+    });
     scene.add(area.setPosition(10, 10));
     expect(() => tick(3)).not.toThrow();
   });
@@ -125,3 +138,82 @@ describe('TextArea component', () => {
     expect(area.lineOfOffset(5)).toBe(1);
   });
 });
+
+/** The value + geometry used by the scroll tests: 40 lines in an 80px box. */
+function makeScrollable(): {
+  area: TextArea;
+  mirror: HTMLTextAreaElement;
+  tick: (n?: number) => void;
+  scrollTopOf: (a: TextArea) => number;
+} {
+  const { scene, root, tick } = makeScene();
+  const value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+  const area = new TextArea({ width: 200, height: 80, value }).setPosition(0, 0) as TextArea;
+  scene.add(area);
+  tick();
+  const mirror = root.querySelector('textarea') as HTMLTextAreaElement;
+  return {
+    area,
+    mirror,
+    tick,
+    scrollTopOf: (a) => (a as unknown as { scrollTop: number }).scrollTop,
+  };
+}
+
+describe('TextArea scroll follows its shadow textarea', () => {
+  it('adopts the offset the mirror reports, which is what makes the wheel work', () => {
+    const { area, mirror, scrollTopOf } = makeScrollable();
+
+    // A wheel gesture lands on the mirror (it is the topmost node under the
+    // pointer) and the browser scrolls it; the entity only sees `scroll`.
+    mirror.scrollTop = 111;
+    mirror.dispatchEvent(new Event('scroll'));
+
+    expect(scrollTopOf(area)).toBe(111);
+  });
+
+  it('keeps the mirror authoritative across later renders instead of snapping back to the caret', () => {
+    const { area, mirror, tick, scrollTopOf } = makeScrollable();
+
+    mirror.scrollTop = 111;
+    mirror.dispatchEvent(new Event('scroll'));
+    // The caret is still at the end of the value, so caret-following would pull
+    // the view back to the bottom on the next frame. It must not: the offsets
+    // the mirror reports for a click are relative to the view it is showing.
+    tick(3);
+
+    expect(scrollTopOf(area)).toBe(111);
+  });
+
+  it('starts at the mirror offset rather than scrolling to the seeded caret', () => {
+    // `selectionStart` is seeded to `value.length`, so before this the first
+    // frame scrolled to the bottom while the freshly-projected mirror was still
+    // at 0 — measured at 640px of disagreement in the reported defect.
+    const { area, mirror, scrollTopOf } = makeScrollable();
+
+    expect(mirror.scrollTop).toBe(0);
+    expect(scrollTopOf(area)).toBe(0);
+  });
+
+  it('still follows the caret when there is no mirror to follow', () => {
+    // Headless / unprojected: nothing reports a scroll offset, so caret
+    // following is the only thing that can keep the caret visible.
+    const value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+    const area = new TextArea({ width: 200, height: 80, value });
+    area.render(fakeRenderer());
+    expect((area as unknown as { scrollTop: number }).scrollTop).toBeGreaterThan(0);
+  });
+});
+
+/** A renderer that accepts every call and draws nothing. */
+function fakeRenderer(): never {
+  return new Proxy(
+    {},
+    {
+      get(_t, prop) {
+        if (prop === 'getContext') return () => fakeCtx();
+        return () => {};
+      },
+    },
+  ) as never;
+}

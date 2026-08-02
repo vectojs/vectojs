@@ -202,8 +202,18 @@ export class TextArea extends UIComponent {
   /** Whether the shadow textarea currently holds focus (drives caret blink). */
   public focused = false;
 
-  /** Vertical scroll offset so the caret line stays in view. */
+  /** Vertical scroll offset of the drawn view, in CSS pixels. */
   private scrollTop = 0;
+  /**
+   * Whether the shadow `<textarea>` has reported a scroll offset. Once it has,
+   * it is the authority: the browser owns this element's scrolling (wheel,
+   * scrollbar drag, caret-into-view) and every offset it reports for a click is
+   * measured against *its* view. The caret-following fallback below must then
+   * stop writing `scrollTop`, or the two fight and a click lands on the wrong
+   * line. Stays `false` when there is no mirror (no scene, or a headless
+   * environment), where caret-following is the only thing that can scroll.
+   */
+  private mirrorOwnsScroll = false;
 
   constructor(opts: TextAreaOptions) {
     super();
@@ -248,6 +258,19 @@ export class TextArea extends UIComponent {
     this.on('blur', () => {
       this.focused = false;
       this.stopCaretBlinkWake();
+    });
+    // Follow the shadow textarea's own scrolling. This is what makes the wheel
+    // work: the browser already scrolled the real element (it is the topmost
+    // node under the pointer), so the canvas only has to draw the same view.
+    // It equally covers a scrollbar drag and the browser scrolling the caret
+    // back into view after a keystroke — and because the mirror's offset is the
+    // one a click's `selectionStart` is measured against, following it is also
+    // what keeps the caret landing where the user clicked.
+    this.on('scroll', (e: { scrollTop: number }) => {
+      this.mirrorOwnsScroll = true;
+      if (this.scrollTop === e.scrollTop) return;
+      this.scrollTop = e.scrollTop;
+      this.scene?.markDirty();
     });
   }
 
@@ -459,8 +482,20 @@ export class TextArea extends UIComponent {
     }
   }
 
-  /** Keep the caret line within the padded box by adjusting `scrollTop`. */
+  /**
+   * Keep the caret line within the padded box by adjusting `scrollTop`.
+   *
+   * A fallback only. It runs while no mirror has reported a scroll offset — a
+   * headless render, or before the shadow textarea has scrolled — and yields
+   * permanently once one has. It cannot be the primary mechanism because it is
+   * driven by the caret rather than by the view: with the caret seeded to the
+   * end of the value it scrolls to the bottom on the very first frame, while
+   * the freshly-projected mirror is still at 0. Measured before this gate, that
+   * put the canvas 640px (32.6 lines) from the view every click offset was
+   * being resolved against.
+   */
   private updateScroll(caretLine: number, lh: number, innerH: number): void {
+    if (this.mirrorOwnsScroll) return;
     const caretY = caretLine * lh;
     if (caretY - this.scrollTop > innerH - lh) this.scrollTop = caretY - (innerH - lh);
     if (caretY - this.scrollTop < 0) this.scrollTop = caretY;
