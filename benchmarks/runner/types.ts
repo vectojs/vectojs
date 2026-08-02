@@ -10,7 +10,12 @@ export interface Viewport {
 export interface RunnerConfig {
   benchDir: string;
   port: number;
-  workspace: number;
+  /**
+   * Explicit `--workspace N` override, or `null` to use the per-engine default
+   * from `ENGINE_WORKSPACE` (Chrome 5, Firefox 6). Resolved per engine at launch
+   * because one invocation can run both browsers.
+   */
+  workspace: number | null;
   keepGoing: boolean;
   viewport: Viewport | null;
   iterations: number;
