@@ -182,10 +182,11 @@ let cachedRefreshHz: Promise<number> | null = null;
 /**
  * Measure the real rAF cadence by sampling frame intervals.
  *
- * Uses the median rather than the mean: a single long frame from a GC pause or a
- * compositor hitch would drag a mean down and understate the display rate, which
- * would then understate the expected frame count and hide starvation — the very
- * thing this feeds.
+ * Averages the intervals that survive a median-relative hitch filter, rather than
+ * taking the median outright. A plain mean is unusable — one GC pause or
+ * compositor hitch drags it down, which understates the expected frame count and
+ * hides starvation, the very thing this feeds. The median resists that but is
+ * wrong for Gecko; see {@link measureRefreshRate} for the measurement.
  *
  * Cached per page: the first call measures and every later one reuses that
  * measurement, so a benchmark's rows and its envelope can never quote two
@@ -211,6 +212,43 @@ export function resetRefreshRateCache(): void {
   cachedRefreshHz = null;
 }
 
+/**
+ * An interval longer than this multiple of the median is a hitch, not a frame.
+ *
+ * 2 is the smallest useful factor: a frame that misses one vsync and lands on the
+ * next arrives at exactly 2x, so anything above that missed at least two and is
+ * not evidence of the display's period. It also keeps Gecko's 5 ms samples, which
+ * are 1.25x its 4 ms median and are signal rather than noise (see
+ * {@link measureRefreshRate}).
+ */
+const HITCH_FACTOR = 2;
+
+/**
+ * Sample rAF intervals and reduce them to a cadence.
+ *
+ * Rejects any interval above {@link HITCH_FACTOR} times the median, then means the
+ * rest. Both simpler reductions are wrong here, for opposite reasons:
+ *
+ * A plain mean is dragged down by a single hitch, understating the cadence and
+ * therefore the expected frame count — which is what the starvation check divides
+ * by, so it would hide the severe starvation it exists to catch.
+ *
+ * The median resists hitches but is wrong for Gecko, whose rAF timestamp advances
+ * in whole milliseconds even under cross-origin isolation. A 240 Hz panel's real
+ * 4.167 ms period is unrepresentable, so Gecko dithers between 4 and 5 ms.
+ * Measured 2026-08-02, focused, 720 intervals: 590 at exactly 4.00 ms and 126 at
+ * 5.00 ms. The median lands on 4.00 and reports **250 Hz on a 240 Hz panel**,
+ * 4.1% high, and the ratio is not noise — 590/716 x 4 + 126/716 x 5 = 4.176 ms,
+ * i.e. the dither *is* the period. Averaging recovers 239.94 Hz. Trimming both
+ * tails is also wrong: it cuts more 5 ms samples than 4 ms ones and biases the
+ * result up (241.61 Hz on the same data).
+ *
+ * So the mean is the correct estimator and the only real problem is the hitch
+ * tail, which is what the median-relative filter removes: it keeps the dither,
+ * which sits at 1.25x the median, and drops a missed-vsync frame, which sits at
+ * 2x or beyond. Chrome, whose timestamps are sub-millisecond, has no dither and
+ * is unaffected — its intervals cluster tightly at 4.165 ms and all survive.
+ */
 function measureRefreshRate(durationMs: number): Promise<number> {
   // A non-positive budget means "do not calibrate" and must not await a frame at
   // all. The failure path uses this: a page that threw during setup may never
@@ -240,7 +278,19 @@ function measureRefreshRate(durationMs: number): Promise<number> {
       }
       intervals.sort((a, b) => a - b);
       const median = intervals[Math.floor(intervals.length / 2)]!;
-      resolvePromise(1000 / median);
+      // Reject hitches relative to the median, then average what survives. The
+      // median itself always passes (the factor is > 1), so at least one
+      // interval is always kept and `count` is never 0.
+      const limit = median * HITCH_FACTOR;
+      let total = 0;
+      let count = 0;
+      for (const interval of intervals) {
+        if (interval <= limit) {
+          total += interval;
+          count += 1;
+        }
+      }
+      resolvePromise(1000 / (total / count));
     };
     requestAnimationFrame(frame);
   });
