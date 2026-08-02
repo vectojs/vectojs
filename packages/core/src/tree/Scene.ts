@@ -3691,6 +3691,8 @@ export class Scene {
       let el = this.a11yElements.get(node.id);
       const attrs = node.getA11yAttributes();
       const expectedTag = attrs.tag || 'div';
+      /** Set when a mirror is created, called once its geometry is written. */
+      let emitInitialScroll: (() => void) | null = null;
 
       // If tag name changes at runtime, recreate the element
       if (el && el.tagName.toLowerCase() !== expectedTag.toLowerCase()) {
@@ -3800,6 +3802,43 @@ export class Scene {
           },
           { passive: false },
         );
+        // The mirror scrolling itself is a *state change*, not a gesture: the
+        // browser has already applied it (wheel, scrollbar drag, or scrolling a
+        // caret back into view) and the entity's only job is to follow. Without
+        // this an entity that paints scrollable content has no way to learn the
+        // offset its own mirror is using, so every offset the element reports —
+        // `selectionStart` from a click — is measured against a view the canvas
+        // is not drawing. `scroll` does not bubble in the DOM, hence a direct
+        // `emit` to the owning entity rather than a tree dispatch.
+        const scrollTarget = el;
+        const emitScroll = (): void => {
+          node.emit('scroll', {
+            scrollTop: scrollTarget.scrollTop,
+            scrollLeft: scrollTarget.scrollLeft,
+            scrollHeight: scrollTarget.scrollHeight,
+            scrollWidth: scrollTarget.scrollWidth,
+            clientHeight: scrollTarget.clientHeight,
+            clientWidth: scrollTarget.clientWidth,
+          });
+        };
+        el.addEventListener(
+          'scroll',
+          () => {
+            emitScroll();
+            this.markDirty();
+          },
+          { passive: true },
+        );
+        // Publish the mirror's *initial* offset once this frame's geometry has
+        // been written (below), not here: a just-created element has no size, so
+        // `clientHeight`/`scrollHeight` would both be 0 and the payload would be
+        // a lie. A fresh mirror sits at 0 and fires no `scroll` until something
+        // moves it, but an entity that scrolls to its caret on the first frame
+        // draws a different view meanwhile — measured at 640px of disagreement
+        // for a TextArea whose caret starts at the end of its value. Emitting
+        // once at creation makes the two agree from the first frame rather than
+        // from the first gesture.
+        emitInitialScroll = emitScroll;
         el.addEventListener('keydown', (e) => {
           node.dispatchEvent(new VectoJSEvent('keydown', node, e));
         });
@@ -4078,6 +4117,15 @@ export class Scene {
         if (el.style.padding !== padding) el.style.padding = padding;
         if (el.style.boxSizing !== 'border-box') el.style.boxSizing = 'border-box';
         if (el instanceof HTMLTextAreaElement) el.style.resize = 'none';
+        // Suppress the mirror's scrollbar. The element is transparent so a
+        // scrollbar is never seen, but a *classic* one takes its width out of
+        // the content box: measured on Firefox/Linux, clientWidth 504 vs
+        // offsetWidth 516, so the element wrapped its text at 480px while the
+        // canvas wrapped at 492px. The two then disagree about which line a
+        // character sits on, and a click returns an offset for a line the canvas
+        // never drew there. Chromium's overlay scrollbar takes 0 and already
+        // agreed.
+        if (el.style.scrollbarWidth !== 'none') el.style.scrollbarWidth = 'none';
       }
 
       // Nest under the inherited container only if ARIA requires this role to
@@ -4153,6 +4201,9 @@ export class Scene {
         const display = visible ? '' : 'none';
         if (el.style.display !== display) el.style.display = display;
       }
+
+      // Geometry is now written, so the mirror can report a truthful scroll box.
+      emitInitialScroll?.();
     }
 
     // Charge content projection and the per-node work separately, to the calling
