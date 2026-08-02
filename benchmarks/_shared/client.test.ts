@@ -133,3 +133,97 @@ test('a zero reading is not cached as though it were a measurement', async () =>
   expect(Math.round(real)).toBe(120);
   resetRefreshRateCache();
 });
+
+// --- cadence estimator ------------------------------------------------------
+// `measureRefreshRate` averages the intervals that survive a median-relative
+// hitch filter. These pin why neither simpler reduction works: the median is
+// wrong for Gecko's 1ms-quantised timestamps, and a plain mean is wrong whenever
+// a hitch lands in the sample.
+
+/** Drive rAF from an explicit interval sequence, cycling if it runs short. */
+function stubRafSequence(intervalsMs: readonly number[]): () => void {
+  const realRaf = globalThis.requestAnimationFrame;
+  const realNow = performance.now;
+  let t = 1000;
+  let i = 0;
+  // @ts-expect-error test stub
+  globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
+    t += intervalsMs[i % intervalsMs.length]!;
+    i += 1;
+    queueMicrotask(() => cb(t));
+    return 0;
+  };
+  // @ts-expect-error test stub
+  performance.now = () => t;
+  return () => {
+    globalThis.requestAnimationFrame = realRaf;
+    performance.now = realNow;
+  };
+}
+
+test("Gecko's 1ms-quantised dither reads as the panel rate, not the modal delta", async () => {
+  // Firefox's rAF timestamp advances in whole milliseconds even under COI, so a
+  // 240Hz panel's 4.167ms period is unrepresentable and Gecko dithers 4/5. The
+  // measured ratio (2026-08-02, 720 intervals) was 590x4 to 126x5, which is
+  // 5 of every 6 — and 5/6*4 + 1/6*5 = 4.167, so the dither IS the period.
+  // A median would lock onto the modal 4.00 and report 250Hz.
+  const restore = stubRafSequence([4, 4, 4, 4, 4, 5]);
+  resetRefreshRateCache();
+  const hz = await calibrateRefreshRate(400);
+  restore();
+  resetRefreshRateCache();
+  expect(hz).toBeGreaterThan(238);
+  expect(hz).toBeLessThan(242);
+});
+
+test('a GC pause does not drag the cadence down', async () => {
+  // The reason the median was chosen originally. `expectedFrames` divides by this
+  // value, and the starvation check compares achieved frames against it, so an
+  // understated cadence understates the expectation and hides real starvation.
+  // One 100ms hitch every 40 frames at 240Hz.
+  const withHitch = [...Array.from({ length: 39 }, () => 4.167), 100];
+  const restore = stubRafSequence(withHitch);
+  resetRefreshRateCache();
+  const hz = await calibrateRefreshRate(400);
+  restore();
+  resetRefreshRateCache();
+  expect(hz).toBeGreaterThan(238);
+  expect(hz).toBeLessThan(242);
+});
+
+test('a missed vsync is rejected but the dither is kept', async () => {
+  // The filter must distinguish 1.25x the median (Gecko's dither, signal) from
+  // 2x (a frame that missed a vsync, not evidence of the display period).
+  const restore = stubRafSequence([4, 4, 4, 5, 8.33, 4, 4, 5]);
+  resetRefreshRateCache();
+  const hz = await calibrateRefreshRate(400);
+  restore();
+  resetRefreshRateCache();
+  // Dither mean is ~4.28ms -> ~233Hz. Including the 8.33 would give ~4.79 -> 209.
+  expect(hz).toBeGreaterThan(225);
+  expect(hz).toBeLessThan(240);
+});
+
+test("Chrome's sub-millisecond intervals are unaffected by the filter", async () => {
+  // Chrome has no quantisation, so every interval sits at the true period and
+  // all of them must survive: this is the arm that must not regress.
+  const restore = stubRafSequence([4.165]);
+  resetRefreshRateCache();
+  const hz = await calibrateRefreshRate(400);
+  restore();
+  resetRefreshRateCache();
+  expect(hz).toBeCloseTo(240.1, 0);
+});
+
+test('a genuinely throttled 60Hz page still reads 60Hz', async () => {
+  // An unfocused window loses compositor frame callbacks and rAF falls back to a
+  // ~60Hz timer. That is a real cadence for that window, not a hitch, so the
+  // filter must not "correct" it towards the panel rate — the starvation check
+  // and `validateEnvironment` are what surface the problem.
+  const restore = stubRafSequence([16.67]);
+  resetRefreshRateCache();
+  const hz = await calibrateRefreshRate(400);
+  restore();
+  resetRefreshRateCache();
+  expect(hz).toBeCloseTo(60, 0);
+});
