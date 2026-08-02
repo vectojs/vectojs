@@ -19,6 +19,16 @@ export interface ButtonOptions {
   /** Corner radius in pixels. Default `8`. */
   radius?: number;
   /**
+   * Focus-ring color, stroked 2px when the button is focused. Default
+   * `'#00f0ff'`.
+   *
+   * Set it on a light or warm theme: the default cyan is tuned for the dark
+   * default palette and reads as off-brand elsewhere, and a focus ring is the
+   * one affordance a keyboard user cannot do without. Ignored under forced-colors
+   * mode, which always uses the system `Highlight` color.
+   */
+  focusColor?: string;
+  /**
    * Start disabled. A disabled button is drawn muted, projects `disabled` on its
    * shadow `<button>`, and does not fire `onClick` from either the canvas
    * hit-test or the DOM click.
@@ -47,6 +57,7 @@ export class Button extends UIComponent {
   public color: string;
   public font: string;
   public radius: number;
+  public focusColor: string;
   public focused = false;
   private hovered = false;
   private _disabled = false;
@@ -62,6 +73,7 @@ export class Button extends UIComponent {
     this.font = opts.font ?? '600 16px sans-serif';
     this.padding = opts.padding ?? 12;
     this.radius = opts.radius ?? 8;
+    this.focusColor = opts.focusColor ?? '#00f0ff';
     this._disabled = opts.disabled ?? false;
     this.interactive = true;
 
@@ -162,7 +174,7 @@ export class Button extends UIComponent {
           ? this.hoverBg
           : this.bg;
     const border = forced ? (this._disabled ? 'GrayText' : 'ButtonText') : null;
-    const focusColor = forced ? 'Highlight' : '#00f0ff';
+    const focusColor = forced ? 'Highlight' : this.focusColor;
     const textColor = forced
       ? this._disabled
         ? 'GrayText'

@@ -18,12 +18,51 @@ export class Dropdown extends UIComponent {
    */
   public label?: string;
 
+  /**
+   * Background of an unselected option row in the open menu.
+   *
+   * Defaults to the dark slate the closed trigger also defaults to. Set it on a
+   * light theme: the trigger's own `bg`/`color` were always overridable while
+   * the menu's were not, so a themed dropdown opened a dark panel and read as a
+   * rendering bug rather than a style. Default `'rgba(15, 23, 42, 0.95)'`.
+   */
+  public menuBg: string;
+
+  /** Text color of option rows in the open menu. Default `'#fff'`. */
+  public menuColor: string;
+
+  /**
+   * Background of the currently selected option row. Default
+   * `'rgba(0, 240, 255, 0.25)'`.
+   */
+  public menuSelectedBg: string;
+
+  /**
+   * Background of the keyboard-highlighted option row. Should read as stronger
+   * than {@link menuSelectedBg}, since both can apply at once. Default
+   * `'rgba(0, 240, 255, 0.4)'`.
+   */
+  public menuHighlightBg: string;
+
+  /**
+   * Focus-ring color for the trigger and for option rows. Default `'#00f0ff'`.
+   * Forwarded to the underlying `Button`s, so it follows the same forced-colors
+   * behavior.
+   */
+  public focusColor: string;
+
   constructor(options: string[], props: any = {}) {
     super();
     this.label = props.label;
     this.options = options;
     this.selectedValue = props.value ?? (options.length > 0 ? options[0] : '');
     this.interactive = true;
+
+    this.menuBg = props.menuBg ?? 'rgba(15, 23, 42, 0.95)';
+    this.menuColor = props.menuColor ?? '#fff';
+    this.menuSelectedBg = props.menuSelectedBg ?? 'rgba(0, 240, 255, 0.25)';
+    this.menuHighlightBg = props.menuHighlightBg ?? 'rgba(0, 240, 255, 0.4)';
+    this.focusColor = props.focusColor ?? '#00f0ff';
 
     this.width = props.width ?? 120;
     this.height = props.height ?? 36;
@@ -33,6 +72,7 @@ export class Dropdown extends UIComponent {
       color: props.color ?? '#fff',
       radius: props.radius ?? 8,
       font: props.font ?? '14px sans-serif',
+      focusColor: this.focusColor,
     });
     this.button.width = this.width;
     this.button.height = this.height;
@@ -159,10 +199,11 @@ export class Dropdown extends UIComponent {
 
     this.options.forEach((opt, index) => {
       const item = new Button(opt, {
-        bg: opt === this.selectedValue ? 'rgba(0, 240, 255, 0.25)' : 'rgba(15, 23, 42, 0.95)',
-        color: '#fff',
+        bg: opt === this.selectedValue ? this.menuSelectedBg : this.menuBg,
+        color: this.menuColor,
         radius: 4,
         font: '13px sans-serif',
+        focusColor: this.focusColor,
       });
       item.id = `${this.id}-opt-${index}`;
       item.width = menu.width;
@@ -197,10 +238,10 @@ export class Dropdown extends UIComponent {
       if (child instanceof Button) {
         child.bg =
           idx === this.highlightedIndex
-            ? 'rgba(0, 240, 255, 0.4)'
+            ? this.menuHighlightBg
             : child.label === this.selectedValue
-              ? 'rgba(0, 240, 255, 0.25)'
-              : 'rgba(15, 23, 42, 0.95)';
+              ? this.menuSelectedBg
+              : this.menuBg;
       }
     });
   }
