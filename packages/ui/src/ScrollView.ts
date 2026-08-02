@@ -1,15 +1,42 @@
 import {
+  type A11yAttributes,
   type DevtoolsDescriptor,
   Entity,
   IRenderer,
   type LayoutControlledProperty,
+  type MotionConfig,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 export interface ScrollViewOptions {
   width: number;
   height: number;
+  /**
+   * Physics driving the scroll offset. Defaults to `'spring'`, whose defaults
+   * (`stiffness: 180`, `damping: 12`) are underdamped — ζ ≈ 0.447, so one wheel
+   * tick overshoots by ~20% and reverses direction several times before
+   * settling. That reads as liveliness on a short list and as a bounce on a
+   * document.
+   *
+   * For document-like content pass the critically-damped preset
+   * `{ stiffness: 180, damping: 27 }`: same travel, no overshoot, and the
+   * spring reaches rest sooner, which also lets {@link Entity.hasPendingAnimations}
+   * clear so Scene's idle throttle can re-engage.
+   */
+  scrollPhysics?: MotionConfig;
 }
+
+/**
+ * Critically-damped scroll physics: reaches the target without overshoot.
+ *
+ * ζ = damping / (2·√(stiffness·mass)) = 27 / (2·√180) ≈ 1.006, just past the
+ * critical 2·√180 ≈ 26.83. Exported so applications can opt into
+ * non-bouncing document scrolling without re-deriving the constants.
+ */
+export const DOCUMENT_SCROLL_PHYSICS: MotionConfig = {
+  stiffness: 180,
+  damping: 27,
+};
 
 /**
  * A scrollable viewport that clips its content and handles wheel/touch scrolling
@@ -47,7 +74,7 @@ export class ScrollView extends UIComponent {
     // (see Entity.hasPendingAnimations), so it only advanced once per external
     // markDirty() trigger instead of every render frame once the throttle
     // engaged — visibly stepping/jumping instead of gliding.
-    this.content.setTransition({ y: 'spring' });
+    this.content.setTransition({ y: opts.scrollPhysics ?? 'spring' });
 
     this.on('wheel', (e: WheelEvent) => {
       if (e.ctrlKey) return; // Allow browser zoom (Ctrl+wheel)
@@ -177,6 +204,25 @@ export class ScrollView extends UIComponent {
     return child === this.content ? ['y', 'width', 'height'] : [];
   }
 
+  /**
+   * A ScrollView is a structural container: it draws nothing and every pixel a
+   * user aims at belongs to a descendant. It is nonetheless `interactive`, so
+   * Scene projects a viewport-sized semantic mirror for it — and a mirror with
+   * the default `pointerEvents: 'auto'` sits above the content projections
+   * (which are pinned to `zIndex: 0`) and swallows the pointer, making the text
+   * underneath unselectable.
+   *
+   * Opting out of hit testing restores selection while keeping wheel
+   * scrolling: Scene binds its wheel listener to the *content* projection and
+   * dispatches it to the owning node, not to this mirror. The one thing that
+   * does not survive is pointer-*drag* scrolling over selectable text, which is
+   * the correct trade — a drag over text means "select this" on every other
+   * platform.
+   */
+  public override getA11yAttributes(): A11yAttributes {
+    return { pointerEvents: 'none' };
+  }
+
   public override getDevtoolsDescriptor(): DevtoolsDescriptor {
     const maxScroll = Math.max(0, this.content.height - this.height);
     return {
@@ -197,16 +243,32 @@ export class ScrollView extends UIComponent {
               hint: 'Where the spring is headed; differs from scrollTop mid-animation',
               readOnly: true,
             },
-            { label: 'maxScroll', value: Math.round(maxScroll * 10) / 10, readOnly: true },
+            {
+              label: 'maxScroll',
+              value: Math.round(maxScroll * 10) / 10,
+              readOnly: true,
+            },
             { label: 'dragging', value: this.dragging, readOnly: true },
           ],
         },
         {
           label: 'Content',
           fields: [
-            { label: 'contentHeight', value: Math.round(this.content.height), readOnly: true },
-            { label: 'viewportHeight', value: Math.round(this.height), readOnly: true },
-            { label: 'childCount', value: this.content.children.length, readOnly: true },
+            {
+              label: 'contentHeight',
+              value: Math.round(this.content.height),
+              readOnly: true,
+            },
+            {
+              label: 'viewportHeight',
+              value: Math.round(this.height),
+              readOnly: true,
+            },
+            {
+              label: 'childCount',
+              value: this.content.children.length,
+              readOnly: true,
+            },
           ],
         },
       ],
