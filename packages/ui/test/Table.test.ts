@@ -51,6 +51,69 @@ describe('Table', () => {
     expect(table.interactive).toBe(true);
   });
 
+  it('rescales columns proportionally on setWidth', () => {
+    const table = new Table({
+      headers: ['Col A', 'Col B'],
+      rows: [['Val A1', 'Val B1']],
+      width: 400,
+      rowHeight: 40,
+    });
+    expect(table.colWidths).toEqual([200, 200]);
+
+    table.setWidth(300);
+
+    expect(table.width).toBe(300);
+    // Assigning `width` alone would have left these at [200, 200], so every cell
+    // would keep wrapping and positioning for a 400px table.
+    expect(table.colWidths).toEqual([150, 150]);
+  });
+
+  it('preserves a caller-supplied column ratio across a resize', () => {
+    const table = new Table({
+      headers: ['Narrow', 'Wide'],
+      rows: [['a', 'b']],
+      width: 300,
+      colWidths: [100, 200],
+    });
+    expect(table.colWidths).toEqual([100, 200]);
+
+    table.setWidth(600);
+
+    // Rescaled from the existing distribution rather than re-split equally: a
+    // re-split would silently discard the 1:2 ratio on the first resize.
+    expect(table.colWidths).toEqual([200, 400]);
+    expect(table.colWidths.reduce((a, b) => a + b, 0)).toBe(600);
+  });
+
+  it('is a no-op at an unchanged width and clamps to at least 1', () => {
+    const table = new Table({
+      headers: ['A', 'B'],
+      rows: [['a', 'b']],
+      width: 400,
+    });
+    const before = [...table.colWidths];
+    expect(table.setWidth(400)).toBe(table);
+    expect(table.colWidths).toEqual(before);
+
+    table.setWidth(0);
+    expect(table.width).toBe(1);
+  });
+
+  it('rewraps cell text on setWidth', () => {
+    const table = new Table({
+      headers: ['Header'],
+      rows: [['A body cell with enough words in it to wrap when the table narrows']],
+      width: 600,
+    });
+    const tallAt600 = table.height;
+
+    table.setWidth(120);
+
+    // More wrapped lines means a taller row, which is only true if `layout()`
+    // re-fitted the cells rather than only repainting the chrome.
+    expect(table.height).toBeGreaterThan(tallAt600);
+  });
+
   it('provides Table A11y Landmark Attributes', () => {
     const table = new Table({
       headers: ['Col A', 'Col B'],

@@ -706,6 +706,37 @@ export class Table extends UIComponent {
   }
 
   /**
+   * Change the table's total width, rescaling columns proportionally, and re-lay
+   * out.
+   *
+   * Assigning {@link width} alone is not enough: {@link colWidths} is resolved
+   * once in the constructor from the width given there, and every cell's wrap
+   * width, position and alignment derives from *those* per-column figures rather
+   * than from `width`. A table whose `width` was reassigned therefore paints its
+   * chrome at the new size while its cells stay laid out for the old one.
+   *
+   * Columns keep their relative proportions, so an explicit `colWidths` ratio
+   * survives a resize — including one that came from the caller rather than from
+   * the equal-split default.
+   *
+   * @returns `this` for chaining.
+   */
+  public setWidth(width: number): this {
+    const next = Math.max(1, width);
+    if (next === this.width) return this;
+    const total = this.colWidths.reduce((sum, columnWidth) => sum + columnWidth, 0);
+    this.width = next;
+    // Rescale from the previous distribution rather than re-splitting equally:
+    // re-splitting would silently discard a caller-supplied ratio on the first
+    // resize. A degenerate total (a zero-column table) falls back to the split.
+    this.colWidths =
+      total > 0
+        ? this.colWidths.map((columnWidth) => (columnWidth / total) * next)
+        : this.colWidths.map(() => next / Math.max(1, this.colWidths.length));
+    return this.layout();
+  }
+
+  /**
    * Recompute cell wrapping, row heights, and child positions.
    *
    * Call after mutating an externally supplied Entity cell. String-backed
