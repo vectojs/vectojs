@@ -87,6 +87,12 @@ const SOURCE = [
   '',
   'Beta body paragraph.',
   '',
+  // Inline math, so the suite covers what a `Range` copy yields for a reserved
+  // inline object. The layout engine reserves ONE U+FFFC per object, and that
+  // sentinel used to reach the projection verbatim: a copy read
+  // `Iota \ufffc kappa` while the accessible name was already correct.
+  'Iota $E = mc^2$ kappa.',
+  '',
   '```ts',
   'const gamma = 1;',
   'const delta = 2;',
@@ -98,7 +104,7 @@ const SOURCE = [
 ].join('\n');
 
 const scene = new Scene(canvas, { disableWindowResize: true });
-scene.resize(360, 420);
+scene.resize(360, 520);
 const markdown = new Markdown(SOURCE, { maxWidth: 340, selectable: true });
 scene.add(markdown);
 

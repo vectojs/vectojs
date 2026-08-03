@@ -414,6 +414,48 @@ export class RichText extends UIComponent {
     return this.spans.map((s) => (s.object ? (s.object.alt ?? '') : s.text)).join('');
   }
 
+  /**
+   * The projected text for a half-open interval of {@link sourceText} offsets,
+   * with each inline object's U+FFFC sentinel replaced by its `alt`.
+   *
+   * This is the one function that reconciles two things that cannot both be a
+   * single string. Layout offsets (`LayoutNode.sourceIndex`) index
+   * {@link sourceText}, where an inline object is exactly one character, so the
+   * line-slicing arithmetic in {@link buildVisualLineGroups} must stay in that
+   * coordinate space. But what the DOM projection *emits* has to be readable: a
+   * raw U+FFFC copies out of a real browser `Range` as an invisible character, so
+   * a paragraph with inline math yielded `'Inline math \ufffc inside a sentence.'`
+   * on a plain Ctrl+C.
+   *
+   * Substituting cannot be done by swapping {@link sourceText} for
+   * {@link accessibleText} at the top of {@link getContentProjection}, which is why
+   * this exists: an `alt` of any length other than one shifts every later offset,
+   * so the slices would desynchronise from the laid-out glyphs and the selection
+   * boxes would drift. Taking the interval in *source* coordinates and substituting
+   * only on the way out keeps every offset intact while changing what is emitted.
+   *
+   * A span with no `alt` contributes nothing, matching {@link accessibleText}: an
+   * unlabelled decorative object is better absent from a copy than present as an
+   * invisible character.
+   */
+  private projectedSlice(start: number, end: number): string {
+    let out = '';
+    let offset = 0;
+    for (const span of this.spans) {
+      const spanEnd = offset + span.text.length;
+      const from = Math.max(start, offset);
+      const to = Math.min(end, spanEnd);
+      if (from < to) {
+        // An object span is exactly one U+FFFC (LayoutEngine requires it), so any
+        // overlap at all covers the whole sentinel and the alt is emitted once.
+        out += span.object ? (span.object.alt ?? '') : span.text.slice(from - offset, to - offset);
+      }
+      offset = spanEnd;
+      if (offset >= end) break;
+    }
+    return out;
+  }
+
   /** Rebuild styled DOM runs from a logical UTF-16 source interval. */
   private logicalRuns(start: number, end: number): Array<{ text: string; font: string }> {
     const runs: Array<{ text: string; font: string }> = [];
@@ -426,7 +468,11 @@ export class RichText extends UIComponent {
         const style =
           span.style || this.baseStyle ? { ...this.baseStyle, ...span.style } : undefined;
         const font = this.nodeFont(style, style?.fontSize ?? this.baseFontSize);
-        const text = span.text.slice(from - offset, to - offset);
+        // The alt, not the U+FFFC sentinel — see `projectedSlice`. An object span
+        // is exactly one sentinel character, so any overlap covers all of it.
+        const text = span.object
+          ? (span.object.alt ?? '')
+          : span.text.slice(from - offset, to - offset);
         const previous = runs.at(-1);
         if (previous?.font === font) previous.text += text;
         else runs.push({ text, font });
@@ -447,7 +493,6 @@ export class RichText extends UIComponent {
   private positionedRuns(
     nodes: LayoutResult['nodes'],
   ): Array<{ text: string; font: string; x: number; width: number }> {
-    const source = this.sourceText();
     // Visual order. One carrier PER GLYPH: justify widens the gaps between words
     // (and the engine can even reorder a trailing space around a wrap boundary),
     // so only a per-glyph carrier positioned at each glyph's own visual x keeps
@@ -464,7 +509,11 @@ export class RichText extends UIComponent {
     }> = [];
     for (const g of glyphs) {
       const s = g.sourceIndex ?? 0;
-      const text = source.slice(s, s + (g.sourceLength ?? 0)) || g.char;
+      // `projectedSlice`, not a raw `source.slice`: a reserved inline-object glyph
+      // must carry its `alt` into the carrier's text or a justified line copies the
+      // invisible sentinel. Falls back to `g.char` only when the node claims no
+      // source extent at all.
+      const text = this.projectedSlice(s, s + (g.sourceLength ?? 0)) || (g.object ? '' : g.char);
       runs.push({
         text,
         font: this.nodeFont(g.style, g.height),
@@ -526,8 +575,10 @@ export class RichText extends UIComponent {
       return {
         nodes,
         projection: {
-          text: source.slice(sourceStart, sourceEnd),
-          separatorAfter: source.slice(sourceEnd, Math.max(sourceEnd, nextStart)),
+          // Offsets stay in `sourceText` space (that is what `sourceIndex` indexes);
+          // only the emitted string substitutes each inline object's `alt`.
+          text: this.projectedSlice(sourceStart, sourceEnd),
+          separatorAfter: this.projectedSlice(sourceEnd, Math.max(sourceEnd, nextStart)),
           x: Math.min(...nodes.map((node) => node.x)),
           y,
           baseline,
@@ -562,8 +613,12 @@ export class RichText extends UIComponent {
 
   /** Mirror the concatenated span text into the DOM content layer. */
   public override getContentProjection(): ContentProjection | null {
-    const text = this.sourceText();
-    if (!text) return null;
+    // Emptiness is decided on the SOURCE, not the projected text: a paragraph whose
+    // only content is an unlabelled inline object projects an empty string but still
+    // occupies layout, and returning a projection with `text: ''` would make Scene
+    // release the DOM node on every frame it is rebuilt.
+    if (!this.sourceText()) return null;
+    const text = this.projectedSlice(0, this.sourceText().length);
     // The engine advances lines by fontSize × 1.5; without matching the DOM
     // line-height, multi-line selection highlights drift off the glyphs.
     return {

@@ -17,10 +17,16 @@ import { type BrowserCase, bothEngines, closeServer } from '../../core/e2e/_shar
  * that has never been observed to fail is not yet a gate.
  */
 
-/** Reading order of the seven projected leaves, in canvas order. */
+/** Reading order of the eight projected leaves, in canvas order. */
 const EXPECTED_ORDER = [
   'Alpha Heading',
   'Beta body paragraph.',
+  // The inline-math paragraph projects its object's `alt`, not the U+FFFC
+  // sentinel the layout engine reserves. Asserting the alt HERE, in the document
+  // order literal, is deliberate: it is read from the DOM mirror's textContent,
+  // so it fails if any of the four projection emission points still emits the
+  // sentinel.
+  'Iota E = mc^2 kappa.',
   'const gamma = 1;\nconst delta = 2;',
   'Epsilon',
   'Zeta',
@@ -42,6 +48,10 @@ interface Result {
   crossBlock: SelectionCase;
   crossBlockReversed: SelectionCase;
   codeBlock: SelectionCase;
+  /** A `Range` copy of the whole inline-math paragraph. */
+  inlineMath: SelectionCase;
+  /** The same paragraph's accessible name, which was already correct. */
+  inlineMathA11yLabel: string | null;
 }
 
 /** Drag between the centers of two projected mirrors, by their text. */
@@ -117,6 +127,50 @@ async function dragCodeRows(page: Page): Promise<SelectionCase> {
   });
 }
 
+/**
+ * Copy the inline-math paragraph via a real `Range`, and read its accessible name.
+ *
+ * A `Range` over the mirror's contents is what Ctrl+C actually serializes, so this
+ * is the assertion the defect was defined by: `getA11yAttributes()` already
+ * returned `Iota E = mc^2 kappa.` while a copy returned the U+FFFC sentinel,
+ * because `getContentProjection()` built from `sourceText()` — the string layout
+ * offsets index — rather than substituting the object's `alt` on the way out.
+ *
+ * Both halves are read here so the gate proves they now AGREE, rather than only
+ * that one of them is right.
+ */
+async function copyInlineMath(page: Page): Promise<{
+  selection: SelectionCase;
+  a11yLabel: string | null;
+}> {
+  return page.evaluate(() => {
+    const mirror = [...document.querySelectorAll<HTMLElement>('[data-vecto-content]')].find((el) =>
+      (el.textContent ?? '').startsWith('Iota'),
+    );
+    if (!mirror) throw new Error('Missing inline-math mirror');
+    const range = document.createRange();
+    range.selectNodeContents(mirror);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const text = selection?.toString() ?? '';
+    const anchor = selection?.anchorNode?.textContent ?? null;
+    const focus = selection?.focusNode?.textContent ?? null;
+    selection?.removeAllRanges();
+
+    // The a11y label lives on the interactive shadow node for the same entity,
+    // which the scene labels via `aria-label`. Fall back to the projection's own
+    // node when the paragraph is not separately labelled.
+    const labelled = [...document.querySelectorAll<HTMLElement>('[aria-label]')].find((el) =>
+      (el.getAttribute('aria-label') ?? '').startsWith('Iota'),
+    );
+    return {
+      selection: { text, anchor, focus },
+      a11yLabel: labelled?.getAttribute('aria-label') ?? null,
+    };
+  });
+}
+
 async function collect(page: Page): Promise<Result> {
   const base = await page.evaluate(() => {
     const nodes = [...document.querySelectorAll<HTMLElement>('[data-vecto-content]')];
@@ -137,11 +191,15 @@ async function collect(page: Page): Promise<Result> {
     };
   });
 
+  const inline = await copyInlineMath(page);
+
   return {
     ...base,
     crossBlock: await dragBetween(page, 'Alpha Heading', 'Theta'),
     crossBlockReversed: await dragBetween(page, 'Theta', 'Alpha Heading'),
     codeBlock: await dragCodeRows(page),
+    inlineMath: inline.selection,
+    inlineMathA11yLabel: inline.a11yLabel,
   };
 }
 
@@ -215,6 +273,37 @@ function verify(browserCase: BrowserCase, result: Result): void {
     /gamma[^]*\n[^]*delta/u,
     `${tag} fenced code lost its source line break: ${JSON.stringify(result.codeBlock.text)}`,
   );
+  // Gate 4 — a reserved inline object copies as its `alt`, not as the U+FFFC
+  // sentinel the layout engine reserves for it.
+  //
+  // Stated on a real `Range` because that is what Ctrl+C serializes, and because
+  // the jsdom suite structurally cannot: it has no usable `getSelection()` over
+  // positioned text. Before the fix this arm read `Iota \ufffc kappa.` while the
+  // accessible name was already correct, so the two are compared against each
+  // other as well as against the literal — a projection that regressed one but not
+  // the other is the exact shape of the original defect.
+  assert.ok(
+    !result.inlineMath.text.includes('\ufffc'),
+    `${tag} a Range copy still contains the U+FFFC object sentinel: ${JSON.stringify(result.inlineMath.text)}`,
+  );
+  assert.equal(
+    result.inlineMath.text.replaceAll(/\s+/gu, ' ').trim(),
+    'Iota E = mc^2 kappa.',
+    `${tag} inline-object copy text is wrong: ${JSON.stringify(result.inlineMath.text)}`,
+  );
+  if (result.inlineMathA11yLabel !== null) {
+    assert.equal(
+      result.inlineMathA11yLabel.replaceAll(/\s+/gu, ' ').trim(),
+      result.inlineMath.text.replaceAll(/\s+/gu, ' ').trim(),
+      `${tag} accessible name and copied text disagree: ${JSON.stringify(result.inlineMathA11yLabel)} vs ${JSON.stringify(result.inlineMath.text)}`,
+    );
+  }
+  // Select-all must carry it too — a substitution applied to the per-line text but
+  // not to the runs (or vice versa) would pass the Range arm and fail here.
+  assert.ok(
+    result.selectAll.includes('E = mc^2') && !result.selectAll.includes('\ufffc'),
+    `${tag} select-all lost the inline-object alt: ${JSON.stringify(result.selectAll)}`,
+  );
 }
 
 async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> {
@@ -223,7 +312,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     executablePath: browserCase.executablePath,
     headless: true,
     args: browserCase.browser === 'chrome' ? ['--no-sandbox'] : [],
-    defaultViewport: { width: 360, height: 420, deviceScaleFactor: 1 },
+    defaultViewport: { width: 360, height: 520, deviceScaleFactor: 1 },
   });
 
   try {
