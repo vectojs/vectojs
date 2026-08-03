@@ -70,6 +70,24 @@ export interface IRenderer {
   readonly kind?: 'canvas2d' | 'svg' | 'three' | string;
 
   /**
+   * Device pixels per CSS pixel of this renderer's backing store, i.e. the scale
+   * already applied to the drawing context.
+   *
+   * Read this rather than `window.devicePixelRatio` when rasterizing pixels that
+   * will be blitted into the renderer: the two differ whenever a backend clamps
+   * (`CanvasRenderer.maxDPR`, `SceneOptions.maxDPR`), and rasterizing at the
+   * window's ratio while the context is scaled to a clamped one blits a texture
+   * the destination then resamples. A cache keyed on this value also stays
+   * correct across a zoom or a monitor move, which a value captured once at
+   * module scope cannot — that is the defect this exists to make fixable
+   * (`GlyphRasterAtlas` consumers; see `Markdown`'s code atlas pool).
+   *
+   * Optional and a *live* read, not a snapshot: a backend that has no backing
+   * store of its own omits it, and a caller treats the absence as `1`.
+   */
+  readonly pixelRatio?: number;
+
+  /**
    * Enable or disable draw counting. Optional; a backend that cannot count omits
    * it and a reader treats the absence as "not available".
    */

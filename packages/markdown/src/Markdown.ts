@@ -1343,7 +1343,7 @@ export class CodeBlock extends UIComponent {
 }
 
 /**
- * The process-wide glyph atlas for code blocks, created on first use.
+ * Process-wide code-block glyph atlases, **keyed by device-pixel-ratio**.
  *
  * Shared rather than per-`CodeBlock` so a document's glyph set is rasterized once:
  * streamed markdown creates many code blocks over the same font and theme, and a
@@ -1351,47 +1351,115 @@ export class CodeBlock extends UIComponent {
  * approach depends on. Slots carry `(font, colour, glyph)`, so multiple themes or
  * font sizes coexist correctly and merely occupy more slots.
  *
+ * ## Why a pool and not one atlas
+ *
+ * A slot's `sx/sy/sw/sh` are device pixels at the ratio it was rasterized at, so
+ * an atlas's DPR is immutable — and this used to be a single atlas capturing
+ * `devicePixelRatio` at first use, with no rebuild path. A browser zoom therefore
+ * left the code grid blitting stale pixels that the DPR-scaled context resampled,
+ * while every other text entity re-rasterized: measured in Firefox 153 on one live
+ * page, zooming 100% → 133% moved the renderer to 2.068 while the atlas stayed at
+ * 1.579, and peak edge contrast inside the code block fell 171 → 139 → 73 across
+ * 100/133/500% while prose held 255. **Only code looked soft**, which is exactly
+ * why it read as a font bug rather than a cache bug.
+ *
+ * Keying on the ratio fixes that without mutation: a zoom simply selects a
+ * different atlas, and zooming back reuses the first one rather than re-rasterizing
+ * from scratch. It also makes two scenes at *different* effective ratios correct —
+ * `SceneOptions.maxDPR` lets one scene cap at 2 while another runs uncapped, and a
+ * single atlas would have thrashed between them every frame.
+ *
+ * Bounded to {@link MAX_CODE_ATLASES} entries, LRU-evicted and `destroy()`ed on
+ * eviction, because each atlas holds a `maxSize²` canvas (2048² ≈ 16 MB) and a
+ * pinch-zoom can walk through many ratios.
+ *
+ * The DPR comes from {@link IRenderer.pixelRatio} rather than
+ * `window.devicePixelRatio`, so a clamped backing store gets an atlas matching
+ * *it* — rasterizing at the window's ratio while the context is scaled to a
+ * clamped one is the same resampling defect in a different disguise.
+ *
  * Returns `undefined` when the renderer cannot blit a sub-rect (`SVGRenderer`, or
  * any renderer omitting the optional method), leaving the caller on `fillText` —
  * which is also the correct output for a vector export.
  */
-let sharedCodeAtlas: GlyphRasterAtlas | null = null;
+const codeAtlases = new Map<number, GlyphRasterAtlas>();
+/** LRU bound on {@link codeAtlases}. Two covers a zoom and its origin. */
+const MAX_CODE_ATLASES = 2;
+/** The atlas most recently handed out, for {@link codeAtlas}/{@link codeAtlasStats}. */
+let lastCodeAtlas: GlyphRasterAtlas | null = null;
+
 function codeGlyphAtlas(r: IRenderer): GlyphRasterAtlas | undefined {
   if (typeof r.drawImageRect !== 'function') return undefined;
   if (typeof document === 'undefined') return undefined;
-  sharedCodeAtlas ??= new GlyphRasterAtlas({
-    // Match the display so a HiDPI blit stays crisp. Capped at 3 because atlas
-    // area grows with dpr² and a 4x display would otherwise blow the size cap
-    // with a few hundred glyphs.
-    dpr: typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 3) : 1,
-    maxSize: 2048,
-  });
-  return sharedCodeAtlas;
+  // Prefer the renderer's own backing-store ratio; fall back to the window only
+  // for a backend that does not report one.
+  const dpr = Math.max(
+    1,
+    r.pixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1),
+  );
+  const existing = codeAtlases.get(dpr);
+  if (existing) {
+    // Refresh LRU position: re-insertion moves the key to the end of the
+    // Map's iteration order, which is what makes the eviction below pick the
+    // genuinely least-recently-used entry.
+    codeAtlases.delete(dpr);
+    codeAtlases.set(dpr, existing);
+    lastCodeAtlas = existing;
+    return existing;
+  }
+  // No `Math.min(dpr, 3)` cap here, deliberately. The cap was there because atlas
+  // area grows with dpr², but it made *correctness impossible* on a display whose
+  // real ratio exceeds it — this host's 500% zoom is 4.286, so a capped atlas is
+  // permanently resampled by 1.43x and no amount of rebuilding helps. A code
+  // block's glyph set is bounded (one mono font, one size, a handful of theme
+  // colours), so the honest failure mode of an over-full atlas is `stats.resets`
+  // climbing, which is already instrumented and already documented as the signal
+  // to fall back to `fillText`.
+  const atlas = new GlyphRasterAtlas({ dpr, maxSize: 2048 });
+  codeAtlases.set(dpr, atlas);
+  if (codeAtlases.size > MAX_CODE_ATLASES) {
+    const oldestKey = codeAtlases.keys().next().value as number;
+    const oldest = codeAtlases.get(oldestKey);
+    codeAtlases.delete(oldestKey);
+    // Release the backing canvas rather than waiting for GC: these are ~16 MB
+    // each and an evicted atlas is unreachable anyway.
+    if (oldest && oldest !== atlas) oldest.destroy();
+  }
+  lastCodeAtlas = atlas;
+  return atlas;
 }
 
 /**
- * Instrumentation for the shared code-block glyph atlas, or `null` before first
+ * Instrumentation for the code-block glyph atlas in use, or `null` before first
  * use.
  *
  * Exposed so an app or benchmark can confirm the atlas is actually active and
  * reusing slots. Watch `resets`: a steadily climbing count means the glyph set is
  * unbounded for the atlas size, so every reset re-rasterizes everything and the
  * atlas is doing net harm rather than saving work.
+ *
+ * Reports the *most recently used* atlas, which after a zoom is the one now being
+ * blitted — see {@link codeAtlas}.
  */
 export function codeAtlasStats(): GlyphRasterAtlasStats | null {
-  return sharedCodeAtlas ? sharedCodeAtlas.stats : null;
+  return lastCodeAtlas ? lastCodeAtlas.stats : null;
 }
 
 /**
- * The shared code-block atlas itself, or `null` before first use.
+ * The code-block atlas most recently blitted from, or `null` before first use.
  *
  * For instrumentation that must map a traced `drawImage` back to the glyph it
  * painted — a blit carries only a source rect, so `slotAt()` is the only way to
  * recover the cluster and its metrics. Used by `e2e/text-projection.e2e.ts` to
  * keep the code-grid positioning assertions working on the blit path.
+ *
+ * "Most recently used" rather than "the one" because atlases are pooled per DPR:
+ * a caller resolving a traced blit wants the atlas that produced it, which is the
+ * one the last render selected. Compare its {@link GlyphRasterAtlas.pixelRatio}
+ * against {@link IRenderer.pixelRatio} to assert the blit is 1:1.
  */
 export function codeAtlas(): GlyphRasterAtlas | null {
-  return sharedCodeAtlas;
+  return lastCodeAtlas;
 }
 
 // ── Inline token → RichText entities ─────────────────────────────────────────
