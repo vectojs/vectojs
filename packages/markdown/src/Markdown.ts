@@ -1178,6 +1178,26 @@ export class CodeBlock extends UIComponent {
     return this;
   }
 
+  /**
+   * Change the block's box width.
+   *
+   * Deliberately does **not** rebuild the grid or the highlight, because code does
+   * not reflow: lines are placed on a fixed monospace grid at `col × cellWidth` and
+   * a long line overflows rather than wrapping, so `height` is a function of line
+   * *count* alone. The width only sizes the rounded background. Anything that would
+   * change the glyph geometry — the source, the language, the font — goes through
+   * {@link setCode} and invalidates the grid there.
+   *
+   * @returns `this` for chaining.
+   */
+  public setWidth(width: number): this {
+    const next = Math.max(0, width);
+    if (next === this.width) return this;
+    this.width = next;
+    this.scene?.markDirty();
+    return this;
+  }
+
   public override getContentProjection(): ContentProjection | null {
     if (!this.source) return null;
     const grid = this.ensureGrid();
@@ -2221,6 +2241,199 @@ export class Markdown extends UIComponent {
       this.streamOnStable = options.onStable ?? null;
     }
     return controller;
+  }
+
+  /**
+   * Change the wrap width and reflow the existing blocks in place.
+   *
+   * `Text` and `RichText` both have this; `Markdown`, which composes them, did
+   * not — and assigning `maxWidth` alone does nothing visible, because the width
+   * is read when each block is *built*. A document whose field was reassigned
+   * therefore kept every block wrapped at the previous width.
+   *
+   * The only correct workaround was a full rebuild, and a real consumer had
+   * written one: `vectojs-gallery`'s chat Creation released its stream, replayed
+   * every revealed character through {@link setContent}, constructed a **new**
+   * stream writer because the old one was bound to blocks `setContent` had
+   * discarded, and carried its scroll offset across by hand — on every resize
+   * frame that changed the width. This method exists so that is unnecessary.
+   *
+   * What it does instead: walk the retained token list beside the existing child
+   * entities and hand each block its new width, recursing into blockquotes and
+   * list/image stacks. Nothing is re-lexed, no entity is destroyed or created, and
+   * an open {@link createStream} writer stays valid because the block structure it
+   * is bound to is untouched. `RichText`'s paragraph memo is keyed on content
+   * rather than width, so a re-wrap reuses the shaping and pays only for line
+   * breaking.
+   *
+   * Safe to call with an unchanged width (returns immediately) and safe to call
+   * mid-stream. It is *not* callable from an `onStable` callback, for the same
+   * reason {@link setContent} is not: that callback is handed the finished block
+   * list and mutating geometry underneath it is a reentrancy hazard.
+   *
+   * @returns `this` for chaining.
+   */
+  public setMaxWidth(maxWidth: number): this {
+    this.assertNotInStableCallback('setMaxWidth');
+    const next = Math.max(0, maxWidth);
+    if (next === this.maxWidth) return this;
+    this.maxWidth = next;
+
+    // Same pairing `updateTokens` relies on: `producesEntity` decides which tokens
+    // own a child, in order. Walking both together is what lets a reflow know a
+    // `MarkdownContainer` is a blockquote rather than a display-math wrapper —
+    // they are the same class, so the entity tree alone cannot say.
+    let childIndex = 0;
+    const children = this.content.children;
+    for (const token of this.tokens) {
+      if (!this.producesEntity(token)) continue;
+      const child = children[childIndex++];
+      if (!child) break;
+      this.reflowToken(token, child, next);
+    }
+
+    this.content.layout();
+    this.width = this.content.width;
+    this.height = this.content.height;
+    this.onLayoutUpdated?.();
+    this.scene?.markDirty();
+    return this;
+  }
+
+  /**
+   * Re-apply `availableWidth` to one already-built block.
+   *
+   * Deliberately mirrors {@link renderToken}'s `switch` arm for arm: the two must
+   * agree on what a token's entity looks like, and keeping the shapes adjacent is
+   * what makes a divergence visible. A token type missing here keeps its old width
+   * rather than being rebuilt — wrong on screen, but never a crash or a lost
+   * entity, which is the right failure mode for a layout pass.
+   */
+  private reflowToken(token: Token, entity: Entity, availableWidth: number): void {
+    switch (token.type) {
+      case 'heading':
+      case 'paragraph': {
+        // An ordinary paragraph or heading is one `RichText`. An image-bearing
+        // paragraph is a `Stack` of alternating runs and images, which is why this
+        // dispatches on the entity rather than on `paragraphHasImage`: a streamed
+        // paragraph can have gained its first image since it was built.
+        if (entity instanceof RichText) {
+          entity.setMaxWidth(availableWidth);
+          return;
+        }
+        if (entity instanceof Stack) {
+          entity.maxWidth = availableWidth;
+          for (const run of entity.children) {
+            if (run instanceof RichText) run.setMaxWidth(availableWidth);
+            else if (run instanceof Image) this.refitParagraphImage(run, availableWidth);
+          }
+          entity.layout();
+        }
+        return;
+      }
+
+      case 'blockMath':
+      case 'code': {
+        // A math block that typeset is a `MarkdownContainer` wrapping an `Image`
+        // whose box came from MathJax's own `ex`-relative metrics, not from the
+        // available width — so it is already correct at any width and must not be
+        // stretched. One that has not typeset yet is a `CodeBlock` showing the TeX
+        // source, and reflows as code does.
+        if (entity instanceof CodeBlock) entity.setWidth(availableWidth);
+        return;
+      }
+
+      case 'blockquote': {
+        const bqToken = token as Tokens.Blockquote;
+        // Shape built by the `blockquote` arm: MarkdownContainer[QuoteBorder,
+        // Stack[MarkdownContainer[block], …]].
+        const innerStack = entity.children.find((c) => c instanceof Stack);
+        const border = entity.children.find((c) => c instanceof QuoteBorder);
+        const indentStart = Math.min(16, availableWidth);
+        const childWidth = Math.max(0, availableWidth - indentStart);
+        if (innerStack instanceof Stack && bqToken.tokens) {
+          let index = 0;
+          for (const inner of bqToken.tokens) {
+            if (!this.producesEntity(inner)) continue;
+            const wrapper = innerStack.children[index++];
+            if (!wrapper) break;
+            const block = wrapper.children[0];
+            if (!block) continue;
+            this.reflowToken(inner, block, childWidth);
+            // The wrapper's geometry is derived, exactly as the render arm derives
+            // it — re-deriving here is what keeps a nested quote's indent from
+            // accumulating or collapsing across successive resizes.
+            block.x = indentStart;
+            wrapper.width = block.width + indentStart;
+            wrapper.height = block.height;
+          }
+          innerStack.layout();
+        }
+        // The bar spans the quote's final height, which the reflow above may have
+        // changed.
+        if (border instanceof QuoteBorder && innerStack) {
+          border.height = innerStack.height || 20;
+        }
+        entity.width = availableWidth;
+        entity.height = Math.max(border?.height ?? 0, innerStack?.height ?? 0);
+        return;
+      }
+
+      case 'list': {
+        if (!(entity instanceof Stack)) return;
+        for (const item of entity.children) {
+          if (item instanceof RichText) item.setMaxWidth(availableWidth);
+        }
+        entity.layout();
+        return;
+      }
+
+      case 'table': {
+        // `setWidth`, not `width =`: a Table's cell wrapping and alignment derive
+        // from `colWidths`, which is resolved once at construction.
+        if (entity instanceof Table) entity.setWidth(availableWidth);
+        return;
+      }
+
+      case 'hr': {
+        if (entity instanceof HorizontalRule) entity.width = availableWidth;
+        return;
+      }
+
+      default: {
+        // The fallback arm builds a `Text`. `html` builds an `SVGEntity`, whose
+        // intrinsic size is the SVG's own and is left alone.
+        if (entity instanceof Text) entity.setMaxWidth(availableWidth);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Rescale one image inside a paragraph to a new available width.
+   *
+   * The render arm captures `availableWidth` in the `onLoad` closure, so a resize
+   * that lands *after* the bitmap decoded has no path back into that arithmetic.
+   * Reproducing it here keeps a loaded image and a still-loading one converging on
+   * the same box, and preserves the "never upscale past natural width" rule that
+   * closure applies.
+   */
+  private refitParagraphImage(image: Image, availableWidth: number): void {
+    // `naturalWidth`/`naturalHeight`, not `width`/`height`: `bitmap` is an
+    // `HTMLImageElement`, whose `width`/`height` are the *layout* attributes and
+    // are 0 for an element never inserted into a document. Using them would make
+    // every decoded image fall through to the placeholder guess below.
+    const bitmap = (image as unknown as { bitmap?: HTMLImageElement | null }).bitmap;
+    if (bitmap?.naturalWidth && bitmap.naturalHeight) {
+      const aspect = bitmap.naturalHeight / bitmap.naturalWidth;
+      image.width = Math.min(bitmap.naturalWidth, availableWidth);
+      image.height = Math.round(image.width * aspect);
+      return;
+    }
+    // Not decoded yet: mirror the placeholder the render arm guesses, so the
+    // reserved box tracks the width until the real aspect ratio arrives.
+    image.width = Math.min(800, availableWidth);
+    image.height = Math.round(image.width * 0.6);
   }
 
   /** Replace all markdown content (full rebuild). */
