@@ -12,8 +12,14 @@ import {
   type ProcessSignal,
 } from './processes';
 import { findResult, starvationWarnings } from './results';
-import { runOne } from './runner';
-import { ENGINE_WORKSPACE, parseRunnerArgs, parseRunnerResult, RunnerUsageError } from './schema';
+import { runOne, runUrl } from './runner';
+import {
+  ENGINE_WORKSPACE,
+  parseRunnerArgs,
+  parseRunnerResult,
+  RESERVED_PARAMS,
+  RunnerUsageError,
+} from './schema';
 import { startRunnerServer } from './server';
 import type {
   BrowserAdapter,
@@ -46,6 +52,7 @@ describe('runner CLI schema', () => {
       iterations: 1,
       profileState: 'cold',
       mode: 'measure',
+      params: {},
       browsers: ['chrome'],
       timeoutMs: 60_000,
       extendMs: 180_000,
@@ -117,6 +124,92 @@ describe('runner CLI schema', () => {
       '--viewport must be WIDTHxHEIGHT',
     );
     expect(() => parseRunnerArgs(['x', '8178', 'safari'])).toThrow('unknown browser: safari');
+  });
+});
+
+describe('benchmark query passthrough', () => {
+  test('collects repeated --param into the config', () => {
+    expect(
+      parseRunnerArgs(['glyph-batch', '8178', '--param', 'hud=1', '--param', 'holdMs=0', 'firefox'])
+        .params,
+    ).toEqual({ hud: '1', holdMs: '0' });
+  });
+
+  test('defaults to no extra params', () => {
+    expect(parseRunnerArgs(['glyph-batch', '8178']).params).toEqual({});
+  });
+
+  test('keeps a value containing = and accepts an empty value', () => {
+    // Only the first `=` separates; a benchmark may legitimately want a value
+    // that itself contains one (a comma-list, an expression).
+    expect(parseRunnerArgs(['x', '8178', '--param', 'expr=a=b']).params).toEqual({ expr: 'a=b' });
+    expect(parseRunnerArgs(['x', '8178', '--param', 'note=']).params).toEqual({ note: '' });
+  });
+
+  test('rejects a malformed --param', () => {
+    expect(() => parseRunnerArgs(['x', '8178', '--param', 'hud'])).toThrow(
+      '--param must be KEY=VALUE',
+    );
+    // A leading `=` would name an empty key.
+    expect(() => parseRunnerArgs(['x', '8178', '--param', '=1'])).toThrow(
+      '--param must be KEY=VALUE',
+    );
+    expect(() => parseRunnerArgs(['x', '8178', '--param'])).toThrow('--param requires a value');
+  });
+
+  test('rejects a duplicate key instead of silently keeping one', () => {
+    expect(() => parseRunnerArgs(['x', '8178', '--param', 'hud=1', '--param', 'hud=0'])).toThrow(
+      '--param hud given more than once',
+    );
+  });
+
+  test('refuses to override any key the runner owns', () => {
+    // These carry run identity and profiler selection; a caller overriding one
+    // would produce a run that cannot be matched back or does not measure what
+    // it reports.
+    for (const key of RESERVED_PARAMS) {
+      expect(() => parseRunnerArgs(['x', '8178', '--param', `${key}=x`])).toThrow(
+        `--param ${key} is set by the runner and cannot be overridden`,
+      );
+    }
+  });
+
+  test('reaches the benchmark URL without disturbing runner-owned keys', () => {
+    const config = parseRunnerArgs([
+      'glyph-batch',
+      '8178',
+      '--param',
+      'hud=1',
+      '--param',
+      'holdMs=0',
+      '--param',
+      'sustainGlyphs=24800',
+    ]);
+    const url = new URL(runUrl('http://127.0.0.1:8178/', 'run-7', 'suite-3', 2, config, false));
+
+    expect(url.searchParams.get('hud')).toBe('1');
+    expect(url.searchParams.get('holdMs')).toBe('0');
+    expect(url.searchParams.get('sustainGlyphs')).toBe('24800');
+    expect(url.searchParams.get('runId')).toBe('run-7');
+    expect(url.searchParams.get('suiteRunId')).toBe('suite-3');
+    expect(url.searchParams.get('iteration')).toBe('2');
+    expect(url.searchParams.get('mode')).toBe('measure');
+    expect(url.searchParams.get('profileState')).toBe('cold');
+    expect(url.searchParams.get('gate')).toBeNull();
+  });
+
+  test('leaves the URL identical to before when no --param is given', () => {
+    const bare = parseRunnerArgs(['glyph-batch', '8178']);
+    expect(runUrl('http://127.0.0.1:8178/', 'r', 's', 1, bare, true)).toBe(
+      'http://127.0.0.1:8178/?runId=r&suiteRunId=s&iteration=1&mode=measure&profileState=cold&gate=1',
+    );
+  });
+
+  test('percent-encodes a value rather than injecting a second parameter', () => {
+    const config = parseRunnerArgs(['x', '8178', '--param', 'glyphs=1000&hud=1']);
+    const url = new URL(runUrl('http://127.0.0.1:8178/', 'r', 's', 1, config, false));
+    expect(url.searchParams.get('glyphs')).toBe('1000&hud=1');
+    expect(url.searchParams.get('hud')).toBeNull();
   });
 });
 
@@ -292,6 +385,7 @@ async function exerciseProfileLifecycle(
     iterations: 1,
     profileState: 'cold',
     mode: 'profile',
+    params: {},
     browsers: [browser],
     timeoutMs: 0,
     extendMs: 0,
