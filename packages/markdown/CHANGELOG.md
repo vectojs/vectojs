@@ -1,5 +1,149 @@
 # @vectojs/markdown
 
+## 0.9.0
+
+### Minor Changes
+
+- 189f4e4: Add `Markdown.setMaxWidth()`, so a width change rewraps in place instead of
+  requiring a full document rebuild.
+
+  `Text` and `RichText` both had a `setMaxWidth`; `Markdown`, which composes them,
+  did not — and assigning `maxWidth` alone changed nothing visible, because the width
+  is read when each block is **built**. Measured before: `md.maxWidth = 300` left the
+  paragraph 465 wide and the document box 712.
+
+  The only correct workaround was a rebuild, and a real consumer had written one.
+  `vectojs-gallery`'s chat Creation released its stream, replayed every revealed
+  character through `setContent`, constructed a **new** stream writer because the old
+  one was bound to blocks `setContent` had just discarded, and carried its scroll
+  offset across by hand — on every resize frame that changed the width. That is now
+  unnecessary.
+
+  `setMaxWidth` walks the retained token list beside the existing child entities and
+  hands each block its new width, recursing into blockquotes and list/image stacks.
+  Nothing is re-lexed, no entity is destroyed or created, and an open `createStream`
+  writer stays valid because the block structure it is bound to is untouched.
+  `RichText`'s paragraph memo is keyed on content rather than width, so a re-wrap
+  reuses the shaping and pays only for line breaking.
+
+  Also adds two supporting primitives:
+
+  - **`Table.setWidth()`** — assigning `width` alone was not enough, because
+    `colWidths` is resolved once in the constructor and every cell's wrap width,
+    position and alignment derives from _those_ per-column figures. A `Table` whose
+    `width` was reassigned painted its chrome at the new size while its cells stayed
+    laid out for the old one. Columns rescale proportionally, so a caller-supplied
+    ratio survives a resize rather than being re-split equally.
+  - **`CodeBlock.setWidth()`** — deliberately does not rebuild the grid or the
+    highlight, because code does not reflow: lines sit on a fixed monospace grid and a
+    long line overflows rather than wrapping, so height is a function of line _count_
+    alone.
+
+  Verified by a new both-engines gate, `packages/markdown/e2e/set-max-width.e2e.ts`,
+  wired into `test:e2e`. Geometry alone is not the assertion there, because a rebuild
+  produces correct geometry too — which is exactly how a consumer ended up writing
+  one. It asserts the properties that distinguish a reflow from a rebuild: the same
+  entity **instances** survive (identity tokens, not counts), an open stream writer
+  stays `open` and keeps appending afterwards, and the lexer consumes **zero**
+  additional source characters. Measured: 520px/2 lines/h=88 → 260px/4 lines/h=160,
+  widest projected line 257.4 against the 260 wrap width, same 2 instances, stream
+  open, 0 extra characters lexed, identical on both engines. Confirmed to fail against
+  the pre-fix behaviour: 505.7px lines inside a 260px box.
+
+### Patch Changes
+
+- 6b71a9f: Rebuild the code-block glyph atlas when the device pixel ratio changes, so code
+  stops blurring after a browser zoom.
+
+  `CodeBlock` blits its grid from a shared `GlyphRasterAtlas` whose slots are device
+  pixels at a fixed ratio. That atlas was a module-level singleton capturing
+  `devicePixelRatio` at first use, and `GlyphRasterAtlas.dpr` was `private readonly`
+  with no rebuild path — so after a zoom the grid kept blitting a texture rasterized
+  at the old ratio while the DPR-scaled context resampled it. Every other text entity
+  re-rasterizes per frame, so **only code looked soft**, which is why it read as a
+  font problem rather than a cache problem.
+
+  Measured in real Firefox 153 on one live page, no reload: zooming 100% → 133% moved
+  the renderer 1.579 → 2.068 while the atlas stayed at 1.579 (`blitScale` 1.31,
+  `resets` 0); at 500% the renderer reached 4.286 for a `blitScale` of 2.71. Peak
+  edge contrast inside the fenced block fell **171 → 139 → 73** across those three
+  states while prose held 255.
+
+  Atlases are now pooled **per ratio** rather than mutated, since a slot's device
+  pixels are only meaningful at the ratio they were rasterized at. A zoom selects a
+  different atlas and zooming back reuses the original instead of re-rasterizing; the
+  pool is bounded to two entries and `destroy()`s on eviction, because each holds a
+  2048² canvas (~16 MB). This also makes two scenes at _different_ effective ratios
+  correct — `SceneOptions.maxDPR` lets one cap at 2 while another runs uncapped, and
+  a single atlas would have thrashed between them every frame.
+
+  The `Math.min(dpr, 3)` cap is gone. It existed because atlas area grows with dpr²,
+  but it made correctness _impossible_ above it: this host's 500% zoom is 4.286, so a
+  capped atlas is permanently resampled by 1.43x and no rebuild path helps. A code
+  block's glyph set is bounded (one mono font, one size, a handful of theme colours),
+  and the honest failure mode of an over-full atlas is `stats.resets` climbing, which
+  was already instrumented and already documented as the signal to fall back to
+  `fillText`. Measured at 4.286 with a real document: 0 resets.
+
+  New API, both additive:
+
+  - `IRenderer.pixelRatio` (optional, `CanvasRenderer` implements it) — device pixels
+    per CSS pixel of the renderer's **backing store**. Read this rather than
+    `window.devicePixelRatio` when rasterizing pixels to blit, since the two differ
+    whenever a backend clamps. It deliberately reports the ratio the context is
+    _currently_ scaled by rather than recomputing live: `devicePixelRatio` changes the
+    instant a zoom lands, but the backing store is only reallocated when something
+    calls `resize()`, and a live value would hand callers the _future_ ratio during
+    that window — the same resampling defect inverted.
+  - `GlyphRasterAtlas.pixelRatio` — the ratio its slots were rasterized at, so a
+    caller can assert `renderer.pixelRatio / atlas.pixelRatio === 1`.
+
+  Covered by a new both-engines gate, `packages/markdown/e2e/code-atlas-dpr.e2e.ts`,
+  which drives three ratios on one live page without reloading and asserts both the
+  mechanism (`blitScale === 1`) and the symptom (code contrast within 10% of its
+  first-ratio value, with prose as a control arm). Each arm was confirmed to fail
+  against the pre-fix behaviour independently — `blitScale` 1.3097, and contrast
+  178.4 → 147.7 (-17.2%). Peak edge contrast is asserted rather than mean luminance
+  gradient: mono glyphs are thinner and syntax-coloured, so the mean moved the _wrong
+  way_ under a 2.71x mismatch (0.216 matched vs 0.251 mismatched) and would have
+  "disproved" a real defect.
+
+- 2e5d49b: Lex from the last stable block boundary instead of re-lexing the whole document
+  on every streamed chunk.
+
+  `marked` has no incremental lexing API, so the streaming path re-lexed the entire
+  accumulated source per chunk, making a stream O(n²). `incrementalLex` now tracks
+  the last **stable block boundary** — a blank line that appended text can no longer
+  reach across — and lexes only the text after it, splicing the result onto the
+  already-stable token prefix.
+
+  Measured in `comparisons/stream-markdown-smd` on real Chrome 150 / Firefox 153,
+  COOP+COEP isolated, median of 9 after 3 warmups, 32-char chunks. A 200-section
+  document (25 070 chars, 784 chunks):
+
+  |                  | before    | after           |
+  | ---------------- | --------- | --------------- |
+  | Chrome 150       | 419.6 ms  | 6.02 ms (69.8x) |
+  | Firefox 153      | 440.2 ms  | 9.06 ms (48.6x) |
+  | scaling exponent | 1.98      | 0.94 / 1.21     |
+  | characters lexed | 9 847 040 | 63 806 (154x)   |
+
+  The exponent is the substance: the streaming path is now linear rather than
+  quadratic, so the improvement grows with document length (7.8x at 25 sections,
+  69.8x at 200).
+
+  Token output is unchanged. The contract is that a streamed lex is deeply identical
+  to `marked.lexer()` of the same source at every intermediate length, enforced by a
+  differential suite that streams a corpus one character at a time plus a seeded
+  fuzzer over randomly assembled documents and chunkings.
+
+  Two document shapes keep the previous cost by design, because appended text can
+  retroactively change tokens already emitted: those containing a **link reference
+  definition** (`marked` resolves reference links across the whole document after
+  block-lexing) and those containing **display math** (`$$`, whose tokenizer spans
+  blank lines and whose `start()` hook re-groups preceding paragraphs). Both degrade
+  to whole-document lexing, which is correct and no slower than before.
+
 ## 0.8.0
 
 ### Minor Changes
