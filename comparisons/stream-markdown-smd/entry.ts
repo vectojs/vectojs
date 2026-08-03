@@ -10,12 +10,21 @@
  * pitting "our parser" against `smd` would in fact be `marked` vs `smd` — two
  * third-party libraries, neither of them ours, which ground rule 3 rejects.
  *
- * What *is* ours is the **strategy**: the worker
- * (`packages/markdown/src/MarkdownWorkerSource.ts`) caches the accumulated
- * source per instance, appends each delta, then calls `marked.lexer()` on the
- * **whole document again**, and returns only the changed token tail via a
- * raw-string prefix match. `smd` instead advances a persistent parser state
- * machine over just the new chunk and never revisits earlier text.
+ * What *is* ours is the **strategy**. This suite measures two of them, in the
+ * same process on the same hardware:
+ *
+ * - `wholeDocument` — what the worker did when this suite was written: cache the
+ *   accumulated source, append each delta, call `marked.lexer()` on the **whole
+ *   document again**, return only the changed token tail via a raw-string prefix
+ *   match. Measured at 571x `smd` in Chrome 150, with a scaling exponent of 2.01.
+ * - `vecto` — what it does now: `incrementalLex` tracks the last **stable block
+ *   boundary** and lexes only the text after it, splicing onto the stable token
+ *   prefix. Imported from the package source rather than reimplemented here, so
+ *   this arm cannot drift from what production runs.
+ *
+ * `smd` instead advances a persistent parser state machine over just the new
+ * chunk and never revisits earlier text, which remains the better design; the
+ * question this suite now answers is how much of that gap the boundary closes.
  *
  * That is the axis measured here: **cost to stream a document in N chunks**,
  * which is a property of the strategy, not of either parser's constant factor.
@@ -45,6 +54,11 @@
  */
 import { marked } from 'marked';
 import * as smd from 'streaming-markdown';
+import {
+  type IncrementalLexCache,
+  lexAppend,
+  lexFull,
+} from '../../packages/markdown/src/incrementalLex';
 
 // ---------------------------------------------------------------------------
 // Workload
@@ -170,11 +184,17 @@ function runSmd(chunks: string[]): { result: ArmResult; sink: Sink } {
 }
 
 /**
- * Our strategy: accumulate the source and re-lex the whole document per chunk,
- * exactly as `MarkdownWorkerSource` does, including the raw-prefix match that
- * decides how much of the token array is reused.
+ * The OLD strategy, kept as a control arm: accumulate the source and re-lex the
+ * whole document per chunk, including the raw-prefix match that decides how much
+ * of the token array is reused.
+ *
+ * This is no longer what `@vectojs/markdown` does — it is what it did when this
+ * suite first ran, and it stays because a before/after in the same process on the
+ * same hardware is the only honest way to report the improvement. Deleting it
+ * would leave the fix's effect resting on a comparison against a number measured
+ * on a different day.
  */
-function runVectoStrategy(chunks: string[]): {
+function runWholeDocumentStrategy(chunks: string[]): {
   result: ArmResult;
   sink: Sink;
   prefixReuse: number;
@@ -224,10 +244,86 @@ function runVectoStrategy(chunks: string[]): {
       trimmedMeanMs: trimmedMean(samples),
     },
     sink: lastSink,
-    // Fraction of token slots the delta protocol successfully reused. This is
-    // the part that IS ours, and it is high — the strategy saves entity
-    // rebuilds, it just cannot save lexing.
+    // Fraction of token slots the delta protocol successfully reused. High even
+    // in the old arm — it saves entity rebuilds, it just could not save lexing.
     prefixReuse: totalConsidered === 0 ? 0 : prefixMatchedTotal / totalConsidered,
+  };
+}
+
+/**
+ * The CURRENT strategy: `incrementalLex`, imported from the shipped package
+ * source rather than reimplemented here.
+ *
+ * Importing the real module is deliberate. The old arm above is a reimplementation
+ * of the worker's logic, which was accurate when written but is exactly the kind
+ * of copy that silently stops matching the thing it claims to measure. This arm
+ * calls what production calls, so it cannot drift.
+ */
+function runIncrementalStrategy(chunks: string[]): {
+  result: ArmResult;
+  sink: Sink;
+  prefixReuse: number;
+  charsLexed: number;
+  degraded: boolean;
+} {
+  const samples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+  let prefixMatchedTotal = 0;
+  let tokensReturnedTotal = 0;
+  let charsLexedLast = 0;
+  let degradedLast = false;
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const sink: Sink = { tokens: 0, textChars: 0 };
+    let cache: IncrementalLexCache | null = null;
+    let prevRaws: string[] = [];
+    let matchedThisTrial = 0;
+    let returnedThisTrial = 0;
+    let charsThisTrial = 0;
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      const res = cache === null ? lexFull(c) : lexAppend(cache, c);
+      cache = res.cache;
+      const tokens = res.tokens;
+      charsThisTrial += res.charsLexed;
+      // The same prefix match the worker runs, starting where the incremental
+      // lex has already proven the tokens identical.
+      let matchLen = Math.min(res.reusedTokens, Math.min(prevRaws.length, tokens.length));
+      const limit = Math.min(prevRaws.length, tokens.length);
+      while (matchLen < limit && prevRaws[matchLen] === tokens[matchLen]!.raw) matchLen++;
+      matchedThisTrial += matchLen;
+      returnedThisTrial += tokens.length - matchLen;
+      prevRaws = tokens.map((tok) => tok.raw);
+      sink.tokens = tokens.length;
+    }
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) {
+      samples.push(elapsed);
+      prefixMatchedTotal += matchedThisTrial;
+      tokensReturnedTotal += returnedThisTrial;
+      charsLexedLast = charsThisTrial;
+    }
+    degradedLast = cache?.degraded ?? false;
+    lastSink = sink;
+  }
+
+  const ms = median(samples);
+  const totalConsidered = prefixMatchedTotal + tokensReturnedTotal;
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+    prefixReuse: totalConsidered === 0 ? 0 : prefixMatchedTotal / totalConsidered,
+    // Total characters handed to `marked.lexer()` across the stream. This is the
+    // mechanism the timing reflects, reported alongside it so a reader can see
+    // WHY the number moved rather than taking the number on trust.
+    charsLexed: charsLexedLast,
+    degraded: degradedLast,
   };
 }
 
@@ -261,26 +357,56 @@ function runSingleLex(doc: string): ArmResult {
 interface Gates {
   /** Both arms saw the same source text. */
   sameSource: boolean;
-  /** Both arms actually parsed: token counts > 0. */
+  /** Every arm actually parsed: token counts > 0. */
   bothParsed: boolean;
   /** smd's text sink received approximately the document's prose. */
   smdTextPlausible: boolean;
   /** Our arm's final token count matches a direct one-shot lex of the doc. */
   vectoFinalMatchesOneShot: boolean;
+  /**
+   * Our arm's final token TREE is deeply identical to a one-shot lex.
+   *
+   * The count gate above is not sufficient for a boundary optimisation: a
+   * boundary placed one line early can split a fence, merge two paragraphs, or
+   * flip a list from tight to loose while leaving the token count untouched — and
+   * would then publish a fast number for a broken parse. This is the gate that
+   * makes that impossible, and it is the reason a timing figure from this suite
+   * can be quoted at all.
+   */
+  vectoTreeMatchesOneShot: boolean;
+  /** The control arm agrees too, proving the comparison is like-for-like. */
+  wholeDocumentMatchesOneShot: boolean;
   /** The document was actually split into more than one chunk. */
   streamed: boolean;
 }
 
-function evaluateGates(doc: string, chunks: string[], smdSinkResult: Sink, vectoSink: Sink): Gates {
-  const oneShotTokens = marked.lexer(doc).length;
+function evaluateGates(
+  doc: string,
+  chunks: string[],
+  smdSinkResult: Sink,
+  vectoSink: Sink,
+  oldSink: Sink,
+): Gates {
+  const oneShot = marked.lexer(doc);
+  // Re-drive the incremental arm once outside the timed loop to compare trees.
+  // Doing it inside would put a full lex plus a deep comparison into the
+  // measurement and destroy the very number this suite exists to report.
+  let cache: IncrementalLexCache | null = null;
+  for (const c of chunks) {
+    const res = cache === null ? lexFull(c) : lexAppend(cache, c);
+    cache = res.cache;
+  }
+  const finalTokens = cache?.tokens ?? [];
   return {
     sameSource: chunks.join('') === doc,
-    bothParsed: smdSinkResult.tokens > 0 && vectoSink.tokens > 0,
+    bothParsed: smdSinkResult.tokens > 0 && vectoSink.tokens > 0 && oldSink.tokens > 0,
     // smd reports text through add_text; it strips markup, so expect strictly
     // less than the raw document but a substantial fraction of it.
     smdTextPlausible:
       smdSinkResult.textChars > doc.length * 0.4 && smdSinkResult.textChars <= doc.length,
-    vectoFinalMatchesOneShot: vectoSink.tokens === oneShotTokens,
+    vectoFinalMatchesOneShot: vectoSink.tokens === oneShot.length,
+    vectoTreeMatchesOneShot: JSON.stringify(finalTokens) === JSON.stringify(oneShot),
+    wholeDocumentMatchesOneShot: oldSink.tokens === oneShot.length,
     streamed: chunks.length > 1,
   };
 }
@@ -294,9 +420,21 @@ interface Row {
   chars: number;
   chunks: number;
   smd: ArmResult;
+  /** The current shipped strategy: `incrementalLex`, boundary-based. */
   vecto: ArmResult;
+  /** The strategy this suite originally measured, kept as a control arm. */
+  wholeDocument: ArmResult;
   singleLex: ArmResult;
   prefixReuse: number;
+  /**
+   * Characters handed to `marked.lexer()` across the stream, current strategy vs
+   * the old one. This is the mechanism behind the timing, reported so the number
+   * can be checked rather than trusted.
+   */
+  charsLexed: number;
+  wholeDocumentCharsLexed: number;
+  /** Whether the boundary held for this document, or the instance degraded. */
+  degraded: boolean;
   gates: Gates;
   gatesPass: boolean;
 }
@@ -319,10 +457,11 @@ async function main(): Promise<void> {
     const chunks = chunkify(doc, CHUNK_CHARS);
 
     const smdRun = runSmd(chunks);
-    const vectoRun = runVectoStrategy(chunks);
+    const vectoRun = runIncrementalStrategy(chunks);
+    const oldRun = runWholeDocumentStrategy(chunks);
     const singleLex = runSingleLex(doc);
 
-    const gates = evaluateGates(doc, chunks, smdRun.sink, vectoRun.sink);
+    const gates = evaluateGates(doc, chunks, smdRun.sink, vectoRun.sink, oldRun.sink);
     const gatesPass = Object.values(gates).every(Boolean);
 
     rows.push({
@@ -331,8 +470,14 @@ async function main(): Promise<void> {
       chunks: chunks.length,
       smd: smdRun.result,
       vecto: vectoRun.result,
+      wholeDocument: oldRun.result,
       singleLex,
       prefixReuse: vectoRun.prefixReuse,
+      charsLexed: vectoRun.charsLexed,
+      // What the old arm handed the lexer: every chunk saw the whole accumulated
+      // document, so this is the sum of the growing prefix lengths.
+      wholeDocumentCharsLexed: chunks.reduce((sum, _c, i) => sum + (i + 1) * CHUNK_CHARS, 0),
+      degraded: vectoRun.degraded,
       gates,
       gatesPass,
     });
@@ -353,12 +498,16 @@ async function main(): Promise<void> {
     engine: engineName,
     userAgent: navigator.userAgent,
     note:
-      'Streaming-parse cost only. Our arm is marked.lexer() driven by the ' +
-      'delta strategy from MarkdownWorkerSource; smd is a true incremental ' +
-      'parser. Both use an identical counting sink, so neither pays for ' +
-      'rendering. smd implements a reduced CommonMark subset and does no ' +
-      'layout/canvas/a11y/math work — see the header comment for the full ' +
-      'scope statement.',
+      'Streaming-parse cost only. The `vecto` arm imports incrementalLex from ' +
+      'the shipped package source, so it measures what production runs; ' +
+      '`wholeDocument` is the strategy this suite originally measured, kept as ' +
+      'a same-process control arm for the before/after. smd is a true ' +
+      'incremental parser. All arms use an identical counting sink, so none ' +
+      'pays for rendering. smd implements a reduced CommonMark subset and does ' +
+      'no layout/canvas/a11y/math work — see the header comment for the full ' +
+      'scope statement. Note the workload is prose: documents containing ' +
+      'display math or link reference definitions degrade to whole-document ' +
+      'lexing by design, and the `degraded` field per row reports which path ran.',
     chunkChars: CHUNK_CHARS,
     trials: TRIALS,
     warmups: WARMUPS,
@@ -372,7 +521,13 @@ async function main(): Promise<void> {
       ? {
           smdExponent: scalingExponent(rows, (r) => r.smd.totalMs),
           vectoStrategyExponent: scalingExponent(rows, (r) => r.vecto.totalMs),
+          wholeDocumentExponent: scalingExponent(rows, (r) => r.wholeDocument.totalMs),
           singleLexExponent: scalingExponent(rows, (r) => r.singleLex.totalMs),
+          // The exponent is the claim this suite makes, so it is reported for the
+          // characters handed to the lexer as well as for wall time. Wall time
+          // alone can move for reasons unrelated to the strategy; the two
+          // agreeing is what makes the attribution sound.
+          vectoCharsLexedExponent: scalingExponent(rows, (r) => r.charsLexed),
         }
       : null,
     versions: {

@@ -249,10 +249,15 @@ describe('MarkdownWorker delta protocol', () => {
     expect(res.needResync).toBe(true);
   });
 
-  it('reports the lexer cost of the WHOLE source, not just the delta', () => {
-    // The reason the reuse counters were renamed: a delta shrinks the transfer, not
-    // the lex. `marked` has no incremental lexing API, so every append re-lexes the
-    // full accumulated document, and `sourceCharsLexed` is what makes that visible.
+  it('lexes only the unstable tail on a delta, not the whole source', () => {
+    // This test previously asserted the OPPOSITE — that a delta re-lexed the whole
+    // accumulated document — and it was right about the code at the time. That
+    // strategy made a stream O(n²): measured in `comparisons/stream-markdown-smd`,
+    // a 25 070-char document in 784 chunks cost 434 ms in Chrome 150 while lexing
+    // the finished document once cost 0.975 ms. `incrementalLex` now keeps a stable
+    // block boundary and lexes only what follows it, so `sourceCharsLexed` reports
+    // the tail. It is the counter that makes the difference observable, which is
+    // why it is asserted rather than just the token diff.
     const initial = '# Title\n\nFirst paragraph.';
     const first = request({
       id: 1,
@@ -279,9 +284,17 @@ describe('MarkdownWorker delta protocol', () => {
     });
     expect(second.matchLen).toBeGreaterThan(0);
     expect(second.tail!.length).toBeLessThan(4);
-    // ...but the lex covered the whole document, appended text included.
-    expect(second.sourceCharsLexed).toBe(initial.length + append.length);
-    expect(second.sourceCharsLexed).toBeGreaterThan(first.sourceCharsLexed!);
+    // ...and so is the lex. Strictly less than the document proves the boundary is
+    // load-bearing rather than merely present.
+    expect(second.sourceCharsLexed).toBeLessThan(initial.length + append.length);
+    // The tail must still cover the appended text plus the unstable block it
+    // extends — the heading and the blank line after it are what became stable.
+    expect(second.sourceCharsLexed).toBeGreaterThanOrEqual(append.length);
+    // The token stream is what actually has to be right; the counter is only
+    // evidence about cost. Assert equivalence with a full lex explicitly.
+    const wholeDoc = marked.lexer(initial + append);
+    const spliced = [...marked.lexer(initial).slice(0, second.matchLen!), ...second.tail!];
+    expect(spliced.map((t) => t.raw)).toEqual(wholeDoc.map((t) => t.raw));
   });
 
   it('emits parse timing only when the request opts in', () => {

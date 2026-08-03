@@ -232,12 +232,13 @@ JSON so the calibration is auditable.
 
 ## `stream-markdown-smd` — vs [`streaming-markdown`](https://github.com/thetarnav/streaming-markdown)
 
-**This one is a loss, and the biggest one recorded here.** `smd` (0.2.15, zero
-dependencies, ~1.6k lines) is a true incremental parser: `parser_write(p, chunk)`
-advances a persistent state machine over a flat `Uint32Array` token stack and
-emits through a four-callback renderer interface, so it never revisits text it
-has already consumed. Our streaming path re-lexes the **entire accumulated
-document** on every chunk.
+**Still a loss, but no longer the biggest one recorded here — it was 571× and is
+now 4.5×.** `smd` (0.2.15, zero dependencies, ~1.6k lines) is a true incremental
+parser: `parser_write(p, chunk)` advances a persistent state machine over a flat
+`Uint32Array` token stack and emits through a four-callback renderer interface, so
+it never revisits text it has already consumed. Our streaming path used to re-lex
+the **entire accumulated document** on every chunk; it now re-lexes only the text
+after the last stable block boundary.
 
 ### Scope difference (ground rule 3)
 
@@ -253,69 +254,107 @@ place the two genuinely overlap.
 `lexMarkdown()` (`packages/markdown/src/Markdown.ts:42`) is a thin wrapper over
 `marked.lexer()`, and `marked` is a real runtime dependency. Benchmarking "our
 parser" against `smd` would be benchmarking `marked` against `smd`: two
-third-party libraries, neither of them ours. What **is** ours is the strategy in
-`MarkdownWorkerSource` — cache the accumulated source, append the delta, re-lex
-the whole thing, return only the changed token tail via a raw-string prefix
-match. That strategy is what this suite measures.
+third-party libraries, neither of them ours. What **is** ours is the strategy, and
+the suite measures two of them in the same process on the same hardware:
+
+- **`wholeDocument`** — the original: cache the accumulated source, append the
+  delta, re-lex the whole thing, return only the changed token tail via a
+  raw-string prefix match. Kept as a control arm so the before/after is a real
+  measurement rather than a comparison against a number from another day.
+- **`vecto`** — the current: `incrementalLex` tracks the last stable block
+  boundary and lexes only what follows it. The arm imports the shipped package
+  source rather than reimplementing it, so it cannot drift from production.
 
 ### Results
 
 Real Chrome 150 / Firefox 153, COOP+COEP isolated, median of 9 trials after 3
-warmups, 32-char chunks, both arms driven through an identical counting sink so
-neither pays for rendering.
+warmups, 32-char chunks, every arm driven through an identical counting sink so
+none pays for rendering. All seven gates pass in both engines.
 
-| Document (200 sections, 25 070 chars, 784 chunks) | Chrome | Firefox |
-| --- | --- | --- |
-| `smd`, whole stream | 0.76 ms | 1.08 ms |
-| our strategy, whole stream | 434.3 ms | 443.8 ms |
-| **ratio** | **571×** | **411×** |
-| per chunk: `smd` | 0.97 µs | 1.38 µs |
-| per chunk: ours | 554.0 µs | 566.1 µs |
-| one full `marked.lexer()` of the finished doc | 0.975 ms | 1.020 ms |
+| Document (200 sections, 25 070 chars, 784 chunks) | Chrome    | Firefox   |
+| ------------------------------------------------- | --------- | --------- |
+| `smd`, whole stream                               | 1.35 ms   | 1.16 ms   |
+| ours **before** (whole-document re-lex)           | 419.6 ms  | 440.2 ms  |
+| ours **after** (stable block boundary)            | 6.02 ms   | 9.06 ms   |
+| **improvement**                                   | **69.8×** | **48.6×** |
+| **remaining gap to `smd`**                        | **4.5×**  | **7.8×**  |
+| one full `marked.lexer()` of the finished doc     | 0.99 ms   | 1.02 ms   |
 
-The last row is the finding. Lexing the finished document **once** costs about a
-millisecond; streaming that same document costs 434 ms. That is ~445× of pure
-re-work — not a parser being slow, but the same linear parser being run 784
-times over an ever-growing prefix.
+The last row used to be the finding: lexing the finished document once cost about
+a millisecond while streaming it cost 434 ms, i.e. ~445× of pure re-work. That
+re-work is what the boundary removes. The streamed cost is now **6.1× a single
+full lex**, against 439× before.
 
 ### Scaling exponents, measured across 3 070 → 25 070 chars
 
-| Arm                             | Chrome | Firefox |
-| ------------------------------- | ------ | ------- |
-| `smd`                           | 0.56   | 0.35    |
-| our streaming strategy          | 2.01   | 1.84    |
-| single `marked.lexer()` call    | 0.98   | 0.95    |
+| Arm                                  | Chrome | Firefox |
+| ------------------------------------ | ------ | ------- |
+| `smd`                                | 0.97   | 0.42    |
+| ours **before**                      | 1.98   | 1.98    |
+| ours **after**                       | 0.94   | 1.21    |
+| single `marked.lexer()` call         | 0.97   | 0.95    |
+| ours, characters handed to the lexer | 1.00   | 1.00    |
 
-`marked.lexer()` is **linear** (0.98 / 0.95). The quadratic behaviour is entirely
-ours, and it follows arithmetically: N chunks × O(document) per chunk. Measured
-cost lands at 0.33–0.70 of `chunks × (cost of lexing the full document)` across
-both engines and all four sizes, straddling the 0.5 that an exact O(n²)/2 would
-give — early chunks lex a shorter prefix.
+**The exponent is the substance, not the ratio.** `marked.lexer()` is linear, and
+the old strategy's 1.98 was arithmetic: N chunks × O(document) per chunk. The
+boundary brings our arm back to the parser's own complexity class, which is why
+the improvement grows with length — 7.8× at 25 sections, 69.8× at 200. The former
+"widens with length, exactly the wrong direction for a chat transcript" now runs
+the right way.
 
-At small documents the gap is modest (25 sections: 27× Chrome, 18× Firefox). It
-widens with length, which is exactly the wrong direction for a chat transcript
-that grows all session.
+The last row is the mechanism, measured independently of wall time: characters
+handed to `marked.lexer()` across the stream fall from **9 847 040 to 63 806**
+(154×) with an exponent of 1.00. Wall time can move for incidental reasons; wall
+time and characters-lexed agreeing is what makes the attribution sound.
 
 ### What the delta protocol does and does not buy
 
-Token-prefix reuse is **99.5%** at 200 sections. The protocol works: it saves
-almost all of the canvas entity rebuilds, which is what it was designed for. It
-cannot save lexing, because the prefix match happens _after_ `marked.lexer()` has
-already run on the full source. The win and the loss are in different phases.
+Token-prefix reuse is **99.5%** at 200 sections, and always was. The protocol
+works: it saves almost all of the canvas entity rebuilds, which is what it was
+designed for. It never could save lexing, because the prefix match happens _after_
+`marked.lexer()` has run — the win and the loss were in different phases, and the
+fix had to be additive rather than a redesign of the diff.
 
 The production path also runs this in a Worker, so an app's main thread does not
-block on it. That is a real mitigation for responsiveness and not for cost: the
-CPU work, the battery drain, and the final chunk's latency are unchanged.
+block on it. That was a real mitigation for responsiveness and not for cost: CPU
+work, battery drain, and the final chunk's latency were unchanged, which is why
+this was worth fixing despite the Worker.
+
+### Two document shapes deliberately keep the old cost
+
+Correctness comes first here: a boundary placed one line early corrupts the token
+stream rather than merely being slow. Two constructs let appended text change
+tokens already emitted, so an instance containing either degrades to
+whole-document lexing — measured at parity (1.01×) with the old strategy, never
+worse:
+
+- **Link reference definitions.** `marked` collects every `def` while block-lexing
+  and only then resolves reference links across the whole document, so a
+  definition arriving late retroactively rewrites inline tokens already emitted,
+  and one inside the stable prefix is invisible to a suffix lex.
+- **Display math (`$$`).** Our own `blockMath` extension breaks locality in both
+  directions. Forwards: its `[\s\S]+?` tokenizer crosses blank lines, so an
+  unterminated `$$` swallows following tokens — measured,
+  `'$$\nopen\n\npara\n'` is `[paragraph, space, paragraph]` and appending
+  `'\n$$\n'` collapses all three into one `blockMath`. Backwards: marked's
+  `startBlock` clip, which the extension's `start()` hook triggers, merges a
+  following paragraph into a preceding one, so a `$$` anywhere ahead re-groups
+  paragraphs already banked.
+
+The `degraded` field on each result row reports which path ran, so a timing figure
+from this suite always says whether the boundary was in play.
 
 ### TODO (ground rule 5)
 
-Lex only from the last **stable block boundary** rather than from the start of
-the document. Markdown blocks are separated by blank lines, and a blank line
-followed by already-stable tokens cannot be re-opened by later text, so the
-prefix before it never needs re-lexing. That converts the stream from O(n²) to
-O(n · block) without giving up the existing token-diff machinery. Fenced code
-blocks and tables need care — an unterminated fence swallows everything after it,
-so the boundary must be the last blank line _outside_ any open construct.
+Make display math incremental by stopping `blockMath`'s tokenizer at a blank line,
+which would remove the larger of the two degrade paths. That is a rendering
+behaviour change for existing content and affects `Markdown.ts` equally, so it
+belongs in its own task rather than riding along with a performance fix.
+
+Closing the remaining 4.5× would mean not calling `marked` at all — `smd`'s design
+advantage is that it never re-tokenizes a partial block, whereas we re-lex the
+unstable tail from its start on every chunk. That is a genuine architectural
+difference and not obviously worth the cost of owning a CommonMark parser.
 
 ## Libraries reviewed but not yet benchmarked
 

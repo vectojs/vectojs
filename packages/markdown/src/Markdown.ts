@@ -1832,21 +1832,29 @@ export class Markdown extends UIComponent {
    *
    * Cheap enough to keep always-on (a handful of integer increments per append).
    *
-   * These describe the **token diff and the transfer**, not the parser. `marked`
-   * has no incremental lexing API, so the worker calls `marked.lexer()` on the
-   * whole accumulated source for every chunk and the lexer's cost is O(document)
-   * per append no matter how well the diff goes. That is what `lexerMs` and
-   * `sourceCharsLexed` are for; an earlier version of these counters was named as
-   * though a high prefix match meant less lexing, which sent readers to optimise
-   * the already-solved transfer path.
+   * The token counters describe the **token diff and the transfer**, which is a
+   * different thing from the parser's cost — `lexerMs` and `sourceCharsLexed` are
+   * what report that. An earlier version of these counters was named as though a
+   * high prefix match meant less lexing, which sent readers to optimise the
+   * already-solved transfer path.
+   *
+   * `marked` still has no incremental lexing API, but the worker no longer lexes
+   * the whole accumulated source per chunk: `incrementalLex` tracks the last
+   * stable block boundary and lexes only the text after it, so `sourceCharsLexed`
+   * now reports the unstable tail. Two document shapes are excluded and do still
+   * pay O(document) per append — see `DegradeReason` — so a `sourceCharsLexed`
+   * that tracks the document length is the signal that this instance degraded.
    */
   private streamStats = {
     appends: 0,
     workerResponses: 0,
     /**
      * Sum of `matchLen`: leading tokens whose `raw` was unchanged, so the main
-     * thread kept its existing token objects and child entities. A prefix match,
-     * not a lexer saving — the worker still lexed them.
+     * thread kept its existing token objects and child entities. Still a prefix
+     * match rather than a lexer saving — the two now usually coincide, since the
+     * stable boundary skips lexing most of what this counter covers, but they are
+     * measured independently and a degraded instance has a high match and no
+     * lexing saving at all.
      */
     tokensPrefixMatched: 0,
     /**
@@ -1858,8 +1866,10 @@ export class Markdown extends UIComponent {
     /** Total ms spent inside `marked.lexer()` across worker responses. */
     lexerMs: 0,
     /**
-     * Characters handed to the lexer, summed across responses. Grows ~O(n^2) over
-     * a stream of n chunks, because every chunk re-lexes the whole document.
+     * Characters handed to the lexer, summed across responses. With a stable
+     * boundary this is O(n·window) over a stream of n chunks; it returns to the
+     * old ~O(n²) only for a degraded instance, which is what makes an unexpectedly
+     * large value here worth investigating rather than ignoring.
      */
     sourceCharsLexed: 0,
     /** Total round-trip ms across worker lex requests, dispatch to callback. */
@@ -2377,7 +2387,7 @@ export class Markdown extends UIComponent {
             {
               label: 'tokenPrefixReuseRatio',
               value: Math.round(tokenPrefixReuseRatio * 1000) / 1000,
-              hint: 'matched / (matched + returned). Near 1 means small transfers and high entity reuse — NOT less lexing',
+              hint: 'matched / (matched + returned). Near 1 means small transfers and high entity reuse. Lexing saved is measured separately — see sourceCharsLexed',
               readOnly: true,
             },
           ],
@@ -2388,13 +2398,13 @@ export class Markdown extends UIComponent {
             {
               label: 'lexerMs',
               value: Math.round(s.lexerMs * 10) / 10,
-              hint: 'Total ms inside marked.lexer() — the whole source, every append',
+              hint: 'Total ms inside marked.lexer() — the unstable tail, every append',
               readOnly: true,
             },
             {
               label: 'sourceCharsLexed',
               value: s.sourceCharsLexed,
-              hint: 'Characters lexed, summed over appends. Grows ~O(n^2) across a stream',
+              hint: 'Characters lexed, summed over appends. O(n*window) with a stable block boundary; ~O(n^2) if this instance degraded (display math or a link reference definition)',
               readOnly: true,
             },
           ],
@@ -2407,7 +2417,7 @@ export class Markdown extends UIComponent {
             ]
           : tokenPrefixReuseRatio > 0 && tokenPrefixReuseRatio < 0.5
             ? [
-                `Only ${Math.round(tokenPrefixReuseRatio * 100)}% of tokens matched the prior prefix, so most of the token array is being returned and its entities rebuilt every chunk. Note the LEXER is O(document) per append regardless — see lexerMs.`,
+                `Only ${Math.round(tokenPrefixReuseRatio * 100)}% of tokens matched the prior prefix, so most of the token array is being returned and its entities rebuilt every chunk. The lexer is a separate cost — check sourceCharsLexed to see whether the stable boundary is also failing to advance.`,
               ]
             : s.changedTailChars > 0 &&
                 this.rawMarkdown.length > 0 &&

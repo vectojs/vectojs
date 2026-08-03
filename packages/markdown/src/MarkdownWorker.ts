@@ -1,4 +1,10 @@
-import { marked, type TokensList } from 'marked';
+import { marked, type Token } from 'marked';
+import {
+  type IncrementalLexCache,
+  type IncrementalLexResult,
+  lexAppend,
+  lexFull,
+} from './incrementalLex';
 
 interface WorkerTimingSpan {
   name: string;
@@ -107,23 +113,30 @@ marked.use({
 });
 
 /**
- * Per-Markdown-instance cache of what the caller is currently holding: the raw
- * source of its tokens, and the accumulated document source itself.
+ * Per-Markdown-instance lex state: everything needed to extend this instance's
+ * document without re-reading or re-lexing what it already covers.
  *
- * `raws` exists so a streaming append does NOT have to re-send every prior
- * token's raw text each chunk. `source` exists so it does not have to re-send
- * the DOCUMENT each chunk either — with both cached, a steady-state append ships
- * only the new chunk, which is what takes main->worker transfer from
- * O(document) per chunk (O(N²) over a stream) down to O(chunk).
+ * The {@link IncrementalLexCache} carries the accumulated source, the token list,
+ * and the stable block boundary. Caching the source is what takes main->worker
+ * transfer from O(document) per chunk (O(N²) over a stream) down to O(chunk),
+ * since a steady-state append ships only the new text. Caching the boundary is
+ * what does the same for the lex itself — the cost this protocol used to pay in
+ * full on every chunk.
+ *
+ * The token list is held rather than a parallel array of raw strings: the prefix
+ * match needs `raw` values, and reading them off the tokens avoids rebuilding an
+ * O(document) array per chunk. It also means the tokens spliced into the next
+ * response are the same objects, so the prefix comparison short-circuits on
+ * pointer equality.
  *
  * `version` is the caller's token-list version this cache is valid for. The
  * caller bumps its version on every token-list mutation it makes, so a mismatch
  * (first request, a `setContent()`, or a main-thread sync-fallback parse that
  * the worker never saw) means the cache cannot be trusted — the worker asks for
- * one resync rather than silently diffing against stale raws or, worse, lexing a
- * source that has silently diverged from the caller's.
+ * one resync rather than silently diffing against stale tokens or, worse, lexing
+ * a source that has silently diverged from the caller's.
  */
-const rawCache = new Map<string, { version: number; raws: string[]; source: string }>();
+const rawCache = new Map<string, { version: number; lex: IncrementalLexCache }>();
 
 self.onmessage = (e: MessageEvent) => {
   // A dedicated worker only receives messages from the script that created it
@@ -166,7 +179,8 @@ self.onmessage = (e: MessageEvent) => {
   const key = typeof instance === 'string' ? instance : null;
   const version = typeof baseVersion === 'number' ? baseVersion : null;
 
-  // Resolve the source to lex and the prior raws to diff against.
+  // Resolve how this request will be lexed, and what the caller currently holds
+  // to diff against.
   //
   // Two request shapes. A DELTA request carries only `append` and extends the
   // cached source; a FULL request carries `text`, which is what a first request,
@@ -174,8 +188,15 @@ self.onmessage = (e: MessageEvent) => {
   // for one resync rather than guessing: lexing a source that had silently
   // diverged from the caller's would return a matchLen describing tokens the
   // caller never held, and the reconciler would keep the wrong entities.
-  let source: string;
-  let priorRaws: string[] | null = null;
+  //
+  // `runLex` is deferred rather than executed here so the user-timing span and
+  // the `lexerMs` measurement wrap exactly the lex and nothing else.
+  let runLex: () => IncrementalLexResult;
+  // Two shapes of "what the caller holds": a raw-string array it sent us, or the
+  // token list we already have for it. Kept separate so the cached case can skip
+  // the comparisons the incremental lex has already proven equal.
+  let priorRaws: readonly string[] | null = null;
+  let priorTokenRaws: readonly Token[] | null = null;
 
   if (typeof append === 'string') {
     if (key === null || version === null) {
@@ -189,28 +210,37 @@ self.onmessage = (e: MessageEvent) => {
       self.postMessage({ id, needResync: true });
       return;
     }
-    source = cached.source + append;
     // The caller states what the document must total after this append. A
     // mismatch means the two sides disagree about the source — a dropped,
     // duplicated, or reordered chunk — and every token from here on would be
     // lexed from text the caller does not have. One integer to check, and it
-    // converts a silent divergence into one resync.
-    if (typeof expectedLength === 'number' && source.length !== expectedLength) {
+    // converts a silent divergence into one resync. Compared by length rather
+    // than by concatenating first, so a rejected delta costs no string work.
+    if (
+      typeof expectedLength === 'number' &&
+      cached.lex.source.length + append.length !== expectedLength
+    ) {
       rawCache.delete(key);
       self.postMessage({ id, needResync: true });
       return;
     }
-    priorRaws = cached.raws;
+    const base = cached.lex;
+    runLex = () => lexAppend(base, append);
+    // The prior token list IS the cache's, so raws are read straight off it.
+    // Building a parallel string array here would put an O(document) allocation
+    // back into the per-chunk path that the boundary exists to remove.
+    priorTokenRaws = base.tokens;
   } else if (typeof text === 'string') {
-    source = text;
+    const full = text;
+    runLex = () => lexFull(full);
     // The raws just sent (a resync or a cacheless caller) take precedence, else
-    // this instance's cached raws when they match the caller's current version.
+    // this instance's cached tokens when they match the caller's current version.
     if (Array.isArray(oldRaws)) {
       priorRaws = oldRaws as string[];
     } else if (key !== null && version !== null) {
       const cached = rawCache.get(key);
       if (cached && cached.version === version) {
-        priorRaws = cached.raws;
+        priorTokenRaws = cached.lex.tokens;
       } else {
         // Cache miss/stale — ask for the raws once instead of diffing blind (a
         // wrong matchLen would corrupt the caller's reconciled token list).
@@ -224,54 +254,68 @@ self.onmessage = (e: MessageEvent) => {
   }
 
   try {
-    // `marked` has no incremental lexing API, so re-lexing the whole
-    // accumulated text on every streamed chunk is unavoidable — but shipping
-    // the ENTIRE resulting token tree back over `postMessage` on every call
-    // is not: structured-cloning a multi-megabyte object graph (this tree
-    // grows with the whole document, not just the new chunk) is itself a
-    // real, escalating main/worker-thread cost on top of the lex itself.
-    // The caller already knows which of ITS OWN previous tokens are still
-    // valid (raw source unchanged), so diff the same way `updateTokens()`
-    // does on the receiving end and send back only the changed suffix.
-    // Time the lex itself. It is the one cost in this pipeline that is still
-    // O(document) per chunk, and nothing downstream could see it: the reuse
+    // Shipping the ENTIRE token tree back over `postMessage` on every call would
+    // be a real, escalating cost: structured-cloning an object graph that grows
+    // with the whole document, not just the new chunk. The caller already knows
+    // which of ITS OWN previous tokens are still valid (raw source unchanged), so
+    // diff the same way `updateTokens()` does on the receiving end and send back
+    // only the changed suffix.
+    //
+    // Time the lex itself. It used to be the one cost here that stayed
+    // O(document) per chunk while nothing downstream could see it — the reuse
     // counters describe the token DIFF, which is a different thing entirely.
+    // `charsLexed` is now what makes the difference visible: it reports the text
+    // actually handed to `marked`, which is the unstable tail rather than the
+    // document.
     const userTiming = typeof userTimingName === 'string' ? beginUserTiming(userTimingName) : null;
     const lexStart = performance.now();
-    let tokens: TokensList;
+    let result: IncrementalLexResult;
     try {
-      tokens = marked.lexer(source);
+      result = runLex();
     } finally {
       if (userTiming) endUserTiming(userTiming);
     }
     const lexerMs = performance.now() - lexStart;
+    const tokens = result.tokens;
+
+    // Leading tokens the incremental lex reused are the SAME objects the caller's
+    // prior list holds, so their raws are equal by construction and comparing
+    // them would be wasted work. Starting the scan at `reusedTokens` is what
+    // keeps the prefix match O(window) rather than O(document) — without it the
+    // diff would remain linear in the whole token list even though the lex no
+    // longer is.
     let matchLen = 0;
-    if (priorRaws) {
+    if (priorRaws !== null) {
       const minLen = Math.min(priorRaws.length, tokens.length);
       for (; matchLen < minLen; matchLen++) {
-        if (priorRaws[matchLen] !== tokens[matchLen].raw) break;
+        if (priorRaws[matchLen] !== tokens[matchLen]!.raw) break;
+      }
+    } else if (priorTokenRaws !== null) {
+      const prior = priorTokenRaws;
+      const minLen = Math.min(prior.length, tokens.length);
+      matchLen = Math.min(result.reusedTokens, minLen);
+      for (; matchLen < minLen; matchLen++) {
+        if (prior[matchLen]!.raw !== tokens[matchLen]!.raw) break;
       }
     }
+
     // Remember what the caller will be holding after it applies this response,
-    // tagged with the version it will then be at, plus the source those tokens
+    // tagged with the version it will then be at, plus the lex state those tokens
     // came from — so the next chunk needs to send neither the prior raws nor the
-    // document, only the new text.
+    // document, only the new text, and needs to lex only what follows the stable
+    // boundary.
     if (key !== null && version !== null) {
-      rawCache.set(key, {
-        version: version + 1,
-        raws: tokens.map((t) => t.raw),
-        source,
-      });
+      rawCache.set(key, { version: version + 1, lex: result.cache });
     }
     self.postMessage({
       id,
       matchLen,
       tail: tokens.slice(matchLen),
       lexerMs,
-      sourceCharsLexed: source.length,
+      sourceCharsLexed: result.charsLexed,
     });
   } catch (err) {
-    // The cached raws no longer describe anything the caller can trust.
+    // The cached tokens no longer describe anything the caller can trust.
     if (key !== null) rawCache.delete(key);
     self.postMessage({ id, error: String(err) });
   }
