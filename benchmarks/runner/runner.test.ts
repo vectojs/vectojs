@@ -21,6 +21,7 @@ import {
   RunnerUsageError,
 } from './schema';
 import { startRunnerServer } from './server';
+import { selectPanelRefreshHz } from './window/hyprland';
 import type {
   BrowserAdapter,
   BrowserProfileSession,
@@ -143,7 +144,9 @@ describe('benchmark query passthrough', () => {
     // Only the first `=` separates; a benchmark may legitimately want a value
     // that itself contains one (a comma-list, an expression).
     expect(parseRunnerArgs(['x', '8178', '--param', 'expr=a=b']).params).toEqual({ expr: 'a=b' });
-    expect(parseRunnerArgs(['x', '8178', '--param', 'note=']).params).toEqual({ note: '' });
+    expect(parseRunnerArgs(['x', '8178', '--param', 'note=']).params).toEqual({
+      note: '',
+    });
   });
 
   test('rejects a malformed --param', () => {
@@ -299,6 +302,7 @@ async function exerciseProfileLifecycle(
   const stopsAfterBrowserExit = browser === 'firefox';
   let requestedTracePath = '';
   let requestedGate: string | null = null;
+  let preparedPanelHz: number | null | undefined;
   let launchedEnvironment: Readonly<Record<string, string>> | undefined;
   let terminationOptions: { graceMs?: number; requireGracefulExit?: boolean } | undefined;
   const profileSession: BrowserProfileSession = {
@@ -345,8 +349,9 @@ async function exerciseProfileLifecycle(
       },
     },
     resolveExecutable: () => `/usr/bin/${browser}`,
-    async prepareProfile() {
+    async prepareProfile(_profileDir, panelHz) {
       events.push('prepare');
+      preparedPanelHz = panelHz;
     },
     launchSpec: () => ({
       executable: `/usr/bin/${browser}`,
@@ -356,6 +361,7 @@ async function exerciseProfileLifecycle(
   };
   const windows: WindowController = {
     activeWorkspace: async () => 1,
+    panelRefreshHz: async () => 240,
     async launch(_workspace, spec) {
       events.push('launch');
       launchedEnvironment = spec.environment;
@@ -415,6 +421,7 @@ async function exerciseProfileLifecycle(
     events,
     launchedEnvironment,
     match,
+    preparedPanelHz,
     requestedGate,
     requestedTracePath,
     terminationOptions,
@@ -478,9 +485,24 @@ describe('profile orchestration', () => {
 
 test('window selection prefers the benchmark title on the dedicated workspace', () => {
   const clients = [
-    { address: '0x1', className: 'firefox', title: 'Private Browsing', workspace: 3 },
-    { address: '0x2', className: 'firefox', title: 'VectoJS benchmark', workspace: 3 },
-    { address: '0x3', className: 'firefox', title: 'VectoJS user tab', workspace: 1 },
+    {
+      address: '0x1',
+      className: 'firefox',
+      title: 'Private Browsing',
+      workspace: 3,
+    },
+    {
+      address: '0x2',
+      className: 'firefox',
+      title: 'VectoJS benchmark',
+      workspace: 3,
+    },
+    {
+      address: '0x3',
+      className: 'firefox',
+      title: 'VectoJS user tab',
+      workspace: 1,
+    },
   ];
   expect(selectWindow(clients, 3, 'firefox', 'vectojs')).toBe('0x2');
   expect(selectWindow(clients, 3, 'firefox', 'missing')).toBe('0x1');
@@ -498,7 +520,14 @@ describe('result matching', () => {
         runId: 'suite-chrome-i1',
         suiteRunId: 'suite',
         engine: 'chrome',
-        rows: [{ starved: true, shape: 'scene', expectedFrames: 100, streamOffered: 2 }],
+        rows: [
+          {
+            starved: true,
+            shape: 'scene',
+            expectedFrames: 100,
+            streamOffered: 2,
+          },
+        ],
       }),
     );
     await Bun.write(
@@ -555,7 +584,9 @@ describe('profile-owned process cleanup', () => {
   test('tracks a Firefox window PID tree while waiting for natural exit', async () => {
     const procRoot = await mkdtemp(join(tempRoot, 'proc-tree-'));
     for (const pid of [303, 404]) {
-      await mkdir(join(procRoot, String(pid), 'task', String(pid)), { recursive: true });
+      await mkdir(join(procRoot, String(pid), 'task', String(pid)), {
+        recursive: true,
+      });
     }
     await writeFile(join(procRoot, '303', 'task', '303', 'children'), '404');
     await writeFile(join(procRoot, '404', 'task', '404', 'children'), '');
@@ -587,7 +618,9 @@ describe('profile-owned process cleanup', () => {
   test('reports SIGTERM as a non-graceful fallback after the Firefox grace expires', async () => {
     const procRoot = await mkdtemp(join(tempRoot, 'proc-tree-timeout-'));
     for (const pid of [505, 606]) {
-      await mkdir(join(procRoot, String(pid), 'task', String(pid)), { recursive: true });
+      await mkdir(join(procRoot, String(pid), 'task', String(pid)), {
+        recursive: true,
+      });
     }
     await writeFile(join(procRoot, '505', 'task', '505', 'children'), '606');
     await writeFile(join(procRoot, '606', 'task', '606', 'children'), '');
@@ -650,4 +683,116 @@ test('thin shell entry preserves parser failures and exit status', async () => {
   const stderr = await new Response(subprocess.stderr).text();
   expect(await subprocess.exited).toBe(1);
   expect(stderr).toContain("unknown --mode 'bad'");
+});
+
+describe('firefox frame rate preference', () => {
+  test('writes the panel rate into the profile so rAF runs at display cadence', async () => {
+    // The whole fix. Firefox's `layout.frame_rate` default of -1 ("follow the
+    // display") resolves to 60Hz on this Hyprland/Wayland host even with the window
+    // focused on the active workspace: measured 2026-08-03, seven launches with a
+    // fresh profile each, every 500ms rAF bucket between 58.1 and 61.9Hz, while the
+    // same probe gave Chromium ~240Hz from its first bucket. Without this pref every
+    // Firefox measure-mode row samples a 60Hz page.
+    const directory = await mkdtemp(join(tempRoot, 'ff-prefs-'));
+    try {
+      await new FirefoxAdapter('/usr/bin/firefox').prepareProfile(directory, 240);
+      const prefs = await Bun.file(join(directory, 'user.js')).text();
+      expect(prefs).toContain('user_pref("layout.frame_rate", 240);');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('rounds a fractional panel rate, because the pref is an integer', async () => {
+    // hyprctl reports 239.76 on some modes; `layout.frame_rate` takes an int, and an
+    // unparseable value would leave Firefox on its 60Hz default.
+    const directory = await mkdtemp(join(tempRoot, 'ff-prefs-round-'));
+    try {
+      await new FirefoxAdapter('/usr/bin/firefox').prepareProfile(directory, 143.94);
+      const prefs = await Bun.file(join(directory, 'user.js')).text();
+      expect(prefs).toContain('user_pref("layout.frame_rate", 144);');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('omits the preference when the panel rate is unknown', async () => {
+    // Better to leave Firefox on its default than to invent a rate: a wrong explicit
+    // value would be quoted as though the page ran at it, whereas an absent one is
+    // caught by the page's cadence gate.
+    const directory = await mkdtemp(join(tempRoot, 'ff-prefs-none-'));
+    try {
+      const adapter = new FirefoxAdapter('/usr/bin/firefox');
+      for (const panelHz of [null, undefined, 0, Number.NaN]) {
+        await adapter.prepareProfile(directory, panelHz);
+        const prefs = await Bun.file(join(directory, 'user.js')).text();
+        expect(prefs).not.toContain('layout.frame_rate');
+        // The suppression preferences must survive regardless.
+        expect(prefs).toContain('browser.shell.checkDefaultBrowser');
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('never unthrottles rAF, which would decouple it from vsync', async () => {
+    // `layout.frame_rate=0` measured 820-1044Hz — frames nobody sees, and not
+    // comparable to any user-visible cadence. A panel rate must never produce it.
+    const directory = await mkdtemp(join(tempRoot, 'ff-prefs-zero-'));
+    try {
+      await new FirefoxAdapter('/usr/bin/firefox').prepareProfile(directory, 240);
+      const prefs = await Bun.file(join(directory, 'user.js')).text();
+      expect(prefs).not.toContain('user_pref("layout.frame_rate", 0);');
+      expect(prefs).not.toContain('user_pref("layout.frame_rate", -1);');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('panel refresh rate from the compositor', () => {
+  test('reads the rate hyprctl reports', () => {
+    expect(selectPanelRefreshHz([{ name: 'eDP-1', refreshRate: 240.00001, disabled: false }])).toBe(
+      240,
+    );
+  });
+
+  test('ignores a disabled monitor', () => {
+    // A disabled panel's mode is not what any window renders against.
+    expect(
+      selectPanelRefreshHz([
+        { name: 'HDMI-A-1', refreshRate: 360, disabled: true },
+        { name: 'eDP-1', refreshRate: 240, disabled: false },
+      ]),
+    ).toBe(240);
+  });
+
+  test('takes the fastest monitor, since the window does not exist yet', () => {
+    // The rate is written into a browser profile before launch, so there is no
+    // window whose monitor could be consulted.
+    expect(
+      selectPanelRefreshHz([
+        { name: 'eDP-1', refreshRate: 60 },
+        { name: 'DP-1', refreshRate: 144 },
+      ]),
+    ).toBe(144);
+  });
+
+  test('returns null rather than a guess on unusable output', () => {
+    // Null leaves Firefox on its default, which the cadence gate then reports. A
+    // fabricated rate would be silently wrong and still quoted.
+    for (const value of [null, undefined, {}, [], 'nope', [{ name: 'x' }], [{ refreshRate: 0 }]]) {
+      expect(selectPanelRefreshHz(value)).toBeNull();
+    }
+  });
+});
+
+test('the runner reads the panel rate and hands it to the browser profile', async () => {
+  // The wiring the whole Firefox fix depends on, and the one step no other test
+  // covers: `framePreference` can be perfect and the pref still never reach the
+  // profile. Firefox's frame rate is a profile preference, so it must be read from
+  // the compositor and written BEFORE launch — there is no way to set it after.
+  const { events, preparedPanelHz } = await exerciseProfileLifecycle(true);
+  expect(preparedPanelHz).toBe(240);
+  expect(events.indexOf('prepare')).toBeLessThan(events.indexOf('launch'));
 });

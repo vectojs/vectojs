@@ -49,6 +49,27 @@ export interface HostInfo {
   driver: string | null;
   kernel: string | null;
   os: string | null;
+  /**
+   * The display's own refresh rate in Hz, from the compositor. `null` when it
+   * could not be determined.
+   *
+   * This is the one number that makes a measured `refreshHz` checkable. A page
+   * can measure the cadence it is *getting*, but it has no way to know the
+   * cadence it *should* be getting: an unfocused window on an inactive Hyprland
+   * workspace silently loses compositor frame callbacks and its rAF falls back to
+   * a ~60 Hz timer while still reporting `visibilityState: 'visible'` and
+   * `document.hasFocus() === true`. 60 Hz is a perfectly ordinary reading, so
+   * without an external expectation nothing in the page or the envelope can tell
+   * that run apart from a good one.
+   *
+   * On a host with mixed refresh rates this is the fastest enabled monitor, not
+   * necessarily the one the benchmark window is on — the value is cached for the
+   * server's lifetime and a window can move, so it is a property of the host
+   * rather than of one window. That makes it usable for the check it exists for
+   * ("did this page fall far below what this host can deliver") and unsuitable as
+   * a per-window ground truth.
+   */
+  panelHz: number | null;
 }
 
 /** The viewport, in enough detail to reconstruct the rasterization workload. */
@@ -127,6 +148,32 @@ export interface BrowserInfo {
   hardwareConcurrency: number | null;
 }
 
+/**
+ * What the pre-run cadence gate found.
+ *
+ * Recorded in the envelope because a gate that only waits is barely better than no
+ * gate: when it times out the run continues and still produces numbers, and this
+ * block plus the validation issue it drives are the only things that tell those
+ * numbers apart from good ones. Present only on runs whose page gated, so its
+ * absence on an older file means "not gated", not "gate passed".
+ */
+export interface CadenceGateOutcome {
+  /**
+   * `reached` — cadence matched the panel before the deadline, the normal path.
+   * `timeout` — it never did, so the run measured a throttled page and must not be
+   * quoted. `skipped` — the gate did not apply; see `reason`.
+   */
+  status: 'reached' | 'timeout' | 'skipped';
+  /** The rate the gate was waiting for, or null when it did not know one. */
+  panelHz: number | null;
+  /** The last cadence the gate sampled. 0 means no frames arrived at all. */
+  observedHz: number;
+  /** How long the gate waited before proceeding. */
+  waitedMs: number;
+  /** Why the gate was skipped or timed out; null when it simply succeeded. */
+  reason: string | null;
+}
+
 /** Why a result should or should not be trusted. */
 export interface ValidationBlock {
   /** True when `issues` is empty. */
@@ -168,6 +215,14 @@ export interface BenchmarkResult {
   viewport: ViewportInfo;
   /** Measured rAF cadence. 0 means no frames arrived, which is a validation issue. */
   refreshHz: number;
+  /**
+   * What the pre-run cadence gate found, when the page ran one.
+   *
+   * Absent on a profile-mode run (the driver gate holds the page instead) and on
+   * any result produced before the gate existed, so absence means "not gated"
+   * rather than "gate passed".
+   */
+  cadenceGate?: CadenceGateOutcome;
   host: HostInfo | null;
   startedAt: string;
   /** Wall-clock time the measured section took, for spotting a run that stalled. */
@@ -226,6 +281,34 @@ export function engineFromUa(ua: string): string {
 }
 
 /**
+ * How far *below* the panel rate a measured cadence may sit before it is a defect.
+ *
+ * Wide, because a page can legitimately read below panel rate: rAF is delivered at
+ * display rate but a callback can be late, and the estimator's own hitch filter
+ * only removes intervals beyond 2x the median. The failure it must catch is not
+ * subtle — the focus cliff lands a 240 Hz panel at ~60 Hz, 75% low — so there is no
+ * reason to sit anywhere near real measurement error, which is 0.025% (Gecko's
+ * whole-millisecond rAF dither averages to 239.94 Hz on a 240 Hz panel).
+ */
+export const CADENCE_TOLERANCE = 0.1;
+
+/**
+ * How far *above* the panel rate a measured cadence may sit.
+ *
+ * Much tighter than {@link CADENCE_TOLERANCE}, and the asymmetry is physical
+ * rather than a tuning choice: a page can genuinely receive fewer frames than the
+ * display offers, but it cannot receive more. So the only thing that has to fit
+ * under this bound is measurement error itself, and every over-read beyond it is a
+ * broken estimator.
+ *
+ * 1% admits Gecko's 0.025% dither error with 40x of room and still catches the one
+ * over-read that has actually happened: taking the median of that dither instead
+ * of the mean reported 250 Hz on a 240 Hz panel, 4.2% high (fixed in #327). A
+ * single tolerance cannot do both jobs — 10% would have let that artifact through.
+ */
+export const CADENCE_OVER_TOLERANCE = 0.01;
+
+/**
  * Environmental checks applied to every run, whatever the benchmark measures.
  *
  * These are the conditions under which a number is not merely noisy but wrong,
@@ -237,11 +320,20 @@ export function engineFromUa(ua: string): string {
  *     costs quantize to 0 or to one tick.
  *   * `dpr` disagreeing with the raster pixel count — a mismatch means the
  *     envelope was assembled by hand and one of the two is stale.
+ *   * `refreshHz` far from `panelHz` — the run measured a cadence the display does
+ *     not have. Measured 2026-08-03: the same command at the same commit produced
+ *     Firefox rows at 239.68 Hz and at 60.30 Hz, and the 60 Hz rows were not
+ *     merely thinner samples — per-flush cost was worse and more variable
+ *     (0.66-0.92 ms at 34-38% GPU utilization, against 0.62-0.64 ms at 64-72%).
+ *     Such a row must be discarded rather than averaged, and before this check
+ *     nothing in the file said so.
  */
 export function validateEnvironment(input: {
   refreshHz: number;
   crossOriginIsolated: boolean;
   viewport: ViewportInfo;
+  /** The display's own rate, when the server could determine it. */
+  panelHz?: number | null;
 }): ValidationBlock {
   const issues: string[] = [];
   if (input.refreshHz === 0) {
@@ -258,6 +350,29 @@ export function validateEnvironment(input: {
     input.viewport.width * input.viewport.height * input.viewport.dpr * input.viewport.dpr;
   if (Math.abs(expectedPixels - input.viewport.rasterPixels) > 1) {
     issues.push('viewport.rasterPixels disagrees with width*height*dpr^2');
+  }
+  // Only meaningful when both are known. `refreshHz === 0` already has its own,
+  // more specific issue above, so it is not also reported as a cadence mismatch.
+  const panelHz = input.panelHz;
+  if (typeof panelHz === 'number' && panelHz > 0 && input.refreshHz > 0) {
+    const ratio = input.refreshHz / panelHz;
+    if (ratio < 1 - CADENCE_TOLERANCE) {
+      // Reported as lost frames rather than as a bad estimate: the frames really
+      // did not arrive, so the per-frame figures describe a throttled run.
+      issues.push(
+        `refreshHz ${input.refreshHz.toFixed(2)} is far below the panel's ${panelHz.toFixed(2)}: ` +
+          'the page did not receive frame callbacks at panel rate (typically an unfocused window), ' +
+          'so its per-frame figures are not comparable and must not be quoted',
+      );
+    } else if (ratio > 1 + CADENCE_OVER_TOLERANCE) {
+      // The opposite sign cannot be lost frames — no display delivers more frames
+      // than its rate — so the estimator itself is wrong, which also invalidates
+      // the expected-frame count the starvation check divides by.
+      issues.push(
+        `refreshHz ${input.refreshHz.toFixed(2)} exceeds the panel's ${panelHz.toFixed(2)}: ` +
+          'the cadence estimate is wrong, so expected-frame counts derived from it are too',
+      );
+    }
   }
   return { ok: issues.length === 0, issues };
 }

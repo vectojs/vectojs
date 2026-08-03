@@ -186,7 +186,12 @@ export async function runOne(
   let browserPid: number | null = null;
   let profileSession: BrowserProfileSession | null = null;
 
-  await adapter.prepareProfile(profileDir);
+  // Read before launch: Firefox's frame rate is a profile preference, so it has to
+  // be written before the process starts. Null leaves the pref unset, which puts
+  // Firefox back on its 60Hz default — the page's cadence gate reports that rather
+  // than letting it pass as a measurement.
+  const panelHz = await windows.panelRefreshHz();
+  await adapter.prepareProfile(profileDir, panelHz);
   const environment = profileOptions ? await profiler?.prepare(profileOptions) : undefined;
   const launchSpec = adapter.launchSpec(profileDir, url, config.viewport, config.mode);
   const spec: BrowserLaunchSpec =

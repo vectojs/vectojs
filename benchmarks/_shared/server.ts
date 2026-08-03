@@ -114,6 +114,48 @@ async function firstLine(command: string[]): Promise<string | null> {
   }
 }
 
+/**
+ * The display's refresh rate in Hz, from the compositor, or null.
+ *
+ * This exists so that a measured cadence can be checked against something. The
+ * page can measure the rate it is *getting* but has no way to know the rate it
+ * *should* be getting, and the failure this catches produces a perfectly ordinary
+ * looking number: an unfocused window on an inactive Hyprland workspace loses
+ * compositor frame callbacks and its rAF drops to a ~60 Hz timer while still
+ * reporting `visibilityState: 'visible'` and `document.hasFocus() === true`.
+ *
+ * The fastest enabled monitor, not the one the benchmark window is on. A window
+ * can move and this value is cached for the server's lifetime, so anything
+ * per-window would go stale; the fastest enabled panel is a property of the host
+ * and is the right denominator for the question actually being asked, which is
+ * whether a page fell far below what this host can deliver.
+ *
+ * Null rather than a guess when `hyprctl` is absent or unparseable — a fabricated
+ * expectation would produce false validation issues on every run of a machine
+ * this happens not to know how to interrogate.
+ */
+async function readPanelHz(): Promise<number | null> {
+  try {
+    const proc = Bun.spawn(['hyprctl', 'monitors', '-j'], { stderr: 'ignore' });
+    const parsed: unknown = JSON.parse(await new Response(proc.stdout).text());
+    if (!Array.isArray(parsed)) return null;
+    let best = 0;
+    for (const monitor of parsed) {
+      if (typeof monitor !== 'object' || monitor === null) continue;
+      if ('disabled' in monitor && monitor.disabled === true) continue;
+      if (!('refreshRate' in monitor) || typeof monitor.refreshRate !== 'number') continue;
+      if (Number.isFinite(monitor.refreshRate) && monitor.refreshRate > best) {
+        best = monitor.refreshRate;
+      }
+    }
+    // Round to 2dp: hyprctl reports 240.00000, and an exact float here would make
+    // the recorded expectation noisier than the thing it is checking.
+    return best > 0 ? Math.round(best * 100) / 100 : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readHostInfo(benchRoot: string): Promise<Record<string, unknown>> {
   const cpuinfo = await Bun.file('/proc/cpuinfo')
     .text()
@@ -154,6 +196,7 @@ async function readHostInfo(benchRoot: string): Promise<Record<string, unknown>>
     kernel: await firstLine(['uname', '-r']),
     os: prettyName?.[1] ?? null,
     commit,
+    panelHz: await readPanelHz(),
   };
 }
 

@@ -73,7 +73,16 @@ export interface BrowserAdapter {
   readonly name: BrowserName;
   readonly profiler: BrowserProfiler | null;
   resolveExecutable(): string | null;
-  prepareProfile(profileDir: string): Promise<void>;
+  /**
+   * Write whatever profile state the browser needs before launch.
+   *
+   * `panelHz` is the display's refresh rate, or null when it could not be
+   * determined. Firefox needs it: its `layout.frame_rate` default of -1 means
+   * "follow the display" and resolves to 60 Hz on this Hyprland/Wayland host even
+   * with the window focused, so without an explicit value every Firefox run
+   * measures a 60 Hz page on a 240 Hz panel. See {@link FirefoxAdapter}.
+   */
+  prepareProfile(profileDir: string, panelHz?: number | null): Promise<void>;
   launchSpec(
     profileDir: string,
     url: string,
@@ -84,6 +93,16 @@ export interface BrowserAdapter {
 
 export interface WindowController {
   activeWorkspace(): Promise<number>;
+  /**
+   * The display's refresh rate in Hz, or null when it cannot be determined.
+   *
+   * On the compositor interface because the compositor is the only thing that
+   * knows it, and because a browser has to be *told* it: Firefox's
+   * `layout.frame_rate` default of -1 resolves to 60 Hz here regardless of focus.
+   * Never hardcode a rate — a benchmark on a 60 Hz or 144 Hz panel must get that
+   * panel's rate, not this host's.
+   */
+  panelRefreshHz(): Promise<number | null>;
   launch(workspace: number, spec: BrowserLaunchSpec): Promise<void>;
   find(workspace: number, className: string, titleFragment: string): Promise<string | null>;
   processId?(address: string): Promise<number | null>;
