@@ -230,11 +230,98 @@ _faster_ from 200 to 500 rows. Each arm's repetition count is now calibrated fro
 a probe call to fill a ~20 ms window, and the raw per-call samples ship in the
 JSON so the calibration is auditable.
 
+## `stream-markdown-smd` — vs [`streaming-markdown`](https://github.com/thetarnav/streaming-markdown)
+
+**This one is a loss, and the biggest one recorded here.** `smd` (0.2.15, zero
+dependencies, ~1.6k lines) is a true incremental parser: `parser_write(p, chunk)`
+advances a persistent state machine over a flat `Uint32Array` token stack and
+emits through a four-callback renderer interface, so it never revisits text it
+has already consumed. Our streaming path re-lexes the **entire accumulated
+document** on every chunk.
+
+### Scope difference (ground rule 3)
+
+`smd` is a parser and nothing else — no layout, no rendering beyond an optional
+DOM renderer, no math, no accessibility, and a deliberately reduced CommonMark
+subset. `@vectojs/markdown` parses **and** lays out **and** renders to canvas
+**and** projects a semantic DOM mirror for screen readers **and** shapes TeX via
+MathJax. Only the streaming-parse axis is compared, because that is the only
+place the two genuinely overlap.
+
+### The comparison is not "our parser vs theirs" — we don't have a parser
+
+`lexMarkdown()` (`packages/markdown/src/Markdown.ts:42`) is a thin wrapper over
+`marked.lexer()`, and `marked` is a real runtime dependency. Benchmarking "our
+parser" against `smd` would be benchmarking `marked` against `smd`: two
+third-party libraries, neither of them ours. What **is** ours is the strategy in
+`MarkdownWorkerSource` — cache the accumulated source, append the delta, re-lex
+the whole thing, return only the changed token tail via a raw-string prefix
+match. That strategy is what this suite measures.
+
+### Results
+
+Real Chrome 150 / Firefox 153, COOP+COEP isolated, median of 9 trials after 3
+warmups, 32-char chunks, both arms driven through an identical counting sink so
+neither pays for rendering.
+
+| Document (200 sections, 25 070 chars, 784 chunks) | Chrome | Firefox |
+| --- | --- | --- |
+| `smd`, whole stream | 0.76 ms | 1.08 ms |
+| our strategy, whole stream | 434.3 ms | 443.8 ms |
+| **ratio** | **571×** | **411×** |
+| per chunk: `smd` | 0.97 µs | 1.38 µs |
+| per chunk: ours | 554.0 µs | 566.1 µs |
+| one full `marked.lexer()` of the finished doc | 0.975 ms | 1.020 ms |
+
+The last row is the finding. Lexing the finished document **once** costs about a
+millisecond; streaming that same document costs 434 ms. That is ~445× of pure
+re-work — not a parser being slow, but the same linear parser being run 784
+times over an ever-growing prefix.
+
+### Scaling exponents, measured across 3 070 → 25 070 chars
+
+| Arm                             | Chrome | Firefox |
+| ------------------------------- | ------ | ------- |
+| `smd`                           | 0.56   | 0.35    |
+| our streaming strategy          | 2.01   | 1.84    |
+| single `marked.lexer()` call    | 0.98   | 0.95    |
+
+`marked.lexer()` is **linear** (0.98 / 0.95). The quadratic behaviour is entirely
+ours, and it follows arithmetically: N chunks × O(document) per chunk. Measured
+cost lands at 0.33–0.70 of `chunks × (cost of lexing the full document)` across
+both engines and all four sizes, straddling the 0.5 that an exact O(n²)/2 would
+give — early chunks lex a shorter prefix.
+
+At small documents the gap is modest (25 sections: 27× Chrome, 18× Firefox). It
+widens with length, which is exactly the wrong direction for a chat transcript
+that grows all session.
+
+### What the delta protocol does and does not buy
+
+Token-prefix reuse is **99.5%** at 200 sections. The protocol works: it saves
+almost all of the canvas entity rebuilds, which is what it was designed for. It
+cannot save lexing, because the prefix match happens _after_ `marked.lexer()` has
+already run on the full source. The win and the loss are in different phases.
+
+The production path also runs this in a Worker, so an app's main thread does not
+block on it. That is a real mitigation for responsiveness and not for cost: the
+CPU work, the battery drain, and the final chunk's latency are unchanged.
+
+### TODO (ground rule 5)
+
+Lex only from the last **stable block boundary** rather than from the start of
+the document. Markdown blocks are separated by blank lines, and a blank line
+followed by already-stable tokens cannot be re-opened by later text, so the
+prefix before it never needs re-lexing. That converts the stream from O(n²) to
+O(n · block) without giving up the existing token-diff machinery. Fenced code
+blocks and tables need care — an unterminated fence swallows everything after it,
+so the boundary must be the last blank line _outside_ any open construct.
+
 ## Libraries reviewed but not yet benchmarked
 
 Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
 `paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`,
-`danmaku`, `streaming-markdown`.
+`danmaku`.
 
 `LightningChart JS` is commercial and closed-source — any comparison must be
 based on its published documentation and labelled as such.
