@@ -155,6 +155,32 @@ describe('A11y Root and Agent Contract', () => {
         (document.activeElement as HTMLElement)?.hasAttribute('data-vecto-focus-sentinel'),
       ).toBe(true);
     });
+
+    it('keeps focus on a mirror that the ordering pass moves', () => {
+      // Two entities whose visual order is the reverse of their insertion order,
+      // so the ordering pass must actually move one of them.
+      const first = new TestInteractiveEntity('lower');
+      first.y = 200;
+      const second = new TestInteractiveEntity('upper');
+      second.y = 0;
+      scene.add(first);
+      scene.add(second);
+      tick();
+
+      const el = scene.getA11yElement('lower')!;
+      el.focus();
+      expect(document.activeElement).toBe(el);
+
+      // Force the pass to run again and reposition the focused mirror. Moving a
+      // focused element with `insertBefore` blanks `document.activeElement`,
+      // which silently disables any component whose keyboard contract rides an
+      // entity `keydown` listener — `Dropdown`'s Escape-to-close died this way.
+      first.y = -100;
+      scene.a11yNeedsReorder = true;
+      tick();
+
+      expect(document.activeElement).toBe(el);
+    });
   });
 
   it('maintains strict physical order of DOM nodes consistent with DFS preorder traversal', () => {

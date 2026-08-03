@@ -1368,6 +1368,16 @@ export class Scene {
   private activeIds: Set<string> = new Set<string>();
   /** Per-parent insertion cursor, reused by `enforceA11yDomOrder`. */
   private a11yOrderCursors: Map<Node, number> = new Map<Node, number>();
+  /** Membership set for the elements being ordered, reused per reorder pass. */
+  private a11yOrderMembers: Set<HTMLElement> = new Set<HTMLElement>();
+  /**
+   * Elements that are an *ancestor* of another ordered element, reused per pass.
+   *
+   * A composite widget's container (a `grid` around its rows, a `tree` around its
+   * items) spans every descendant row, so it must not extend a visual row band —
+   * see {@link sortNormalElementsVisually}.
+   */
+  private a11yOrderContainers: Set<HTMLElement> = new Set<HTMLElement>();
 
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
@@ -5073,7 +5083,14 @@ export class Scene {
       this.a11yOrderCursors.set(parent, at + 1);
       const current = parent.childNodes[at];
       if (current !== expected) {
+        // Moving a focused element blanks `document.activeElement`, and a
+        // component whose keyboard contract rides an entity `keydown` listener
+        // then stops receiving keys entirely — measured on `Dropdown`, whose
+        // Escape-to-close (Dropdown.ts:95,123) silently died because opening the
+        // popup reordered the mirror that held focus. Restore it after the move.
+        const refocus = document.activeElement === expected;
         parent.insertBefore(expected, current || null);
+        if (refocus) expected.focus({ preventScroll: true });
       }
     }
 
@@ -5105,25 +5122,61 @@ export class Scene {
     if (els.length < 2) return;
 
     const rtl = this._readingDirection === 'rtl';
-    const topOf = (el: HTMLElement) => Number.parseFloat(el.style.top) || 0;
-    const leftOf = (el: HTMLElement) => Number.parseFloat(el.style.left) || 0;
     // A zero-height mirror (rare) still needs a row band so same-top siblings
     // group together; clamp to a small minimum.
     const heightOf = (el: HTMLElement) => Math.max(Number.parseFloat(el.style.height) || 0, 4);
 
+    // Identify which of these elements contain another one. Composite widgets
+    // nest (`grid` > `row` > `gridcell`), and a container necessarily spans every
+    // row it owns, so letting it extend a row band merges all of its rows into a
+    // single band — after which the inline sort orders every cell by `left`
+    // alone and yields column-major order. Walking ancestors is O(n · depth)
+    // against the O(n log n) sort below, and the projection nests at most three
+    // levels deep.
+    const members = this.a11yOrderMembers;
+    const containers = this.a11yOrderContainers;
+    members.clear();
+    containers.clear();
+    for (const el of els) members.add(el);
+    for (const el of els) {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        if (members.has(p)) containers.add(p);
+      }
+    }
+
+    // `top`/`left` are written **parent-relative** for a nested mirror (see
+    // `rebaseChildBox`) and world-relative for a flat one, so the raw values are
+    // not comparable across nesting levels: every `gridcell` inside a `row`
+    // reports `top: 0`, which sorts all of them as if they sat at the top of the
+    // document. Accumulate ancestor offsets to put every element back into one
+    // space. The walk stops at the first ancestor that is not itself being
+    // ordered, which is `a11yRoot`.
+    const absolute = (el: HTMLElement): { top: number; left: number } => {
+      let top = 0;
+      let left = 0;
+      for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+        top += Number.parseFloat(node.style.top) || 0;
+        left += Number.parseFloat(node.style.left) || 0;
+        const parent = node.parentElement;
+        if (!parent || !members.has(parent)) break;
+      }
+      return { top, left };
+    };
+
     // Decorate with the original index so the sort is stable across engines.
-    const order = els.map((el, i) => ({
-      el,
-      i,
-      top: topOf(el),
-      left: leftOf(el),
-    }));
+    const order = els.map((el, i) => {
+      const { top, left } = absolute(el);
+      return { el, i, top, left, container: containers.has(el) };
+    });
     order.sort((p, q) => p.top - q.top || p.i - q.i);
 
-    // Bucket into visual rows by vertical overlap, then sort each row inline.
+    // Bucket into visual rows by vertical overlap, then sort each row inline. A
+    // container contributes its position — so it still sorts ahead of its own
+    // descendants — but not its height, which is what keeps its rows separate.
+    const bandBottom = (r: (typeof order)[number]) => r.top + (r.container ? 4 : heightOf(r.el));
     const sorted: HTMLElement[] = [];
     let rowStart = 0;
-    let rowBottom = order.length ? order[0].top + heightOf(order[0].el) : 0;
+    let rowBottom = order.length ? bandBottom(order[0]) : 0;
     const flushRow = (end: number) => {
       const row = order.slice(rowStart, end);
       row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
@@ -5132,11 +5185,11 @@ export class Scene {
     for (let k = 1; k < order.length; k++) {
       if (order[k].top < rowBottom) {
         // Same row — extend the band to the tallest element seen so far.
-        rowBottom = Math.max(rowBottom, order[k].top + heightOf(order[k].el));
+        rowBottom = Math.max(rowBottom, bandBottom(order[k]));
       } else {
         flushRow(k);
         rowStart = k;
-        rowBottom = order[k].top + heightOf(order[k].el);
+        rowBottom = bandBottom(order[k]);
       }
     }
     flushRow(order.length);
