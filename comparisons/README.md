@@ -1,4 +1,3 @@
-
 # Library comparisons
 
 Head-to-head comparisons between VectoJS and other libraries, written as
@@ -96,12 +95,12 @@ renders the same label + button four ways and probes the live DOM.
 
 Chrome 150 (DPR 1) and Firefox 153 (DPR 1.579 — a fractional ratio, deliberately):
 
-| | backing-store ratio | a11y tree | accessible name | text selectable |
-| --- | --- | --- | --- | --- |
-| DOM (baseline) | n/a | yes | `Run export` | yes |
-| **VectoJS** | matches DPR | **yes** | **`Run export`** | **yes** |
-| Konva 10.3.0 | matches DPR | no | — | no |
-| Fabric.js 7.4.0 | matches DPR | no | — | no |
+|                 | backing-store ratio | a11y tree | accessible name  | text selectable |
+| --------------- | ------------------- | --------- | ---------------- | --------------- |
+| DOM (baseline)  | n/a                 | yes       | `Run export`     | yes             |
+| **VectoJS**     | matches DPR         | **yes**   | **`Run export`** | **yes**         |
+| Konva 10.3.0    | matches DPR         | no        | —                | no              |
+| Fabric.js 7.4.0 | matches DPR         | no        | —                | no              |
 
 **DPR is not a differentiator — do not claim it as one.** All three canvas
 libraries scale their backing store correctly, including at Firefox's fractional
@@ -127,10 +126,114 @@ pixels: the screenshot was taken before the render settled. The page now emits a
 would have produced a false bug report — capture after an explicit settle signal,
 and cross-check pixels programmatically before believing an image.
 
+## `layout-flex-canvas-ui` — vs [`@canvas-ui/core`](https://github.com/alibaba/canvas-ui)
+
+Of every library cloned into `references/`, Alibaba's Canvas UI is the only one
+attempting what VectoJS attempts: a general UI runtime that renders components to
+a canvas with a DOM-like scene tree, its own text layout, and a box layout system.
+Konva and Fabric are scene-graph and object-model libraries with no layout system
+at all, which is why `render-canvas-libs` compares those on rendering and
+semantics instead.
+
+It also makes the opposite architectural bet on layout, which is what makes it
+worth measuring: **canvas-ui delegates layout to Yoga**, Facebook's C++ flexbox
+engine, while VectoJS computes layout in hand-written TypeScript.
+
+**This is not "WASM vs JS", and the difference matters.** canvas-ui 2.0.0 depends
+on `yoga-layout-prebuilt-fork@1.10.6`, which ships **asm.js**: its
+`build/Release/nbind.js` contains `"use asm"` and zero references to
+`WebAssembly`, and the package contains no `.wasm` file at all. So this is an
+Emscripten/nbind asm.js port against natively JIT-compiled TypeScript — asm.js
+pays marshalling on every boundary crossing and no longer gets the dedicated
+ahead-of-time pipeline it once did.
+
+**Scope differs, and it matters:**
+
+|              | `@canvas-ui/core` `RenderFlex`                                                                    | `@vectojs/ui` `Stack`               |
+| ------------ | ------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Layout model | much of flexbox: grow/shrink/basis, wrap, justify, align items/content/self, min/max, %, absolute | single-axis stacking                |
+| Knobs        | per-side margin **and** padding                                                                   | `direction`, `gap`, `align`, `wrap` |
+| Backend      | Yoga (asm.js)                                                                                     | hand-written TypeScript             |
+| Invalidation | style write → dirty → `pipeline.flushLayout()`                                                    | `add()` positions immediately       |
+
+`Stack` is a strict **subset**. The benchmark therefore drives only the workload
+both express natively — stacked rows of fixed-size children with a gap — and is
+**not** evidence that `Stack` could replace `RenderFlex`. One asymmetry is
+accepted rather than hidden: canvas-ui has no `gap`, so the gap is per-child
+leading margin, which gives Yoga per-child margin work `Stack` folds into one
+scalar.
+
+### What the benchmark found
+
+Chrome 150 / Firefox 153, median of 15 with 3 warmup passes, 500 rows × 3 cells
+= 2001 nodes (baselines in `vectojs-docs/forge/baselines/cmp-layout-flex-canvas-ui-*`):
+
+| 500-row tree                                 | Chrome        | Firefox       |
+| -------------------------------------------- | ------------- | ------------- |
+| build — VectoJS `Stack`                      | **0.333 ms**  | **0.916 ms**  |
+| build — canvas-ui, append all then one flush | 182.51 ms     | 172.04 ms     |
+| build — canvas-ui, flush per row (streaming) | 468.36 ms     | 730.54 ms     |
+| relayout — VectoJS `Stack.layout()`          | **0.0217 ms** | **0.0415 ms** |
+| relayout — canvas-ui end-to-end              | 16.36 ms      | 19.24 ms      |
+| ⤷ of which: marking dirty                    | 13.38 ms      | 10.74 ms      |
+| ⤷ of which: Yoga computing (`flushLayout`)   | 3.68 ms       | 6.62 ms       |
+
+**The headline ratio is not a layout-algorithm result, and reporting it as one
+would be wrong.** End-to-end relayout differs by 755× (Chrome), but the split
+shows **78% of canvas-ui's Chrome cost, and 62% of its Firefox cost, is spent
+before Yoga computes anything** — in the `StyleMap` Proxy trap, an eventemitter3
+`emit`, the asm.js `setWidth` marshalling, and `markLayoutDirty`. Against Yoga's
+`flushLayout` alone the gap is **170× / 159×**, and Yoga's own cost of ~1.8 µs per
+node is not embarrassing. The invalidation path, not the flexbox engine, is what
+dominates — and a caller cannot avoid it, because a style write is canvas-ui's
+only way to invalidate.
+
+The one clear algorithmic difference is **incremental build**: canvas-ui's
+flush-per-append is 2.6× (Chrome) / 4.2× (Firefox) slower than its own batched
+path at 500 rows, up from 1.1× at 50 rows — superlinear, because each flush
+re-lays the dirty subtree. `Stack.add()` has an O(1) append fast path, so its
+build is linear (per-node cost flat, and slightly _falling_, at 0.179 → 0.170 →
+0.166 µs across 50/200/500 rows in Chrome). A streaming feed appending one row at
+a time is the workload where that difference is felt.
+
+### Method note — two gates, both verified by sabotage
+
+Neither gate is decoration; each caught a real defect in this suite's own first draft.
+
+1. **Geometry agreement, checked before any timing.** The first version expressed
+   only the horizontal gap on the canvas-ui side, so its column was 80 px tall
+   against VectoJS's 104 — it would have looked faster for doing strictly less
+   work. The page now suppresses **every** timing unless both engines produce
+   identical geometry. Verified by re-introducing the bug: `geometryAgrees: false`
+   and zero rows measured.
+2. **Proof that the relayout actually reflowed.** canvas-ui's `RenderFlex`
+   container-style handlers (`flexDirection`, `flexWrap`, `justifyContent`,
+   `alignItems`, `alignContent`) set the Yoga property but **never call
+   `markLayoutDirty()`**, unlike `RenderObject`'s `width`/`height`/`flexGrow`
+   handlers. Driving relayout via `alignItems` therefore left the dirty list empty
+   and `flushLayout()` returned instantly — reported as 0.05 ms for 500 rows in
+   Chrome, which reads as a fast Yoga rather than a no-op. Relayout is now driven
+   through `width`, and each row asserts the reflow landed.
+
+   That second gate was itself too weak at first: it compared the row's width
+   against a value that happened to equal the row's natural content width, so a
+   no-op passed it. Sabotage caught that too. **An assertion whose expected value
+   coincides with the system's default state cannot distinguish "did the work"
+   from "did nothing."**
+
+Both VectoJS arms are tens of microseconds, which is at or below
+`performance.now()`'s resolution — 5 µs in Chrome, **20 µs in Firefox**, even with
+COOP/COEP. Timed one call at a time, the Firefox relayout produced
+`[0.02, 0.02, 0, 0.02, 0, …]`: one timer tick or zero, a quantisation pattern
+rather than a measurement, which also explains an earlier build "result" that got
+_faster_ from 200 to 500 rows. Each arm's repetition count is now calibrated from
+a probe call to fill a ~20 ms window, and the raw per-call samples ship in the
+JSON so the calibration is auditable.
+
 ## Libraries reviewed but not yet benchmarked
 
 Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
-`paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`, `alibaba-canvas-ui`,
+`paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`,
 `danmaku`, `streaming-markdown`.
 
 `LightningChart JS` is commercial and closed-source — any comparison must be
