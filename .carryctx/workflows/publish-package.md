@@ -40,6 +40,22 @@ User asks to "release", "publish", "cut a version", or "bump" a package under `p
    - `public/sandbox/**/*.html` → the `esm.sh` import-map pins (14 `core` pins across 14 files, plus 11 `ui` and 1 `markdown`, as of 1.23.0). **Glob recursively** — `public/sandbox/ui/` is a subdirectory, so a non-recursive `public/sandbox/*.html` silently misses 5 of the 14 `core` pins. `check:docs` scans `**/*.html` and will fail on the ones you missed.
    - `package.json` + lockfile → the real `@vectojs/*` deps; `check-docs-consistency.ts` compares `VERSIONS` against what is **installed in `node_modules`**, not the declared range, so `bun install` must run. Note it only version-checks the four packages the site actually depends on (`core`, `ui`, `three`, `video-exporter`) — `VERSIONS.devtools`, `.text`, `.layout`, `.math`, `.animation`, `.markdown`, `.graph3d` are display-only for the docs sidebar and **no gate catches them**, so update those by hand and re-read the diff.
    - `src/content/reference/ui-components.md` → the `Version documented:` line
+   - `src/content/**/*.md` → the `?v=core-<core>-ui-<ui>` cache-bust token on every
+     sandbox `<iframe>` (**29 files** as of core 1.28.1). This is a fifth surface,
+     and the one most likely to be missed: the sandbox page never reads `v=`, so a
+     stale token breaks nothing locally — it only means a returning visitor keeps
+     executing the **old** pinned core against the new docs, which is exactly what
+     happened at `core-1.8.0-ui-1.9.0`. `scripts/test-component-sandboxes.ts`
+     derives the expected token from `VERSIONS` and does catch it, but it lives in
+     `test:component-sandboxes` and website CI runs **only** `bun run test`
+     (= `bun test src`), so **no CI check will tell you**. Run it by hand on every
+     release sync, together with `test:demos`, `test:dpr` and `test:keyboard`,
+     which CI also skips.
+
+     That suite serves `dist/` and rebuilds only when `dist` is _missing_, not when
+     it is stale (`scripts/test-utils.ts:52`), so run `bun run build` first or it
+     reports the previous build's tokens — a false failure indistinguishable from a
+     real one.
 
    Confirm each new pin resolves (`curl -o /dev/null -w '%{http_code}' https://esm.sh/@vectojs/<pkg>@<version>`) **before** committing: an unresolvable pin breaks the sandbox outright rather than degrading, and it only fails at runtime in a visitor's browser. Run all five CI steps locally (`check:docs`, `check`, `test`, `format:check`, `build`), then verify the deployed page with `curl -sL` — note `/sandbox/*.html` answers `308`, so `-L` is required.
 
