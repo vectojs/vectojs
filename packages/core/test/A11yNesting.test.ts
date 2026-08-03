@@ -36,6 +36,40 @@ class RoleEntity extends Entity {
   }
 }
 
+/**
+ * A cell that carries *both* an a11y role and selectable text, like `Table`'s
+ * cells. The two mirrors land in different places: the role mirror nests inside
+ * its `row`, while the **content** mirror stays flat under `a11yRoot` (only the
+ * role pairs in `A11Y_REQUIRED_OWNED` nest). Document order across the flat
+ * content mirrors is what native selection reads.
+ */
+class TextCellEntity extends Entity {
+  public role: string;
+  public label: string;
+
+  constructor(id: string, role: string, label: string) {
+    super(id);
+    this.role = role;
+    this.label = label;
+    this.interactive = true;
+    this.width = 100;
+    this.height = 30;
+  }
+
+  isPointInside() {
+    return true;
+  }
+  render() {}
+
+  public getA11yAttributes(): A11yAttributes {
+    return { role: this.role, label: this.label };
+  }
+
+  public getContentProjection() {
+    return { text: this.label, selectable: true };
+  }
+}
+
 /** A container that never projects, like `Table`'s virtualization clip. */
 class InertEntity extends Entity {
   constructor(id: string) {
@@ -333,6 +367,69 @@ describe('a11y projection nesting', () => {
 
       const cells = [...mirror('row')!.children].map((c) => c.getAttribute('data-vecto-id'));
       expect(cells).toEqual(['left', 'right']);
+    });
+
+    /**
+     * Regression: two rows, not one.
+     *
+     * The single-row case above passes even when the ordering pass compares
+     * elements across two different coordinate spaces, because with one row
+     * there is nothing to confuse. With two rows the defect becomes visible:
+     * a nested mirror's `left`/`top` are **parent-relative** by design
+     * (see {@link rebaseChildBox}), so every `gridcell` in every row reports
+     * `top: 0px`. An ordering pass that reads raw `style.top` therefore sees all
+     * four cells at the same y, collapses them into one visual row, and sorts
+     * them by `left` alone — yielding column-major order (`a1, a2, b1, b2`)
+     * instead of reading order (`a1, b1, a2, b2`).
+     *
+     * Measured in real Chromium and Firefox before the fix, on a plain
+     * `@vectojs/ui` `Table`: selecting the whole projection returned
+     * `EpsilonEtaIotaZetaThetaKappa` — the entire first column, then the entire
+     * second. This drives Tab order as well as selection order.
+     */
+    it('orders flat content mirrors in reading order across multiple rows', () => {
+      const grid = new RoleEntity('grid', 'grid', 'Data');
+      grid.width = 400;
+      // Taller than one row: this is the container whose band must not swallow
+      // the rows below it.
+      grid.height = 120;
+
+      const ids = [
+        ['r0c0', 'r0c1'],
+        ['r1c0', 'r1c1'],
+      ];
+      for (let r = 0; r < 2; r++) {
+        const row = new RoleEntity(`row${r}`, 'row');
+        row.width = 400;
+        row.y = r * 40;
+        // Right-then-left again: reading order must come from geometry, and the
+        // second row must not be able to borrow the first row's ordering.
+        const right = new TextCellEntity(ids[r][1], 'gridcell', ids[r][1]);
+        right.x = 200;
+        const left = new TextCellEntity(ids[r][0], 'gridcell', ids[r][0]);
+        left.x = 0;
+        row.add(right);
+        row.add(left);
+        grid.add(row);
+      }
+      scene.add(grid);
+      tick();
+
+      // The role mirrors nest per row, so their document order is already
+      // correct by containment. This assertion guards that the fix does not
+      // regress it.
+      expect([...mirror('row0')!.children].map((c) => c.getAttribute('data-vecto-id'))).toEqual([
+        'r0c0',
+        'r0c1',
+      ]);
+
+      // The content mirrors are FLAT siblings under a11yRoot, ordered only by
+      // the visual sort — this is the order native selection walks.
+      const root = (scene as any).a11yRoot as HTMLElement;
+      const contentOrder = [...root.querySelectorAll('[data-vecto-content]')].map(
+        (el) => (el as HTMLElement).textContent,
+      );
+      expect(contentOrder).toEqual(['r0c0', 'r0c1', 'r1c0', 'r1c1']);
     });
   });
 });
