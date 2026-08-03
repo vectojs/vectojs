@@ -1,5 +1,48 @@
 # @vectojs/ui
 
+## 2.10.0
+
+### Minor Changes
+
+- ae6d6ad: Paint strikethrough in `RichText`, and add per-column alignment to `Table`.
+
+  `RichText` renders `@vectojs/layout`'s new `TextStyle.lineThrough` as one line
+  stroked across each struck run. Unlike the link underline — which needs a segment
+  per glyph — a struck run is already coalesced, so one segment spans it; struck-ness
+  joins the coalescing key so a run is never part struck, and the line scales with
+  the run's font size rather than being a hairline on a heading. A struck link gets
+  both lines, which is reachable: `~~[x](url)~~` lexes to a `del` wrapping a `link`.
+
+  `TableOptions.align` (new exported type `ColumnAlign`) takes one entry per column
+  and accepts `'left' | 'center' | 'right' | null`, where `null` and a malformed or
+  short array mean the previous all-left behavior. Alignment is applied by
+  positioning each cell entity inside its column rather than by a text-align
+  property, because the text components accept only `'left' | 'justify'`. All three
+  positioning sites honor it — header, plain body, and virtualized body — so a
+  virtualized table cannot align differently from a plain one past the scroll
+  threshold. For a cell that wrapped to several lines this aligns the block, not each
+  line within it.
+
+### Patch Changes
+
+- 773bbe6: Fix `TextArea` not scrolling with the wheel, and clicks landing on the wrong line.
+
+  `TextArea`'s scroll offset was caret-driven only: it followed `selectionStart` and
+  was never driven by the view. A wheel gesture landed on the shadow `<textarea>`
+  (the topmost node under the pointer) and scrolled it, but the canvas kept drawing
+  the same lines — measured in both engines, the mirror went to `scrollTop` 480 while
+  the canvas stayed put. The same split broke clicking: the browser resolves a click
+  against the mirror's view, so the caret landed on a different line than the one
+  under the pointer — 29 wrapped lines off at load, because the caret is seeded to
+  the end of the value and the canvas scrolled to the bottom while the freshly
+  projected mirror was still at 0.
+
+  `TextArea` now follows the offset its mirror reports (`@vectojs/core`'s new
+  `'scroll'` event), which fixes both: the wheel scrolls because the browser already
+  scrolled the real element, and clicks land correctly because both surfaces resolve
+  against the same view. Caret-following remains as a fallback for when there is no
+  mirror, such as a headless render.
+
 ## 2.9.0
 
 ### Minor Changes
