@@ -40,7 +40,7 @@
   "scripts": {
     "build": "(cd ../ui && bun run build) && node scripts/build-worker.js && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:e2e": "bun e2e/blockquote-layout.e2e.ts && bun e2e/stream-controller.e2e.ts && bun e2e/lazy-math.e2e.ts && bun e2e/paragraph-image-repaint.e2e.ts && bun e2e/selection-fidelity.e2e.ts"
+    "test:e2e": "bun e2e/blockquote-layout.e2e.ts && bun e2e/stream-controller.e2e.ts && bun e2e/lazy-math.e2e.ts && bun e2e/paragraph-image-repaint.e2e.ts && bun e2e/selection-fidelity.e2e.ts && bun e2e/code-atlas-dpr.e2e.ts"
   },
   "dependencies": {
     "marked": "^18.0.7",

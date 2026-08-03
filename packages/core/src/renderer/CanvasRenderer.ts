@@ -62,6 +62,13 @@ export class CanvasRenderer implements IRenderer {
   public maxDPR?: number;
 
   /**
+   * The ratio the context is actually scaled by, i.e. the last value the
+   * constructor or {@link resize} applied. Backs {@link pixelRatio}; see there
+   * for why this is recorded rather than recomputed on read.
+   */
+  private appliedDPR = 1;
+
+  /**
    * Max circles per batched `fill()`. A single Canvas 2D `fill()` over a path is
    * superlinear in sub-path count, so an unbounded batch is *slower* than many
    * small fills at high entity counts. Capping bounds each fill's path
@@ -108,6 +115,7 @@ export class CanvasRenderer implements IRenderer {
   ) {
     this.maxDPR = maxDPR;
     const dpr = this.effectiveDPR();
+    this.appliedDPR = dpr;
     // Fall back to the canvas's own size in SSR/Node where there is no window.
     this.width =
       size?.width ?? (typeof window !== 'undefined' ? window.innerWidth : canvas.width || 0);
@@ -158,7 +166,12 @@ export class CanvasRenderer implements IRenderer {
       if (!ctx) return;
       this.ctx = ctx;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.scale(this.effectiveDPR(), this.effectiveDPR());
+      // Recorded, not just applied: this is a third site that sets the context
+      // scale, and leaving `appliedDPR` behind here would make `pixelRatio` lie
+      // after a GPU reset that happened across a zoom.
+      const restoredDPR = this.effectiveDPR();
+      this.appliedDPR = restoredDPR;
+      ctx.scale(restoredDPR, restoredDPR);
       this._cachedFont = '';
       this._cachedFill = '';
       this.batchActive = false;
@@ -185,6 +198,26 @@ export class CanvasRenderer implements IRenderer {
   }
 
   /**
+   * @inheritdoc
+   *
+   * The ratio the context is **currently scaled by**, recorded by the constructor
+   * and {@link resize} — deliberately not a live `effectiveDPR()` call.
+   *
+   * The distinction is load-bearing rather than pedantic. `devicePixelRatio`
+   * changes the instant a zoom lands, but the backing store is only reallocated
+   * when something calls {@link resize} (in a `Scene`, the `(resolution: Ndppx)`
+   * media query). A live getter therefore reports the *future* ratio during that
+   * window, and a caller rasterizing pixels from it produces a texture that the
+   * still-old context scale resamples — the same defect this property exists to
+   * let callers avoid, merely inverted. Reporting the applied ratio means a
+   * cache keyed on it is always consistent with the pixels it is blitted into,
+   * and it simply re-keys on the next `resize`.
+   */
+  public get pixelRatio(): number {
+    return this.appliedDPR;
+  }
+
+  /**
    * Resize the backing canvas buffer and re-apply DPR scaling.
    *
    * Called automatically by {@link Scene} on `window.resize` events.
@@ -194,6 +227,7 @@ export class CanvasRenderer implements IRenderer {
    */
   public resize(width: number, height: number): void {
     const dpr = this.effectiveDPR();
+    this.appliedDPR = dpr;
     this.width = width;
     this.height = height;
     this.ctx.canvas.width = width * dpr;

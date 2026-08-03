@@ -160,6 +160,21 @@ export class GlyphRasterAtlas {
     this.maxSize = Math.min(HARD_MAX_SIZE, Math.max(256, options.maxSize ?? 2048));
   }
 
+  /**
+   * The device-pixel-ratio these slots were rasterized at.
+   *
+   * Immutable by design. Slot `sx`/`sy`/`sw`/`sh` are device pixels at *this*
+   * ratio while `w`/`h` are CSS pixels, so changing it would invalidate every
+   * resident slot — an atlas is therefore keyed by DPR and replaced on a change,
+   * not mutated (see `Markdown`'s code atlas pool). Exposed so a caller can
+   * compare it against {@link IRenderer.pixelRatio} and assert the blit is
+   * 1:1 rather than resampled: `blitScale = renderer.pixelRatio / atlas.dpr`,
+   * which must be 1 for the pixels to land crisp.
+   */
+  get pixelRatio(): number {
+    return this.dpr;
+  }
+
   /** Live instrumentation snapshot. */
   get stats(): GlyphRasterAtlasStats {
     return {
