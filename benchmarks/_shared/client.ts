@@ -28,11 +28,13 @@ import {
 } from './loaf.ts';
 import {
   browserVersionFromUa,
+  CADENCE_TOLERANCE,
   engineFromUa,
   SCHEMA_VERSION,
   validateEnvironment,
   type BenchmarkMode,
   type BenchmarkResult,
+  type CadenceGateOutcome,
   type HostResponse,
   type ViewportInfo,
 } from './schema.ts';
@@ -113,6 +115,21 @@ let releaseStart: (() => void) | null = null;
 let longAnimationFrameCollector: LongAnimationFrameCollector | null = null;
 
 /**
+ * What {@link awaitCadence} found, for {@link buildResult} to report.
+ *
+ * Module-level for the same reason the LoAF collector is: the gate runs at the top
+ * of a benchmark's `main()` and the envelope is assembled at the end, and nothing
+ * threads a value between the two. Null when the gate never ran, which is the
+ * case for `profile` mode and for a page that does not call {@link awaitStart}.
+ */
+let cadenceGate: CadenceGateOutcome | null = null;
+
+/** Reset the recorded gate outcome. Exists for tests. */
+export function resetCadenceGate(): void {
+  cadenceGate = null;
+}
+
+/**
  * Install `window.__VECTO_BENCH__` and return it.
  *
  * Called automatically by {@link awaitStart}; call it directly only if the page
@@ -138,16 +155,131 @@ export function installControl(context: RunContext = readRunContext()): Benchmar
 }
 
 /**
+ * How long one cadence probe samples for.
+ *
+ * Long enough to tell the two cases apart with margin — 200 ms is ~12 intervals
+ * at 60 Hz and ~48 at 240 Hz — and short enough that the common case, a page
+ * already at panel rate, costs one probe and proceeds.
+ */
+const CADENCE_SAMPLE_MS = 200;
+
+/**
+ * How long the gate waits for cadence before giving up and measuring anyway.
+ *
+ * The wait it has to cover is the runner's: it polls for the browser window every
+ * 500 ms for up to 30 s and only focuses it once found, so a page can load well
+ * before anything focuses it. 10 s covers the observed 0.5-2 s comfortably while
+ * staying far inside the runner's own 60 s result timeout — the gate must never be
+ * what makes a run time out, because a timeout produces no result file at all,
+ * whereas proceeding produces one that says why it is untrustworthy.
+ */
+const CADENCE_DEADLINE_MS = 10_000;
+
+/**
+ * Wait until the page is actually receiving frames at the display's rate.
+ *
+ * This is the fix for a race that silently produced unquotable measurements.
+ * `awaitStart`'s `gate` is released over CDP, which exists only on the Chrome
+ * profile path, so in `measure` mode the page began calibrating while the runner's
+ * `focusWindow` was still in flight. Measured 2026-08-03, same command and same
+ * commit, twice: `--iterations 5` gave Firefox 239.68 Hz then 60.30/60.33/60.12/
+ * 60.38, and `--iterations 3` gave 60.21 Hz then 240.04/240.35. A race, not a
+ * warm-up — and the resulting rows are worse than merely thin, since per-flush
+ * cost at 60 Hz was 0.66-0.92 ms at 34-38% GPU utilization against 0.62-0.64 ms
+ * at 64-72% focused.
+ *
+ * It waits on the *consequence* of focus rather than on focus itself, which is
+ * what makes it work at all. A page cannot detect this condition directly:
+ * measured 2026-08-02, an unfocused window on an inactive Hyprland workspace
+ * reports `visibilityState: 'visible'` **and** `document.hasFocus() === true`
+ * while its rAF has already fallen back to ~60 Hz. Frame arrival rate, on the
+ * other hand, is exactly the thing that went wrong and is directly observable.
+ *
+ * Waiting on cadence is also strictly stronger than waiting for the runner to
+ * report focus, which is why this is not simply a second gate released by the
+ * runner. Focus landing is not the same event as frame callbacks flowing at panel
+ * rate: a probe bucketing rAF intervals over 6 s showed Chrome's first 500 ms
+ * bucket at 60.01 Hz before every later bucket settled at 240.1 Hz, on a page
+ * nothing was competing with. A release-after-focus signal would have admitted
+ * that first bucket.
+ *
+ * Never throws and never waits forever. On timeout it returns `timeout` and lets
+ * the run proceed, because the alternative is worse: the runner's timeout yields
+ * no result file, while a completed run carries a validation issue that names the
+ * problem and a `cadenceGate` block that proves it.
+ *
+ * The sampler and clock are injectable so the logic can be tested without a
+ * compositor; the default samples real rAF intervals.
+ */
+export async function awaitCadence(options: {
+  /** The rate to wait for. Null skips the gate — there is nothing to wait for. */
+  panelHz: number | null;
+  deadlineMs?: number;
+  sampleMs?: number;
+  sample?: (durationMs: number) => Promise<number>;
+  now?: () => number;
+}): Promise<CadenceGateOutcome> {
+  const panelHz = options.panelHz;
+  const clock = options.now ?? (() => performance.now());
+  const started = clock();
+  if (typeof panelHz !== 'number' || !Number.isFinite(panelHz) || panelHz <= 0) {
+    return {
+      status: 'skipped',
+      panelHz: null,
+      observedHz: 0,
+      waitedMs: 0,
+      reason: 'panel rate unknown: the server could not determine the display refresh rate',
+    };
+  }
+  const sample = options.sample ?? measureRefreshRate;
+  const sampleMs = options.sampleMs ?? CADENCE_SAMPLE_MS;
+  const deadlineMs = options.deadlineMs ?? CADENCE_DEADLINE_MS;
+  // Only the low side gates. Sampling above panel rate is an estimator artifact,
+  // not a reason to keep waiting — waiting could not fix it and would burn the
+  // whole deadline. Validation reports that case separately.
+  const floor = panelHz * (1 - CADENCE_TOLERANCE);
+  let observedHz = 0;
+  while (true) {
+    observedHz = await sample(sampleMs);
+    if (observedHz >= floor) {
+      return {
+        status: 'reached',
+        panelHz,
+        observedHz: Math.round(observedHz * 100) / 100,
+        waitedMs: Math.round(clock() - started),
+        reason: null,
+      };
+    }
+    if (clock() - started >= deadlineMs) {
+      return {
+        status: 'timeout',
+        panelHz,
+        observedHz: Math.round(observedHz * 100) / 100,
+        waitedMs: Math.round(clock() - started),
+        reason: `cadence stayed at ${observedHz.toFixed(2)}Hz, below the ${floor.toFixed(2)}Hz floor for a ${panelHz.toFixed(2)}Hz panel`,
+      };
+    }
+  }
+}
+
+/**
  * Resolve when the benchmark should begin.
  *
- * Without `gate=1` this returns immediately, so the default path is byte-for-byte
- * the behaviour every benchmark had before and no existing measurement moves.
- * With it, the page waits for `window.__VECTO_BENCH__.start()` so a driver can
- * attach its tracer to a loaded but idle page.
+ * Two independent gates, for the two different reasons a page must not start
+ * measuring the instant it loads.
  *
- * A gated page that is never started stays open until the runner's timeout, which
- * is the correct failure: measuring anyway, without the profiler attached, would
- * produce a result file indistinguishable from a good one.
+ * `gate=1` — the driver gate. The page waits for `window.__VECTO_BENCH__.start()`
+ * so a driver can attach its tracer to a loaded but idle page. Opt-in, set by the
+ * runner only on the Chrome profile path, because a gated page that nothing starts
+ * stays open until the runner's timeout. That is the correct failure there:
+ * measuring without the profiler attached would produce a result file
+ * indistinguishable from a good one.
+ *
+ * `mode=measure` — the cadence gate. The page waits until it is actually receiving
+ * frames at the display's rate; see {@link awaitCadence}. Not opt-in and not
+ * capable of hanging, since it proceeds on a timeout and reports why. It runs in
+ * measure mode only: in profile mode the driver gate already holds the page, and
+ * an idle wait inside a profile is what that gate exists to avoid recording.
  *
  * Call this at the top of a benchmark's `main()`, before any measurement:
  *
@@ -155,9 +287,27 @@ export function installControl(context: RunContext = readRunContext()): Benchmar
  * const context = await awaitStart();
  * ```
  */
-export async function awaitStart(context: RunContext = readRunContext()): Promise<RunContext> {
+export async function awaitStart(
+  context: RunContext = readRunContext(),
+  /**
+   * Cadence-gate overrides. A benchmark never passes these; they exist so the
+   * gate's wait can be bounded in a test without waiting out the real deadline.
+   */
+  options: { cadenceDeadlineMs?: number; cadenceSampleMs?: number } = {},
+): Promise<RunContext> {
   installControl(context);
   if (context.gate) await startSignal;
+  // Measure mode only. In `profile` mode the CDP gate above already holds the page
+  // until the tracer is attached, and an idle wait inside a profile is exactly
+  // what that gate exists to avoid recording.
+  if (context.mode === 'measure') {
+    cadenceGate = await awaitCadence({
+      panelHz: (await fetchHostInfo())?.panelHz ?? null,
+      deadlineMs: options.cadenceDeadlineMs,
+      sampleMs: options.cadenceSampleMs,
+    });
+  }
+  // After the gate, so the observer does not retain the frames spent waiting.
   longAnimationFrameCollector ??= observeLongAnimationFrames();
   return context;
 }
@@ -327,7 +477,27 @@ export function readViewport(): ViewportInfo {
  * throwing when the server does not offer the endpoint, so an older bench
  * directory still produces a valid result.
  */
+let cachedHostInfo: Promise<HostResponse | null> | null = null;
+
 export async function fetchHostInfo(): Promise<HostResponse | null> {
+  // Cached per page: the cadence gate needs `panelHz` before the run and
+  // `buildResult` needs the same facts after it, and these are static host
+  // properties — refetching would only add a request to every run. A null result
+  // is not cached, so a transient failure before the server is ready does not
+  // permanently blank the host block.
+  cachedHostInfo ??= requestHostInfo().then((host) => {
+    if (host === null) cachedHostInfo = null;
+    return host;
+  });
+  return cachedHostInfo;
+}
+
+/** Reset the cached host facts. Exists for tests. */
+export function resetHostInfoCache(): void {
+  cachedHostInfo = null;
+}
+
+async function requestHostInfo(): Promise<HostResponse | null> {
   try {
     const response = await fetch('/host');
     if (!response.ok) return null;
@@ -405,8 +575,20 @@ export async function buildResult(
     refreshHz,
     crossOriginIsolated: isolated,
     viewport,
+    panelHz: host?.panelHz ?? null,
   });
-  const issues = [...environment.issues, ...(input.issues ?? [])];
+  // The gate's own issue is kept separate from the cadence mismatch validation
+  // reports, because the two can occur independently: a gate that timed out on a
+  // page whose cadence later recovered produces only this one, and cadence lost
+  // partway through a run that started clean produces only the other.
+  const gateIssues =
+    cadenceGate?.status === 'timeout' && cadenceGate.reason !== null
+      ? [
+          `cadence gate timed out after ${cadenceGate.waitedMs}ms: ${cadenceGate.reason} — ` +
+            'the window was most likely never focused, so this run is not quotable',
+        ]
+      : [];
+  const issues = [...environment.issues, ...gateIssues, ...(input.issues ?? [])];
   return {
     schemaVersion: SCHEMA_VERSION,
     runId: context.runId,
@@ -427,6 +609,7 @@ export async function buildResult(
     },
     viewport,
     refreshHz: Math.round(refreshHz * 100) / 100,
+    ...(cadenceGate === null ? {} : { cadenceGate }),
     host,
     startedAt: new Date().toISOString(),
     durationMs: input.durationMs ?? 0,

@@ -56,6 +56,34 @@ export function selectWindow(
   return fallback;
 }
 
+/**
+ * The fastest enabled monitor's refresh rate from `hyprctl monitors -j` output.
+ *
+ * Exported for tests: getting this wrong is silent and expensive. A null return
+ * makes the runner leave `layout.frame_rate` alone, which puts Firefox back on the
+ * 60 Hz default, so a parsing slip would restore the exact defect this fixes while
+ * every run still completed and reported numbers.
+ *
+ * The fastest rather than the focused monitor, because the runner writes this into
+ * a browser profile before the window exists, and therefore before there is a
+ * window whose monitor could be consulted.
+ */
+export function selectPanelRefreshHz(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  let best = 0;
+  for (const monitor of value) {
+    if (typeof monitor !== 'object' || monitor === null) continue;
+    if ('disabled' in monitor && monitor.disabled === true) continue;
+    if (!('refreshRate' in monitor) || typeof monitor.refreshRate !== 'number') continue;
+    if (Number.isFinite(monitor.refreshRate) && monitor.refreshRate > best) {
+      best = monitor.refreshRate;
+    }
+  }
+  // Rounded to 2dp: hyprctl reports 240.00000, and Firefox's pref is an integer
+  // anyway, so carrying more precision only invites a spurious mismatch.
+  return best > 0 ? Math.round(best * 100) / 100 : null;
+}
+
 function parseClients(value: unknown): HyprlandClient[] {
   if (!Array.isArray(value)) throw new Error('hyprctl clients did not return an array');
   const clients: HyprlandClient[] = [];
@@ -102,6 +130,15 @@ export class HyprlandWindowController implements WindowController {
       }
     } catch {}
     return 2;
+  }
+
+  public async panelRefreshHz(): Promise<number | null> {
+    try {
+      const value: unknown = JSON.parse(await command(['hyprctl', 'monitors', '-j']));
+      return selectPanelRefreshHz(value);
+    } catch {
+      return null;
+    }
   }
 
   public async launch(workspace: number, spec: BrowserLaunchSpec): Promise<void> {
