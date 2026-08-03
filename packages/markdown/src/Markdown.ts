@@ -112,6 +112,7 @@ marked.use({
 });
 
 import { measureText, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
+import { parseFrontMatterFields, scanFrontMatter } from './frontMatter';
 
 // @ts-ignore
 import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
@@ -1740,7 +1741,34 @@ export class Markdown extends UIComponent {
    * path only, **not** from `setContent()`, so it is not a complete size signal.
    */
   public onLayoutUpdated?: () => void;
+  /**
+   * The document's BODY text — everything after any front matter block.
+   *
+   * Front matter is stripped before it reaches here, so this is the exact string
+   * the lexer sees. That matters for more than tidiness: `workerSourceLen` and
+   * `expectedLength` are offsets into this string, and the worker reassembles the
+   * source it lexes as `cached.source + append`, so a front matter block left in
+   * would have to be accounted for identically on both sides of `postMessage`.
+   * Stripping ahead of the offset arithmetic means the worker needs no notion of
+   * front matter at all.
+   */
   private rawMarkdown: string;
+  /** Raw contents of the front matter block, or `''` when the document has none. */
+  private _frontMatter = '';
+  /** Memoized {@link parseFrontMatterFields} over {@link _frontMatter}. */
+  private frontMatterFieldsCache: Readonly<Record<string, string>> | null = null;
+  /**
+   * Whether the front matter question has been settled for this document.
+   *
+   * While `false`, appended text is held in {@link frontMatterHold} rather than
+   * lexed: a document that opens `---\ntitle: A` may still turn out to carry
+   * metadata, and lexing that prefix would paint a thematic break and a setext
+   * heading that a later chunk then has to tear down. Resolved either by the scan
+   * reaching a verdict or by {@link finalizeFrontMatter} at end of stream.
+   */
+  private frontMatterResolved = false;
+  /** Text withheld from the lexer while {@link frontMatterResolved} is `false`. */
+  private frontMatterHold = '';
   private streamController: BoundStreamController | null = null;
   /**
    * Trailing-unclosed-syntax policy of the active stream, or `'literal'` when no
@@ -1925,9 +1953,129 @@ export class Markdown extends UIComponent {
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
 
-    this.rawMarkdown = markdownText;
+    this.rawMarkdown = '';
     this.setTokens([]);
-    this.renderMarkdown(markdownText);
+    this.renderMarkdown(this.initSource(markdownText));
+  }
+
+  /**
+   * Seed {@link rawMarkdown} from a whole document, stripping front matter.
+   *
+   * Shared by the constructor and {@link setContent} so both resolve front matter
+   * identically. Returns the body text to lex.
+   *
+   * The text is treated as a stream prefix (`complete: false`) rather than a whole
+   * document, even though the caller handed over everything it has. The reason is
+   * that a `Markdown` built from one string can still be appended to — the
+   * streaming API is `new Markdown('')` plus `appendMarkdown` — so declaring the
+   * document complete here would settle the front matter question against a
+   * prefix. What makes that safe for a genuine one-shot document is that the only
+   * text a scan can hold is an opener followed by keys and no closer, and that
+   * document renders nothing until either the closer arrives or the stream ends,
+   * which is precisely what {@link finalizeFrontMatter} is for.
+   */
+  private initSource(markdown: string): string {
+    this._frontMatter = '';
+    this.frontMatterFieldsCache = null;
+    this.frontMatterResolved = false;
+    this.frontMatterHold = '';
+    this.rawMarkdown = '';
+    // A whole string was handed over, so the front matter question is decidable
+    // now: nothing is held, and no document renders blank waiting for a chunk
+    // that is not coming. Both halves of that matter — `new Markdown('---')` is a
+    // thematic break and must paint a rule, while a document that is entirely
+    // front matter must render empty with its metadata readable.
+    //
+    // The streaming entry point is not sacrificed to this: `scanFrontMatter`
+    // returns `pending` for the empty string even when told the text is complete,
+    // precisely so `new Markdown('')` plus `appendMarkdown` still recognises front
+    // matter arriving in a later chunk.
+    //
+    // What this does give up is a constructor seeded with a PARTIAL block that
+    // later appends complete — `new Markdown('---')` then appending
+    // `'\ntitle: A\n---'`. That reverts to marked's own output (a rule plus a
+    // setext heading), because the rule was already painted and the body string
+    // the worker holds an offset into can only grow.
+    const scan = scanFrontMatter(markdown, true);
+    if (scan.kind === 'pending') return this.consumeFrontMatter(markdown);
+    this.frontMatterResolved = true;
+    if (scan.kind === 'found') {
+      this._frontMatter = scan.raw;
+      this.rawMarkdown = markdown.slice(scan.bodyStart);
+    } else {
+      this.rawMarkdown = markdown;
+    }
+    return this.rawMarkdown;
+  }
+
+  /**
+   * Fold `chunk` into {@link rawMarkdown}, diverting any leading front matter.
+   *
+   * Returns the body text accumulated so far, which is `rawMarkdown` — returned
+   * rather than read back by the caller so the two paths that lex cannot
+   * accidentally lex a stale copy.
+   */
+  private consumeFrontMatter(chunk: string): string {
+    if (this.frontMatterResolved) {
+      this.rawMarkdown += chunk;
+      return this.rawMarkdown;
+    }
+    this.frontMatterHold += chunk;
+    const scan = scanFrontMatter(this.frontMatterHold, false);
+    if (scan.kind === 'pending') return this.rawMarkdown;
+    this.frontMatterResolved = true;
+    if (scan.kind === 'found') {
+      this._frontMatter = scan.raw;
+      this.rawMarkdown = this.frontMatterHold.slice(scan.bodyStart);
+    } else {
+      this.rawMarkdown = this.frontMatterHold;
+    }
+    this.frontMatterHold = '';
+    return this.rawMarkdown;
+  }
+
+  /**
+   * Settle an unresolved front matter question because no more text is coming.
+   *
+   * An opener whose closing delimiter never arrives is not front matter — it is a
+   * thematic break followed by content, which is what marked produced before this
+   * stripping existed. Releasing the held text here is what keeps that document
+   * rendering rather than staying blank.
+   *
+   * Returns `true` when text was released, so the caller knows a re-lex is due.
+   */
+  private finalizeFrontMatter(): boolean {
+    if (this.frontMatterResolved) return false;
+    this.frontMatterResolved = true;
+    if (this.frontMatterHold.length === 0) return false;
+    this.rawMarkdown += this.frontMatterHold;
+    this.frontMatterHold = '';
+    return true;
+  }
+
+  /**
+   * Raw contents of the document's YAML front matter block, or `''` when it has
+   * none.
+   *
+   * Verbatim text between the delimiters, unparsed — this package does not depend
+   * on a YAML parser. Use {@link frontMatterFields} for the common `key: value`
+   * case, or hand this to a real parser for anything richer.
+   *
+   * Empty while a stream is still inside an unclosed block.
+   */
+  public get frontMatter(): string {
+    return this._frontMatter;
+  }
+
+  /**
+   * Top-level scalar `key: value` pairs of {@link frontMatter}.
+   *
+   * A narrow convenience, not YAML: nested mappings, sequences and block scalars
+   * are skipped rather than guessed at. See `parseFrontMatterFields`.
+   */
+  public get frontMatterFields(): Readonly<Record<string, string>> {
+    this.frontMatterFieldsCache ??= Object.freeze(parseFrontMatterFields(this._frontMatter));
+    return this.frontMatterFieldsCache;
   }
 
   private renderMarkdown(text: string): void {
@@ -1963,6 +2111,11 @@ export class Markdown extends UIComponent {
           this.unwindOptimisticTail();
         },
         onClose: async () => {
+          // A front matter block whose closing delimiter never arrived is not
+          // metadata — the stream ended, so it is content. Release it BEFORE
+          // settling: it produces body text with no chunk behind it, and
+          // `onStable` is handed the finished document, which must include it.
+          if (this.finalizeFrontMatter()) this.relexBody();
           // The last committed chunk may still be in the worker. Waiting here is
           // what makes `await close()` mean "the document reflects everything
           // written", which onStable's contract depends on.
@@ -2014,7 +2167,7 @@ export class Markdown extends UIComponent {
     // The replies those callbacks would have delivered are gone, so anything
     // awaiting settlement has to be released here or it waits forever.
     this.flushAppendSettledWaiters();
-    this.rawMarkdown = markdown;
+    const body = this.initSource(markdown);
     // The worker's copy of the source now describes a document that no longer
     // exists, so the next append must resend the text rather than a delta.
     //
@@ -2033,7 +2186,7 @@ export class Markdown extends UIComponent {
       this.content.children[this.content.children.length - 1].destroy();
     }
     this.setTokens([]);
-    this.renderMarkdown(markdown);
+    this.renderMarkdown(body);
     return this;
   }
 
@@ -2303,9 +2456,26 @@ export class Markdown extends UIComponent {
   }
 
   private appendMarkdownCore(chunk: string): this {
-    this.rawMarkdown += chunk;
+    const before = this.rawMarkdown.length;
+    this.consumeFrontMatter(chunk);
     this.streamStats.appends++;
 
+    // The chunk went entirely into the front matter hold, so there is no new body
+    // text to lex. Dispatching anyway would post a zero-length delta and spend a
+    // round trip to be told the token list is unchanged.
+    if (this.rawMarkdown.length === before) return this;
+
+    return this.relexBody();
+  }
+
+  /**
+   * Lex {@link rawMarkdown} and reconcile, via the worker when one exists.
+   *
+   * Split out of {@link appendMarkdownCore} because end-of-stream front matter
+   * release has to reach the same path: text held back while the front matter
+   * question was open becomes body text without any chunk being appended.
+   */
+  private relexBody(): this {
     if (!markdownWorker) {
       // No worker (unsupported, failed to construct, or crashed and was dropped):
       // lex here. Nothing the worker holds is advanced by this, so a later
