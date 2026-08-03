@@ -46,7 +46,12 @@ async function shortCommit(): Promise<string> {
   return (await subprocess.exited) === 0 ? output.trim() : 'unknown';
 }
 
-function runUrl(
+/**
+ * Exported for tests: the passthrough is only correct if it reaches the URL
+ * *and* leaves the runner-owned identity keys intact, which is cheap to assert
+ * here and expensive to observe through a live browser run.
+ */
+export function runUrl(
   serverUrl: string,
   runId: string,
   currentSuiteRunId: string,
@@ -61,6 +66,11 @@ function runUrl(
   url.searchParams.set('mode', config.mode);
   url.searchParams.set('profileState', config.profileState);
   if (gated) url.searchParams.set('gate', '1');
+  // Applied last, but `parseRunnerArgs` has already rejected any key set above,
+  // so this cannot overwrite the identity a posted result is matched on.
+  for (const [key, value] of Object.entries(config.params)) {
+    url.searchParams.set(key, value);
+  }
   return url.href;
 }
 

@@ -21,6 +21,17 @@ export interface RunnerConfig {
   iterations: number;
   profileState: ProfileState;
   mode: BenchmarkMode;
+  /**
+   * Extra query parameters appended to the benchmark URL by `--param k=v`.
+   *
+   * Benchmark entries read their own knobs off `location.search` (glyph counts,
+   * `hud`, `holdMs`, …), so without a passthrough a phase gated behind one of
+   * them is simply unreachable through the harness — and therefore unquotable,
+   * since only the harness produces the `BenchmarkResult` envelope. Keys that
+   * the runner itself owns are rejected at parse time rather than silently
+   * overridden.
+   */
+  params: Readonly<Record<string, string>>;
   browsers: BrowserName[];
   timeoutMs: number;
   extendMs: number;
