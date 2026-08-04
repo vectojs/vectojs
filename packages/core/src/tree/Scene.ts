@@ -5032,20 +5032,31 @@ export class Scene {
         }
       }
     } else {
-      // `el.children.length > 0` is part of the condition, not just the text
-      // comparison: demoting a block from the fine tier leaves carrier spans
-      // whose concatenated text can already EQUAL `projection.text`, and a
-      // text-only check would then skip the assignment and strand them. Setting
+      // Demoting a block from the fine tier leaves carrier spans whose
+      // concatenated text can already EQUAL `projection.text`, so a text-only
+      // comparison would skip the assignment and strand them. Setting
       // `textContent` is what removes them.
-      if (el.textContent !== projection.text || el.children.length > 0) {
+      //
+      // Scoped to the coarse tier deliberately. An entity can reach this branch
+      // in the DEFAULT configuration while still holding carriers from an earlier
+      // sync — a Table cell does, and its spans are what give the browser the
+      // geometry to drag-select through. Rebuilding it there would release the
+      // selection mid-drag, since `releaseContentSelectionForRebuild` fires
+      // exactly when the element owns the selection. Withdrawing carriers is
+      // right only when the block really is leaving the interaction band, which
+      // is what `tier === 'coarse'` means.
+      const demoted = tier === 'coarse' && el.children.length > 0;
+      if (el.textContent !== projection.text || demoted) {
         this.releaseContentSelectionForRebuild(el);
         el.textContent = projection.text;
       }
       delete el.dataset.vectoProjectionLines;
-      // Both are fine-tier metadata. A stale window marker would keep claiming
-      // the DOM holds a subset by design, which suppresses the dev-mode
-      // projection equality check.
-      delete el.dataset.vectoProjectionWindow;
+      // A demoted block was gated while it was fine-tiered, so it carries a
+      // window marker claiming its DOM holds a subset by design — which would
+      // suppress the dev-mode projection equality check even though the coarse
+      // tier holds the whole text. Left alone outside the coarse tier to keep the
+      // default path byte-identical.
+      if (tier === 'coarse') delete el.dataset.vectoProjectionWindow;
     }
 
     const font = projection.font ?? '';
