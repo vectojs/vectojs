@@ -92,7 +92,14 @@ const BLOCK_PITCH = BLOCK_H + BLOCK_GAP;
 const VIEW_W = 900;
 const VIEW_H = 700;
 
-type ArmKey = 'native' | 'hybrid' | 'hybrid-windowed' | 'hybrid-cached' | 'all-resident' | 'never';
+type ArmKey =
+  | 'native'
+  | 'hybrid'
+  | 'hybrid-dirty'
+  | 'hybrid-windowed'
+  | 'hybrid-cached'
+  | 'all-resident'
+  | 'never';
 
 /**
  * The document-space band the simulated `hybrid` mode treats as needing fine
@@ -134,6 +141,23 @@ class Block extends Entity {
   private layoutKey = '';
   private semanticCache: ReturnType<Block['buildSemantic']> | null = null;
   private semanticKey = '';
+
+  /**
+   * Content epoch, for the `hybrid-dirty` arm only.
+   *
+   * Derived from `extra.length` rather than an incrementing counter because the
+   * streaming workload mutates `extra` directly (`target.extra += …`) rather than
+   * through a setter, so there is no single site at which to bump one. Length is
+   * exact for this workload: `extra` only ever grows by appending. A real entity
+   * bumps a counter inside its own layout funnel instead — see
+   * `Text.applyLayout()` and `CodeBlock.buildLines()`.
+   *
+   * Returning `null` for every other arm is what keeps them measuring today's
+   * behaviour: `Scene` only skips an entity that opts in.
+   */
+  override getContentEpoch(): number | null {
+    return this.arm === 'hybrid-dirty' ? this.extra.length : null;
+  }
 
   constructor(
     id: string,
@@ -306,6 +330,26 @@ const ARMS: Arm[] = [
   {
     key: 'hybrid-cached',
     label: 'simulated hybrid with memoized off-band semantic projection',
+    margin: Number.POSITIVE_INFINITY,
+    offscreenFindable: true,
+  },
+  {
+    // The engine change under test (vectojs#343 step 1, carryctx CTX-0199).
+    //
+    // Byte-for-byte the same projection behaviour as `hybrid` — same margin, same
+    // resident text for every block, same fine geometry in the band. The ONLY
+    // difference is that `Block.getContentEpoch()` returns a value, so
+    // `Scene.syncContentProjection` can skip an unchanged block before calling
+    // `getContentProjection()`. So `hybrid` vs `hybrid-dirty` isolates
+    // dirty-tracking with nothing else varying, and `hybrid-cached` is the
+    // control that shows caching the projection OBJECT is not the same lever.
+    //
+    // Note this arm still uses margin=Infinity, which disables both engine gates
+    // and is not a supported configuration — deliberately, because it is the
+    // worst case (every block resident) and therefore the honest place to measure
+    // whether the skip carries it.
+    key: 'hybrid-dirty',
+    label: 'hybrid + dirty-tracked sync: unchanged blocks skipped before projection',
     margin: Number.POSITIVE_INFINITY,
     offscreenFindable: true,
   },
@@ -667,6 +711,7 @@ async function main(): Promise<void> {
     const native = of('native');
     const hybrid = of('hybrid');
     const cached = of('hybrid-cached');
+    const dirty = of('hybrid-dirty');
     const windowed = of('hybrid-windowed');
     const allResident = of('all-resident');
     const ratio = (a: unknown, b: unknown): number | null =>
@@ -689,6 +734,18 @@ async function main(): Promise<void> {
       // How much of hybrid's idle cost is rebuilding the projection vs Scene's
       // own walk over every resident block.
       hybridVsCachedIdleMs: ratio(hybrid?.idleMsPerSync, cached?.idleMsPerSync),
+      // THE headline for CTX-0199: what dirty-tracking saves on an identical
+      // workload. `hybrid` and `hybrid-dirty` differ only in whether the entity
+      // stamps its content, so this ratio is the engine change and nothing else.
+      hybridVsDirtyIdleMs: ratio(hybrid?.idleMsPerSync, dirty?.idleMsPerSync),
+      dirtyVsNativeIdleMs: ratio(dirty?.idleMsPerSync, native?.idleMsPerSync),
+      // Must stay 1.00: dirty-tracking is a cost change, not a capability
+      // change. A different node count here means the skip dropped DOM it
+      // should have kept, which is the failure mode that does not look wrong.
+      dirtyVsHybridNodes: ratio(dirty?.domTotal, hybrid?.domTotal),
+      // Streaming is where a skip could go wrong in the other direction: the
+      // tail block DOES change every frame, so this must not regress.
+      dirtyVsHybridStreamMs: ratio(dirty?.streamMsPerFrame, hybrid?.streamMsPerFrame),
       // What hybrid saves against the naive way of getting the same capability.
       allResidentVsHybridNodes: ratio(allResident?.domTotal, hybrid?.domTotal),
       allResidentVsHybridIdleMs: ratio(allResident?.idleMsPerSync, hybrid?.idleMsPerSync),

@@ -681,6 +681,53 @@ function projectionGridLineWindow(
 }
 
 /**
+ * Everything a completed content-projection sync depended on.
+ *
+ * Compared field-by-field against the next sync's inputs to decide whether the
+ * existing DOM is already correct. Deliberately holds the *results* of the two
+ * O(ancestor-depth) geometry queries (`hasBand`/`bandMin`/`bandMax`, `visible`)
+ * rather than the inputs they derive from: an ancestor resizing or toggling
+ * `clipChildren` changes both without changing this entity's own world
+ * transform, so keying on the inputs would skip a sync that genuinely needed to
+ * run.
+ *
+ * A single mutable object is reused per entity, so a steady state allocates
+ * nothing. (carryctx CTX-0199)
+ */
+interface ContentSyncState {
+  epoch: number;
+  /**
+   * Scene's font/metric epoch at the time of the sync.
+   *
+   * Not redundant with the geometry fields: a webfont finishing load or a
+   * browser zoom bumps it without moving the entity, and the grid calibration
+   * key is built from it, so a skip that ignored it would leave grid carriers
+   * measured against the old metrics with nothing to trigger a re-measure. It
+   * also subsumes page scale, since `getContentMetricScaleX` is itself memoized
+   * against this epoch.
+   */
+  fontEpoch: number;
+  /** World transform, flattened — a moved or scaled entity must re-place its DOM. */
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+  /** `false` when the line band was null, in which case the bounds are meaningless. */
+  hasBand: boolean;
+  bandMin: number;
+  bandMax: number;
+  /** Result of the exact (margin 0) visibility test, which drives `display`. */
+  visible: boolean;
+  /** Written to `el.style.width`/`height` from the node, not from the projection. */
+  width: number;
+  height: number;
+  /** Drives `aria-hidden` on the text copy. */
+  interactive: boolean;
+}
+
+/**
  * The contiguous run of lines overlapping `band`, in entity-local y.
  *
  * **Contiguous on purpose.** A gap would break selection: the DOM order of
@@ -1367,6 +1414,15 @@ export class Scene {
   private a11yElements: Map<string, HTMLElement> = new Map();
   /** DOM nodes mirroring static text content, keyed by entity id. */
   private contentElements: Map<string, HTMLElement> = new Map();
+  /**
+   * What the last completed content-projection sync was built from, per entity.
+   *
+   * Compared at the top of {@link syncContentProjection} to skip a block whose
+   * content AND geometry are both unchanged, before the O(glyphs) projection
+   * build. Only populated for entities that opt in via
+   * {@link Entity.getContentEpoch}. (carryctx CTX-0199)
+   */
+  private contentSyncState: Map<string, ContentSyncState> = new Map();
   /** Pending cold font-calibration frame per projected grid entity. */
   private contentGridCalibrationFrames: Map<string, number> = new Map();
   /** Detached, untransformed font probes used by the cold calibration pass. */
@@ -3175,6 +3231,7 @@ export class Scene {
       this.clearContentGridState(node.id, contentEl);
       contentEl.remove();
       this.contentElements.delete(node.id);
+      this.contentSyncState.delete(node.id);
       this.a11yNeedsReorder = true;
     }
     const el = this.a11yElements.get(node.id);
@@ -3342,6 +3399,7 @@ export class Scene {
     this.a11yElements.clear();
     for (const el of this.contentElements.values()) el.remove();
     this.contentElements.clear();
+    this.contentSyncState.clear();
     if (typeof cancelAnimationFrame === 'function') {
       for (const frame of this.contentGridCalibrationFrames.values()) {
         cancelAnimationFrame(frame);
@@ -4619,6 +4677,10 @@ export class Scene {
         this.contentElements.delete(node.id);
         this.a11yNeedsReorder = true;
       }
+      // Also when there was no element: an entity whose projection has gone
+      // null keeps no state, so a later re-materialization starts clean rather
+      // than comparing against a record describing DOM that no longer exists.
+      this.contentSyncState.delete(node.id);
     };
 
     // Virtualize FIRST, before computing the projection. Only materialize
@@ -4648,6 +4710,55 @@ export class Scene {
     const lineBand = Number.isFinite(margin)
       ? this.projectionVisibleLocalYBand(node, worldTf, margin)
       : null;
+
+    // Exact (margin 0) viewport/clip test, used both for the dirty-track
+    // comparison below and for `display` at the end of a full sync. Computed
+    // once: it is an O(ancestor-depth) walk and both readers want the same
+    // answer for the same frame.
+    const visible = this.projectionBoxVisible(node, worldTf, 0);
+
+    // Dirty-track: an entity that can stamp its own content lets a sync whose
+    // content AND geometry are both unchanged stop here — crucially BEFORE
+    // getContentProjection(), which is O(glyphs-in-block), and before the DOM
+    // diff around it.
+    //
+    // The margin gate above already frees blocks far from the viewport, so what
+    // remains is the resident set; for a long document with a wide margin that
+    // set is most of it, and re-deriving byte-identical DOM for all of it every
+    // synced frame is the dominant idle cost. Measured on a 1500-block resident
+    // document: a sync in which `a11yRoot.textContent` was byte-identical before
+    // and after still cost 17.875 ms, and 19.455 ms fell to 0.475 ms once
+    // unchanged blocks stopped here (~41x). Memoizing the projection object
+    // instead saved only 19%, because the walk and the diff — not the build —
+    // are where the time goes. (carryctx CTX-0199, vectojs#343)
+    //
+    // Requires `el` to already exist: with no DOM node there is nothing to
+    // preserve, so a first sync (or one after the margin gate freed the node)
+    // always runs in full.
+    const epoch = node.getContentEpoch();
+    const prior = this.contentSyncState.get(node.id);
+    if (epoch !== null && el && prior !== undefined) {
+      const { a, b, c, d, e, f } = worldTf;
+      if (
+        prior.epoch === epoch &&
+        prior.fontEpoch === this.contentFontEpoch &&
+        prior.a === a &&
+        prior.b === b &&
+        prior.c === c &&
+        prior.d === d &&
+        prior.e === e &&
+        prior.f === f &&
+        prior.hasBand === (lineBand !== null) &&
+        (lineBand === null ||
+          (prior.bandMin === lineBand.minY && prior.bandMax === lineBand.maxY)) &&
+        prior.visible === visible &&
+        prior.width === node.width &&
+        prior.height === node.height &&
+        prior.interactive === node.interactive
+      ) {
+        return;
+      }
+    }
 
     // Hand the band to the entity so an O(glyphs) projection build can become
     // O(visible glyphs). Windowing only the DOM leaves this call rebuilding the
@@ -4863,10 +4974,37 @@ export class Scene {
 
     // Viewport/clip: a materialized-but-off-viewport mirror (inside the
     // virtualization margin) must not keep intercepting input or announce text.
-    // Exact (margin 0) test against viewport + clipChildren ancestors.
-    const visible = this.projectionBoxVisible(node, worldTf, 0);
+    // Exact (margin 0) test against viewport + clipChildren ancestors, computed
+    // once above and shared with the dirty-track comparison.
     const display = visible ? '' : 'none';
     if (el.style.display !== display) el.style.display = display;
+
+    // Record what this sync was built from, so the next one can skip. Only for
+    // entities that stamp their content: without an epoch the comparison can
+    // never pass, and storing state for every projected entity in a long
+    // document would be a per-entity allocation that never pays off.
+    if (epoch !== null) {
+      const { a, b, c, d, e, f } = worldTf;
+      // Mutate the existing record in place when there is one — a steady-state
+      // sync of an unchanged-but-not-skippable entity then allocates nothing.
+      const next = prior ?? ({} as ContentSyncState);
+      next.epoch = epoch;
+      next.fontEpoch = this.contentFontEpoch;
+      next.a = a;
+      next.b = b;
+      next.c = c;
+      next.d = d;
+      next.e = e;
+      next.f = f;
+      next.hasBand = lineBand !== null;
+      next.bandMin = lineBand?.minY ?? 0;
+      next.bandMax = lineBand?.maxY ?? 0;
+      next.visible = visible;
+      next.width = node.width;
+      next.height = node.height;
+      next.interactive = node.interactive;
+      if (prior === undefined) this.contentSyncState.set(node.id, next);
+    }
   }
 
   /**

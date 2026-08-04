@@ -216,6 +216,8 @@ export class RichText extends UIComponent {
   private engine: LayoutEngine;
   private baseFontSize: number;
   private baseStyle?: TextStyle;
+  /** Bumped by {@link layout} and {@link setSelectable}; read by `Scene`. */
+  private contentEpoch = 0;
   private result: LayoutResult;
   /** Memoized visual line groups, keyed on the `result` identity that produced
    *  them. `render()` runs every frame and both it and the content projection
@@ -301,11 +303,21 @@ export class RichText extends UIComponent {
   /** Enable or disable browser-native drag selection without rebuilding the entity. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
+    // Projected as `selectable`, and does not go through layout().
+    this.contentEpoch++;
     this.scene?.markDirty();
     return this;
   }
 
+  public override getContentEpoch(): number {
+    return this.contentEpoch;
+  }
+
   private layout(): LayoutResult {
+    // Covers setSpans/appendSpans/setMaxWidth/setTextAlign/setExclusions — every
+    // mutator that can change what `getContentProjection()` reports, except
+    // `setSelectable`, which bumps the epoch itself.
+    this.contentEpoch++;
     // EMPTY_GLYPH_ATLAS, not a fresh `{}`: the engine invalidates its memoized
     // paragraphs whenever the atlas is not the same object as last call, so a
     // literal here cleared the cache on every single layout. See its docstring.
