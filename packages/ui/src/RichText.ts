@@ -9,6 +9,7 @@ import {
   type LayoutResult,
   type StyledSpan,
   type ContentProjection,
+  type ContentProjectionHint,
   type TextStyle,
   createMetricsMeasurer,
 } from '@vectojs/core';
@@ -593,8 +594,25 @@ export class RichText extends UIComponent {
     });
   }
 
-  private projectedLines(): NonNullable<ContentProjection['lines']> {
-    return this.visualLineGroups().map(({ projection }) => projection);
+  private projectedLines(hint?: ContentProjectionHint): NonNullable<ContentProjection['lines']> {
+    const groups = this.visualLineGroups();
+    if (hint?.minY === undefined || hint.maxY === undefined) {
+      return groups.map(({ projection }) => projection);
+    }
+    const { minY, maxY } = hint;
+    // Keep a line whose box overlaps the band at all, so a line straddling the
+    // edge is retained whole rather than clipped mid-glyph. Scene windows the DOM
+    // regardless; filtering here is what stops the per-frame build from being
+    // O(document).
+    const kept: NonNullable<ContentProjection['lines']> = [];
+    for (const { projection } of groups) {
+      const height = projection.lineHeight ?? this.baseFontSize * 1.5;
+      if (projection.y + height >= minY && projection.y <= maxY) kept.push(projection);
+    }
+    // Never project nothing: an empty `lines` with non-empty `text` would make
+    // Scene fall back to a single text node holding the WHOLE document, which is
+    // both wrong geometrically and slower than what was avoided.
+    return kept.length > 0 ? kept : groups.map(({ projection }) => projection);
   }
 
   /** Build the CSS font shorthand for a node's style. */
@@ -612,7 +630,7 @@ export class RichText extends UIComponent {
   }
 
   /** Mirror the concatenated span text into the DOM content layer. */
-  public override getContentProjection(): ContentProjection | null {
+  public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     // Emptiness is decided on the SOURCE, not the projected text: a paragraph whose
     // only content is an unlabelled inline object projects an empty string but still
     // occupies layout, and returning a projection with `text: ''` would make Scene
@@ -625,7 +643,7 @@ export class RichText extends UIComponent {
       text,
       font: this.font,
       lineHeight: this.baseFontSize * 1.5,
-      lines: this.projectedLines(),
+      lines: this.projectedLines(hint),
       selectable: this.selectable,
     };
   }

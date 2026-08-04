@@ -1,4 +1,6 @@
 import {
+  contentLineInHint,
+  type ContentProjectionHint,
   BidiResolver,
   Entity,
   type DevtoolsDescriptor,
@@ -1198,9 +1200,35 @@ export class CodeBlock extends UIComponent {
     return this;
   }
 
-  public override getContentProjection(): ContentProjection | null {
+  public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     if (!this.source) return null;
     const grid = this.ensureGrid();
+    // Slicing the source per row is O(document) per synced frame, and the grid
+    // path is also where the DOM cost concentrates (one carrier per glyph
+    // CLUSTER). Building only the rows in the band is what makes a long code
+    // block cost the viewport rather than the file.
+    //
+    // SPARSE, and index-aligned with `grid.lines`. Scene's grid path reads
+    // `projection.lines[lineIndex]` by DOCUMENT row (`Scene.ts:4797`), so a
+    // compacted array would hand row 900's geometry to row 0 and every carrier
+    // would be positioned wrong. Holes simply fall back to the grid's own
+    // uniform metrics there, which is exactly what a row outside the band needs.
+    const rows: NonNullable<ContentProjection['lines']> = [];
+    rows.length = grid.lines.length;
+    for (let row = 0; row < grid.lines.length; row++) {
+      const line = grid.lines[row];
+      const y = this.pad + row * this.lineH;
+      if (!contentLineInHint(hint, y, this.lineH)) continue;
+      rows[row] = {
+        text: this.source.slice(line.sourceStart, line.sourceEnd),
+        separatorAfter: this.source.slice(line.sourceEnd, line.nextSourceStart) || undefined,
+        x: this.pad,
+        y,
+        baseline: this.lineH * 0.75,
+        font: this.codeFont,
+        lineHeight: this.lineH,
+      };
+    }
     return {
       text: this.source,
       font: this.codeFont,
@@ -1208,15 +1236,8 @@ export class CodeBlock extends UIComponent {
       // Every row is absolutely positioned from the same local coordinates as
       // render(). A single pre-wrap DOM text node would introduce browser
       // wrapping for long source lines that canvas intentionally keeps intact.
-      lines: grid.lines.map((line, row) => ({
-        text: this.source.slice(line.sourceStart, line.sourceEnd),
-        separatorAfter: this.source.slice(line.sourceEnd, line.nextSourceStart) || undefined,
-        x: this.pad,
-        y: this.pad + row * this.lineH,
-        baseline: this.lineH * 0.75,
-        font: this.codeFont,
-        lineHeight: this.lineH,
-      })),
+      //
+      lines: rows,
       selectable: this.selectable,
       // render() draws cell-by-cell (no ligatures can form); the DOM copy
       // must not ligate either or Firefox selection geometry drifts.

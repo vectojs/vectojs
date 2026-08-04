@@ -1,4 +1,6 @@
 import {
+  contentLineInHint,
+  type ContentProjectionHint,
   A11yAttributes,
   EMPTY_GLYPH_ATLAS,
   IRenderer,
@@ -213,10 +215,22 @@ export class Text extends UIComponent {
   }
 
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
-  public override getContentProjection(): ContentProjection | null {
+  public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     if (!this.text) return null;
     const justified = this.engine.textAlign === 'justify';
-    const lines = this.lines.map((visualText, index) => {
+    // Only build the rows in the band. Unlike the grid path, Scene reads these
+    // positionally and every entry carries its own `y`, so a compacted array is
+    // correct — no index alignment to preserve.
+    const indices: number[] = [];
+    for (let index = 0; index < this.lines.length; index++) {
+      if (contentLineInHint(hint, index * this.lineHeight, this.lineHeight)) indices.push(index);
+    }
+    // Never emit zero lines: `lines: []` with non-empty `text` makes Scene
+    // project one text node for the whole string, which is both geometrically
+    // wrong and slower than the work being skipped.
+    const rowIndices = indices.length > 0 ? indices : this.lines.map((_, i) => i);
+    const lines = rowIndices.map((index) => {
+      const visualText = this.lines[index];
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
       // Justify uses per-word positioned carriers (widened gaps). Bidi/RTL does

@@ -129,6 +129,52 @@ export interface ContentProjectionLine {
   runs?: ContentProjectionRun[];
 }
 
+/**
+ * Advice from the {@link Scene} about which part of an entity is worth
+ * describing in {@link Entity.getContentProjection}.
+ *
+ * **Purely an optimization, and ignoring it is always correct.** The Scene
+ * windows the DOM itself, so an entity that returns its whole document still
+ * behaves correctly — it just pays to build lines that get discarded. An entity
+ * whose projection is O(glyphs) can use this to make that build O(visible)
+ * instead, which is the difference between per-frame cost that scales with the
+ * document and cost that scales with the viewport.
+ *
+ * Why a hint rather than a strict window: the entity owns the mapping from its
+ * own text to visual lines, and only it knows things like where a wrapped
+ * paragraph begins. Handing it a band and letting it round outward keeps that
+ * knowledge in one place. An entity may return more than asked — never less
+ * than it can, because text absent from the projection is invisible to
+ * find-in-page, copy and, for static text, the screen reader.
+ */
+export interface ContentProjectionHint {
+  /**
+   * Inclusive band of entity-local y worth projecting, already expanded by the
+   * scene's `contentProjectionMargin` and intersected with every clipping
+   * ancestor. Absent when no useful bound exists (a rotated or skewed
+   * transform, a boundless entity), in which case project everything.
+   */
+  minY?: number;
+  maxY?: number;
+}
+
+/**
+ * Whether a line at `y` of height `height` is worth projecting under `hint`.
+ *
+ * Shared so every consumer rounds the same way: a line is kept when its box
+ * overlaps the band at all, which retains a line straddling the edge whole
+ * rather than clipping it mid-glyph. Returns `true` when the hint carries no
+ * band, so the default is always "project it".
+ */
+export function contentLineInHint(
+  hint: ContentProjectionHint | undefined,
+  y: number,
+  height: number,
+): boolean {
+  if (hint?.minY === undefined || hint.maxY === undefined) return true;
+  return y + height >= hint.minY && y <= hint.maxY;
+}
+
 export interface ContentProjection {
   /** The logical source text exposed to find, selection, copy, and assistive technology. */
   text: string;
@@ -1730,9 +1776,14 @@ export abstract class Entity {
    * `selectable` is set — natively selectable. Returns `null` by default.
    * Read on the a11y sync cadence, so text changes propagate automatically.
    *
+   * @param hint - Optional advice about which part of the entity is worth
+   *   describing. Purely an optimization: ignoring it is always correct, which
+   *   is why it is a parameter rather than a required contract change. See
+   *   {@link ContentProjectionHint}.
    * @returns The projection descriptor, or `null` to project nothing.
    */
-  public getContentProjection(): ContentProjection | null {
+  public getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
+    void hint;
     return null;
   }
 

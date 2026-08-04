@@ -644,6 +644,97 @@ function parseInlinePx(value: string | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Half-open range of projected line indices to materialize. */
+interface ProjectionLineWindow {
+  start: number;
+  /** Exclusive. */
+  end: number;
+  /** False when the whole document is being projected. */
+  gated: boolean;
+}
+
+/**
+ * {@link projectionLineWindow} for a prepared grid.
+ *
+ * A grid line's y comes from the parallel `projection.lines` entry when present
+ * and otherwise from `lineIndex * grid.lineHeight`, which is the same fallback
+ * the materialization loop uses for positioning — so the window and the carriers
+ * always agree on where a line is.
+ */
+function projectionGridLineWindow(
+  grid: PreparedContentGrid,
+  projectionLines: ContentProjection['lines'],
+  band: { minY: number; maxY: number } | null,
+): ProjectionLineWindow {
+  const count = grid.lines.length;
+  const all: ProjectionLineWindow = { start: 0, end: count, gated: false };
+  if (!band || count === 0) return all;
+  const lines: Array<{ y: number; lineHeight?: number }> = [];
+  for (let i = 0; i < count; i++) {
+    const projected = projectionLines?.[i];
+    lines.push({
+      y: projected?.y ?? i * grid.lineHeight,
+      lineHeight: projected?.lineHeight ?? grid.lineHeight,
+    });
+  }
+  return projectionLineWindow(lines, band, grid.lineHeight);
+}
+
+/**
+ * The contiguous run of lines overlapping `band`, in entity-local y.
+ *
+ * **Contiguous on purpose.** A gap would break selection: the DOM order of
+ * carriers is what the browser walks when extending a selection or serialising
+ * a copy, so materializing lines 0-9 and 90-99 with nothing between them would
+ * let a drag from line 5 to line 95 silently splice out 80 lines of text. A
+ * single window can only lose text at its *edges*, where the user cannot reach
+ * without scrolling, and scrolling rebuilds the window.
+ *
+ * Falls back to the whole document whenever the answer is not clearly better:
+ * a null band, a document that fits, or a window that would cover everything
+ * anyway. Emitting nothing is never correct — projected text is what serves
+ * find-in-page, copy and, for static text, the screen reader.
+ */
+function projectionLineWindow(
+  lines: ReadonlyArray<{ y: number; lineHeight?: number }>,
+  band: { minY: number; maxY: number } | null,
+  fallbackLineHeight: number,
+): ProjectionLineWindow {
+  const all: ProjectionLineWindow = {
+    start: 0,
+    end: lines.length,
+    gated: false,
+  };
+  if (!band || lines.length === 0) return all;
+
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const h = line.lineHeight ?? fallbackLineHeight;
+    // A line counts as visible when its box overlaps the band at all, so a line
+    // straddling the edge is kept rather than clipped mid-glyph.
+    if (line.y + h >= band.minY && line.y <= band.maxY) {
+      if (start === -1) start = i;
+      end = i + 1;
+    } else if (start !== -1 && line.y > band.maxY) {
+      // Lines are emitted in document order, so once past the band we are done.
+      // Guard on `start` first: a document whose first line is already past the
+      // band must keep scanning, not stop at index 0.
+      break;
+    }
+  }
+
+  if (start === -1) {
+    // Nothing overlapped. Rather than project nothing, keep the single nearest
+    // line so the entity still has a non-empty projection and the text stays
+    // reachable; a fully off-band entity was already released by the box gate.
+    return { start: 0, end: Math.min(1, lines.length), gated: true };
+  }
+  if (start === 0 && end === lines.length) return all;
+  return { start, end, gated: true };
+}
+
 /** A concrete text caret position, usable as a Selection anchor or focus. */
 interface TextCaretPosition {
   node: Text;
@@ -2479,8 +2570,16 @@ export class Scene {
         const el = this.contentElements?.get(node.id);
         if (el) {
           const projectedText = el.textContent || '';
+          // A line-windowed entity holds a deliberate SUBSET of its text: the
+          // carriers outside the viewport band are not materialized, so an
+          // equality check here would warn on every tall document. Require
+          // containment instead, which still catches genuinely wrong text.
+          const windowed = el.dataset.vectoProjectionWindow !== undefined;
+          const mismatched = windowed
+            ? !proj.text.includes(projectedText)
+            : projectedText !== proj.text;
           // If the projection text differs from what's in the DOM, warn
-          if (projectedText !== '' && projectedText !== proj.text) {
+          if (projectedText !== '' && mismatched) {
             this._devWarn(
               `Content projection mismatch for entity "${node.id}": ` +
                 `projection says "${proj.text.slice(0, 60)}" ` +
@@ -4313,6 +4412,73 @@ export class Scene {
     return true;
   }
 
+  /**
+   * The band of an entity's own y coordinates that is worth projecting, or
+   * `null` to project everything.
+   *
+   * {@link projectionBoxVisible} answers "is this entity near the viewport",
+   * which frees whole blocks that scroll away. It cannot help a single entity
+   * *taller* than the viewport: that entity's box always intersects, so every
+   * one of its visual lines was materialized — a `<span>` per line and, on the
+   * grid path, a `<span>` per glyph cluster. That is where "14.8k elements for a
+   * 346KB Markdown doc" comes from, and it is O(document) rather than
+   * O(viewport) in both element count and per-frame walk cost.
+   *
+   * Measured on one entity scrolled to its middle, real headed browsers
+   * (`benchmarks/projection-per-line/`): at 4000 lines, materializing every line
+   * costs 6.28 ms/frame on Chrome and 6.51 ms on Firefox with 36,000 child
+   * elements, against 0.28/0.16 ms and 963 elements when only the visible band
+   * is emitted. The gated cost is *flat* across a 20x document-size range, so
+   * this converts an asymptote rather than shaving a constant.
+   *
+   * Returns local-y bounds in the entity's own coordinate space, already
+   * expanded by `margin` and intersected with every `clipChildren` ancestor, so
+   * a line inside a scrolled container is measured against the container rather
+   * than the window. `null` means "no useful bound" — a degenerate transform, a
+   * rotation/skew that makes a y-band meaningless, or a boundless entity — and
+   * the caller must then project every line, because emitting nothing would
+   * silently drop text from selection, find-in-page and screen readers.
+   */
+  private projectionVisibleLocalYBand(
+    node: Entity,
+    tf: { a: number; b: number; c: number; d: number; e: number; f: number },
+    margin: number,
+  ): { minY: number; maxY: number } | null {
+    const { b, d, f } = tf;
+    // A y band is only meaningful when local y maps to world y monotonically.
+    // Any rotation or skew mixes local x into world y (b !== 0), so one local-y
+    // interval no longer corresponds to one world band and the whole entity has
+    // to be projected.
+    if (b !== 0 || d === 0 || !Number.isFinite(d) || !Number.isFinite(f)) return null;
+
+    // Invert wy = d * ly + f over the viewport band, expanded by margin.
+    const top = (-margin - f) / d;
+    const bottom = (this.height + margin - f) / d;
+    let minY = Math.min(top, bottom);
+    let maxY = Math.max(top, bottom);
+
+    // Intersect with each clipping ancestor's own visible band, expressed in
+    // this entity's local y. `worldToLocal` handles the full ancestor chain, so
+    // two points are enough to recover the mapping for an axis-aligned case.
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
+      const originWorldY = f;
+      const unitWorldY = d + f;
+      const originLocal = ancestor.worldToLocal(tf.e, originWorldY);
+      const unitLocal = ancestor.worldToLocal(tf.e + tf.c, unitWorldY);
+      if (!originLocal || !unitLocal) return null;
+      const slope = unitLocal.y - originLocal.y;
+      if (slope === 0 || !Number.isFinite(slope)) return null;
+      const a1 = (-margin - originLocal.y) / slope;
+      const a2 = (ancestor.height + margin - originLocal.y) / slope;
+      minY = Math.max(minY, Math.min(a1, a2));
+      maxY = Math.min(maxY, Math.max(a1, a2));
+    }
+
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY) || maxY < minY) return null;
+    return { minY, maxY };
+  }
+
   private syncContentProjection(node: Entity): void {
     if (!this.contentProjectionEnabled || !this.a11yRoot) return;
     let el = this.contentElements.get(node.id);
@@ -4347,7 +4513,20 @@ export class Scene {
       return;
     }
 
-    const projection = node.getContentProjection();
+    // Which of this entity's own lines are worth materializing. Only meaningful
+    // for an entity taller than the band; `null` disables per-line gating and
+    // every line is projected, which is the conservative direction.
+    const lineBand = Number.isFinite(margin)
+      ? this.projectionVisibleLocalYBand(node, worldTf, margin)
+      : null;
+
+    // Hand the band to the entity so an O(glyphs) projection build can become
+    // O(visible glyphs). Windowing only the DOM leaves this call rebuilding the
+    // whole document every synced frame, which measured as no time win at all
+    // (Chrome 1.1x, Firefox 0.95x) despite 35x fewer elements.
+    const projection = node.getContentProjection(
+      lineBand ? { minY: lineBand.minY, maxY: lineBand.maxY } : undefined,
+    );
 
     if (!projection || !projection.text) {
       releaseProjectionEl();
@@ -4390,18 +4569,27 @@ export class Scene {
     }
     if (projection.grid) {
       const gridSyncStart = this._phaseTiming ? performance.now() : 0;
-      this.syncContentGridProjection(node, el, projection, projection.grid);
+      this.syncContentGridProjection(node, el, projection, projection.grid, lineBand);
       if (this._phaseTiming) this._recordPhase('gridSync', performance.now() - gridSyncStart);
     } else if (lines && lines.length > 0) {
+      // Which lines to materialize. A tall entity passes the box gate above and
+      // would otherwise emit a carrier for every line in the document; only the
+      // band near the viewport is observable, so only that band is built.
+      const lineWindow = projectionLineWindow(lines, lineBand, projection.lineHeight ?? 16);
       const signature = JSON.stringify({
         lines,
         fallbackFont: projection.font ?? '',
         fallbackLineHeight: projection.lineHeight ?? 16,
+        // Part of the signature, or scrolling would not rebuild the carriers and
+        // the window would stay frozen where it was first built. Quantized to
+        // whole line indices by construction, so a sub-pixel scroll inside one
+        // line does not churn the DOM.
+        window: lineWindow.gated ? `${lineWindow.start}-${lineWindow.end}` : 'all',
       });
       if (el.dataset.vectoProjectionLines !== signature) {
         this.preserveContentSelectionAcrossRebuild(el, () => {
           el.replaceChildren();
-          for (let index = 0; index < lines.length; index++) {
+          for (let index = lineWindow.start; index < lineWindow.end; index++) {
             const line = lines[index];
             const lineElement = document.createElement('span');
             const lineFont = line.font ?? projection.font ?? '';
@@ -4423,6 +4611,9 @@ export class Scene {
             // Set the explicit line box afterwards, or selection geometry drifts
             // differently in each browser for mixed-size text.
             lineElement.style.lineHeight = `${lineHeight}px`;
+            // Against the DOCUMENT's last line, not the window's: a windowed
+            // last line still has text after it, so it keeps its separator and a
+            // copy spanning the window boundary stays line-broken correctly.
             const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
             if (line.runs && line.runs.length > 0) {
               // Positioned runs (justify / RTL / non-natural spacing): each run
@@ -4470,6 +4661,15 @@ export class Scene {
           }
         });
         el.dataset.vectoProjectionLines = signature;
+        // Publish the window so a consumer can tell "this text is not here" from
+        // "this text does not exist", and so the dev-mode projection check knows
+        // the DOM holds a subset by design. Removed when not gated, or a stale
+        // attribute would keep suppressing the equality check.
+        if (lineWindow.gated) {
+          el.dataset.vectoProjectionWindow = `${lineWindow.start}-${lineWindow.end}/${lines.length}`;
+        } else {
+          delete el.dataset.vectoProjectionWindow;
+        }
       }
     } else {
       if (el.textContent !== projection.text) {
@@ -4550,11 +4750,21 @@ export class Scene {
     el: HTMLElement,
     projection: ContentProjection,
     grid: PreparedContentGrid,
+    lineBand: { minY: number; maxY: number } | null,
   ): void {
     if (grid.source !== projection.text) {
       throw new Error('ContentProjection.grid.source must equal ContentProjection.text');
     }
-    const signature = `${grid.revision}`;
+    // Only the lines near the viewport get carriers. The grid path is where the
+    // element volume lives — one `<span>` per glyph CLUSTER, not per line — so a
+    // tall code block or table is exactly the case this bounds.
+    const gridWindow = projectionGridLineWindow(grid, projection.lines, lineBand);
+    // The window is part of the signature: scrolling changes which lines belong
+    // without changing `grid.revision`, and without this the carriers would stay
+    // frozen at whatever band was first built.
+    const signature = gridWindow.gated
+      ? `${grid.revision}:${gridWindow.start}-${gridWindow.end}`
+      : `${grid.revision}`;
     if (el.dataset.vectoContentGrid !== signature) {
       const materializeStart = typeof performance !== 'undefined' ? performance.now() : 0;
       // Defer the selection decision until it is known which lines are rebuilt: a
@@ -4579,7 +4789,10 @@ export class Scene {
       // only when that changes. This mirrors the line-prefix reuse already in
       // `CodeBlock.buildLines` (#232) — same insight, one layer further out.
       const existingLines = el.children;
-      for (let lineIndex = 0; lineIndex < grid.lines.length; lineIndex++) {
+      for (let lineIndex = gridWindow.start; lineIndex < gridWindow.end; lineIndex++) {
+        // Children hold only the window, so a line's DOM slot is its offset from
+        // the window start, not its document index.
+        const domIndex = lineIndex - gridWindow.start;
         const gridLine = grid.lines[lineIndex];
         const projectedLine = projectionLines[lineIndex];
         const lineHeight = projectedLine?.lineHeight ?? grid.lineHeight;
@@ -4595,7 +4808,7 @@ export class Scene {
           lineFont,
           lineIndex === 0,
         );
-        const reusable = existingLines[lineIndex] as HTMLElement | undefined;
+        const reusable = existingLines[domIndex] as HTMLElement | undefined;
         if (
           reusable !== undefined &&
           reusable.dataset.vectoGridLineSig === lineSignature &&
@@ -4692,15 +4905,19 @@ export class Scene {
         }
         // Replace in place when a line already occupies this index, so untouched
         // neighbours keep their identity (and any live selection anchored in them).
-        const occupant = el.children[lineIndex];
+        const occupant = el.children[domIndex];
         if (occupant) el.replaceChild(lineElement, occupant);
         else el.appendChild(lineElement);
       }
       // Drop carriers past the end: the grid can shrink (an edit, a re-highlight),
       // and stale lines would otherwise stay visible to a screen reader and to
       // copy/find.
-      while (el.children.length > grid.lines.length) {
-        if (selectionLine !== null && selectionLine >= grid.lines.length) {
+      const windowLength = gridWindow.end - gridWindow.start;
+      while (el.children.length > windowLength) {
+        // A selection outside the retained window loses its carrier, so treat it
+        // as rebuilt and release it rather than leaving a Selection pointing at a
+        // detached node.
+        if (selectionLine !== null && selectionLine >= gridWindow.end) {
           rebuiltSelectionLine = true;
         }
         el.lastElementChild?.remove();
@@ -4710,6 +4927,11 @@ export class Scene {
       if (rebuiltSelectionLine) this.releaseContentSelectionForRebuild(el);
       el.dataset.vectoProjectionLines = signature;
       el.dataset.vectoContentGrid = signature;
+      if (gridWindow.gated) {
+        el.dataset.vectoProjectionWindow = `${gridWindow.start}-${gridWindow.end}/${grid.lines.length}`;
+      } else {
+        delete el.dataset.vectoProjectionWindow;
+      }
       el.dataset.vectoGridCarriers = `${el.querySelectorAll('[data-vecto-grid-cell]').length}`;
       if (typeof performance !== 'undefined') {
         const materializeMs = performance.now() - materializeStart;
