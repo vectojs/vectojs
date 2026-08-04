@@ -91,3 +91,13 @@ benchmarks/*/page/*.wasm
 benchmarks/*/page/benchmark.js
 benchmarks/*/page/benchmark.js.map
 benchmarks/*/traces/
+# Throwaway browser profile directories created per screenshot/serve invocation
+# (benchmarks/screenshot-page.ts writes benchmarks/tmp/screenshot-<engine>-<stamp>).
+# Not under benchmarks/*/ so the patterns above do not reach it.
+benchmarks/tmp/
+# Captured screenshots. Like results/, these are per-run artifacts of a specific
+# machine and moment, and a stale one is worse than none: a capture of a
+# multi-canvas page can show a blank canvas for reasons that are in the capture
+# path rather than the renderer (see screenshot-page.ts KNOWN LIMITATION), so a
+# committed image would be read as a defect that does not exist.
+benchmarks/*/screenshots/
