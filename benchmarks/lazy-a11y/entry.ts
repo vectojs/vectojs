@@ -20,6 +20,8 @@
 //   lazy-simulated     N entities, interactive = false, +1 projected
 //                      (models a lazy mode where only the hovered entity has DOM)
 //   non-interactive    N entities, interactive = false     (floor: no projection)
+//   ondemand-real      N entities, interactive = true + a11yProjection =
+//                      'onDemand' (CTX-0196: the shipped mode, not a simulation)
 //
 // `a11ySyncInterval` throttling is deliberately NOT a row here: it only takes
 // effect inside `loop()`, which this bench bypasses, so measuring it would
@@ -74,6 +76,12 @@ interface Config {
   interactive: boolean;
   /** How many entities additionally get a projected element (the "hovered" one). */
   projected: number;
+  /**
+   * Per-entity mode to set (CTX-0196). When present the entities are genuinely
+   * `interactive` and the ENGINE decides whether to project, so this arm measures
+   * the shipped code rather than a simulation of it.
+   */
+  mode?: 'eager' | 'onDemand' | 'never';
 }
 
 const CONFIGS: Config[] = [
@@ -94,6 +102,13 @@ const CONFIGS: Config[] = [
     label: 'none interactive (floor, no a11y DOM)',
     interactive: false,
     projected: 0,
+  },
+  {
+    key: 'ondemand-real',
+    label: "interactive + a11yProjection: 'onDemand' (shipped mode)",
+    interactive: true,
+    projected: 0,
+    mode: 'onDemand',
   },
 ];
 
@@ -121,6 +136,7 @@ function makeScene(count: number, cfg: Config): { scene: Scene; canvas: HTMLCanv
     );
     pt.x = rnd() * 1200;
     pt.y = rnd() * 800;
+    if (cfg.mode) pt.a11yProjection = cfg.mode;
     scene.root.add(pt);
   }
   return { scene, canvas };

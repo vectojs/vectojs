@@ -1446,6 +1446,14 @@ export class Scene {
    *  mid-hover synthesize the `pointerleave` the browser never sends for a
    *  detached element, so the entity doesn't keep its hover state. */
   private readonly hoveredA11yElements = new WeakSet<HTMLElement>();
+  /**
+   * Entity ids the application has pinned via {@link requestA11yProjection}.
+   *
+   * Ids rather than entities so a removed entity cannot be retained by this set;
+   * a stale id simply never matches. Cleared per-entity by
+   * {@link releaseA11yProjection}.
+   */
+  private readonly a11yProjectionRequests = new Set<string>();
   /** Persistent tabindex=-1 element in a11yRoot. When the focused a11y mirror is
    *  pruned (virtualization/streaming/removal) while it holds focus, we move
    *  focus here instead of letting the browser drop it to <body> — keeping the
@@ -3758,7 +3766,128 @@ export class Scene {
    * predicate, which is only tractable while it has one home.
    */
   private shouldProjectA11y(node: Entity): boolean {
-    return node.interactive && (node.width > 0 || node.a11yFullViewport);
+    if (!node.interactive) return false;
+    if (!(node.width > 0 || node.a11yFullViewport)) return false;
+    switch (node.a11yProjection) {
+      case 'never':
+        return false;
+      case 'onDemand':
+        return this.a11yEngaged(node);
+      default:
+        return true;
+    }
+  }
+
+  /**
+   * Whether an `a11yProjection: 'onDemand'` entity is currently engaged enough to
+   * deserve a shadow node.
+   *
+   * Deliberately **not** hover alone. A keyboard or assistive-technology user
+   * generates no pointer events, so a hover-only trigger would withhold the
+   * semantic node from precisely the users it exists for. Three signals, any of
+   * which counts:
+   *
+   * - **Focus.** Covers keyboard traversal and AT-driven focus. Checked against
+   *   the live element so a node keeps its own focus rather than being pruned out
+   *   from under the user mid-interaction.
+   * - **Pointer target.** The entity under the pointer, so a mouse user gets the
+   *   same node a hover-gated design would have given them.
+   * - **Explicit request.** {@link Scene.requestA11yProjection}, for anything the
+   *   app knows is significant — the selected item, a search hit, a
+   *   just-announced element. This is the escape hatch that keeps the mode usable
+   *   when neither focus nor pointer applies.
+   *
+   * The entity stays hit-testable on canvas regardless, so a click always reaches
+   * it and promotes it on the next sync.
+   */
+  private a11yEngaged(node: Entity): boolean {
+    if (this.a11yProjectionRequests.has(node.id)) return true;
+    // Pointer engagement asks the ENTITY whether the pointer is inside it, rather
+    // than asking the DOM what is hovered or the scene what is hit.
+    //
+    // Not the DOM, because an `onDemand` entity has no element until it is
+    // engaged, so a hover test could never promote it — the thing that would
+    // receive the hover does not exist yet. That circularity is what makes
+    // hover-driven materialization awkward in the first place.
+    //
+    // And deliberately not `findEntityAt`, which was the first implementation and
+    // broke a real test: it calls `_ensureHitGrid()`, so running it from the a11y
+    // sync rebuilds the spatial index mid-frame and made Firefox lose an
+    // in-progress drag selection over a Table cell (`text: ''` with the correct
+    // element under the pointer). `isPointInside` is the entity's own predicate,
+    // has no shared state, and is what the pointer pipeline itself uses.
+    //
+    // Overlap is accepted rather than resolved to the topmost entity: deciding
+    // that needs the very hit-test being avoided, and promoting a few stacked
+    // entities is harmless — each is genuinely under the pointer, and the cost is
+    // bounded by how many entities can overlap one point, not by scene size.
+    //
+    // Pointer engagement is skipped for an entity that projects SELECTABLE text of
+    // its own. Its a11y node carries `pointer-events: auto` and stacks above the
+    // transparent text mirror, so materializing one under the pointer swallows the
+    // mousedown and native drag-selection never starts — the same conflict that
+    // makes `Text`/`RichText` set `interactive = false` (`Text.ts:126-130`).
+    // Measured: promoting a Table cell this way left Firefox with the right
+    // element under the pointer and an empty selection. Focus and explicit
+    // requests still apply, so such an entity is still reachable; it just is not
+    // promoted by hovering the text it is trying to let you select.
+    if (this.mouseX > -9000 && !this.projectsSelectableText(node)) {
+      if (node.isPointInside(this.mouseX, this.mouseY)) return true;
+    }
+    // Keep a focused node projected even if it stopped qualifying otherwise:
+    // pruning the element under the user's focus moves focus to <body> and
+    // silently drops them out of the scene.
+    const existing = this.a11yElements?.get(node.id);
+    if (existing && typeof document !== 'undefined' && document.activeElement === existing) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether `node` mirrors selectable text of its own.
+   *
+   * Such an entity must not be promoted by the pointer: its interactive a11y node
+   * would sit above the text mirror and eat the mousedown that starts a native
+   * selection.
+   */
+  private projectsSelectableText(node: Entity): boolean {
+    const projection = node.getContentProjection?.();
+    return !!projection?.text && projection.selectable !== false;
+  }
+
+  /**
+   * Keep `entity`'s a11y shadow node projected while it has
+   * `a11yProjection: 'onDemand'`.
+   *
+   * For anything the application knows matters but the engine cannot infer — the
+   * selected danmaku, a search hit, a node just announced in a live region.
+   * Without this, `'onDemand'` would be reachable only by focus or pointer, and
+   * an app-driven selection change would leave the selected entity semantically
+   * invisible.
+   *
+   * Idempotent. Has no effect on an `'eager'` entity, which is always projected.
+   */
+  public requestA11yProjection(entity: Entity | string): void {
+    const id = typeof entity === 'string' ? entity : entity.id;
+    if (this.a11yProjectionRequests.has(id)) return;
+    this.a11yProjectionRequests.add(id);
+    this.a11yNeedsReorder = true;
+    this.markDirty({ entity: id, reason: 'a11y-reorder' });
+  }
+
+  /**
+   * Drop a projection request made by {@link requestA11yProjection}.
+   *
+   * The node is not removed immediately: it survives while it is focused or under
+   * the pointer, and is pruned on the next sync that finds it unengaged. Releasing
+   * a request the scene does not hold is a no-op.
+   */
+  public releaseA11yProjection(entity: Entity | string): void {
+    const id = typeof entity === 'string' ? entity : entity.id;
+    if (!this.a11yProjectionRequests.delete(id)) return;
+    this.a11yNeedsReorder = true;
+    this.markDirty({ entity: id, reason: 'a11y-reorder' });
   }
 
   private syncA11y(node: Entity, container: A11yContainer | null = null) {
