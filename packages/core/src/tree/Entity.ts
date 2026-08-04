@@ -846,6 +846,43 @@ export abstract class Entity {
   public a11yFullViewport: boolean = false;
 
   /**
+   * When this entity's a11y shadow node is materialized.
+   *
+   * `'eager'` (the default) keeps today's behaviour: a shadow node exists for as
+   * long as the entity is `interactive` with a box. That is right for a button or
+   * a link, and wrong for thousands of ephemeral, individually-meaningless
+   * entities — particles, danmaku, graph nodes — where it produces one DOM node
+   * per entity every frame.
+   *
+   * Measured on 5,000 moving interactive entities (`benchmarks/lazy-a11y/`):
+   * eager costs **72.2 ms/frame on Chrome and 114.3 ms on Firefox**, missing even
+   * 60 Hz, against **1.55/1.63 ms** for the same scene with one node projected —
+   * within noise of the 1.26/1.65 ms floor of projecting nothing at all.
+   *
+   * `'onDemand'` projects a node only while {@link Scene} considers the entity
+   * *engaged*: it is focused, it is the current pointer target, or it has been
+   * explicitly requested via {@link Scene.requestA11yProjection}. Crucially the
+   * trigger is not hover alone — a keyboard or assistive-technology user
+   * generates no hover, so a hover-only gate would remove exactly those users'
+   * access. Engagement therefore includes focus and an explicit request, and the
+   * entity stays hit-testable on canvas throughout, so a click still reaches it
+   * and promotes it.
+   *
+   * `'never'` suppresses the node entirely. Prefer `interactive = false` unless
+   * the entity genuinely needs pointer events without any semantic presence;
+   * this exists so a purely decorative interactive surface can opt out without
+   * losing canvas hit-testing.
+   *
+   * **This does not replace an aggregate description.** A thousand `'onDemand'`
+   * danmaku are individually reachable but say nothing collectively. The proven
+   * pattern is one aggregate live region (`role: 'status'`, `a11yFullViewport`)
+   * plus a small pool of persistent hotspots for the current selection — see
+   * `vectojs-native/danmaku`. Use `'onDemand'` to stop paying per entity, not as
+   * the whole accessibility story.
+   */
+  public a11yProjection: 'eager' | 'onDemand' | 'never' = 'eager';
+
+  /**
    * Hide this entity AND its whole subtree from the accessibility/automation
    * projection, regardless of each node's own `interactive` flag.
    *
