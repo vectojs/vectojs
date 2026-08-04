@@ -1825,6 +1825,35 @@ export abstract class Entity {
   }
 
   /**
+   * A cheap, monotonically-increasing stamp of this entity's projected content.
+   *
+   * Purely an optimization, and opt-in: returning `null` (the default) means
+   * "I cannot cheaply tell whether my content changed", and the {@link Scene}
+   * then rebuilds the projection every synced frame exactly as before. An
+   * implementation must bump the value whenever anything
+   * {@link getContentProjection} would report changes — text, fonts, line
+   * geometry, `selectable`, grid revision.
+   *
+   * When two consecutive syncs report the same epoch AND the entity's geometry
+   * is unchanged, `Scene` skips the block *before* calling
+   * {@link getContentProjection}. That matters because the projection call is
+   * O(glyphs-in-block) and the DOM diff around it costs about the same again:
+   * measured on a 1500-resident-block document, a sync in which the projected
+   * text was byte-identical before and after still cost 17.875 ms, and skipping
+   * unchanged blocks took that to 0.475 ms (carryctx CTX-0199, vectojs#343).
+   *
+   * Correctness is entirely on the implementer: a stale epoch means stale DOM,
+   * so bump it in the same place the content is invalidated rather than trying
+   * to enumerate mutation sites afterwards. Any monotonic counter works; the
+   * value is only ever compared for equality with the previous sync's.
+   *
+   * @returns The current content epoch, or `null` to disable skipping.
+   */
+  public getContentEpoch(): number | null {
+    return null;
+  }
+
+  /**
    * Whether this entity still has a queued/running tween animation, or an
    * active {@link setTransition}/{@link animateTo}/{@link springTo} property
    * driver.

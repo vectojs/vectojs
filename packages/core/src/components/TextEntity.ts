@@ -36,6 +36,8 @@ export class TextEntity extends Entity {
   public lineWidth: number = 1;
 
   private isHovered: boolean = false;
+  /** Bumped by {@link applyLayout}; read by `Scene` to skip an unchanged sync. */
+  private contentEpoch = 0;
 
   constructor(text: string, atlas: any, maxWidth: number, fontSize: number = 24) {
     super();
@@ -61,6 +63,10 @@ export class TextEntity extends Entity {
     if (!this.text) return null;
     // 'sans-serif' matches the shared measurer and the fillText fallback.
     return { text: this.text, font: `${this.fontSize}px sans-serif` };
+  }
+
+  public override getContentEpoch(): number {
+    return this.contentEpoch;
   }
 
   /**
@@ -113,6 +119,10 @@ export class TextEntity extends Entity {
 
   /** Hot pass: place the cached {@link PreparedText} and refresh the a11y box. */
   private applyLayout() {
+    // The projection reports `text` + `fontSize`; every mutator that can change
+    // either routes through here (`fontSize` is constructor-only), so one bump
+    // covers them all.
+    this.contentEpoch++;
     const result = this.layout.layoutPrepared(this.prepared);
     this.nodes = result.nodes;
 

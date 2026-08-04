@@ -99,6 +99,17 @@ export class Text extends UIComponent {
    *  `fillText` per line and never touches this. */
   private glyphNodes: LayoutNode[] = [];
   private perGlyph = false;
+  /**
+   * Bumped whenever a layout or a projected property changes.
+   *
+   * Read by `Scene` to skip re-projecting an unchanged block. Every mutator
+   * routes through {@link applyLayout} except {@link setSelectable}, which bumps
+   * it directly. Assigning the public `text`/`font`/`lineHeight` fields without
+   * calling a setter does not bump it — but that already fails to repaint the
+   * canvas, because `render()` draws from the laid-out `lines`/`glyphNodes`
+   * rather than from `text`, so it is not a working pattern to begin with.
+   */
+  private contentEpoch = 0;
   /** True when the last layout produced any RTL glyph (bidi content). Engages
    *  the glyph-accurate render + positioned-carrier projection so selection
    *  overlaps the reordered / right-aligned canvas glyphs. */
@@ -270,8 +281,16 @@ export class Text extends UIComponent {
   /** Enable or disable browser-native drag selection without rebuilding the entity. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
+    // The one projected property that does not go through applyLayout(). It
+    // drives `pointer-events`/`user-select` on the projected node, so a missed
+    // bump would leave text unselectable after opting in.
+    this.contentEpoch++;
     this.scene?.markDirty();
     return this;
+  }
+
+  public override getContentEpoch(): number {
+    return this.contentEpoch;
   }
 
   public setText(text: string): this {
@@ -323,6 +342,10 @@ export class Text extends UIComponent {
 
   /** Hot pass: place the cached prepared text and regroup glyphs into lines. */
   private applyLayout(): void {
+    // Every projected property this recomputes — lines, source ranges, bidi,
+    // glyph positions — is what `getContentProjection()` reports, so one bump
+    // here covers setText/append/setMaxWidth/setTextAlign.
+    this.contentEpoch++;
     const result = this.engine.layoutPrepared(this.prepared);
     // Bidi (RTL / mixed) needs the glyph-accurate path too: the engine reorders
     // glyphs to visual order and right-aligns RTL lines, so a single logical

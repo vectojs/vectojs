@@ -1137,6 +1137,8 @@ export class CodeBlock extends UIComponent {
   private rawLines: string[] | null = null;
   private cellWidth = 0;
   private source: string;
+  /** Bumped by {@link buildLines} and {@link setSelectable}; read by `Scene`. */
+  private contentEpoch = 0;
 
   private lang: string;
   private theme: Required<MarkdownTheme>;
@@ -1176,8 +1178,14 @@ export class CodeBlock extends UIComponent {
   /** Enable or disable browser-native selection for this code block. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
+    // Projected as `selectable`, and does not rebuild the lines.
+    this.contentEpoch++;
     this.scene?.markDirty();
     return this;
+  }
+
+  public override getContentEpoch(): number {
+    return this.contentEpoch;
   }
 
   /**
@@ -1259,6 +1267,9 @@ export class CodeBlock extends UIComponent {
    * lands mid-line, so that line's text (and therefore its tokenization) changes.
    */
   private buildLines(code: string): void {
+    // The projection reports `source` and the grid built from it; `setCode` is
+    // the only path that changes either, and it ends here.
+    this.contentEpoch++;
     const rawLines = code.split(/\r\n|\r|\n/);
     const previous = this.rawLines;
     // Longest identical prefix, excluding the previous last line (see above).

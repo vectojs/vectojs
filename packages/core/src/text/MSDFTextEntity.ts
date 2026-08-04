@@ -43,6 +43,8 @@ export class MSDFTextEntity extends Entity {
 
   private text: string = '';
   private lastRenderedSeqId: number = 0;
+  /** Bumped by {@link queueLayout}; read by `Scene` to skip an unchanged sync. */
+  private contentEpoch = 0;
   // Atlas-decode subscription (see watchAtlasDecode). Held so `destroy()` can
   // release it: the handler closes over `this`, so leaving it attached to a
   // long-lived shared atlas image would retain the whole entity.
@@ -195,6 +197,9 @@ export class MSDFTextEntity extends Entity {
   }
 
   private queueLayout(): void {
+    // The projection reports `text` + `fontSize` + `lineHeight`, and every
+    // mutator that can change any of them ends here.
+    this.contentEpoch++;
     LayoutWorkerManager.getInstance().queueLayout(this.id, this.layoutText, {
       fontId: this.font.id,
       fontSize: this.fontSize,
@@ -224,6 +229,10 @@ export class MSDFTextEntity extends Entity {
       font: `${this.fontSize}px ${this.fallbackFont}`,
       lineHeight: this.lineHeight,
     };
+  }
+
+  public override getContentEpoch(): number {
+    return this.contentEpoch;
   }
 
   public isPointInside(globalX: number, globalY: number): boolean {
