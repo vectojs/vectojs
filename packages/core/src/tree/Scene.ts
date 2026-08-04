@@ -431,6 +431,34 @@ export interface SceneOptions {
    */
   contentProjectionMargin?: number;
   /**
+   * Virtualization margin (px) for the *semantic* tier of content projection —
+   * whether a block has **any** projected DOM at all, as opposed to
+   * {@link SceneOptions.contentProjectionMargin}, which decides whether that
+   * block's per-line **carriers** are windowed.
+   *
+   * Splitting the two makes a coarse resident tier expressible: with
+   * `contentSemanticMargin: Infinity` and a finite `contentProjectionMargin`,
+   * every block in the document keeps an element holding its full text — so
+   * find-in-page and screen-reader read-ahead see the whole document — while
+   * only blocks near the viewport pay for per-line carriers. One scalar could
+   * not express that, because a finite value freed off-band blocks entirely and
+   * `Infinity` also unwindowed every carrier, which is O(total document glyphs).
+   *
+   * `Infinity` is safe **here** and remains unsupported for
+   * `contentProjectionMargin`: the cost that made it unsupported comes from an
+   * unwindowed carrier band, not from resident text.
+   *
+   * Note the one-time cost. A resident tier materializes one element per block
+   * on the first sync — measured ~13µs per node created, so ~20ms at 1000 blocks
+   * and ~146ms at 10000 — as one synchronous block. Steady state is cheap
+   * (unchanged blocks skip via {@link Entity.getContentEpoch}), so this is a
+   * document-open stall, not a per-frame cost.
+   *
+   * Default: whatever `contentProjectionMargin` resolves to, so omitting this
+   * leaves behaviour unchanged.
+   */
+  contentSemanticMargin?: number;
+  /**
    * Reading direction used to order the accessibility/automation shadow tree so
    * keyboard **tab order** and screen-reader traversal follow the *visual*
    * reading order (top-to-bottom, then inline) rather than scene-graph
@@ -475,6 +503,7 @@ export const SCENE_OPTION_KEYS = [
   'autoThrottle',
   'contentProjection',
   'contentProjectionMargin',
+  'contentSemanticMargin',
   'debugA11y',
   'disableWindowResize',
   'maxDPR',
@@ -644,6 +673,19 @@ function parseInlinePx(value: string | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * Which tier of content projection a block gets.
+ *
+ * `fine` is the historical behavior: an element plus a carrier per visual line
+ * (or per glyph cluster, for a grid), windowed to the interaction band. `coarse`
+ * is text-only — one text node holding the block's whole string, no carriers —
+ * for a block that is resident under the semantic margin but outside the
+ * interaction margin. Coarse text still serves find-in-page, copy and
+ * screen-reader read-ahead; only per-line selection geometry needs carriers, and
+ * that is unreachable without scrolling the block into the band anyway.
+ */
+type ContentSyncTier = 'fine' | 'coarse';
+
 /** Half-open range of projected line indices to materialize. */
 interface ProjectionLineWindow {
   start: number;
@@ -714,6 +756,17 @@ interface ContentSyncState {
   d: number;
   e: number;
   f: number;
+  /**
+   * Which projection tier the DOM was built for.
+   *
+   * Not derivable from `hasBand`: the coarse tier has no band, but so does an
+   * in-band ROTATED entity (a y band is meaningless once local x mixes into
+   * world y), and those two want opposite DOM — one plain text node versus every
+   * line's carrier. Recorded explicitly so a scene resize that re-tiers a block
+   * without moving it still invalidates, which is otherwise invisible to every
+   * other field here.
+   */
+  tier: ContentSyncTier;
   /** `false` when the line band was null, in which case the bounds are meaningless. */
   hasBand: boolean;
   bandMin: number;
@@ -775,7 +828,15 @@ function projectionLineWindow(
   if (start === -1) {
     // Nothing overlapped. Rather than project nothing, keep the single nearest
     // line so the entity still has a non-empty projection and the text stays
-    // reachable; a fully off-band entity was already released by the box gate.
+    // reachable.
+    //
+    // This is now only reachable for an entity the caller has already decided is
+    // in the interaction band — a partially-overlapping box whose own lines all
+    // miss the band. A FULLY off-band entity does not arrive here at all: it is
+    // either released by the semantic gate or routed to the coarse plain-text
+    // tier, which is why this fallback no longer needs to be the thing that keeps
+    // its text reachable. Before the semantic/interaction split it was, because a
+    // surviving entity was by definition in the one band there was.
     return { start: 0, end: Math.min(1, lines.length), gated: true };
   }
   if (start === 0 && end === lines.length) return all;
@@ -1456,9 +1517,14 @@ export class Scene {
   private contentMetricScaleEpoch = -1;
   private contentMetricScaleX = 1;
   private contentProjectionEnabled: boolean = true;
-  // Virtualization margin (px) for content projection; `undefined` → one
-  // viewport height, resolved at sync time. `Infinity` = materialize everything.
+  // Virtualization margin (px) for the content-projection CARRIER band;
+  // `undefined` → one viewport height, resolved at sync time. `Infinity` is
+  // unsupported here: it unwindows every carrier, which is O(total glyphs).
   private contentProjectionMargin: number | undefined = undefined;
+  // Virtualization margin (px) for the SEMANTIC tier — whether a block has
+  // any projected DOM. `undefined` → falls back to contentProjectionMargin, so
+  // the default keeps one gate. `Infinity` = every block keeps resident text.
+  private contentSemanticMargin: number | undefined = undefined;
   /**
    * True while a text-selection drag that started on a projection's blank
    * region (no text node under the press) is being driven manually — the
@@ -2696,6 +2762,7 @@ export class Scene {
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
+    this.contentSemanticMargin = options.contentSemanticMargin;
     this.readingDirection = options.readingDirection ?? 'ltr';
     this.renderMode = options.renderMode ?? 'always';
     this._devActive = Scene._devModeDetected();
@@ -4698,18 +4765,53 @@ export class Scene {
     // gate needs only node/worldTf/margin, not the projection, so off-viewport
     // blocks now cost O(1). (carryctx CTX-0024)
     const worldTf = node.getWorldTransform();
-    const margin = this.contentProjectionMargin ?? this.height;
-    if (Number.isFinite(margin) && !this.projectionBoxVisible(node, worldTf, margin)) {
+    // Two margins, two independent gates. `interactionMargin` decides whether
+    // this block's per-line CARRIERS are built; `semanticMargin` decides whether
+    // it has any projected DOM at all. They default to the same value, so a scene
+    // that sets neither, or only the interaction margin, behaves exactly as
+    // before. Setting `contentSemanticMargin: Infinity` with a finite interaction
+    // margin is the coarse resident tier: whole-document text findable, carriers
+    // still bounded by the viewport. (carryctx CTX-0201, DEC-01KZ6RSS)
+    const interactionMargin = this.contentProjectionMargin ?? this.height;
+    const semanticMargin = this.contentSemanticMargin ?? interactionMargin;
+    if (
+      Number.isFinite(semanticMargin) &&
+      !this.projectionBoxVisible(node, worldTf, semanticMargin)
+    ) {
       releaseProjectionEl();
       return;
     }
 
+    // Which tier this block gets. `coarse` means it survived the semantic gate
+    // but is outside the interaction margin, so it projects its full text as one
+    // node and NO carriers.
+    //
+    // Decided by a box test rather than by inspecting the line window, for two
+    // reasons. It is O(ancestor-depth) and allocation-free, where the window
+    // needs the projection built first — the very O(glyphs) call this avoids. And
+    // it must be knowable BEFORE the dirty-track comparison below, because the
+    // tier is part of what that comparison keys on.
+    const inInteractionBand =
+      !Number.isFinite(interactionMargin) ||
+      this.projectionBoxVisible(node, worldTf, interactionMargin);
+    const tier: ContentSyncTier = inInteractionBand ? 'fine' : 'coarse';
+
     // Which of this entity's own lines are worth materializing. Only meaningful
     // for an entity taller than the band; `null` disables per-line gating and
     // every line is projected, which is the conservative direction.
-    const lineBand = Number.isFinite(margin)
-      ? this.projectionVisibleLocalYBand(node, worldTf, margin)
-      : null;
+    //
+    // Deliberately NOT computed for the coarse tier. The band is the viewport
+    // expressed in entity-local y, UNCLAMPED to the entity's own box, so it
+    // carries the viewport's position and moves whenever the view or the entity
+    // does. A resident off-band block that recorded one could never match on a
+    // later frame, so every resident block would rebuild — O(total document
+    // glyphs) per frame, the CTX-0024 regression this tier exists to avoid.
+    const lineBand =
+      tier === 'coarse'
+        ? null
+        : Number.isFinite(interactionMargin)
+          ? this.projectionVisibleLocalYBand(node, worldTf, interactionMargin)
+          : null;
 
     // Exact (margin 0) viewport/clip test, used both for the dirty-track
     // comparison below and for `display` at the end of a full sync. Computed
@@ -4748,6 +4850,7 @@ export class Scene {
         prior.d === d &&
         prior.e === e &&
         prior.f === f &&
+        prior.tier === tier &&
         prior.hasBand === (lineBand !== null) &&
         (lineBand === null ||
           (prior.bandMin === lineBand.minY && prior.bandMax === lineBand.maxY)) &&
@@ -4804,14 +4907,31 @@ export class Scene {
     }
 
     const lines = projection.lines;
-    if (!projection.grid && el.dataset.vectoContentGrid !== undefined) {
+    // Tier, not `lines`, selects the branch.
+    //
+    // This used to read `else if (lines && lines.length > 0)`, so an entity that
+    // returned lines could never reach the plain-text branch. Under a resident
+    // semantic tier that is wrong in both directions: keeping the lines branch
+    // emits one spurious carrier per off-band block (`projectionLineWindow`
+    // falls back to the nearest line when nothing overlaps the band), while
+    // handing it an empty window would `replaceChildren()` and add nothing,
+    // BLANKING the text — the silent-staleness failure, worse than the carrier.
+    //
+    // The plain-text branch below is already exactly the coarse tier, and every
+    // real `getContentProjection` returns the block's FULL text regardless of the
+    // hint (`ui/Text`, `ui/RichText`, `markdown/CodeBlock` all narrow only
+    // `lines`), so routing to it preserves the whole string. Keeping the decision
+    // here also keeps it in the engine, rather than depending on every entity
+    // voluntarily returning a coarse-only projection.
+    const useCarriers = tier === 'fine';
+    if ((!projection.grid || !useCarriers) && el.dataset.vectoContentGrid !== undefined) {
       this.clearContentGridState(node.id, el);
     }
-    if (projection.grid) {
+    if (projection.grid && useCarriers) {
       const gridSyncStart = this._phaseTiming ? performance.now() : 0;
       this.syncContentGridProjection(node, el, projection, projection.grid, lineBand);
       if (this._phaseTiming) this._recordPhase('gridSync', performance.now() - gridSyncStart);
-    } else if (lines && lines.length > 0) {
+    } else if (useCarriers && lines && lines.length > 0) {
       // Which lines to materialize. A tall entity passes the box gate above and
       // would otherwise emit a carrier for every line in the document; only the
       // band near the viewport is observable, so only that band is built.
@@ -4912,11 +5032,31 @@ export class Scene {
         }
       }
     } else {
-      if (el.textContent !== projection.text) {
+      // Demoting a block from the fine tier leaves carrier spans whose
+      // concatenated text can already EQUAL `projection.text`, so a text-only
+      // comparison would skip the assignment and strand them. Setting
+      // `textContent` is what removes them.
+      //
+      // Scoped to the coarse tier deliberately. An entity can reach this branch
+      // in the DEFAULT configuration while still holding carriers from an earlier
+      // sync — a Table cell does, and its spans are what give the browser the
+      // geometry to drag-select through. Rebuilding it there would release the
+      // selection mid-drag, since `releaseContentSelectionForRebuild` fires
+      // exactly when the element owns the selection. Withdrawing carriers is
+      // right only when the block really is leaving the interaction band, which
+      // is what `tier === 'coarse'` means.
+      const demoted = tier === 'coarse' && el.children.length > 0;
+      if (el.textContent !== projection.text || demoted) {
         this.releaseContentSelectionForRebuild(el);
         el.textContent = projection.text;
       }
       delete el.dataset.vectoProjectionLines;
+      // A demoted block was gated while it was fine-tiered, so it carries a
+      // window marker claiming its DOM holds a subset by design — which would
+      // suppress the dev-mode projection equality check even though the coarse
+      // tier holds the whole text. Left alone outside the coarse tier to keep the
+      // default path byte-identical.
+      if (tier === 'coarse') delete el.dataset.vectoProjectionWindow;
     }
 
     const font = projection.font ?? '';
@@ -4996,6 +5136,7 @@ export class Scene {
       next.d = d;
       next.e = e;
       next.f = f;
+      next.tier = tier;
       next.hasBand = lineBand !== null;
       next.bandMin = lineBand?.minY ?? 0;
       next.bandMax = lineBand?.maxY ?? 0;
