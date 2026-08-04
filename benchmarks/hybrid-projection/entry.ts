@@ -99,6 +99,7 @@ type ArmKey =
   | 'hybrid-windowed'
   | 'hybrid-cached'
   | 'all-resident'
+  | 'split'
   | 'never';
 
 /**
@@ -156,7 +157,7 @@ class Block extends Entity {
    * behaviour: `Scene` only skips an entity that opts in.
    */
   override getContentEpoch(): number | null {
-    return this.arm === 'hybrid-dirty' ? this.extra.length : null;
+    return this.arm === 'hybrid-dirty' || this.arm === 'split' ? this.extra.length : null;
   }
 
   constructor(
@@ -296,6 +297,12 @@ class Block extends Entity {
         return null;
       case 'native':
       case 'all-resident':
+      // `split` behaves like a NAIVE entity on purpose: it always returns
+      // `lines`, and never consults `band`. Every other resident arm simulates
+      // the coarse tier itself by withholding `lines` off-band, which is the
+      // thing an entity should not have to do. If the engine's split works, this
+      // arm reaches `hybrid`'s DOM shape without the entity cooperating at all.
+      case 'split':
         return this.withGeometry(hint);
       default:
         // The whole point: resident text for every block, fine geometry only
@@ -308,8 +315,13 @@ class Block extends Entity {
 interface Arm {
   key: ArmKey;
   label: string;
-  /** Scene's entity-level virtualization margin. */
+  /** Scene's entity-level virtualization margin (the CARRIER band). */
   margin: number;
+  /**
+   * Scene's SEMANTIC margin — whether a block has any DOM at all. Omitted means
+   * "same as `margin`", which is the pre-split behaviour of one gate.
+   */
+  semanticMargin?: number;
   /** Can off-screen text be found by native find-in-page in this arm? */
   offscreenFindable: boolean;
 }
@@ -377,6 +389,26 @@ const ARMS: Arm[] = [
     offscreenFindable: true,
   },
   {
+    // THE ENGINE FEATURE, not a simulation (vectojs#343 step 2, CTX-0201).
+    //
+    // `contentSemanticMargin: Infinity` arms only the box gate, so every block
+    // keeps resident text; `contentProjectionMargin: VIEW_H` still arms the
+    // carrier band, so carriers stay windowed to the viewport. Every other
+    // resident arm gets that shape only by having the ENTITY withhold `lines`
+    // off-band; this one gets it from Scene while the entity returns everything.
+    //
+    // The capability proof is numeric and needs no screenshot: its per-block
+    // element count should match `hybrid` (every block resident, whole document
+    // findable) while its per-line span count matches `native` (fine geometry
+    // still bounded by the viewport). No single-margin configuration can produce
+    // both at once — see splitVsHybridCarriers / splitVsNativeDescendants.
+    key: 'split',
+    label: 'engine split: semantic=Infinity + interaction=viewport, entity naive',
+    margin: VIEW_H,
+    semanticMargin: Number.POSITIVE_INFINITY,
+    offscreenFindable: true,
+  },
+  {
     key: 'never',
     label: 'floor: no content projection at all',
     margin: VIEW_H,
@@ -401,6 +433,9 @@ function build(count: number, arm: Arm): Built {
   document.body.appendChild(canvas);
   const scene = new Scene(canvas, {
     contentProjectionMargin: arm.margin,
+    // Only the `split` arm sets this. Passing `undefined` elsewhere is exactly
+    // the default, so every other arm is byte-identical to a pre-split run.
+    contentSemanticMargin: arm.semanticMargin,
     // Without this, Scene binds a window-resize handler that resizes the canvas
     // to window.innerWidth/innerHeight. The band and the block coordinates here
     // are computed against VIEW_W/VIEW_H, so an inflated viewport silently moves
@@ -777,6 +812,7 @@ async function main(): Promise<void> {
     const dirty = of('hybrid-dirty');
     const windowed = of('hybrid-windowed');
     const allResident = of('all-resident');
+    const split = of('split');
     const ratio = (a: unknown, b: unknown): number | null =>
       typeof a === 'number' && typeof b === 'number' && b > 0 ? +(a / b).toFixed(2) : null;
     return {
@@ -827,6 +863,38 @@ async function main(): Promise<void> {
       allResidentVsHybridHeap: ratio(allResident?.heapDeltaMB, hybrid?.heapDeltaMB),
       windowedVsNativeHeap: ratio(windowed?.heapDeltaMB, native?.heapDeltaMB),
       allResidentVsHybridStreamMs: ratio(allResident?.streamMsPerFrame, hybrid?.streamMsPerFrame),
+      // CTX-0201 — THE CAPABILITY PROOF for the engine split, and it is a pair of
+      // ratios rather than a time, because the claim is about DOM SHAPE.
+      //
+      // Note which census field carries which half. `carriers` counts elements
+      // with `[data-vecto-content]` — ONE PER RESIDENT BLOCK, i.e. the semantic
+      // tier — while `domDescendants` counts the per-line/per-run spans inside
+      // them, i.e. the interaction tier. So the split's two independent gates map
+      // to those two counts, and `split` must match a DIFFERENT arm on each:
+      //
+      //   splitVsHybridCarriers ~ 1     every block resident (whole doc findable)
+      //   splitVsNativeDescendants ~ 1  carriers still viewport-bounded
+      //
+      // No single-margin configuration reaches both: `native` fails the first
+      // (off-band blocks have no DOM at all) and `hybrid`/`all-resident` fail the
+      // second. A drift below 1 on the first means the semantic gate is still
+      // releasing; above 1 on the second means the carrier band stopped windowing.
+      splitVsHybridCarriers: ratio(split?.carriers, hybrid?.carriers),
+      splitVsNativeDescendants: ratio(split?.domDescendants, native?.domDescendants),
+      splitCarriers: split?.carriers ?? null,
+      splitDomDescendants: split?.domDescendants ?? null,
+      nativeCarriers: native?.carriers ?? null,
+      nativeDomDescendants: native?.domDescendants ?? null,
+      hybridCarriers: hybrid?.carriers ?? null,
+      hybridDomDescendants: hybrid?.domDescendants ?? null,
+      // And what it costs, against the arm that simulates the same shape
+      // entity-side. Above ~1 means the engine tier is more expensive than an
+      // entity withholding `lines`, which would be an argument against it.
+      splitVsDirtyIdleMs: ratio(split?.idleMsPerSync, dirty?.idleMsPerSync),
+      splitVsDirtyFirstSyncMs: ratio(split?.firstSyncMs, dirty?.firstSyncMs),
+      splitFirstSyncMs: split?.firstSyncMs ?? null,
+      splitIdleMsPerSync: split?.idleMsPerSync ?? null,
+      splitDomTotal: split?.domTotal ?? null,
     };
   });
 
@@ -852,7 +920,12 @@ async function main(): Promise<void> {
         "'hybrid' and 'all-resident' use margin=Infinity, which makes Number.isFinite(margin) false and so skips BOTH engine gates " +
         '(Scene.ts:4638 box test and the line band), running getContentProjection() unwindowed for every block — the CTX-0024 ' +
         "O(total document glyphs) regression. 'hybrid-windowed' uses a wide FINITE margin so both gates stay live and is the arm " +
-        'that reflects a competently-built hybrid; its findability reaches the margin, not the whole document.',
+        'that reflects a competently-built hybrid; its findability reaches the margin, not the whole document. ' +
+        "'split' is the SHIPPED engine feature rather than a simulation: contentSemanticMargin=Infinity arms only the box gate while " +
+        'contentProjectionMargin=viewport still windows the carriers, and its entity is deliberately naive (always returns `lines`, ' +
+        'never consults the band), so any coarse tier it reaches came from Scene. Its capability proof is splitVsHybridCarriers ~ 1 ' +
+        '(every block resident, so the whole document is findable) TOGETHER WITH splitVsNativeDescendants ~ 1 (per-line carriers still ' +
+        'bounded by the viewport) — two counts no single-margin configuration can satisfy at once.',
     },
     rows,
     summary,
