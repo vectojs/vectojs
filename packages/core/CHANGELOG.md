@@ -1,5 +1,44 @@
 # @vectojs/core
 
+## 1.31.0
+
+### Minor Changes
+
+- d011cc8: Add dirty-tracked content projection sync.
+
+  `Scene` re-derived every resident block's DOM text projection on every synced
+  frame, even when nothing had changed. Measured on a 1500-resident-block document
+  in real headed Chrome, a sync whose projected text was byte-identical before and
+  after still cost 17.875 ms, because `getContentProjection()` — an O(glyphs) build
+  — ran once per block and its result was re-diffed against the DOM.
+
+  `Entity.getContentEpoch()` is new, optional API: return a number that changes
+  whenever the entity's projected content changes, and `Scene` will skip the block
+  entirely — before the projection call — while both that epoch and the entity's
+  geometry are unchanged. The default returns `null`, which keeps the previous
+  behaviour exactly, so this is opt-in and no existing subclass is affected.
+
+  `Text`, `RichText`, `CodeBlock`, `TextEntity` and `MSDFTextEntity` now implement
+  it, so text-heavy and streaming scenes get the reduction without any code change.
+  Only the blocks that actually changed are re-projected; a streaming tail block
+  costs one rebuild instead of one per resident block.
+
+- 51f30eb: Split `contentProjectionMargin` into a semantic and an interaction margin.
+
+  `contentSemanticMargin` arms the gate that decides whether a content block has
+  **any** projected DOM; `contentProjectionMargin` now governs only whether that
+  block's per-line **carriers** are windowed. One scalar armed both, so only two
+  states were reachable: a finite value freed off-band blocks entirely, leaving
+  off-screen text invisible to find-in-page and screen-reader read-ahead, while
+  `Infinity` also unwindowed every carrier — O(total document glyphs).
+
+  Setting `contentSemanticMargin: Infinity` with a finite `contentProjectionMargin`
+  is the middle tier that was previously unreachable: every block keeps an element
+  holding its full text, while only blocks near the viewport pay for carriers.
+
+  Purely additive — `contentSemanticMargin` defaults to whatever
+  `contentProjectionMargin` resolves to, so existing scenes are unchanged.
+
 ## 1.30.0
 
 ### Minor Changes
