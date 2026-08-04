@@ -1,5 +1,80 @@
 # @vectojs/core
 
+## 1.30.0
+
+### Minor Changes
+
+- 7fa6cfc: Add a per-entity `a11yProjection` mode: `'eager' | 'onDemand' | 'never'`.
+
+  `'eager'` is the default and keeps today's behaviour, so nothing changes for
+  existing scenes. `'onDemand'` withholds an entity's a11y shadow node until it is
+  _engaged_, which makes high-cardinality interactive scenes — particles, danmaku,
+  graph nodes — affordable for the first time. `'never'` suppresses the node
+  entirely while leaving the entity hit-testable on canvas.
+
+  Measured on 5,000 moving interactive entities (`benchmarks/lazy-a11y/`, real
+  headed browsers):
+
+  |                    | Chrome                      | Firefox                      |
+  | ------------------ | --------------------------- | ---------------------------- |
+  | `'eager'` (today)  | 66.4 ms/frame, misses 60 Hz | 114.7 ms/frame, misses 60 Hz |
+  | `'onDemand'`       | **2.23 ms**                 | **1.69 ms**                  |
+  | no a11y DOM at all | 1.35 ms                     | 1.75 ms                      |
+
+  So 30x/68x faster, landing at the floor of projecting nothing — while every
+  entity stays individually reachable.
+
+  **Engagement is deliberately not hover-only.** A keyboard or assistive-technology
+  user generates no pointer events, so a hover-gated node would be withheld from
+  exactly the users it exists for. Three signals count: focus (a focused node is
+  never pruned out from under the user), the pointer being inside the entity, and
+  an explicit `Scene.requestA11yProjection(entity)` / `releaseA11yProjection(entity)`
+  for anything the app knows matters — a selection, a search hit, a live-region
+  announcement. The entity stays hit-testable throughout, so a click always reaches
+  it and promotes it.
+
+  Pointer engagement is skipped for an entity that projects **selectable text** of
+  its own: its interactive node carries `pointer-events: auto` and stacks above the
+  transparent text mirror, so materializing one under the pointer swallows the
+  mousedown and native drag-selection never starts. Such entities remain reachable
+  by focus and explicit request.
+
+  `'onDemand'` does not replace an aggregate description. A thousand reachable
+  danmaku still say nothing collectively; pair it with one live region plus a small
+  pool of persistent hotspots for the current selection.
+
+- ceb7e3f: Virtualize content projection per line inside one tall entity.
+
+  `contentProjectionMargin` gates whole entities, which frees blocks that scroll
+  away but cannot help an entity _taller_ than the viewport: its box always
+  intersects, so every one of its visual lines was materialized — a `<span>` per
+  line, and on the grid path a `<span>` per glyph cluster. That is the origin of the
+  "14.8k elements for a 346KB Markdown document" already documented in `Scene`, and
+  it made per-frame projection cost scale with the document instead of the viewport.
+
+  `Scene` now materializes only the contiguous run of lines near the viewport, and
+  passes that band to `Entity.getContentProjection(hint?)` so an entity whose
+  projection build is O(glyphs) can make it O(visible glyphs). `Text`, `RichText`
+  and `CodeBlock` honour the hint.
+
+  Measured on one entity scrolled to its middle, real headed browsers, 4000 lines:
+
+  |              | before        | after           |
+  | ------------ | ------------- | --------------- |
+  | Chrome       | 4.21 ms/frame | 0.20 ms (21.1x) |
+  | Firefox      | 4.83 ms/frame | 0.14 ms (34.5x) |
+  | DOM children | 36,000        | 1,026 (35x)     |
+
+  The gated cost is flat across a 20x document-size range, so this converts an
+  asymptote rather than shaving a constant.
+
+  `ContentProjectionHint` is additive and advisory: ignoring it stays correct
+  because the Scene windows the DOM regardless, so existing `getContentProjection`
+  overrides keep working unchanged. The window is deliberately contiguous — a gap
+  would let a drag across it silently omit the lines in between — and never empty,
+  because text missing from the projection is invisible to find-in-page, copy and,
+  for static text, the screen reader.
+
 ## 1.29.0
 
 ### Minor Changes
