@@ -497,6 +497,11 @@ interface IdleMeasurement {
   heapDelta: number | null;
   heapSource: string;
   painted: boolean;
+  firstSyncMs: number;
+  editInBandMs: number;
+  editOffBandMs: number;
+  editOffBandTargetY: number;
+  editInBandTargetY: number;
 }
 
 /** Steady-state re-sync cost with nothing changing — the reading case. */
@@ -512,7 +517,7 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
   // DELTA. `measureUserAgentSpecificMemory()` forces GC and resolves after it
   // settles, which is what makes the pair subtractable.
   const before = await heapBytes();
-  const { scene, canvas } = build(count, arm);
+  const { scene, canvas, blocks } = build(count, arm);
   // Paint once, and verify something actually landed on the canvas. A silently
   // blank canvas would make every projection figure here a measurement against
   // entities that draw nothing.
@@ -538,7 +543,14 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
     }
   }
 
+  // FIRST sync, timed rather than discarded (CTX-0200). Dirty-tracking only
+  // helps from the SECOND sync onward, so this pass is the FRONT-LOAD: every
+  // resident block is projected and its DOM created, with no epoch to skip on.
+  // It is what a reader pays once at document build, and it is invisible in
+  // `idleMsPerSync` because that figure is deliberately measured warm.
+  const tFirst = performance.now();
   syncOnce(scene); // warm: materialize carriers
+  const firstSyncMs = performance.now() - tFirst;
   const dom = census();
   const times: number[] = [];
   for (let t = 0; t < TRIALS; t++) {
@@ -547,6 +559,40 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
     syncOnce(scene);
     times.push(performance.now() - t0);
   }
+
+  // PER-EDIT cost (CTX-0200): dirty exactly ONE block and sync. This is the
+  // other half of the front-load question — dirty-tracking makes an UNCHANGED
+  // block free, but a genuinely changed one still pays full price, so a mode
+  // that makes every block resident pays per edit rather than per frame.
+  //
+  // Two targets, because they are different cases and the difference is the
+  // whole point of a resident tier:
+  //   in-band  — the block the user is looking at. Every arm has DOM for it.
+  //   off-band — a block the user cannot see. `native` released it at the margin
+  //              gate so the edit is free; a resident tier still holds it, so
+  //              this is the cost the capability actually adds.
+  const editTimes = (target: Block): number => {
+    const t: number[] = [];
+    for (let i = 0; i < TRIALS; i++) {
+      target.extra += 'e';
+      scene.markDirty();
+      const t0 = performance.now();
+      syncOnce(scene);
+      t.push(performance.now() - t0);
+    }
+    return median(t);
+  };
+  const inBandTarget = blocks.reduce(
+    (best, b) => (Math.abs(b.y - VIEW_H / 2) < Math.abs(best.y - VIEW_H / 2) ? b : best),
+    blocks[0]!,
+  );
+  const editInBandMs = editTimes(inBandTarget);
+  // blocks[0] sits at docY 0 while the band starts at scrollY - VIEW_H with
+  // scrollY = docHeight/2 - VIEW_H/2, so it is off-band at every count measured
+  // here. Asserted rather than assumed: a target that turned out to be in-band
+  // would silently make this column a duplicate of the one above.
+  const offBandTarget = blocks[0]!;
+  const editOffBandMs = editTimes(offBandTarget);
   // Measured with the scene still alive, or the DOM under test is already gone.
   const { bytes, source } = await heapBytes();
   scene.destroy();
@@ -561,6 +607,11 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
       typeof bytes === 'number' && typeof before.bytes === 'number' ? bytes - before.bytes : null,
     heapSource: source,
     painted,
+    firstSyncMs,
+    editInBandMs,
+    editOffBandMs,
+    editOffBandTargetY: offBandTarget.y,
+    editInBandTargetY: inBandTarget.y,
   };
 }
 
@@ -679,6 +730,16 @@ async function main(): Promise<void> {
         label: arm.label,
         offscreenFindable: arm.offscreenFindable,
         idleMsPerSync: +idle.msPerSync.toFixed(4),
+        // CTX-0200: the front-load. One-time document-build cost, and the cost of
+        // one genuine content change in and out of the viewport band.
+        firstSyncMs: +idle.firstSyncMs.toFixed(4),
+        editInBandMs: +idle.editInBandMs.toFixed(4),
+        editOffBandMs: +idle.editOffBandMs.toFixed(4),
+        // Reported so the off-band claim is CHECKABLE in the result rather than
+        // resting on arithmetic in a comment. Screen-space y: the fine-geometry
+        // band spans -VIEW_H..2*VIEW_H, so off-band means y < -700 here.
+        editOffBandTargetY: +idle.editOffBandTargetY.toFixed(1),
+        editInBandTargetY: +idle.editInBandTargetY.toFixed(1),
         streamMsPerFrame: +stream.msPerFrame.toFixed(4),
         carriers: idle.dom.carriers,
         domDescendants: idle.dom.descendants,
@@ -696,6 +757,8 @@ async function main(): Promise<void> {
         streamCharacterDataMutations: stream.characterDataMutations,
         idleFits240: idle.msPerSync < 4.17,
         streamFits240: stream.msPerFrame < 4.17,
+        editInBandFits240: idle.editInBandMs < 4.17,
+        editOffBandFits240: idle.editOffBandMs < 4.17,
       });
       pre.textContent =
         `measured ${count} blocks / ${arm.key}…\n` + JSON.stringify(rows.slice(-5), null, 1);
@@ -739,6 +802,18 @@ async function main(): Promise<void> {
       // stamps its content, so this ratio is the engine change and nothing else.
       hybridVsDirtyIdleMs: ratio(hybrid?.idleMsPerSync, dirty?.idleMsPerSync),
       dirtyVsNativeIdleMs: ratio(dirty?.idleMsPerSync, native?.idleMsPerSync),
+      // CTX-0200 — the front-load a resident tier adds, which dirty-tracking by
+      // construction cannot remove. `firstSync` is paid once at document build;
+      // `editOffBand` is paid on every change to text the user cannot see, and is
+      // the column where `native` is free because it holds no DOM there at all.
+      dirtyFirstSyncMs: dirty?.firstSyncMs ?? null,
+      nativeFirstSyncMs: native?.firstSyncMs ?? null,
+      dirtyVsNativeFirstSyncMs: ratio(dirty?.firstSyncMs, native?.firstSyncMs),
+      dirtyVsNativeEditInBandMs: ratio(dirty?.editInBandMs, native?.editInBandMs),
+      dirtyVsNativeEditOffBandMs: ratio(dirty?.editOffBandMs, native?.editOffBandMs),
+      dirtyEditInBandMs: dirty?.editInBandMs ?? null,
+      dirtyEditOffBandMs: dirty?.editOffBandMs ?? null,
+      nativeEditOffBandMs: native?.editOffBandMs ?? null,
       // Must stay 1.00: dirty-tracking is a cost change, not a capability
       // change. A different node count here means the skip dropped DOM it
       // should have kept, which is the failure mode that does not look wrong.
