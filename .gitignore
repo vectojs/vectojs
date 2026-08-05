@@ -95,6 +95,12 @@ benchmarks/*/traces/
 # (benchmarks/screenshot-page.ts writes benchmarks/tmp/screenshot-<engine>-<stamp>).
 # Not under benchmarks/*/ so the patterns above do not reach it.
 benchmarks/tmp/
+# Agent and tooling scratch space. AGENTS.md rule 5 sends temporary files here
+# rather than into a package directory, so it must never be committed. Belt and
+# braces: the video-exporter tests used to create `tmp/video-exporter-tests`
+# through a cwd-relative path and were not caught by any ignore rule, which is how
+# a stray directory kept reappearing in a clean checkout.
+tmp/
 # Captured screenshots. Like results/, these are per-run artifacts of a specific
 # machine and moment, and a stale one is worse than none: a capture of a
 # multi-canvas page can show a blank canvas for reasons that are in the capture
