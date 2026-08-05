@@ -3099,6 +3099,130 @@ export class Markdown extends UIComponent {
     });
   }
 
+  /**
+   * Token types a list item's fast path can render as one `RichText`.
+   *
+   * An ALLOWLIST, deliberately, following `markstream-vue`'s
+   * `SIMPLE_INLINE_TYPES` (`SimpleInlineRenderer/simpleInline.ts:15-31`): a block
+   * type is excluded by OMISSION, so a token this renderer has never heard of
+   * falls out of the fast path automatically instead of being silently flattened
+   * to its raw text. A denylist fails the other way, and the failure is quiet —
+   * a formula painted as literal TeX rather than an error — which is why this
+   * defect survived so long.
+   *
+   * Deliberately small, because a list item's DIRECT children are far less varied
+   * than they look. Probed against marked 18.0.7: every inline construct
+   * (`strong`, `em`, `del`, `codespan`, `link`, `image`, `br`, `escape`, `html`,
+   * `inlineMath`) arrives nested one level DEEPER, inside a container whose own
+   * type is `text` — so a tight item's direct child list is `text` and nothing
+   * else. Listing those inline types here would be dead code.
+   *
+   * `space` and `checkbox` are included because both are inert here. A blank line
+   * between an item's paragraph and its block sibling produces a `space`, and
+   * marked unshifts a `checkbox` into every TIGHT GFM task item — the box itself
+   * is drawn from `item.task`/`item.checked` by `listItemSpans`, so the token
+   * renders nothing on its own. Omitting `checkbox` sent every task item down the
+   * block path and moved its marker into a nested entity, which broke four
+   * task-list assertions in `Markdown.test.ts`.
+   */
+  private static readonly INLINE_ITEM_TOKENS: ReadonlySet<string> = new Set([
+    'text',
+    'space',
+    'checkbox',
+  ]);
+
+  /**
+   * Does this item consist purely of inline content?
+   *
+   * True keeps the single-`RichText` fast path, which is not merely an
+   * optimization: `updateStreamedList` reuses `stack.children[i]` by calling
+   * `setSpans` on it, so an item that becomes a `Stack` forfeits streamed reuse
+   * for its entire list. Only pay for a block container when an item holds a
+   * block.
+   *
+   * A lone `paragraph` counts as inline. A LOOSE list re-lexes every item's
+   * inline content from `text` to `paragraph` — adding one blank line anywhere
+   * flips `token.loose` for the whole list — so treating a single paragraph as a
+   * block would drop the fast path for every item of every loose list, the common
+   * shape in real prose, for no rendering benefit.
+   */
+  private itemIsInlineOnly(item: Tokens.ListItem): boolean {
+    const children = item.tokens;
+    if (!children || children.length === 0) return true;
+    if (children.length === 1 && children[0].type === 'paragraph') return true;
+    return children.every((child) => Markdown.INLINE_ITEM_TOKENS.has(child.type));
+  }
+
+  /**
+   * Build a list item that holds block-level children.
+   *
+   * The item becomes a vertical `Stack`: its leading inline run (carrying the
+   * marker) first, then every remaining child rendered through the same
+   * `renderToken` the document level uses, indented to clear the marker.
+   *
+   * Recursing rather than special-casing the types we know about is the point — a
+   * display formula, a fence, a table, a blockquote, a nested list, an `hr` and a
+   * second paragraph all render exactly as they would at indent 0, and a block
+   * type added later works here for free.
+   *
+   * Only the FIRST child can be the lead. Everything after it becomes a block,
+   * including a second `paragraph`: an item's two paragraphs are two blocks, and
+   * folding them into the lead run would concatenate them into one line with no
+   * separation.
+   *
+   * The lead `RichText` is emitted even when the item has no inline text, because
+   * it carries the marker — an item that is nothing but a formula still shows its
+   * bullet or ordinal.
+   */
+  private listItemBlockStack(
+    token: Tokens.List,
+    index: number,
+    availableWidth: number,
+    t: Required<MarkdownTheme>,
+  ): Entity {
+    const item = token.items[index];
+    const children = item.tokens ?? [];
+    const stack = new Stack({ direction: 'vertical', gap: 4 });
+
+    // The lead run: the item's own inline content, or nothing but a marker.
+    const first = children[0];
+    const leadChildren =
+      first && (first.type === 'text' || first.type === 'paragraph') ? [first] : [];
+    // Built through `listItemRichText` on a token whose item holds only the lead
+    // children, so the lead run is constructed identically to a fast-path item —
+    // same font, same marker placement, same reading-direction handling — rather
+    // than by a second copy of that construction which could drift from it.
+    const leadToken: Tokens.List = {
+      ...token,
+      items: token.items.map((it, i) => (i === index ? { ...it, tokens: leadChildren } : it)),
+    };
+    stack.add(this.listItemRichText(leadToken, index, availableWidth, t));
+
+    // Everything after the lead, indented past the marker. Same wrapper shape
+    // blockquote uses (`MarkdownContainer` + `el.x`), because `Stack` treats `x`
+    // as layout-controlled and overwrites a child's own offset
+    // (`Stack.appendFast` assigns `child.x = 0` for a vertical stack).
+    const indent = Math.round(t.fontSize);
+    const childMetrics: BlockMetrics = {
+      marginBefore: 0,
+      marginAfter: 0,
+      indentStart: indent,
+      availableWidth: Math.max(1, availableWidth - indent),
+    };
+    for (let i = leadChildren.length; i < children.length; i++) {
+      const el = this.renderTokenWithMetrics(children[i], childMetrics);
+      if (!el) continue;
+      const wrapper = new MarkdownContainer();
+      el.x = indent;
+      wrapper.add(el);
+      wrapper.width = el.width + indent;
+      wrapper.height = el.height;
+      stack.add(wrapper);
+    }
+
+    return stack;
+  }
+
   private listItemSpans(token: Tokens.List, index: number): StyledSpan[] {
     const item = token.items[index];
     const num = Number(token.start ?? 1) + index;
@@ -3218,8 +3342,15 @@ export class Markdown extends UIComponent {
     // Every item before the last retained one must be unchanged. Compare `text`,
     // not `raw` — see the trap note above.
     const lastRetained = oldToken.items.length - 1;
+    // Alongside the text check, confirm each retained entity is still the KIND its
+    // token implies. `text` equality is a weaker guarantee for a block-bearing item
+    // than for an inline one, because a block child's content need not appear in the
+    // item's `text` at all; if the two ever disagree, rebuild rather than reuse an
+    // entity of the wrong shape.
     for (let i = 0; i < lastRetained; i++) {
       if (oldToken.items[i].text !== newToken.items[i].text) return false;
+      const isStack = stack.children[i] instanceof Stack;
+      if (isStack !== !this.itemIsInlineOnly(newToken.items[i])) return false;
     }
 
     // Same derivation renderToken uses, so an appended item is measured exactly
@@ -3228,18 +3359,26 @@ export class Markdown extends UIComponent {
     const availableWidth = this.activeBlockMetrics?.availableWidth ?? this.maxWidth;
     const t = this.theme;
 
-    // The last retained item may have grown; rewrite its spans in place.
+    // The last retained item may have grown; rewrite its spans in place. An item
+    // that now holds a block child is no longer a single `RichText` and cannot be
+    // updated by rewriting spans — rebuild instead, which is also what promotes it
+    // from the fast path the moment its `$$` or fence closes.
     const tailEntity = stack.children[lastRetained];
     if (oldToken.items[lastRetained].text !== newToken.items[lastRetained].text) {
+      if (!this.itemIsInlineOnly(newToken.items[lastRetained])) return false;
       if (!('setSpans' in tailEntity)) return false;
       (tailEntity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
         this.listItemSpans(newToken, lastRetained),
       );
     }
 
-    // Then append whatever arrived after it.
+    // Then append whatever arrived after it, tiered the same way the render arm is.
     for (let i = oldToken.items.length; i < newToken.items.length; i++) {
-      stack.add(this.listItemRichText(newToken, i, availableWidth, t));
+      stack.add(
+        this.itemIsInlineOnly(newToken.items[i])
+          ? this.listItemRichText(newToken, i, availableWidth, t)
+          : this.listItemBlockStack(newToken, i, availableWidth, t),
+      );
     }
 
     // `add()` already maintained the stack's box via its append fast path, but a
@@ -4410,7 +4549,14 @@ export class Markdown extends UIComponent {
         const listToken = token as Tokens.List;
         const listStack = new Stack({ direction: 'vertical', gap: 6 });
         for (let i = 0; i < listToken.items.length; i++) {
-          listStack.add(this.listItemRichText(listToken, i, availableWidth, t));
+          // An item holding a block child cannot be one `RichText`. Tiered so the
+          // inline-only case — the overwhelming majority, and the one
+          // `updateStreamedList` reuses via `setSpans` — keeps its single entity.
+          listStack.add(
+            this.itemIsInlineOnly(listToken.items[i])
+              ? this.listItemRichText(listToken, i, availableWidth, t)
+              : this.listItemBlockStack(listToken, i, availableWidth, t),
+          );
         }
         return listStack;
       }
