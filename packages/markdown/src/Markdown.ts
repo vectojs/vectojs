@@ -471,9 +471,105 @@ function isFenceClosed(raw: string): boolean {
  *
  * The same test the `paragraph` render arm uses, so the reconciler and the
  * renderer cannot disagree about which shape a token produces.
+ *
+ * The search is over **descendants, not direct children**. `marked` nests an
+ * image as deeply as the source does — `[![a](u)](dest)` is
+ * `paragraph > link > image` and `- item ![a](u)` is
+ * `list_item > text > [text, image]` — so a direct-children test failed every
+ * nested form, sent the run to `inlineRunRichText`, which has no image support,
+ * and dropped the image with no warning. Recursing costs one walk of an inline
+ * run and removes the whole class rather than the two shapes that were reported.
  */
 function paragraphHasImage(token: Tokens.Paragraph): boolean {
-  return token.tokens?.some((child) => child.type === 'image') === true;
+  return containsImage(token.tokens);
+}
+
+/**
+ * Whether any token in this inline run, at any depth, is an image.
+ *
+ * The one place the question is answered, so the predicate above, the list-item
+ * tier check and the flattening the render arms do cannot drift apart.
+ */
+function containsImage(tokens: Token[] | undefined): boolean {
+  if (!tokens) return false;
+  for (const token of tokens) {
+    if (token.type === 'image') return true;
+    if (containsImage((token as Tokens.Generic).tokens as Token[] | undefined)) return true;
+  }
+  return false;
+}
+
+/**
+ * An inline run with nested images lifted to the top level, in source order.
+ *
+ * The paragraph arm splits a run into one `Stack` child per image plus one per
+ * maximal run of non-image tokens, which requires every image to be a direct
+ * member of the array it iterates. An image inside a link or an emphasis is not,
+ * so the run is flattened first.
+ *
+ * A wrapper is replaced by its children rather than dropped, so the text inside a
+ * link that also holds an image survives. Only wrappers **containing** an image
+ * are opened: a plain link keeps its own token, and therefore keeps the styling
+ * and click handling `renderInlineToRichText` gives it.
+ */
+/**
+ * Every image in an inline run, at any depth, in source order.
+ *
+ * Pairs with `stripImages`: together they partition a run into the prose a
+ * `RichText` can render and the images it cannot.
+ */
+function imagesOf(tokens: Token[] | undefined): Tokens.Image[] {
+  const images: Tokens.Image[] = [];
+  for (const token of tokens ?? []) {
+    if (token.type === 'image') {
+      images.push(token as Tokens.Image);
+      continue;
+    }
+    images.push(...imagesOf((token as Tokens.Generic).tokens as Token[] | undefined));
+  }
+  return images;
+}
+
+/**
+ * The same token with every nested image removed, prose intact.
+ *
+ * A wrapper that held only an image is dropped; one that also held text keeps the
+ * text. Used for a list item's lead run, which must show its marker and its prose
+ * while its images render as blocks beneath.
+ */
+function stripImages<T extends Token>(token: T): T {
+  const children = (token as Tokens.Generic).tokens as Token[] | undefined;
+  if (!children) return token;
+  const kept: Token[] = [];
+  for (const child of children) {
+    if (child.type === 'image') continue;
+    const grandchildren = (child as Tokens.Generic).tokens as Token[] | undefined;
+    if (grandchildren && containsImage(grandchildren)) {
+      const stripped = stripImages(child);
+      const remaining = (stripped as Tokens.Generic).tokens as Token[] | undefined;
+      if (remaining && remaining.length > 0) kept.push(stripped);
+      continue;
+    }
+    kept.push(child);
+  }
+  return { ...token, tokens: kept };
+}
+
+function liftNestedImages(tokens: Token[]): Token[] {
+  const lifted: Token[] = [];
+  for (const token of tokens) {
+    if (token.type === 'image') {
+      lifted.push(token);
+      continue;
+    }
+    const children = (token as Tokens.Generic).tokens as Token[] | undefined;
+    if (children && containsImage(children)) {
+      lifted.push(...liftNestedImages(children));
+      continue;
+    }
+    lifted.push(token);
+  }
+  return lifted;
 }
 
 /** Index of the last `image` token in an inline run, or -1 if there is none. */
@@ -496,7 +592,9 @@ function lastIndexOfImage(tokens: Token[]): number {
 function expectedImageParagraphChildren(tokens: Token[]): number {
   let children = 0;
   let inTextRun = false;
-  for (const token of tokens) {
+  // Counted over the same flattened run the arm iterates, or a paragraph whose
+  // image is nested would be checked against a child count it never built.
+  for (const token of liftNestedImages(tokens)) {
     if (token.type === 'image') {
       children++;
       inTextRun = false;
@@ -3197,6 +3295,11 @@ export class Markdown extends UIComponent {
   private itemIsInlineOnly(item: Tokens.ListItem): boolean {
     const children = item.tokens;
     if (!children || children.length === 0) return true;
+    // An image is inline in Markdown but not in this renderer: `listItemRichText`
+    // builds one `RichText`, which has no image support, so an item holding one
+    // has to take the block path or the image is silently dropped. Checked before
+    // the lone-paragraph shortcut, which would otherwise return true first.
+    if (containsImage(children)) return false;
     if (children.length === 1 && children[0].type === 'paragraph') return true;
     return children.every((child) => Markdown.INLINE_ITEM_TOKENS.has(child.type));
   }
@@ -3234,8 +3337,21 @@ export class Markdown extends UIComponent {
 
     // The lead run: the item's own inline content, or nothing but a marker.
     const first = children[0];
-    const leadChildren =
-      first && (first.type === 'text' || first.type === 'paragraph') ? [first] : [];
+    const firstIsInline = Boolean(first) && (first.type === 'text' || first.type === 'paragraph');
+    // A lead carrying a nested image keeps its prose but surrenders the image to
+    // the block loop, which routes it through the paragraph arm. The image cannot
+    // stay: the lead is one `RichText`, which has no image support, and it cannot
+    // simply be excluded from the lead either — an empty `leadChildren` makes
+    // `listItemSpans` fall back to the item's RAW `text`, so `- item ![a](u)`
+    // rendered its own Markdown source as the marker run, duplicated above the
+    // correctly-split block. Stripping keeps the marker, keeps `"item "`, and
+    // leaves exactly the images to the loop.
+    const leadHasImage =
+      firstIsInline && containsImage((first as Tokens.Generic).tokens as Token[]);
+    const leadChildren = firstIsInline ? [leadHasImage ? stripImages(first) : first] : [];
+    // What the block loop must still render from the first child: the images the
+    // lead gave up, and nothing else.
+    const leadImages = leadHasImage ? imagesOf((first as Tokens.Generic).tokens as Token[]) : [];
     // Built through `listItemRichText` on a token whose item holds only the lead
     // children, so the lead run is constructed identically to a fast-path item —
     // same font, same marker placement, same reading-direction handling — rather
@@ -3257,6 +3373,17 @@ export class Markdown extends UIComponent {
       indentStart: indent,
       availableWidth: Math.max(1, availableWidth - indent),
     };
+    // The images the lead surrendered, each as its own block. Emitted before the
+    // item's remaining children so source order is preserved: they came from the
+    // FIRST child.
+    for (const image of leadImages) {
+      const el = this.paragraphImage(image, childMetrics.availableWidth);
+      const wrapper = new MarkdownContainer();
+      el.x = indent;
+      wrapper.add(el);
+      stack.add(wrapper);
+    }
+
     for (let i = leadChildren.length; i < children.length; i++) {
       const el = this.renderTokenWithMetrics(children[i], childMetrics);
       if (!el) continue;
@@ -4525,7 +4652,9 @@ export class Markdown extends UIComponent {
           }
         };
 
-        for (const child of pToken.tokens) {
+        // Flattened first: an image inside a link or an emphasis is not a direct
+        // member of this array, and the split below can only see direct members.
+        for (const child of liftNestedImages(pToken.tokens)) {
           if (child.type === 'image') {
             flushText();
             stack.add(this.paragraphImage(child as Tokens.Image, availableWidth));
