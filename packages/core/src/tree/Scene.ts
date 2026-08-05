@@ -449,15 +449,45 @@ export interface SceneOptions {
    * unwindowed carrier band, not from resident text.
    *
    * Note the one-time cost. A resident tier materializes one element per block
-   * on the first sync — measured ~13µs per node created, so ~20ms at 1000 blocks
-   * and ~146ms at 10000 — as one synchronous block. Steady state is cheap
+   * on the first sync — measured unbudgeted at 21.3ms for 1000 blocks and 139.5ms
+   * for 10000 on Chrome — as one synchronous block. Steady state is cheap
    * (unchanged blocks skip via {@link Entity.getContentEpoch}), so this is a
-   * document-open stall, not a per-frame cost.
+   * document-open stall, not a per-frame cost. That stall is what
+   * {@link SceneOptions.contentSemanticBudget} spreads across frames.
    *
    * Default: whatever `contentProjectionMargin` resolves to, so omitting this
    * leaves behaviour unchanged.
    */
   contentSemanticMargin?: number;
+  /**
+   * How many resident (coarse-tier) blocks may be materialized in **one** sync,
+   * bounding the document-open stall a wide {@link
+   * SceneOptions.contentSemanticMargin} otherwise pays all at once.
+   *
+   * The cost of a resident tier is per node **created**, not per node held: 10000
+   * resident blocks cost ~3.0 ms/sync at steady state, while creating them costs
+   * ~0.03 ms each plus a per-pass floor that grows with how many are already
+   * resident. So the front-load is a *scheduling* problem, and this is the
+   * schedule — remaining blocks materialize on subsequent syncs, a few per frame,
+   * until the document is fully resident.
+   *
+   * What it does **not** change is the end state: the same blocks end up with the
+   * same DOM, only later. Nothing is dropped, so the reachability the semantic
+   * tier exists for is preserved; a block still waiting is simply not yet in the
+   * DOM, exactly as a block beyond the margin is not.
+   *
+   * Applies **only** to the coarse tier. A block inside the interaction margin is
+   * on screen and materializes immediately regardless of this budget — deferring
+   * visible text would make it briefly unselectable, which is a user-visible
+   * regression rather than a cost saving.
+   *
+   * `Infinity` disables the budget and restores one synchronous pass. Default:
+   * {@link DEFAULT_CONTENT_SEMANTIC_BUDGET}. Because the coarse tier exists only
+   * when `contentSemanticMargin` is wider than `contentProjectionMargin`, a scene
+   * that does not opt into a resident tier has no coarse blocks and is therefore
+   * unaffected by any value here.
+   */
+  contentSemanticBudget?: number;
   /**
    * Reading direction used to order the accessibility/automation shadow tree so
    * keyboard **tab order** and screen-reader traversal follow the *visual*
@@ -503,6 +533,7 @@ export const SCENE_OPTION_KEYS = [
   'autoThrottle',
   'contentProjection',
   'contentProjectionMargin',
+  'contentSemanticBudget',
   'contentSemanticMargin',
   'debugA11y',
   'disableWindowResize',
@@ -672,6 +703,46 @@ function parseInlinePx(value: string | undefined): number | null {
   const n = parseFloat(value);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
+
+/**
+ * Default {@link SceneOptions.contentSemanticBudget}: resident blocks
+ * materialized per sync.
+ *
+ * Sized against the two costs a pass actually pays, both measured in real headed
+ * Chrome on a 240Hz panel. Per created block is cheap and flat (~0.03ms). What
+ * dominates is style+layout of the projection subtree, which scales with how many
+ * blocks are already RESIDENT and is paid once per pass: traced at 10000 blocks,
+ * `UpdateLayoutTree` 391.7ms + `Layout` 305.8ms over 40 passes (~17ms each), with
+ * per-pass cost roughly doubling from the first pass to the last while the number
+ * created stayed constant.
+ *
+ * So total drain cost is approximately `passes × f(resident)`, and a SMALLER
+ * budget multiplies the term that does not shrink. Measured to completion, 3
+ * repeats, medians:
+ *
+ * ```text
+ *  1000 blocks   budget  32 →   67.1ms total,  4.3ms worst pass
+ *                budget  64 →   54.0ms total,  5.1ms worst pass
+ *                budget 256 →   27.7ms total,  7.7ms worst pass
+ *                Infinity   →   24.1ms total, 23.6ms worst pass
+ * 10000 blocks   budget  32 → 3773.2ms total, 42.6ms worst pass
+ *                budget  64 → 1896.2ms total, 41.6ms worst pass
+ *                budget 256 →  648.1ms total, 35.2ms worst pass
+ *                Infinity   →  319.4ms total, 307.3ms worst pass
+ * ```
+ *
+ * 256 is where the two goals stop trading against each other. Below it there is no
+ * frame-bound improvement at 10000 blocks — every budget lands at 35-43ms, because
+ * the worst pass is the LAST one laying out the complete subtree — while total time
+ * rises 6x. At 1000 blocks it still holds 7.7ms, inside a 60Hz frame, for less than
+ * half the total time of 64.
+ *
+ * This replaces an earlier default of 64, which was sized against a per-block cost
+ * of ~0.4ms. That figure was inflated by a forced layout per materialized block
+ * (see `contentSelectionPresentThisSync`); with that removed, 64 spends 6x the
+ * total time for no frame-bound gain.
+ */
+export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 256;
 
 /**
  * Which tier of content projection a block gets.
@@ -1525,6 +1596,41 @@ export class Scene {
   // any projected DOM. `undefined` → falls back to contentProjectionMargin, so
   // the default keeps one gate. `Infinity` = every block keeps resident text.
   private contentSemanticMargin: number | undefined = undefined;
+  // How many coarse-tier blocks may be MATERIALIZED per sync, spreading the
+  // resident tier's document-open cost across frames. `Infinity` = one
+  // synchronous pass.
+  private contentSemanticBudget: number = DEFAULT_CONTENT_SEMANTIC_BUDGET;
+  // Remaining materializations in the CURRENT sync. Reset at the start of each
+  // a11y walk; decremented per coarse block that creates its element.
+  private contentSemanticBudgetLeft = 0;
+  // Set when a sync deferred at least one block, so the scene knows to keep
+  // drawing frames until the resident tier is complete. Without it a static
+  // scene in `onDemand` mode would stop rendering with the document half
+  // materialized and never finish.
+  private contentSemanticDeferred = false;
+  /**
+   * Per-sync memo of "does the document hold a selection at all".
+   *
+   * Reading ANY property of a `Selection` (`anchorNode`, `rangeCount`, `type`,
+   * `isCollapsed`) forces a synchronous layout, because Blink validates the
+   * selection against current box geometry before answering. Measured in real
+   * Chrome against a 1000-carrier subtree with layout dirtied between reads:
+   * `anchorNode` 0.5ms, `rangeCount` 0.4ms, `type` 0.5ms, `isCollapsed` 0.5ms —
+   * all indistinguishable from `offsetHeight` (0.5ms), against a 0ms floor for
+   * mutating without reading. So there is no cheap property to probe with; the
+   * only way to avoid the layout is to not touch the object at all.
+   *
+   * Materializing a block rebuilds its carriers, which asks whether the rebuild
+   * would destroy a selection. Once per block, that read cost a forced layout
+   * over the whole (and growing) projection subtree, which is what made
+   * per-block cost rise with resident count: profiled at 1973 forced layouts
+   * totalling 633ms of an 847ms 1000-block drain (75%).
+   *
+   * A selection is a single document-wide object and a sync walk cannot yield to
+   * the user, so its presence cannot change mid-walk. Resolving it once per walk
+   * turns O(blocks) forced layouts into O(1). `null` = not yet resolved.
+   */
+  private contentSelectionPresentThisSync: boolean | null = null;
   /**
    * True while a text-selection drag that started on a projection's blank
    * region (no text node under the press) is being driven manually — the
@@ -2763,6 +2869,7 @@ export class Scene {
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
     this.contentSemanticMargin = options.contentSemanticMargin;
+    this.contentSemanticBudget = options.contentSemanticBudget ?? DEFAULT_CONTENT_SEMANTIC_BUDGET;
     this.readingDirection = options.readingDirection ?? 'ltr';
     this.renderMode = options.renderMode ?? 'always';
     this._devActive = Scene._devModeDetected();
@@ -3115,7 +3222,36 @@ export class Scene {
     return null;
   }
 
+  /**
+   * Does the document hold a selection right now, memoized for this sync walk?
+   *
+   * Pays one forced layout per walk instead of one per rebuilt element — see
+   * {@link Scene.contentSelectionPresentThisSync} for the measurements. When the
+   * answer is `false` no element can own a selection, so every per-element
+   * ownership test can be skipped without touching the object.
+   */
+  private contentSelectionPresent(): boolean {
+    if (this.contentSelectionPresentThisSync !== null) {
+      return this.contentSelectionPresentThisSync;
+    }
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    // `anchorNode`/`focusNode` rather than `rangeCount`: a collapsed caret still
+    // has an anchor and still belongs to whoever contains it, and every property
+    // costs the same single forced layout anyway.
+    const present = !!selection && (!!selection.anchorNode || !!selection.focusNode);
+    this.contentSelectionPresentThisSync = present;
+    return present;
+  }
+
   private releaseContentSelectionForRebuild(el: HTMLElement): void {
+    // Cheap rejection first. `contentSelectionAnchor` is the scene's own field so
+    // it costs nothing, and the memo costs one forced layout per sync walk rather
+    // than one per element. With neither an anchor nor a document selection there
+    // is nothing to release — the case for every block of a bulk materialization.
+    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) return;
     const selection =
       typeof window !== 'undefined' && typeof window.getSelection === 'function'
         ? window.getSelection()
@@ -3127,6 +3263,8 @@ export class Scene {
     if (!ownsSelection) return;
     this.endContentSelectionDrag();
     selection?.removeAllRanges();
+    // The memo described the document before this release; it no longer does.
+    this.contentSelectionPresentThisSync = null;
   }
 
   /**
@@ -3145,6 +3283,15 @@ export class Scene {
    * restore against).
    */
   private preserveContentSelectionAcrossRebuild(el: HTMLElement, rebuild: () => void): void {
+    // Nothing selected anywhere in the document means nothing to preserve and
+    // nothing to release, so rebuild without touching the Selection object. This
+    // is the bulk-materialization path, where reading a selection property would
+    // force a layout over the whole projection subtree once per block — see
+    // {@link Scene.contentSelectionPresentThisSync}.
+    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) {
+      rebuild();
+      return;
+    }
     const selection =
       typeof window !== 'undefined' && typeof window.getSelection === 'function'
         ? window.getSelection()
@@ -4017,6 +4164,21 @@ export class Scene {
 
   private syncA11y(node: Entity, container: A11yContainer | null = null) {
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
+    if (node === this.root) {
+      // Refill the per-sync materialization budget at the start of each walk.
+      //
+      // Keyed on the root rather than sited in the render loop because this method
+      // is also the entry point for tests and benchmarks, which drive syncs
+      // directly; a refill in the loop would leave those callers at a permanently
+      // spent budget, deferring every resident block forever. Recursive calls and
+      // the overlay pass both carry non-root nodes, so they correctly share one
+      // budget rather than refilling it per subtree.
+      this.contentSemanticBudgetLeft = this.contentSemanticBudget;
+      this.contentSemanticDeferred = false;
+      // Invalidate the selection memo: a new walk may see a selection the
+      // previous one did not.
+      this.contentSelectionPresentThisSync = null;
+    }
     if (node.isDOMPortal) {
       return;
     }
@@ -4595,7 +4757,9 @@ export class Scene {
    * transparent DOM node positioned over the drawn glyphs. Runs on the a11y
    * sync cadence; all writes are dirty-checked. Off-viewport projections are
    * hidden (`display: none`) so text-heavy scenes only materialize what is
-   * visible to the browser's text machinery anyway.
+   * visible to the browser's text machinery anyway — except in the coarse
+   * (resident) tier, which stays displayed because hiding it would make its text
+   * unfindable and remove it from the accessibility tree, defeating the tier.
    */
   /**
    * Whether `node`'s world-space box, expanded by `margin` px on every side,
@@ -4604,11 +4768,19 @@ export class Scene {
    * at `margin = contentProjectionMargin`) and for the exact `display:none`
    * visibility test (`margin = 0`). Boundless nodes (width/height 0) opt out of
    * culling and always count as visible, matching the legacy behavior.
+   *
+   * `viewportOnly` skips the `clipChildren` ancestor walk, answering the narrower
+   * question "does this box overlap the viewport at all". The coarse content tier
+   * needs the two apart: text that is merely off-viewport is clipped by
+   * `a11yRoot`'s own `overflow: hidden` and can safely stay displayed, while text
+   * rejected by an ancestor clip box that itself overlaps the viewport would sit
+   * transparently on top of whatever is really drawn there.
    */
   private projectionBoxVisible(
     node: Entity,
     tf: { a: number; b: number; c: number; d: number; e: number; f: number },
     margin: number,
+    viewportOnly = false,
   ): boolean {
     if (!(node.width > 0 && node.height > 0)) return true;
     const { a, b, c, d, e, f } = tf;
@@ -4638,6 +4810,7 @@ export class Scene {
     ) {
       return false;
     }
+    if (viewportOnly) return true;
     for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
       if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
       let localMinX = Infinity;
@@ -4863,6 +5036,58 @@ export class Scene {
       }
     }
 
+    // Materialization budget: spread a resident tier's document-open cost across
+    // frames instead of paying it in one synchronous pass.
+    //
+    // Measured unbudgeted, `firstSyncMs` for the resident tier is 21.3 ms at 1000
+    // blocks and 139.5 ms at 10000 on Chrome (21.9 / 141.6 Firefox) — at 10000 far
+    // past the ~30 ms trigger DEC-01KZ6RSS set for needing exactly this. The cost
+    // is per node CREATED, not per node held (10000 resident blocks cost ~3.0
+    // ms/sync at steady state, the same as a settled document of that size), which
+    // is what makes it a scheduling problem rather than a caching one.
+    //
+    // Do not reuse the 46.72 ms / ~13µs-per-node figures that DEC-01KZ6Z2K recorded
+    // for this path: both were taken while a coarse block was `display: none` and
+    // therefore outside layout, i.e. against a tier that did not yet deliver the
+    // reachability it exists for. Removing that (CTX-0203) changed the cost, and
+    // fixing the forced layout per rebuilt element changed it again.
+    //
+    // Four conditions, each load-bearing:
+    //
+    // - `tier === 'coarse'`: the fine tier is on screen or next to it, and text a
+    //   user can see must be selectable in the same frame it is drawn. Only the
+    //   resident tier's off-viewport blocks are deferrable.
+    // - `!el`: a block that already HAS an element is being updated, not created.
+    //   Deferring that would leave stale text in the DOM — silently wrong, and
+    //   worse than the stall. The budget only ever delays a FIRST appearance.
+    // - budget exhausted: the count for this sync is spent.
+    // - placed AFTER the dirty-track early-return and BEFORE
+    //   `getContentProjection()`, so a deferred block costs only the O(ancestor-
+    //   depth) box tests already computed above and never the O(glyphs) build.
+    //
+    // A deferred block is simply not yet in the DOM — the same state as a block
+    // beyond the margin — so nothing is findable-yet-empty. It cannot thrash
+    // either: with no element, there is no DOM to rebuild, and `contentSyncState`
+    // records nothing for it. The walk visits blocks in scene-graph order, so
+    // already-materialized blocks stop consuming budget and the frontier advances
+    // on every sync until the document is complete.
+    //
+    // A COUNT, not a time slice — deliberately, and re-tested after the per-block
+    // cost changed. A deadline is deterministic only if the clock is injected, and
+    // is unreproducible in a benchmark. It also cannot help here: a pass pays a
+    // floor before creating anything (measured 3.2ms at 10000 blocks, and the same
+    // 3.0ms for a fully-settled document, so it is the pre-existing cost of walking
+    // the tree rather than anything the budget introduced). A deadline only adapts
+    // the count to that floor — at 10000 blocks a 4.2ms/240Hz deadline admits ~35
+    // blocks per pass, which is ~285 passes and worse than a fixed 256 on both
+    // total time and worst pass. Per-block cost is also flat and small (~0.03ms),
+    // because a coarse block emits one text node regardless of its length, so a
+    // count predicts the work well.
+    if (tier === 'coarse' && !el && this.contentSemanticBudgetLeft <= 0) {
+      this.contentSemanticDeferred = true;
+      return;
+    }
+
     // Hand the band to the entity so an O(glyphs) projection build can become
     // O(visible glyphs). Windowing only the DOM leaves this call rebuilding the
     // whole document every synced frame, which measured as no time win at all
@@ -4877,6 +5102,10 @@ export class Scene {
     }
 
     if (!el) {
+      // Charged only for the coarse tier, and only on creation. The fine tier is
+      // never budgeted, so it must not consume from the same pool — otherwise a
+      // viewport full of new text would starve the resident tier, or vice versa.
+      if (tier === 'coarse') this.contentSemanticBudgetLeft--;
       el = document.createElement('div');
       el.setAttribute('data-vecto-content', node.id);
       const s = el.style;
@@ -5116,7 +5345,49 @@ export class Scene {
     // virtualization margin) must not keep intercepting input or announce text.
     // Exact (margin 0) test against viewport + clipChildren ancestors, computed
     // once above and shared with the dirty-track comparison.
-    const display = visible ? '' : 'none';
+    //
+    // A scene that opted into a WIDER SEMANTIC MARGIN is the exception, and it has
+    // to be: `display: none` text is skipped by find-in-page and absent from the
+    // accessibility tree, so hiding a resident block would leave the tier
+    // delivering a DOM node and none of the capability it exists for. The coarse
+    // tier also IMPLIES `visible === false` — a coarse block is outside the
+    // interaction margin, every margin is >= 0, so it fails the margin-0 test by
+    // construction. Left as-is, `contentSemanticMargin: Infinity` could never
+    // expose anything at all.
+    //
+    // Keyed on the OPT-IN rather than on `tier === 'coarse'`, which would leave a
+    // hole: a block inside the interaction margin but outside the exact viewport is
+    // fine-tiered, so it would stay hidden while blocks FURTHER away were exposed.
+    // Find-in-page would then skip a band of matches just off-screen while
+    // reporting ones below it — text closer to the viewport being less reachable
+    // than text far from it. `tier === 'coarse'` already implies this opt-in (with
+    // equal margins, failing the interaction gate means failing the semantic gate,
+    // so the block was released above), so testing the opt-in subsumes the coarse
+    // case rather than widening it.
+    //
+    // Exposing it is safe only because of where these elements live. `a11yRoot` is
+    // viewport-sized with `overflow: hidden` and is not scrollable, so an
+    // off-viewport carrier is clipped rather than painted, and the browser has
+    // nowhere to scroll a find match into view — measured in real Chrome 151:
+    // `window.find` reaches the clipped text while `a11yRoot.scrollTop` and
+    // `window.scrollY` both stay 0. Its `pointer-events` also still follow
+    // `projection.selectable`, and its geometry is off-viewport, so it intercepts
+    // nothing a user can reach.
+    //
+    // That reasoning only covers text the VIEWPORT rejects. A block rejected by a
+    // `clipChildren` ancestor whose own box overlaps the viewport (scrolled out of
+    // a ScrollView, but still over the canvas) would be transparent selectable
+    // text on top of whatever is really drawn there, so it keeps `display: none`.
+    // Hence the narrower viewport-only test rather than reusing `visible`.
+    //
+    // The default configuration is untouched: with no semantic margin the two
+    // resolve equal, `residentTier` is false, and `display` is exactly
+    // `visible ? '' : 'none'` as before. That matters beyond compatibility — a
+    // scene that never asked for a resident tier should NOT have a screen reader
+    // announcing text the sighted user cannot see.
+    const residentTier = semanticMargin > interactionMargin;
+    const display =
+      visible || (residentTier && !this.projectionBoxVisible(node, worldTf, 0, true)) ? '' : 'none';
     if (el.style.display !== display) el.style.display = display;
 
     // Record what this sync was built from, so the next one can skip. Only for
@@ -6062,7 +6333,14 @@ export class Scene {
     // walk). Skipped frames change no state, so they stay valid while idle;
     // anything that starts motion marks the scene dirty, which wakes the loop
     // and refreshes them on the next rendered frame.
-    const isIdle = !this.dirty && !this.frameHadAnimation;
+    // A sync that deferred resident blocks is NOT idle: the document is still
+    // materializing and needs further frames to finish. Without this, `onDemand`
+    // would skip the frame outright and `autoThrottle` would drop an `always`
+    // scene to 2 FPS — at a 64-block budget, 1000 blocks would then take 16 syncs
+    // across 8 seconds, so text would sit unfindable long after it looked done.
+    // Deliberately NOT `markDirty()`: materializing off-viewport DOM changes no
+    // pixel, so requesting a canvas repaint would be a lie about the frame.
+    const isIdle = !this.dirty && !this.frameHadAnimation && !this.contentSemanticDeferred;
 
     if (isIdle && this.autoThrottle && this.renderMode === 'always' && this.maxFPS > 0) {
       cap = Math.min(cap, 2);

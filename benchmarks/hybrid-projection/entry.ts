@@ -100,6 +100,7 @@ type ArmKey =
   | 'hybrid-cached'
   | 'all-resident'
   | 'split'
+  | 'split-budgeted'
   | 'never';
 
 /**
@@ -144,7 +145,7 @@ class Block extends Entity {
   private semanticKey = '';
 
   /**
-   * Content epoch, for the `hybrid-dirty` arm only.
+   * Content epoch, for the arms that opt into dirty-tracked sync.
    *
    * Derived from `extra.length` rather than an incrementing counter because the
    * streaming workload mutates `extra` directly (`target.extra += …`) rather than
@@ -155,9 +156,21 @@ class Block extends Entity {
    *
    * Returning `null` for every other arm is what keeps them measuring today's
    * behaviour: `Scene` only skips an entity that opts in.
+   *
+   * `split-budgeted` MUST be listed alongside `split`. It was not, and the
+   * omission made its `idleMsPerSync` meaningless rather than merely noisy: with
+   * no epoch, no block is ever skipped, so every idle sync re-projected all 10000
+   * blocks and the arm reported 104.445ms against `split`'s 1.605ms. That reads as
+   * the budget destroying steady-state performance, when the engine measured in
+   * isolation gives the two arms comparable idle (3.3ms vs 2.0ms at 10000 blocks,
+   * 0.35ms vs 1.3ms at 1000). The arm exists to differ from `split` in the budget
+   * and NOTHING else, so any per-arm branch in this class must treat the two
+   * identically.
    */
   override getContentEpoch(): number | null {
-    return this.arm === 'hybrid-dirty' || this.arm === 'split' ? this.extra.length : null;
+    return this.arm === 'hybrid-dirty' || this.arm === 'split' || this.arm === 'split-budgeted'
+      ? this.extra.length
+      : null;
   }
 
   constructor(
@@ -297,12 +310,21 @@ class Block extends Entity {
         return null;
       case 'native':
       case 'all-resident':
-      // `split` behaves like a NAIVE entity on purpose: it always returns
-      // `lines`, and never consults `band`. Every other resident arm simulates
-      // the coarse tier itself by withholding `lines` off-band, which is the
-      // thing an entity should not have to do. If the engine's split works, this
-      // arm reaches `hybrid`'s DOM shape without the entity cooperating at all.
+      // `split` and `split-budgeted` behave like a NAIVE entity on purpose: they
+      // always return `lines`, and never consult `band`. Every other resident arm
+      // simulates the coarse tier itself by withholding `lines` off-band, which is
+      // the thing an entity should not have to do. If the engine's split works,
+      // these arms reach `hybrid`'s DOM shape without the entity cooperating at
+      // all.
+      //
+      // `split-budgeted` must be here rather than falling through to `default`,
+      // for the same reason it must appear in `getContentEpoch`: it differs from
+      // `split` in the BUDGET and nothing else. Landing in `default` had it
+      // simulate the coarse tier in the entity, so the two arms were not
+      // comparable and the budget was credited with an entity-side behaviour
+      // change.
       case 'split':
+      case 'split-budgeted':
         return this.withGeometry(hint);
       default:
         // The whole point: resident text for every block, fine geometry only
@@ -324,6 +346,11 @@ interface Arm {
   semanticMargin?: number;
   /** Can off-screen text be found by native find-in-page in this arm? */
   offscreenFindable: boolean;
+  /**
+   * Scene's per-sync resident materialization budget. Omitted means the engine
+   * default; `Infinity` is one synchronous pass.
+   */
+  semanticBudget?: number;
 }
 
 const ARMS: Arm[] = [
@@ -406,6 +433,27 @@ const ARMS: Arm[] = [
     label: 'engine split: semantic=Infinity + interaction=viewport, entity naive',
     margin: VIEW_H,
     semanticMargin: Number.POSITIVE_INFINITY,
+    // Unbudgeted: one synchronous materialization pass, the shipped 1.31.0
+    // behaviour. This is the arm `split-budgeted` must beat on firstSync WITHOUT
+    // losing any of its census.
+    semanticBudget: Number.POSITIVE_INFINITY,
+    offscreenFindable: true,
+  },
+  {
+    // THE BUDGET (CTX-0203). Identical to `split` in every projection parameter,
+    // differing ONLY in the per-sync materialization budget — so the comparison
+    // isolates the schedule with nothing else varying, the same discipline
+    // `hybrid-dirty` used against `hybrid`.
+    //
+    // Its firstSync should fall well under the ~30 ms trigger while `drainSyncs`
+    // stays small and the final census matches `split` exactly. A drop in
+    // firstSync alone would prove nothing: deferring everything forever would
+    // achieve it and deliver no text at all, which is why the census is taken
+    // AFTER the drain.
+    key: 'split-budgeted',
+    label: 'engine split + per-sync materialization budget',
+    margin: VIEW_H,
+    semanticMargin: Number.POSITIVE_INFINITY,
     offscreenFindable: true,
   },
   {
@@ -436,6 +484,9 @@ function build(count: number, arm: Arm): Built {
     // Only the `split` arm sets this. Passing `undefined` elsewhere is exactly
     // the default, so every other arm is byte-identical to a pre-split run.
     contentSemanticMargin: arm.semanticMargin,
+    // Omitted for every arm but the two split ones, so the rest stay byte-
+    // identical to a pre-budget run.
+    contentSemanticBudget: arm.semanticBudget,
     // Without this, Scene binds a window-resize handler that resizes the canvas
     // to window.innerWidth/innerHeight. The band and the block coordinates here
     // are computed against VIEW_W/VIEW_H, so an inflated viewport silently moves
@@ -533,6 +584,10 @@ interface IdleMeasurement {
   heapSource: string;
   painted: boolean;
   firstSyncMs: number;
+  /** Extra syncs a budgeted arm needed before its resident tier was complete. */
+  drainSyncs: number;
+  /** Total ms spent in those extra syncs. */
+  drainMs: number;
   editInBandMs: number;
   editOffBandMs: number;
   editOffBandTargetY: number;
@@ -586,7 +641,40 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
   const tFirst = performance.now();
   syncOnce(scene); // warm: materialize carriers
   const firstSyncMs = performance.now() - tFirst;
+
+  // DRAIN. A budgeted arm materializes only part of the resident tier in the
+  // first sync, so the census must be taken once the document is complete or the
+  // capability guard rails would compare a partial DOM against a whole one and
+  // the budget would appear to win by simply doing less.
+  //
+  // Counts the syncs and their total cost, which is what makes the schedule
+  // visible: `firstSyncMs` alone cannot distinguish "spread across frames" from
+  // "dropped". Bounded so a bug cannot hang the runner for its whole timeout.
+  const DRAIN_LIMIT = 4096;
+  let drainSyncs = 0;
+  let drainMs = 0;
+  let lastTotal = census().total;
+  for (;;) {
+    if (drainSyncs >= DRAIN_LIMIT) break;
+    const t = performance.now();
+    syncOnce(scene);
+    const elapsed = performance.now() - t;
+    const total = census().total;
+    if (total === lastTotal) break; // converged: nothing new materialized
+    lastTotal = total;
+    drainSyncs++;
+    drainMs += elapsed;
+  }
   const dom = census();
+  // Flush the layout the drain left pending BEFORE timing idle syncs. `census()`
+  // uses `querySelectorAll`, which does not force layout, so without this the
+  // drain's accumulated invalidation is charged to the first idle sample and
+  // `idleMsPerSync` misreports a budgeted arm's steady state. Measured: 10.465ms
+  // at 1000 blocks / 111.395ms at 10000 without the flush, versus 0.2ms with it
+  // (against an unbudgeted 0.5ms) — i.e. the artifact inverted the comparison,
+  // making the budgeted arm look ~20x worse at steady state when it is slightly
+  // better.
+  void document.body.offsetHeight;
   const times: number[] = [];
   for (let t = 0; t < TRIALS; t++) {
     scene.markDirty();
@@ -643,6 +731,8 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
     heapSource: source,
     painted,
     firstSyncMs,
+    drainSyncs,
+    drainMs,
     editInBandMs,
     editOffBandMs,
     editOffBandTargetY: offBandTarget.y,
@@ -768,6 +858,8 @@ async function main(): Promise<void> {
         // CTX-0200: the front-load. One-time document-build cost, and the cost of
         // one genuine content change in and out of the viewport band.
         firstSyncMs: +idle.firstSyncMs.toFixed(4),
+        drainSyncs: idle.drainSyncs,
+        drainMs: +idle.drainMs.toFixed(4),
         editInBandMs: +idle.editInBandMs.toFixed(4),
         editOffBandMs: +idle.editOffBandMs.toFixed(4),
         // Reported so the off-band claim is CHECKABLE in the result rather than
@@ -813,8 +905,12 @@ async function main(): Promise<void> {
     const windowed = of('hybrid-windowed');
     const allResident = of('all-resident');
     const split = of('split');
+    const splitBudgeted = of('split-budgeted');
     const ratio = (a: unknown, b: unknown): number | null =>
       typeof a === 'number' && typeof b === 'number' && b > 0 ? +(a / b).toFixed(2) : null;
+    // Integer difference, for a guard rail where "close" is not a pass.
+    const delta = (a: unknown, b: unknown): number | null =>
+      typeof a === 'number' && typeof b === 'number' ? a - b : null;
     return {
       blocks: count,
       // What full-document findability costs against today's band-only DOM.
@@ -885,6 +981,22 @@ async function main(): Promise<void> {
       splitDomDescendants: split?.domDescendants ?? null,
       nativeCarriers: native?.carriers ?? null,
       nativeDomDescendants: native?.domDescendants ?? null,
+
+      // THE BUDGET (CTX-0203). The claim is that the schedule changes WHEN the
+      // resident tier materializes and nothing else, so the proof is a pair:
+      // firstSync must fall below the ~30 ms trigger, and the census must be
+      // IDENTICAL to the unbudgeted arm's once drained. Reported as integer
+      // differences rather than ratios — a ratio of 0.999 reads as "close enough"
+      // where a difference of -1 element is a lost block.
+      budgetedFirstSyncMs: splitBudgeted?.firstSyncMs ?? null,
+      budgetedVsSplitFirstSyncMs: ratio(splitBudgeted?.firstSyncMs, split?.firstSyncMs),
+      budgetedDrainSyncs: splitBudgeted?.drainSyncs ?? null,
+      budgetedDrainMs: splitBudgeted?.drainMs ?? null,
+      // Both must be exactly 0. Anything else means the budget dropped text.
+      budgetedCarrierDelta: delta(splitBudgeted?.carriers, split?.carriers),
+      budgetedDescendantDelta: delta(splitBudgeted?.domDescendants, split?.domDescendants),
+      // Steady state must be unaffected: the budget touches creation only.
+      budgetedIdleMsPerSync: splitBudgeted?.idleMsPerSync ?? null,
       hybridCarriers: hybrid?.carriers ?? null,
       hybridDomDescendants: hybrid?.domDescendants ?? null,
       // And what it costs, against the arm that simulates the same shape

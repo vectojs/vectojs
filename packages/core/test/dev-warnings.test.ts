@@ -292,6 +292,7 @@ describe('dev warnings — Scene.devMode', () => {
       autoThrottle: false,
       contentProjection: false,
       contentProjectionMargin: 10,
+      contentSemanticBudget: 32,
       contentSemanticMargin: 20,
       debugA11y: false,
       disableWindowResize: true,
