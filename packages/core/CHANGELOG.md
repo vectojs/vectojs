@@ -1,5 +1,80 @@
 # @vectojs/core
 
+## 1.32.0
+
+### Minor Changes
+
+- c903de0: Add `SceneOptions.contentSemanticBudget`: how many resident (coarse-tier) blocks
+  may be materialized in one sync, spreading the document-open cost of a wide
+  `contentSemanticMargin` across frames instead of paying it in a single
+  synchronous pass.
+
+  The front-load is a scheduling problem: a resident tier costs little to hold
+  (10000 resident blocks measure 2.470 ms/sync at steady state) but a document's
+  worth of blocks all materialize in the first sync. Remaining blocks now arrive on
+  subsequent syncs until the document is fully resident; the end state is identical,
+  only reached later, so no text is ever dropped.
+
+  The default is 256 blocks per sync, sized against two measured costs: creating one
+  block is cheap and flat (~0.03 ms), while style and layout of the projection
+  subtree scales with how many blocks are already resident and is paid once per pass.
+  Total cost is therefore roughly `passes × f(resident)`, so a smaller budget
+  multiplies the term that does not shrink — at 10000 blocks, budget 32 takes 3773 ms
+  to complete versus 648 ms at 256, with no improvement in worst-pass time (42.6 ms
+  vs 35.2 ms, both bounded by the final pass laying out the complete subtree).
+
+  The budget applies only to the coarse tier. A block inside the interaction margin
+  is on screen and materializes immediately regardless, since deferring visible text
+  would leave it briefly unselectable. An update to a block that already has DOM is
+  never deferred either, which would serve stale text.
+
+  `Infinity` restores one synchronous pass. Because the coarse tier exists only when
+  `contentSemanticMargin` is wider than `contentProjectionMargin`, a scene that does
+  not opt into a resident tier has no budgetable blocks and is unaffected.
+
+### Patch Changes
+
+- c903de0: Fix the resident semantic tier being unreachable. With `contentSemanticMargin`
+  wider than `contentProjectionMargin`, an off-viewport block kept its full text in
+  the DOM but was given `display: none` — and `display: none` text is skipped by
+  native find-in-page and absent from the accessibility tree, so the tier delivered
+  a DOM node and none of the findability it exists for.
+
+  The cause was an implication rather than a coincidence: a coarse-tier block is by
+  definition outside the interaction margin, and every margin is `>= 0`, so it also
+  failed the exact (margin 0) visibility test that drives `display`.
+
+  Blocks in a scene that opted into a wider semantic margin now stay displayed when
+  the _viewport_ is what rejects them. This is safe because the a11y root is
+  viewport-sized, `overflow: hidden` and not scrollable, so such text is clipped
+  rather than painted and a find match cannot scroll the projection layer out of
+  alignment with the canvas. A block rejected by a `clipChildren` ancestor whose own
+  box overlaps the viewport still gets `display: none`, since that text would sit on
+  top of whatever is really drawn there.
+
+  The default configuration is unchanged: without a wider semantic margin there is
+  no coarse tier, and `display` remains exactly the previous viewport test.
+
+- c903de0: Stop the content projection from forcing a synchronous layout once per rebuilt
+  element. Every rebuild asked the document whether it owned the current text
+  selection, and reading any `Selection` property makes the browser lay out the page
+  first — so materializing a document's worth of resident blocks paid one full
+  layout of the (growing) projection subtree per block, making per-block cost rise
+  with how many blocks were already present.
+
+  The answer cannot change during a sync walk: a selection is a single
+  document-wide object and the walk never yields to the user. It is now resolved
+  once per walk instead of once per element.
+
+  Measured in real Chrome over a 1000-block resident document: 2002 forced layouts
+  became 19 (one per pass), layout work dropped from 800 ms to 66.8 ms, and the full
+  materialization went from ~337 ms to 52.3 ms. Per-pass cost also stopped climbing
+  with the number of blocks already materialized — previously 17 → 26 ms as the
+  document filled in, now flat at 1.1–2.3 ms.
+
+  This affects any scene that projects selectable text, and most visibly one using a
+  wide `contentSemanticMargin`, where a whole document is materialized at once.
+
 ## 1.31.0
 
 ### Minor Changes
