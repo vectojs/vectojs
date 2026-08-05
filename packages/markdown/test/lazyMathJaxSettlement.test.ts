@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { Markdown, isMathJaxReady } from '../src/Markdown';
-import { Image } from '@vectojs/ui';
+import { MathBlock, Markdown, isMathJaxReady } from '../src/Markdown';
 
 /**
  * `onStable` must not fire while a formula is still TeX source.
@@ -17,14 +16,13 @@ import { Image } from '@vectojs/ui';
 describe('lazy MathJax settlement: onStable waits for typesetting', () => {
   it('hands onStable a typeset formula, not a CodeBlock of source', async () => {
     const md = new Markdown('');
-    let stableSawImage: boolean | null = null;
+    let stableSawFormula: boolean | null = null;
 
     const stream = md.createStream({
       onStable: () => {
         // The whole contract of onStable: a caller doing expensive one-time work
         // here (measuring, exporting, laying out siblings) must see final boxes.
-        const container = md.content.children[0] as any;
-        stableSawImage = container?.children?.[0] instanceof Image;
+        stableSawFormula = (md.content.children[0] as any) instanceof MathBlock;
       },
     });
 
@@ -37,6 +35,6 @@ describe('lazy MathJax settlement: onStable waits for typesetting', () => {
 
     await stream.close();
 
-    expect(stableSawImage).toBe(true);
+    expect(stableSawFormula).toBe(true);
   });
 });

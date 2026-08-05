@@ -104,7 +104,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     );
     assert.equal(
       result.entityAfterLoad,
-      'MarkdownContainer/Image',
+      'MathBlock/RichText',
       `${browserCase.name}: the formula must be typeset once MathJax lands`,
     );
     assert.equal(

@@ -839,6 +839,54 @@ class MarkdownContainer extends Entity {
   render(_r: any): void {}
 }
 
+/**
+ * One display formula: a `$$..$$` block or a closed ```` ```math ```` fence.
+ *
+ * A named class rather than a bare {@link MarkdownContainer} because the formula
+ * needs a stable handle, and after the switch to an inline object it has none:
+ * the typeset raster lives in a `paint` closure captured by the span, so removing
+ * the `Image` entity left nothing exposing either the source or the SVG bytes.
+ * Devtools, tests, and anything auditing what a formula actually rendered all
+ * want that. `markstream-vue` reaches the same conclusion from the DOM side and
+ * publishes `data-markstream-mode` on its math node for the same reason.
+ *
+ * Deliberately carries no typeset-vs-source flag. A formula MathJax has not
+ * converted yet renders as a bare {@link CodeBlock} of its TeX, which this class
+ * does not wrap — wrapping it would put a container between `content` and a
+ * `CodeBlock` that the streamed `setCode` path locates by type. So a flag would
+ * have exactly one reachable value, which is the dead-API trap that cost CTX-0208
+ * a debugging pass. Add it together with wrapping the fallback, or not at all.
+ */
+export class MathBlock extends MarkdownContainer {
+  /**
+   * The TeX source, exactly as written between the delimiters.
+   *
+   * Also the projected text and the accessible name, so this is the one string a
+   * reader can find, select, and copy.
+   */
+  public readonly formula: string;
+  /** The `data:image/svg+xml` URI of the typeset glyphs. */
+  public readonly svgUri: string;
+
+  constructor(formula: string, svgUri: string) {
+    super();
+    this.formula = formula;
+    this.svgUri = svgUri;
+  }
+
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    return {
+      kind: 'MathBlock',
+      groups: [
+        {
+          label: 'Math',
+          fields: [{ label: 'formula', value: this.formula, readOnly: true }],
+        },
+      ],
+    };
+  }
+}
+
 // ── Code block with syntax-keyword highlighting ─────────────────────────────
 
 /** Keyword sets for basic syntax highlighting. */
@@ -4345,24 +4393,60 @@ export class Markdown extends UIComponent {
     if (!mathData) return null;
     const intrinsicW = exToPx(mathData.widthEx, t.fontSize);
     const intrinsicH = exToPx(mathData.heightEx, t.fontSize);
-    const mathImg = new Image(mathData.uri, {
-      width: Math.min(availableWidth, intrinsicW),
-      height: intrinsicH * Math.min(1, availableWidth / intrinsicW),
-      alt: formula,
-      // The SVG decodes asynchronously and Image paints a placeholder until it
-      // lands. Without this an `onDemand` scene, which repaints only when marked
-      // dirty, leaves the formula a blank slab forever.
-      onLoad: () => {
-        this.scene?.markDirty();
+    // Downscale to fit, never up: a short formula keeps its typeset size rather
+    // than being stretched across the column.
+    const scale = Math.min(1, availableWidth / intrinsicW);
+    const width = intrinsicW * scale;
+    const height = intrinsicH * scale;
+    // Bound outside the span so the closure captures the URI rather than the whole
+    // `MathRender`, matching the inline arm.
+    const uri = mathData.uri;
+    // One inline object in a one-span RichText, which is the same seam inline math
+    // uses. That is what makes the formula reachable by find-in-page, selection and
+    // copy: `RichText` substitutes an object's `alt` for the U+FFFC sentinel when it
+    // projects (see its `accessibleText`/`projectedSlice`). The previous `Image`
+    // reported `tag: 'img'` with no content projection, so the formula existed only
+    // as an accessible name and contributed nothing to the text layer -- the
+    // asymmetry a reader hit when inline `$..$` in the same document selected fine.
+    //
+    // Emitting an `Image` is also what made a formula draggable as an SVG *file*,
+    // since an `<img src="data:...">` is a drag source by default. No reference
+    // implementation needs a `draggable="false"` workaround, because none generates
+    // an image; this removes the vector rather than suppressing it.
+    const math = new RichText(
+      [
+        {
+          text: OBJECT_REPLACEMENT,
+          object: {
+            width,
+            height,
+            // The TeX source is what a reader copies and what a screen reader
+            // announces. KaTeX's dual-layer contract carries the same string in an
+            // `<annotation encoding="application/x-tex">`; here the projection is
+            // the semantic layer, so one copy of the source serves both.
+            alt: formula,
+            paint: (surface, box) => paintInlineMath(uri, surface, box),
+          },
+        },
+      ],
+      {
+        font: `${t.fontSize}px ${t.bodyFont}`,
+        color: t.textColor,
+        maxWidth: availableWidth,
+        selectable: this.selectable,
       },
-    });
+    );
+    // The raster decodes asynchronously and the painter cannot ask for its own
+    // repaint, so an `onDemand` scene would leave the box blank forever. This is the
+    // shared subscription the inline arm relies on for the same reason.
+    this.subscribeInlineMathRepaint();
     // Let the layout flow it as a block.
-    const wrapper = new MarkdownContainer();
-    mathImg.x = 16;
-    mathImg.y = 8;
-    wrapper.add(mathImg);
-    wrapper.width = mathImg.width + 16;
-    wrapper.height = mathImg.height + 16;
+    const wrapper = new MathBlock(formula, uri);
+    math.x = 16;
+    math.y = 8;
+    wrapper.add(math);
+    wrapper.width = width + 16;
+    wrapper.height = height + 16;
     return wrapper;
   }
 
