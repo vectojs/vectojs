@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { CodeBlock, Markdown, isMathJaxReady, preloadMathJax } from '../src/Markdown';
-import { Image } from '@vectojs/ui';
+import { CodeBlock, MathBlock, Markdown, isMathJaxReady, preloadMathJax } from '../src/Markdown';
 
 /**
  * The lazy MathJax load, observed from the state a real page starts in.
@@ -20,10 +19,17 @@ import { Image } from '@vectojs/ui';
  */
 
 const firstChild = (md: Markdown) => md.content.children[0] as any;
-const mathImageOf = (md: Markdown): Image | null => {
+/**
+ * The first block's `MathBlock`, or null when it is not one.
+ *
+ * Was "the container's first child, if it is an `Image`". A typeset formula is now
+ * an inline object inside a `RichText` so that it reaches selection and
+ * find-in-page, and `MathBlock` IS the block wrapper rather than something holding
+ * an `Image` — hence a direct type test rather than a descent into children.
+ */
+const mathBlockOf = (md: Markdown): MathBlock | null => {
   const container = firstChild(md);
-  const inner = container?.children?.[0];
-  return inner instanceof Image ? inner : null;
+  return container instanceof MathBlock ? container : null;
 };
 
 /** Let the dynamic import and its `.then` continuation run. */
@@ -34,7 +40,7 @@ afterEach(() => {
 });
 
 describe('lazy MathJax: a formula before the module resolves', () => {
-  it('renders a closed fence as TeX source, then replaces it with the typeset image', async () => {
+  it('renders a closed fence as TeX source, then replaces it with the typeset formula', async () => {
     // Precondition: this is the first test to touch math in this file.
     expect(isMathJaxReady()).toBe(false);
 
@@ -43,7 +49,7 @@ describe('lazy MathJax: a formula before the module resolves', () => {
     // Synchronously, the formula is honest TeX source rather than a blank box.
     const before = firstChild(md);
     expect(before).toBeInstanceOf(CodeBlock);
-    expect(mathImageOf(md)).toBeNull();
+    expect(mathBlockOf(md)).toBeNull();
     const sourceHeight = md.height;
 
     await settleMathLoad();
@@ -52,10 +58,10 @@ describe('lazy MathJax: a formula before the module resolves', () => {
     // Once the module lands the same document is typeset, without the caller
     // having re-rendered anything.
     expect(isMathJaxReady()).toBe(true);
-    const img = mathImageOf(md);
+    const img = mathBlockOf(md);
     expect(img).not.toBeNull();
-    expect(img!.src.startsWith('data:image/svg+xml;base64,')).toBe(true);
-    expect(img!.alt).toBe('\\alpha_{lazy} + 1');
+    expect(img!.svgUri.startsWith('data:image/svg+xml;base64,')).toBe(true);
+    expect(img!.formula).toBe('\\alpha_{lazy} + 1');
 
     // The rebuild has to resync the document box, not just swap the entity:
     // `height` must track the typeset formula, or a consumer laying out siblings
@@ -75,7 +81,7 @@ describe('lazy MathJax: a formula before the module resolves', () => {
     // No await between construction and assertion: after the one-time load every
     // later document is on the original synchronous path.
     const md = new Markdown('```math\n\\gamma_{sync}\n```');
-    expect(mathImageOf(md)).not.toBeNull();
+    expect(mathBlockOf(md)).not.toBeNull();
   });
 });
 
@@ -92,7 +98,7 @@ describe('lazy MathJax: preloadMathJax', () => {
   it('makes the first formula synchronous when awaited before constructing', async () => {
     await preloadMathJax();
     const md = new Markdown('```math\n\\zeta_{preloaded}\n```');
-    expect(mathImageOf(md)).not.toBeNull();
+    expect(mathBlockOf(md)).not.toBeNull();
   });
 });
 
@@ -112,7 +118,7 @@ describe('lazy MathJax: streaming prefetch', () => {
 
     stream.write('\n```');
     await stream.close();
-    expect(mathImageOf(md)).not.toBeNull();
+    expect(mathBlockOf(md)).not.toBeNull();
   });
 
   it('leaves a non-math fence alone', async () => {
@@ -121,6 +127,6 @@ describe('lazy MathJax: streaming prefetch', () => {
     await Promise.resolve();
     // A TypeScript fence must stay a CodeBlock; the rebuild is only for math.
     expect(firstChild(md)).toBeInstanceOf(CodeBlock);
-    expect(mathImageOf(md)).toBeNull();
+    expect(mathBlockOf(md)).toBeNull();
   });
 });

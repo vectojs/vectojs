@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it } from 'vitest';
-import { Image } from '@vectojs/ui';
-import { Markdown, preloadMathJax } from '../src/Markdown';
+import { MathBlock, Markdown, preloadMathJax } from '../src/Markdown';
 
 /**
  * Display math written as `$$...$$`, and the color baked into every math SVG.
@@ -34,8 +33,16 @@ function walk(e: any, out: any[] = []): any[] {
   return out;
 }
 
-/** Every `Image` in the tree — one per rendered display formula. */
-const imagesOf = (md: Markdown): any[] => walk(md.content).filter((e) => e instanceof Image);
+/**
+ * Every `MathBlock` in the tree — one per rendered display formula.
+ *
+ * Was `instanceof Image`. A formula is now one inline object inside a `RichText`
+ * rather than an `Image` entity, so that it reaches selection, find-in-page and
+ * copy the way inline `$..$` always did. `MathBlock` is the wrapper that still
+ * gives the formula a stable handle, carrying the source and the typeset SVG URI.
+ */
+const mathBlocksOf = (md: Markdown): MathBlock[] =>
+  walk(md.content).filter((e) => e instanceof MathBlock);
 
 /** Every text span's text, concatenated, so a stray delimiter is visible. */
 function textOf(md: Markdown): string {
@@ -47,9 +54,9 @@ function textOf(md: Markdown): string {
   return s;
 }
 
-/** Decode the SVG behind a math `Image`'s data URI. */
-function svgOf(img: any): string {
-  const uri: string = img.src;
+/** Decode the SVG behind a `MathBlock`'s data URI. */
+function svgOf(block: MathBlock): string {
+  const uri: string = block.svgUri;
   expect(uri.startsWith('data:image/svg+xml;base64,')).toBe(true);
   return atob(uri.slice('data:image/svg+xml;base64,'.length));
 }
@@ -57,14 +64,14 @@ function svgOf(img: any): string {
 describe('$$...$$ renders as display math with no stray delimiters', () => {
   it('produces one display formula and no literal $', () => {
     const md = new Markdown('$$\\int_a^b f(x)\\,dx = F(b) - F(a)$$');
-    expect(imagesOf(md)).toHaveLength(1);
+    expect(mathBlocksOf(md)).toHaveLength(1);
     // The defect: a `$` on each side of the formula.
     expect(textOf(md)).not.toContain('$');
   });
 
   it('keeps surrounding prose intact', () => {
     const md = new Markdown('before\n\n$$x^2 + y^2 = z^2$$\n\nafter\n');
-    expect(imagesOf(md)).toHaveLength(1);
+    expect(mathBlocksOf(md)).toHaveLength(1);
     const text = textOf(md);
     expect(text).toContain('before');
     expect(text).toContain('after');
@@ -73,26 +80,27 @@ describe('$$...$$ renders as display math with no stray delimiters', () => {
 
   it('spans multiple lines', () => {
     const md = new Markdown('$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$\n');
-    expect(imagesOf(md)).toHaveLength(1);
+    expect(mathBlocksOf(md)).toHaveLength(1);
     expect(textOf(md)).not.toContain('$');
   });
 
   it('carries the TeX source as the accessible name', () => {
     const md = new Markdown('$$E = mc^2$$');
     // Without this the formula is an unlabelled image to assistive tech.
-    expect(imagesOf(md)[0].alt).toBe('E = mc^2');
+    expect(mathBlocksOf(md)[0].formula).toBe('E = mc^2');
   });
 
   it('still tokenizes inline $...$ as inline math, not a block', () => {
     const md = new Markdown('cost is $x+1$ per unit\n');
-    // Inline math reserves an inline box, so it produces no block Image.
-    expect(imagesOf(md)).toHaveLength(0);
+    // Inline math reserves an inline box in the surrounding paragraph, so it
+    // produces no MathBlock of its own.
+    expect(mathBlocksOf(md)).toHaveLength(0);
     expect(textOf(md)).not.toContain('$');
   });
 
   it('leaves currency alone', () => {
     const md = new Markdown('it costs $5 to $10 per item\n');
-    expect(imagesOf(md)).toHaveLength(0);
+    expect(mathBlocksOf(md)).toHaveLength(0);
     // Currency is the one case where a literal $ SHOULD survive as text.
     expect(textOf(md)).toContain('$5');
     expect(textOf(md)).toContain('$10');
@@ -102,20 +110,20 @@ describe('$$...$$ renders as display math with no stray delimiters', () => {
 describe('math SVG carries an explicit color', () => {
   it('sets the theme text color on the SVG root', () => {
     const md = new Markdown('$$a+b$$', { theme: { textColor: '#ff8800' } });
-    expect(svgOf(imagesOf(md)[0])).toContain('color:#ff8800');
+    expect(svgOf(mathBlocksOf(md)[0])).toContain('color:#ff8800');
   });
 
   it('leaves currentColor on the glyphs for the root to resolve', () => {
     const md = new Markdown('$$a+b$$', { theme: { textColor: '#ff8800' } });
     // The fix must not rewrite fill/stroke — MathJax decides which parts paint.
-    expect(svgOf(imagesOf(md)[0])).toContain('currentColor');
+    expect(svgOf(mathBlocksOf(md)[0])).toContain('currentColor');
   });
 
   it('preserves the root vertical-align the depth scrape reads', () => {
     const md = new Markdown('$$\\int_a^b f(x)\\,dx$$', {
       theme: { textColor: '#ff8800' },
     });
-    const svg = svgOf(imagesOf(md)[0]);
+    const svg = svgOf(mathBlocksOf(md)[0]);
     // Injecting color must not clobber the existing root style, or the depth
     // parse silently returns 0 and the formula sits on the wrong baseline.
     expect(svg).toMatch(/vertical-align:\s*-?[\d.]+ex/);
@@ -130,8 +138,8 @@ describe('math SVG carries an explicit color', () => {
     // theme's bitmap — invisible, not merely wrong, across a light/dark switch.
     const dark = new Markdown('$$a+b$$', { theme: { textColor: '#e2e8f0' } });
     const light = new Markdown('$$a+b$$', { theme: { textColor: '#111111' } });
-    expect(svgOf(imagesOf(dark)[0])).toContain('color:#e2e8f0');
-    expect(svgOf(imagesOf(light)[0])).toContain('color:#111111');
+    expect(svgOf(mathBlocksOf(dark)[0])).toContain('color:#e2e8f0');
+    expect(svgOf(mathBlocksOf(light)[0])).toContain('color:#111111');
   });
 
   it('gives inline math the surrounding run colour', () => {

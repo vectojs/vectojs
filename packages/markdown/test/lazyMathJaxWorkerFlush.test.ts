@@ -118,12 +118,14 @@ describe('lazy MathJax settlement: a worker reply does not release waiters early
     // The formula is typeset by the time close() resolved, not still source.
     //
     // Identified by `constructor.name`, not `instanceof`: `vi.resetModules()`
-    // gives the reloaded `../src/index` its own copy of `@vectojs/ui`, so the
-    // `Image` class the document constructs is a different class object from one
-    // this file could import statically and every `instanceof` would be false.
+    // gives the reloaded `../src/index` its own copy of its classes, so the
+    // `MathBlock` the document constructs is a different class object from one this
+    // file could import statically and every `instanceof` would be false.
     // `Markdown.test.ts` identifies entities the same way for the same reason.
     const container = md.content.children[0] as any;
-    expect(container?.constructor?.name).toBe('MarkdownContainer');
-    expect(container?.children?.[0]?.constructor?.name).toBe('Image');
+    expect(container?.constructor?.name).toBe('MathBlock');
+    // A typeset formula is an inline object inside a RichText, so that it reaches
+    // selection and find-in-page the way inline `$..$` does.
+    expect(container?.children?.[0]?.constructor?.name).toBe('RichText');
   });
 });
