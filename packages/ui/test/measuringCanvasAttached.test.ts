@@ -49,17 +49,52 @@ describe('measuring contexts are attached to the document', () => {
     expect(canvas.height).toBe(1);
   });
 
-  it("attaches RichText's own base measurer, not just the shared one", () => {
-    // RichText builds a SEPARATE per-instance measurer (baseMeasurer) rather
-    // than using the module-level shared context, so fixing only measure.ts
-    // would leave every RichText run still measured on a detached canvas.
-    const before = document.querySelectorAll('canvas').length;
+  it("attaches RichText's base measurer", () => {
+    // RichText builds its own measurer (baseMeasurer) rather than going through
+    // measureText, so fixing only measure.ts would leave every RichText run
+    // measured on a detached canvas. What matters is that the context it measures
+    // on is IN the document; whether it is a fresh one is asserted below.
     new RichText([{ text: 'inline code 中文', font: '16px monospace' }], {
       maxWidth: 200,
     });
     const canvases = Array.from(document.querySelectorAll('canvas'));
-    expect(canvases.length).toBeGreaterThan(before);
+    expect(canvases.length).toBeGreaterThan(0);
     // Every canvas this package put in the document is a measuring canvas.
     for (const c of canvases) expect(c.isConnected).toBe(true);
+  });
+
+  it('does not attach a canvas per RichText', () => {
+    // The leak this replaced: baseMeasurer called createMeasuringContext() directly,
+    // bypassing the memo, so every RichText appended a permanent 1x1 canvas to
+    // <body>. Measured in real Chrome, ONE 17 KB markdown document reached 205 of
+    // them (2 -> 8 -> 48 -> 141 -> 206 across the load), each holding a live 2D
+    // context; process memory hit 277 MB while the JS heap sat at a healthy 25 MB,
+    // because a canvas element's cost is not on the JS heap. Streaming compounded it,
+    // since every re-render builds fresh RichTexts.
+    //
+    // Asserted as "does not grow", not as an absolute count: other suites in this
+    // process may already have created the shared context, and `measureText` creates
+    // it lazily too.
+    new RichText([{ text: 'warm the shared context' }], { maxWidth: 200 });
+    const before = document.querySelectorAll('canvas').length;
+    for (let i = 0; i < 25; i++) {
+      new RichText([{ text: `run ${i} 中文`, font: '16px monospace' }], { maxWidth: 200 });
+    }
+    expect(document.querySelectorAll('canvas').length).toBe(before);
+  });
+
+  it('measures identically across instances sharing one context', () => {
+    // Sharing a context is only safe if no measurement can leak between measurers.
+    // Each assigns ctx.font before every read and owns its own width cache, so two
+    // RichTexts with different fonts must not contaminate each other's widths — the
+    // failure mode would be the second one silently measured in the first one's font.
+    const a = new RichText([{ text: 'AAAA', font: '16px monospace' }], { maxWidth: 500 });
+    const b = new RichText([{ text: 'AAAA', font: '48px monospace' }], { maxWidth: 500 });
+    const again = new RichText([{ text: 'AAAA', font: '16px monospace' }], { maxWidth: 500 });
+    // jsdom has no font engine, so absolute widths are meaningless here; what is
+    // pinned is that re-measuring the FIRST font after the second yields the same
+    // answer it did before.
+    expect(again.width).toBe(a.width);
+    expect(b.width).toBeGreaterThanOrEqual(0);
   });
 });

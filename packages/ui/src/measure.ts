@@ -56,7 +56,22 @@ export function createMeasuringContext(): CanvasRenderingContext2D | null {
 
 let sharedCtx: CanvasRenderingContext2D | null | undefined;
 
-function getCtx(): CanvasRenderingContext2D | null {
+/**
+ * The one measuring context this package ever attaches, created on first use.
+ *
+ * Exported because {@link createMeasuringContext} appends to `document.body`, so
+ * calling it per object leaks a canvas element per object — `RichText` did exactly
+ * that and reached 205 leaked canvases on a single 17 KB document. Anything needing
+ * a measuring context wants this, not a fresh one.
+ *
+ * Safe to share: `ctx.font` is assigned before every read at each call site, and the
+ * memoized value is a context, not a measurement, so no cache is shared with it.
+ *
+ * `undefined` vs `null` is load-bearing — `null` is a real memoized answer ("no DOM
+ * here"), so the check is `!== undefined` rather than a truthiness test that would
+ * retry on every call in a DOM-free environment.
+ */
+export function getSharedMeasuringContext(): CanvasRenderingContext2D | null {
   if (sharedCtx !== undefined) return sharedCtx;
   sharedCtx = createMeasuringContext();
   return sharedCtx;
@@ -194,7 +209,7 @@ export function measureText(text: string, font: string): number {
 
   // Miss: shape now (contextual forms change advance widths for Arabic).
   const shaped = ArabicShaper.shapeArabic(text).shapedText;
-  const ctx = getCtx();
+  const ctx = getSharedMeasuringContext();
   let width: number;
   if (ctx) {
     ctx.font = font;
