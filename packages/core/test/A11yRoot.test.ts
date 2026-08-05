@@ -487,5 +487,87 @@ describe('A11y Root and Agent Contract', () => {
 
       expect(idsInOrder()).toEqual(['a', 'b', 'c']);
     });
+
+    it('keeps each clipping region contiguous instead of interleaving them by y', () => {
+      // Reproduces the reported defect: dragging a selection through the body
+      // column also selected the sidebar, because a DOM Selection covers
+      // everything between anchor and focus in DOM order and the two columns
+      // were spliced together by row band.
+      //
+      // Geometry measured from the gallery: sidebar at x=20, body at x=312,
+      // and the two columns interleave in y.
+      const sidebar = new TestInteractiveEntity('sidebar');
+      sidebar.x = 20;
+      sidebar.y = 0;
+      sidebar.width = 280;
+      sidebar.height = 600;
+      sidebar.clipChildren = true;
+      sidebar.interactive = false;
+
+      const body = new TestInteractiveEntity('body');
+      body.x = 312;
+      body.y = 0;
+      body.width = 900;
+      body.height = 600;
+      body.clipChildren = true;
+      body.interactive = false;
+
+      // Sidebar headings at y=100 and y=300.
+      const creations = new TestInteractiveEntity('sidebar-creations');
+      creations.x = 0;
+      creations.y = 100;
+      const builtOn = new TestInteractiveEntity('sidebar-built-on');
+      builtOn.x = 0;
+      builtOn.y = 300;
+      sidebar.add(creations);
+      sidebar.add(builtOn);
+
+      // Body paragraphs straddling both sidebar headings in y.
+      const p1 = new TestInteractiveEntity('body-p1');
+      p1.x = 0;
+      p1.y = 50;
+      const p2 = new TestInteractiveEntity('body-p2');
+      p2.x = 0;
+      p2.y = 200;
+      const p3 = new TestInteractiveEntity('body-p3');
+      p3.x = 0;
+      p3.y = 400;
+      body.add(p1);
+      body.add(p2);
+      body.add(p3);
+
+      scene.add(sidebar);
+      scene.add(body);
+
+      tick();
+
+      const ids = idsInOrder();
+      const sidebarIdx = ids
+        .map((id, i) => ({ id, i }))
+        .filter((e) => e.id?.startsWith('sidebar-'))
+        .map((e) => e.i);
+      const bodyIdx = ids
+        .map((id, i) => ({ id, i }))
+        .filter((e) => e.id?.startsWith('body-'))
+        .map((e) => e.i);
+
+      // Each region must occupy one contiguous run of DOM positions. A
+      // Selection anchored inside a run therefore cannot reach the other
+      // region without passing its boundary.
+      const contiguous = (idx: number[]) => idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
+      expect(contiguous(sidebarIdx)).toBe(true);
+      expect(contiguous(bodyIdx)).toBe(true);
+
+      // And reading order within a region is still visual top-to-bottom.
+      expect(ids.filter((id) => id?.startsWith('body-'))).toEqual([
+        'body-p1',
+        'body-p2',
+        'body-p3',
+      ]);
+      expect(ids.filter((id) => id?.startsWith('sidebar-'))).toEqual([
+        'sidebar-creations',
+        'sidebar-built-on',
+      ]);
+    });
   });
 });

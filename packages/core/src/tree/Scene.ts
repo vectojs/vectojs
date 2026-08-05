@@ -1705,6 +1705,16 @@ export class Scene {
    * see {@link sortNormalElementsVisually}.
    */
   private a11yOrderContainers: Set<HTMLElement> = new Set<HTMLElement>();
+  /**
+   * Nearest `clipChildren` ancestor per ordered element — its *region* — reused
+   * per pass. Written by `enforceA11yDomOrder`'s collect walk, which already has
+   * the entity in hand, so a region costs one comparison per node rather than an
+   * ancestor walk per element.
+   *
+   * Absent means the element sits under no clipping ancestor and belongs to the
+   * implicit root region. See {@link sortNormalElementsVisually}.
+   */
+  private a11yOrderRegions: Map<HTMLElement, Entity> = new Map<HTMLElement, Entity>();
 
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
@@ -5891,14 +5901,19 @@ export class Scene {
     this.fullViewportElements.length = 0;
     this.normalElements.length = 0;
     this.activeIds.clear();
+    this.a11yOrderRegions.clear();
 
-    const collect = (node: Entity) => {
+    // `region` is the nearest `clipChildren` ancestor, threaded down the walk so
+    // establishing it costs one comparison per node instead of an ancestor walk
+    // per element.
+    const collect = (node: Entity, region: Entity | null) => {
       if (node.isDOMPortal) return;
 
       const contentEl = this.contentElements.get(node.id);
       if (contentEl) {
         if (node.a11yFullViewport) this.fullViewportElements.push(contentEl);
         else this.normalElements.push(contentEl);
+        if (region) this.a11yOrderRegions.set(contentEl, region);
       }
 
       if (this.shouldProjectA11y(node)) {
@@ -5907,15 +5922,18 @@ export class Scene {
           this.activeIds.add(node.id);
           if (node.a11yFullViewport) this.fullViewportElements.push(el);
           else this.normalElements.push(el);
+          if (region) this.a11yOrderRegions.set(el, region);
         }
       }
-      for (const child of node.children) collect(child);
+      // A zero-area clipper clips nothing, matching `isWithinClippedViewport`.
+      const childRegion = node.clipChildren && node.width > 0 && node.height > 0 ? node : region;
+      for (const child of node.children) collect(child, childRegion);
       if (node === this.root) {
-        for (const overlay of this.overlayRoot.children) collect(overlay);
+        for (const overlay of this.overlayRoot.children) collect(overlay, null);
       }
     };
 
-    collect(this.root);
+    collect(this.root, null);
 
     // Prune removed/inactive elements and guard focus leaks
     let elementsPruned = false;
@@ -6017,6 +6035,18 @@ export class Scene {
    * parents, which no `insertBefore` ever acts on. Normalizing everything back
    * to world coordinates here would cost a transform per element per frame to
    * change nothing observable.
+   *
+   * Banding runs **per region** — per nearest `clipChildren` ancestor, recorded
+   * by {@link enforceA11yDomOrder}'s collect walk — rather than once over the
+   * whole scene. Purely visual banding is right for a screen reader but wrong
+   * for selection: a DOM `Selection` covers everything between anchor and focus
+   * in DOM order, so under one global banding a vertical drag through a
+   * transcript also swallowed a sidebar whose headings happened to fall in the
+   * same rows. Regions are laid out side by side, so ordering region-major keeps
+   * each one a contiguous DOM run and a drag stays inside it, while reading
+   * order *within* a region is unchanged. Regions are emitted in the order their
+   * clipper is first reached by the depth-first walk, so a screen reader still
+   * meets them in the author's declared order.
    */
   private sortNormalElementsVisually(): void {
     const els = this.normalElements;
@@ -6065,35 +6095,53 @@ export class Scene {
     };
 
     // Decorate with the original index so the sort is stable across engines.
-    const order = els.map((el, i) => {
+    const decorated = els.map((el, i) => {
       const { top, left } = absolute(el);
       return { el, i, top, left, container: containers.has(el) };
     });
-    order.sort((p, q) => p.top - q.top || p.i - q.i);
 
-    // Bucket into visual rows by vertical overlap, then sort each row inline. A
-    // container contributes its position — so it still sorts ahead of its own
-    // descendants — but not its height, which is what keeps its rows separate.
-    const bandBottom = (r: (typeof order)[number]) => r.top + (r.container ? 4 : heightOf(r.el));
-    const sorted: HTMLElement[] = [];
-    let rowStart = 0;
-    let rowBottom = order.length ? bandBottom(order[0]) : 0;
-    const flushRow = (end: number) => {
-      const row = order.slice(rowStart, end);
-      row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
-      for (const r of row) sorted.push(r.el);
-    };
-    for (let k = 1; k < order.length; k++) {
-      if (order[k].top < rowBottom) {
-        // Same row — extend the band to the tallest element seen so far.
-        rowBottom = Math.max(rowBottom, bandBottom(order[k]));
-      } else {
-        flushRow(k);
-        rowStart = k;
-        rowBottom = bandBottom(order[k]);
-      }
+    // Partition into regions, keeping first-encounter order. `normalElements` is
+    // filled by a depth-first walk, so first encounter is the author's declared
+    // order and a region's own members are already adjacent here.
+    const regions = this.a11yOrderRegions;
+    const buckets = new Map<Entity | null, (typeof decorated)[number][]>();
+    for (const d of decorated) {
+      const key = regions.get(d.el) ?? null;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(d);
+      else buckets.set(key, [d]);
     }
-    flushRow(order.length);
+
+    const bandBottom = (r: (typeof decorated)[number]) =>
+      r.top + (r.container ? 4 : heightOf(r.el));
+    const sorted: HTMLElement[] = [];
+
+    // Band within a region only, so a row never spans two regions.
+    for (const order of buckets.values()) {
+      order.sort((p, q) => p.top - q.top || p.i - q.i);
+
+      // Bucket into visual rows by vertical overlap, then sort each row inline. A
+      // container contributes its position — so it still sorts ahead of its own
+      // descendants — but not its height, which is what keeps its rows separate.
+      let rowStart = 0;
+      let rowBottom = order.length ? bandBottom(order[0]) : 0;
+      const flushRow = (end: number) => {
+        const row = order.slice(rowStart, end);
+        row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
+        for (const r of row) sorted.push(r.el);
+      };
+      for (let k = 1; k < order.length; k++) {
+        if (order[k].top < rowBottom) {
+          // Same row — extend the band to the tallest element seen so far.
+          rowBottom = Math.max(rowBottom, bandBottom(order[k]));
+        } else {
+          flushRow(k);
+          rowStart = k;
+          rowBottom = bandBottom(order[k]);
+        }
+      }
+      flushRow(order.length);
+    }
 
     for (let i = 0; i < sorted.length; i++) els[i] = sorted[i];
   }
