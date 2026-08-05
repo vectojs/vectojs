@@ -449,8 +449,8 @@ export interface SceneOptions {
    * unwindowed carrier band, not from resident text.
    *
    * Note the one-time cost. A resident tier materializes one element per block
-   * on the first sync — measured ~13µs per node created, so ~20ms at 1000 blocks
-   * and ~146ms at 10000 — as one synchronous block. Steady state is cheap
+   * on the first sync — measured unbudgeted at 21.3ms for 1000 blocks and 139.5ms
+   * for 10000 on Chrome — as one synchronous block. Steady state is cheap
    * (unchanged blocks skip via {@link Entity.getContentEpoch}), so this is a
    * document-open stall, not a per-frame cost. That stall is what
    * {@link SceneOptions.contentSemanticBudget} spreads across frames.
@@ -465,8 +465,9 @@ export interface SceneOptions {
    * SceneOptions.contentSemanticMargin} otherwise pays all at once.
    *
    * The cost of a resident tier is per node **created**, not per node held: 10000
-   * resident blocks cost 2.470 ms/sync at steady state, while creating them cost
-   * ~13µs each. So the front-load is a *scheduling* problem, and this is the
+   * resident blocks cost ~3.0 ms/sync at steady state, while creating them costs
+   * ~0.03 ms each plus a per-pass floor that grows with how many are already
+   * resident. So the front-load is a *scheduling* problem, and this is the
    * schedule — remaining blocks materialize on subsequent syncs, a few per frame,
    * until the document is fully resident.
    *
@@ -5038,13 +5039,18 @@ export class Scene {
     // Materialization budget: spread a resident tier's document-open cost across
     // frames instead of paying it in one synchronous pass.
     //
-    // Measured on the shipped implementation, `firstSyncMs` for the resident tier
-    // was 46.72 ms at 1000 blocks on Chrome (18.14 ms Firefox) — past the ~30 ms
-    // trigger DEC-01KZ6RSS set for needing exactly this, at a 3000-line document
-    // that a long transcript reaches easily. The cost is per node CREATED (~13µs),
-    // not per node held (10000 resident blocks cost 2.470 ms/sync at steady
-    // state), which is what makes it a scheduling problem rather than a caching
-    // one.
+    // Measured unbudgeted, `firstSyncMs` for the resident tier is 21.3 ms at 1000
+    // blocks and 139.5 ms at 10000 on Chrome (21.9 / 141.6 Firefox) — at 10000 far
+    // past the ~30 ms trigger DEC-01KZ6RSS set for needing exactly this. The cost
+    // is per node CREATED, not per node held (10000 resident blocks cost ~3.0
+    // ms/sync at steady state, the same as a settled document of that size), which
+    // is what makes it a scheduling problem rather than a caching one.
+    //
+    // Do not reuse the 46.72 ms / ~13µs-per-node figures that DEC-01KZ6Z2K recorded
+    // for this path: both were taken while a coarse block was `display: none` and
+    // therefore outside layout, i.e. against a tier that did not yet deliver the
+    // reachability it exists for. Removing that (CTX-0203) changed the cost, and
+    // fixing the forced layout per rebuilt element changed it again.
     //
     // Four conditions, each load-bearing:
     //
