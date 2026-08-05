@@ -223,6 +223,9 @@ async function runCase(
   // `render()` early-returns on `!layoutResult`, and the atlas is never touched
   // while undecoded — the case then measures nothing (observed: the first
   // submit happened after the decode, reporting complete=true).
+  // `sawFirstSubmit` is set by the submit callback the loop body triggers, not
+  // reassigned in the loop itself — the rule cannot see that indirection.
+  // oxlint-disable-next-line eslint/no-unmodified-loop-condition
   for (let i = 0; i < 100 && !sawFirstSubmit; i++) {
     scene.step(16.67);
     if (sawFirstSubmit) break;

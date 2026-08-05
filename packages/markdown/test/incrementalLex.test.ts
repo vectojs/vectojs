@@ -263,6 +263,7 @@ describe('incrementalLex — fuzzed documents and chunkings', () => {
       } catch (err) {
         throw new Error(
           `fuzz trial ${trial} failed at chunk=${chunk} doc=${JSON.stringify(doc)}\n${String(err)}`,
+          { cause: err },
         );
       }
     }
@@ -294,6 +295,7 @@ describe('incrementalLex — fuzzed documents and chunkings', () => {
         } catch (err) {
           throw new Error(
             `irregular trial ${trial} diverged at len=${next} doc=${JSON.stringify(doc)}\n${String(err)}`,
+            { cause: err },
           );
         }
       }

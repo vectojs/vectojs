@@ -82,6 +82,10 @@ export class StagedOutput {
         await this.dependencies.rename(this.backupPath, this.targetPath);
         this.backupMoved = false;
       } catch (restoreError) {
+        // `restoreError` is preserved in the AggregateError's `errors` array
+        // alongside `installError`. A `cause` chain would hold only one of the
+        // two, so this carries strictly more information than the rule asks.
+        // oxlint-disable-next-line eslint/preserve-caught-error
         throw new AggregateError(
           [installError, restoreError],
           'Failed to install staged output and restore the previous destination',

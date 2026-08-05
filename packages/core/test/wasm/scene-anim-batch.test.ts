@@ -270,6 +270,9 @@ describe.skipIf(!haveWasm)('G2 — Scene batches active drivers through WASM', (
     const springDone = b.springTo({ x: 10 });
     let resolved = false;
     springDone.then(() => (resolved = true));
+    // `resolved` is set by the promise continuation the awaited microtask flush
+    // below runs, not reassigned in the loop itself.
+    // oxlint-disable-next-line eslint/no-unmodified-loop-condition
     for (let i = 0; i < 300 && !resolved; i++) {
       tickMs(scene, 16);
       await Promise.resolve(); // flush the microtask queue

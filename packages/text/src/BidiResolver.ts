@@ -20,6 +20,10 @@ export interface VisualRun {
   visualEnd: number;
 }
 
+// A static-only class is the published shape of this API — callers do
+// `BidiResolver.getBaseLevel(...)`. Converting it to loose functions or a
+// namespace would be a breaking change to @vectojs/text for no behavioural gain.
+// oxlint-disable-next-line typescript/no-extraneous-class
 export class BidiResolver {
   /** Base paragraph embedding level (0 = LTR, 1 = RTL) per UAX #9 P2/P3. */
   public static getBaseLevel(text: string): number {

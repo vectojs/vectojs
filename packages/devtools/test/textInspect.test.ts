@@ -26,9 +26,6 @@ class Plain extends Entity {
 }
 
 class NoText extends Entity {
-  constructor(id: string) {
-    super(id);
-  }
   isPointInside(): boolean {
     return false;
   }

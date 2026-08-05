@@ -56,7 +56,10 @@ const blockquote = (t: number, n: number): string =>
 
 const rule = (): string => '---\n\n';
 
+// The literal fences are kept as separate concatenated strings so the LaTeX
+// body stays a template literal without escaping a nested backtick run.
 const math = (t: number, n: number): string =>
+  // oxlint-disable-next-line eslint/no-useless-concat
   '```math\n' + `\\sum_{k=1}^{${n + 2}} \\frac{1}{k^${t + 2}} = \\zeta(${t + 2})\n` + '```\n\n';
 
 /** A valid 8x8 PNG. Verified to decode in both Chromium and Firefox — an
