@@ -1,15 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { access, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { StagedOutput, type StagedOutputDependencies } from '../src/staged-output.js';
 
-const scratchRoot = resolve(process.cwd(), '../../../tmp/video-exporter-tests');
+// The OS temp dir, NOT a path relative to `process.cwd()`. This read
+// `resolve(process.cwd(), '../../../tmp/video-exporter-tests')`, and since vitest
+// runs with cwd at the package, three levels up escapes the repository entirely
+// into the workspace container — and from a git worktree it materialised a stray
+// `.worktrees/tmp/video-exporter-tests`. Neither location is gitignored at the repo
+// root, so the tests were also creating an untracked directory inside the repo on
+// every run.
+//
+// `mkdtemp` already guarantees a unique leaf, so no shared parent is needed: the
+// old code created one and then only ever removed the leaf, leaving the parent
+// behind after every run. That empty directory reappearing on every task is what
+// prompted this fix.
 let scratchDir = '';
 let target = '';
 
 beforeEach(async () => {
-  await mkdir(scratchRoot, { recursive: true });
-  scratchDir = await mkdtemp(join(scratchRoot, 'output-'));
+  scratchDir = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-'));
   target = join(scratchDir, 'result.mp4');
 });
 

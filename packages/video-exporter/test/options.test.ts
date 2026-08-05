@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { normalizeOptions, type ExportOptions } from '../src/options.js';
 
-const scratchRoot = resolve(process.cwd(), '../../../tmp/video-exporter-tests');
+// See staged-output.test.ts for why this is the OS temp dir rather than a
+// cwd-relative path: the old `resolve(process.cwd(), '../../../tmp/…')` escaped the
+// repository and left an empty parent directory behind on every run.
 let scratchDir = '';
 let localEntry = '';
 let outputPath = '';
 
 beforeEach(async () => {
-  await mkdir(scratchRoot, { recursive: true });
-  scratchDir = await mkdtemp(join(scratchRoot, 'options-'));
+  scratchDir = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-'));
   localEntry = join(scratchDir, 'scene.ts');
   outputPath = join(scratchDir, 'output.mp4');
   await writeFile(localEntry, 'export {};');
