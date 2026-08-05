@@ -271,23 +271,26 @@ async function main(): Promise<void> {
 
     // Wait for the browser to actually decode the SVG data URI. jsdom cannot do
     // this at all — it is the part only a real engine answers.
-    const container = md.content.children[0] as unknown as {
-      children?: Array<{ src?: string }>;
-    };
-    const img = container.children?.[0];
+    //
+    // Read off `MathBlock.svgUri` rather than an `Image` child's `src`: a display
+    // formula is now a `RichText` inline object whose raster lives in a paint
+    // closure, so `MathBlock` is what still exposes the URI. That is precisely why
+    // the class carries it.
+    const container = md.content.children[0] as unknown as { svgUri?: string };
+    const svgUri = container.svgUri;
     let imageDecoded = false;
-    if (img?.src) {
+    if (svgUri) {
       imageDecoded = await new Promise<boolean>((resolve) => {
         const probe = new globalThis.Image();
         probe.onload = () => resolve(probe.naturalWidth > 0 && probe.naturalHeight > 0);
         probe.onerror = () => resolve(false);
-        probe.src = img.src as string;
+        probe.src = svgUri;
       });
     }
 
     // The module is installed now, so this must not need an await.
     const second = new Markdown('```math\n\\int_0^1 x^2 dx\n```');
-    const secondFormulaSynchronous = kindOf(second).endsWith('/Image');
+    const secondFormulaSynchronous = kindOf(second).startsWith('MathBlock');
 
     // Settlement: a fresh document streaming a formula must hand onStable a
     // typeset entity. MathJax is already loaded here, so this checks the
@@ -296,7 +299,7 @@ async function main(): Promise<void> {
     let stableSawTypeset = false;
     const stream = streamed.createStream({
       onStable: () => {
-        stableSawTypeset = kindOf(streamed).endsWith('/Image');
+        stableSawTypeset = kindOf(streamed).startsWith('MathBlock');
       },
     });
     stream.write('```math\n\\alpha + \\beta\n```');

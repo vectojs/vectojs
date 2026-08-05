@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it } from 'vitest';
-import { CodeBlock, Markdown, preloadMathJax } from '../src/Markdown';
-import { Image, Table } from '@vectojs/ui';
+import { CodeBlock, MathBlock, Markdown, preloadMathJax } from '../src/Markdown';
+import { Table } from '@vectojs/ui';
 
 /**
  * Block-level children of a list item.
@@ -48,7 +48,7 @@ function textOf(root: any): string {
   return s;
 }
 
-const imagesOf = (root: any): any[] => walk(root).filter((e) => e instanceof Image);
+const mathBlocksOf = (root: any): any[] => walk(root).filter((e) => e instanceof MathBlock);
 
 describe('a list item renders its block-level children', () => {
   it('typesets $$…$$ inside a list item instead of painting raw TeX', () => {
@@ -57,8 +57,8 @@ describe('a list item renders its block-level children', () => {
       { maxWidth: 600 },
     );
 
-    // The formula becomes a math Image, exactly as it would at indent 0.
-    expect(imagesOf(md.content).length).toBe(1);
+    // The formula becomes a MathBlock, exactly as it would at indent 0.
+    expect(mathBlocksOf(md.content).length).toBe(1);
     // And its source is NOT left lying around as literal characters.
     const text = textOf(md.content);
     expect(text).not.toContain('v_{t}');
@@ -82,7 +82,7 @@ describe('a list item renders its block-level children', () => {
       { maxWidth: 600 },
     );
 
-    expect(imagesOf(md.content).length).toBe(3);
+    expect(mathBlocksOf(md.content).length).toBe(3);
     const text = textOf(md.content);
     for (const tex of ['a = F/m', 'E = mc^2', 'F_1 = -F_2']) {
       expect(text).not.toContain(tex);
@@ -149,7 +149,7 @@ describe('a list item renders its block-level children', () => {
     md.appendMarkdown('$$');
 
     // The formula is now typeset, and its TeX is not painted as text.
-    expect(imagesOf(md.content).length).toBe(1);
+    expect(mathBlocksOf(md.content).length).toBe(1);
     expect(textOf(md.content)).not.toContain('$$');
     expect(textOf(md.content)).toContain('Solver.');
   });
@@ -165,7 +165,7 @@ describe('a list item renders its block-level children', () => {
     expect(text).toContain('Second.');
     expect(text).toContain('Third.');
     expect(text).not.toContain('a=1');
-    expect(imagesOf(md.content).length).toBe(1);
+    expect(mathBlocksOf(md.content).length).toBe(1);
   });
 
   it("reproduces the real document's shape: CJK bold intro, then indented $$", () => {
@@ -184,7 +184,7 @@ describe('a list item renders its block-level children', () => {
     );
 
     // Two display formulas typeset, and no `$$` left anywhere as text.
-    expect(imagesOf(md.content).length).toBe(2);
+    expect(mathBlocksOf(md.content).length).toBe(2);
     const text = textOf(md.content);
     expect(text).not.toContain('$$');
     expect(text).not.toContain('begin{bmatrix}');
@@ -202,7 +202,7 @@ describe('a list item renders its block-level children', () => {
     const md = new Markdown('* **A**: text\n  $$H = x$$ (其中 $p$ 为大质数)。', {
       maxWidth: 900,
     });
-    expect(imagesOf(md.content).length).toBe(0);
+    expect(mathBlocksOf(md.content).length).toBe(0);
   });
 
   it('renders a nested list under a paragraph in the same item', () => {

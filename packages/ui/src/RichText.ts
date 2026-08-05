@@ -14,7 +14,7 @@ import {
   createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { createMeasuringContext, familyOf, fontSizePx, measureText } from './measure';
+import { familyOf, fontSizePx, getSharedMeasuringContext, measureText } from './measure';
 
 /** Construction options for {@link RichText}. */
 export interface RichTextOptions {
@@ -163,7 +163,24 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
   // generic font families against the document, so a detached canvas measures
   // monospace 20% narrow while the engine paints at the real width, and the
   // following run overlaps the tail of this one.
-  const ctx = createMeasuringContext();
+  //
+  // SHARED, not per-instance. This called createMeasuringContext() directly until
+  // it was found to append a 1x1 canvas to <body> per RichText and never remove it:
+  // measured in real Chrome, one 17 KB markdown document reached 205 leaked
+  // measuring canvases (2 -> 8 -> 48 -> 141 -> 206 across the load), each holding a
+  // live CanvasRenderingContext2D. The JS heap was fine — 25 MB settled, collecting
+  // normally — but process memory reached 277 MB, because a canvas element's real
+  // cost is not on the JS heap. Streaming multiplies it: every re-render builds
+  // fresh RichTexts, so a long session grew without bound.
+  //
+  // Sharing is safe on the property CTX-0175 actually established. Its finding was
+  // that "attachment is the only factor that mattered" (see measure.ts) — one
+  // attached canvas is still attached, and it agreed with the painted canvas in 6/6
+  // engine × document combinations. Nor is there mutable state to protect: every
+  // measure() below assigns ctx.font before reading, and each measurer keeps its own
+  // `cache` keyed by size+family+char, so two measurers sharing a context cannot
+  // observe each other.
+  const ctx = getSharedMeasuringContext();
   if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
