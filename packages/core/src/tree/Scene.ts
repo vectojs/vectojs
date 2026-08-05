@@ -707,11 +707,41 @@ function parseInlinePx(value: string | undefined): number | null {
  * Default {@link SceneOptions.contentSemanticBudget}: resident blocks
  * materialized per sync.
  *
- * Chosen from the measured per-block cost of the coarse tier rather than picked
- * for roundness. See the constant's use in `syncContentProjection` for why a
- * COUNT is the right unit here instead of a time slice.
+ * Sized against the two costs a pass actually pays, both measured in real headed
+ * Chrome on a 240Hz panel. Per created block is cheap and flat (~0.03ms). What
+ * dominates is style+layout of the projection subtree, which scales with how many
+ * blocks are already RESIDENT and is paid once per pass: traced at 10000 blocks,
+ * `UpdateLayoutTree` 391.7ms + `Layout` 305.8ms over 40 passes (~17ms each), with
+ * per-pass cost roughly doubling from the first pass to the last while the number
+ * created stayed constant.
+ *
+ * So total drain cost is approximately `passes × f(resident)`, and a SMALLER
+ * budget multiplies the term that does not shrink. Measured to completion, 3
+ * repeats, medians:
+ *
+ * ```text
+ *  1000 blocks   budget  32 →   67.1ms total,  4.3ms worst pass
+ *                budget  64 →   54.0ms total,  5.1ms worst pass
+ *                budget 256 →   27.7ms total,  7.7ms worst pass
+ *                Infinity   →   24.1ms total, 23.6ms worst pass
+ * 10000 blocks   budget  32 → 3773.2ms total, 42.6ms worst pass
+ *                budget  64 → 1896.2ms total, 41.6ms worst pass
+ *                budget 256 →  648.1ms total, 35.2ms worst pass
+ *                Infinity   →  319.4ms total, 307.3ms worst pass
+ * ```
+ *
+ * 256 is where the two goals stop trading against each other. Below it there is no
+ * frame-bound improvement at 10000 blocks — every budget lands at 35-43ms, because
+ * the worst pass is the LAST one laying out the complete subtree — while total time
+ * rises 6x. At 1000 blocks it still holds 7.7ms, inside a 60Hz frame, for less than
+ * half the total time of 64.
+ *
+ * This replaces an earlier default of 64, which was sized against a per-block cost
+ * of ~0.4ms. That figure was inflated by a forced layout per materialized block
+ * (see `contentSelectionPresentThisSync`); with that removed, 64 spends 6x the
+ * total time for no frame-bound gain.
  */
-export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 64;
+export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 256;
 
 /**
  * Which tier of content projection a block gets.
@@ -1577,6 +1607,29 @@ export class Scene {
   // scene in `onDemand` mode would stop rendering with the document half
   // materialized and never finish.
   private contentSemanticDeferred = false;
+  /**
+   * Per-sync memo of "does the document hold a selection at all".
+   *
+   * Reading ANY property of a `Selection` (`anchorNode`, `rangeCount`, `type`,
+   * `isCollapsed`) forces a synchronous layout, because Blink validates the
+   * selection against current box geometry before answering. Measured in real
+   * Chrome against a 1000-carrier subtree with layout dirtied between reads:
+   * `anchorNode` 0.5ms, `rangeCount` 0.4ms, `type` 0.5ms, `isCollapsed` 0.5ms —
+   * all indistinguishable from `offsetHeight` (0.5ms), against a 0ms floor for
+   * mutating without reading. So there is no cheap property to probe with; the
+   * only way to avoid the layout is to not touch the object at all.
+   *
+   * Materializing a block rebuilds its carriers, which asks whether the rebuild
+   * would destroy a selection. Once per block, that read cost a forced layout
+   * over the whole (and growing) projection subtree, which is what made
+   * per-block cost rise with resident count: profiled at 1973 forced layouts
+   * totalling 633ms of an 847ms 1000-block drain (75%).
+   *
+   * A selection is a single document-wide object and a sync walk cannot yield to
+   * the user, so its presence cannot change mid-walk. Resolving it once per walk
+   * turns O(blocks) forced layouts into O(1). `null` = not yet resolved.
+   */
+  private contentSelectionPresentThisSync: boolean | null = null;
   /**
    * True while a text-selection drag that started on a projection's blank
    * region (no text node under the press) is being driven manually — the
@@ -3168,7 +3221,36 @@ export class Scene {
     return null;
   }
 
+  /**
+   * Does the document hold a selection right now, memoized for this sync walk?
+   *
+   * Pays one forced layout per walk instead of one per rebuilt element — see
+   * {@link Scene.contentSelectionPresentThisSync} for the measurements. When the
+   * answer is `false` no element can own a selection, so every per-element
+   * ownership test can be skipped without touching the object.
+   */
+  private contentSelectionPresent(): boolean {
+    if (this.contentSelectionPresentThisSync !== null) {
+      return this.contentSelectionPresentThisSync;
+    }
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    // `anchorNode`/`focusNode` rather than `rangeCount`: a collapsed caret still
+    // has an anchor and still belongs to whoever contains it, and every property
+    // costs the same single forced layout anyway.
+    const present = !!selection && (!!selection.anchorNode || !!selection.focusNode);
+    this.contentSelectionPresentThisSync = present;
+    return present;
+  }
+
   private releaseContentSelectionForRebuild(el: HTMLElement): void {
+    // Cheap rejection first. `contentSelectionAnchor` is the scene's own field so
+    // it costs nothing, and the memo costs one forced layout per sync walk rather
+    // than one per element. With neither an anchor nor a document selection there
+    // is nothing to release — the case for every block of a bulk materialization.
+    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) return;
     const selection =
       typeof window !== 'undefined' && typeof window.getSelection === 'function'
         ? window.getSelection()
@@ -3180,6 +3262,8 @@ export class Scene {
     if (!ownsSelection) return;
     this.endContentSelectionDrag();
     selection?.removeAllRanges();
+    // The memo described the document before this release; it no longer does.
+    this.contentSelectionPresentThisSync = null;
   }
 
   /**
@@ -3198,6 +3282,15 @@ export class Scene {
    * restore against).
    */
   private preserveContentSelectionAcrossRebuild(el: HTMLElement, rebuild: () => void): void {
+    // Nothing selected anywhere in the document means nothing to preserve and
+    // nothing to release, so rebuild without touching the Selection object. This
+    // is the bulk-materialization path, where reading a selection property would
+    // force a layout over the whole projection subtree once per block — see
+    // {@link Scene.contentSelectionPresentThisSync}.
+    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) {
+      rebuild();
+      return;
+    }
     const selection =
       typeof window !== 'undefined' && typeof window.getSelection === 'function'
         ? window.getSelection()
@@ -4081,6 +4174,9 @@ export class Scene {
       // budget rather than refilling it per subtree.
       this.contentSemanticBudgetLeft = this.contentSemanticBudget;
       this.contentSemanticDeferred = false;
+      // Invalidate the selection memo: a new walk may see a selection the
+      // previous one did not.
+      this.contentSelectionPresentThisSync = null;
     }
     if (node.isDOMPortal) {
       return;
@@ -4970,12 +5066,17 @@ export class Scene {
     // already-materialized blocks stop consuming budget and the frontier advances
     // on every sync until the document is complete.
     //
-    // A COUNT, not a time slice. A deadline read from `performance.now()` would
-    // track the real constraint more closely, but it makes the engine's DOM output
-    // depend on how fast the machine is — untestable without injecting a clock,
-    // and unreproducible in a benchmark. The count is deterministic, and per-block
-    // cost in this tier is bounded in practice because a coarse block emits one
-    // text node regardless of its length.
+    // A COUNT, not a time slice — deliberately, and re-tested after the per-block
+    // cost changed. A deadline is deterministic only if the clock is injected, and
+    // is unreproducible in a benchmark. It also cannot help here: a pass pays a
+    // floor before creating anything (measured 3.2ms at 10000 blocks, and the same
+    // 3.0ms for a fully-settled document, so it is the pre-existing cost of walking
+    // the tree rather than anything the budget introduced). A deadline only adapts
+    // the count to that floor — at 10000 blocks a 4.2ms/240Hz deadline admits ~35
+    // blocks per pass, which is ~285 passes and worse than a fixed 256 on both
+    // total time and worst pass. Per-block cost is also flat and small (~0.03ms),
+    // because a coarse block emits one text node regardless of its length, so a
+    // count predicts the work well.
     if (tier === 'coarse' && !el && this.contentSemanticBudgetLeft <= 0) {
       this.contentSemanticDeferred = true;
       return;

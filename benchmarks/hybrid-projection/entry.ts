@@ -145,7 +145,7 @@ class Block extends Entity {
   private semanticKey = '';
 
   /**
-   * Content epoch, for the `hybrid-dirty` arm only.
+   * Content epoch, for the arms that opt into dirty-tracked sync.
    *
    * Derived from `extra.length` rather than an incrementing counter because the
    * streaming workload mutates `extra` directly (`target.extra += …`) rather than
@@ -156,9 +156,21 @@ class Block extends Entity {
    *
    * Returning `null` for every other arm is what keeps them measuring today's
    * behaviour: `Scene` only skips an entity that opts in.
+   *
+   * `split-budgeted` MUST be listed alongside `split`. It was not, and the
+   * omission made its `idleMsPerSync` meaningless rather than merely noisy: with
+   * no epoch, no block is ever skipped, so every idle sync re-projected all 10000
+   * blocks and the arm reported 104.445ms against `split`'s 1.605ms. That reads as
+   * the budget destroying steady-state performance, when the engine measured in
+   * isolation gives the two arms comparable idle (3.3ms vs 2.0ms at 10000 blocks,
+   * 0.35ms vs 1.3ms at 1000). The arm exists to differ from `split` in the budget
+   * and NOTHING else, so any per-arm branch in this class must treat the two
+   * identically.
    */
   override getContentEpoch(): number | null {
-    return this.arm === 'hybrid-dirty' || this.arm === 'split' ? this.extra.length : null;
+    return this.arm === 'hybrid-dirty' || this.arm === 'split' || this.arm === 'split-budgeted'
+      ? this.extra.length
+      : null;
   }
 
   constructor(
@@ -298,12 +310,21 @@ class Block extends Entity {
         return null;
       case 'native':
       case 'all-resident':
-      // `split` behaves like a NAIVE entity on purpose: it always returns
-      // `lines`, and never consults `band`. Every other resident arm simulates
-      // the coarse tier itself by withholding `lines` off-band, which is the
-      // thing an entity should not have to do. If the engine's split works, this
-      // arm reaches `hybrid`'s DOM shape without the entity cooperating at all.
+      // `split` and `split-budgeted` behave like a NAIVE entity on purpose: they
+      // always return `lines`, and never consult `band`. Every other resident arm
+      // simulates the coarse tier itself by withholding `lines` off-band, which is
+      // the thing an entity should not have to do. If the engine's split works,
+      // these arms reach `hybrid`'s DOM shape without the entity cooperating at
+      // all.
+      //
+      // `split-budgeted` must be here rather than falling through to `default`,
+      // for the same reason it must appear in `getContentEpoch`: it differs from
+      // `split` in the BUDGET and nothing else. Landing in `default` had it
+      // simulate the coarse tier in the entity, so the two arms were not
+      // comparable and the budget was credited with an entity-side behaviour
+      // change.
       case 'split':
+      case 'split-budgeted':
         return this.withGeometry(hint);
       default:
         // The whole point: resident text for every block, fine geometry only
@@ -645,6 +666,15 @@ async function measureIdle(count: number, arm: Arm): Promise<IdleMeasurement> {
     drainMs += elapsed;
   }
   const dom = census();
+  // Flush the layout the drain left pending BEFORE timing idle syncs. `census()`
+  // uses `querySelectorAll`, which does not force layout, so without this the
+  // drain's accumulated invalidation is charged to the first idle sample and
+  // `idleMsPerSync` misreports a budgeted arm's steady state. Measured: 10.465ms
+  // at 1000 blocks / 111.395ms at 10000 without the flush, versus 0.2ms with it
+  // (against an unbudgeted 0.5ms) — i.e. the artifact inverted the comparison,
+  // making the budgeted arm look ~20x worse at steady state when it is slightly
+  // better.
+  void document.body.offsetHeight;
   const times: number[] = [];
   for (let t = 0; t < TRIALS; t++) {
     scene.markDirty();
