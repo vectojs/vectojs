@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -11,15 +11,6 @@ const execFileAsync = promisify(execFile);
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = join(packageRoot, 'test/fixtures/two-frame-scene.ts');
 
-function findWorkspaceRoot(start: string): string {
-  let current = resolve(start);
-  while (dirname(current) !== current) {
-    if (existsSync(join(current, 'vectojs')) && existsSync(join(current, 'tmp'))) return current;
-    current = dirname(current);
-  }
-  throw new Error(`Could not find the VectoJS workspace from ${start}`);
-}
-
 const scratchRoots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -29,8 +20,16 @@ afterEach(async () => {
 
 describe('real video export', () => {
   it('renders exactly two H.264 frames through Chromium and FFmpeg', async () => {
-    const workspaceRoot = findWorkspaceRoot(process.cwd());
-    const scratch = await mkdtemp(join(workspaceRoot, 'tmp/video-exporter-integration-'));
+    // The OS temp dir. This used to walk up from `process.cwd()` for an ancestor
+    // holding both `vectojs/` and `tmp/`, i.e. it depended on the *workspace
+    // container's* layout rather than on anything in this repository. It passed in CI
+    // only by accident: GitHub checks out to `/home/runner/work/vectojs/vectojs`, so
+    // the parent matched — and the `tmp/` that made it match was created by the two
+    // sibling suites in this directory, which wrote outside the repo through the same
+    // kind of cwd-relative path. Fixing those removed this test's accidental
+    // dependency and it failed with "Could not find the VectoJS workspace", which is
+    // how the coupling was found.
+    const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
     scratchRoots.push(scratch);
     const outputPath = join(scratch, 'two-frames.mp4');
 
