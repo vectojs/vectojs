@@ -58,7 +58,7 @@ machine and CI runner uses the same locked version.
 
 - **Runtime & package manager**: `bun` only — `bun.lock`, `packageManager: bun@…`, and `engines.bun` are the single source of truth. Do not use `node`, `npm`, `pnpm`, or `yarn` to run or install.
 - **Formatter (authority)**: `oxfmt` (config `.oxfmtrc.json`) formats JS/TS/JSX/TSX/JSON. It is the **only** formatting gate — the pre-commit hook and CI both run it, so a commit is always CI-clean. Prettier has been removed.
-- **Linter (authority)**: `oxlint` (config `oxlintrc.json`), `--deny-warnings` in CI. Do not invoke `eslint`.
+- **Linter (authority)**: `oxlint` (config `.oxlintrc.json`), `--deny-warnings` in CI. Do not invoke `eslint`. The filename **must** stay dot-prefixed: oxlint discovers only `.oxlintrc.json`, and a non-dot-prefixed `oxlintrc.json` is silently ignored with no "config not found" warning, so the repo lints on oxlint's built-in defaults instead.
 - **Local dev layer**: `biome` (config `biome.json`) provides fast editor format + lint feedback. It is **advisory only** — it is not a commit or CI gate, because biome and oxfmt/oxlint intentionally disagree on a few trivia (e.g. empty `for(;;)` spacing) and two competing authorities over the same files is a footgun. `oxfmt`/`oxlint` always win.
 - **Markdown**: `markdownlint-cli2` (config `.markdownlint-cli2.jsonc`).
 - **GitHub Actions**: `actionlint` (Go binary; no npm package — CI runs the pinned `docker://rhysd/actionlint` image, local is optional).

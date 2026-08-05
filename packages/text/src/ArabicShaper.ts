@@ -11,6 +11,10 @@ interface GlyphForms {
   joining: 'D' | 'R' | 'U';
 }
 
+// A static-only class is the published shape of this API — callers do
+// `ArabicShaper.shape(...)`. Converting it to loose functions or a namespace
+// would be a breaking change to @vectojs/text for no behavioural gain.
+// oxlint-disable-next-line typescript/no-extraneous-class
 export class ArabicShaper {
   private static MAPPINGS: { [code: number]: GlyphForms } = {
     0x0621: { isolated: 0xfe80, initial: 0xfe80, medial: 0xfe80, final: 0xfe80, joining: 'U' }, // Hamza

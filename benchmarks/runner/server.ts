@@ -5,6 +5,6 @@ export async function startRunnerServer(benchRoot: string, port: number): Promis
     return await startBenchmarkServer({ benchRoot, port });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`benchmark server failed to start: ${detail}`);
+    throw new Error(`benchmark server failed to start: ${detail}`, { cause: error });
   }
 }

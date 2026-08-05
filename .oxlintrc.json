@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "no-console": "off",
+    "no-debugger": "warn",
+
+    // The four rules below are in the `suspicious`/`perf` categories this file
+    // enables, but they were never actually evaluated: until this file was
+    // renamed to its dot-prefixed form, oxlint never discovered it and silently
+    // linted on built-in defaults instead. Turning the categories on for the
+    // first time surfaced 1889 findings, 1821 of them from these four rules.
+    // Each is off because it contradicts a deliberate, repo-wide convention —
+    // not because the backlog is inconvenient.
+
+    // 1656 findings. `_privateField` is the codebase-wide convention for
+    // internal state across every package, and the a11y/WASM/projection
+    // internals in `packages/core/src` depend on it being visually distinct
+    // from public API. Renaming them would be a breaking-looking churn of
+    // ~104 files with no behavioural benefit.
+    "no-underscore-dangle": "off",
+
+    // 165 findings, concentrated in `benchmarks/runner` (32) and test/e2e
+    // helpers. Sequential `await` in a loop is the *intent* in a benchmark
+    // driver: parallelising browser launches, frame samples, or staged captures
+    // would corrupt the measurement it exists to take.
+    "no-await-in-loop": "off",
+
+    // 32 findings, all benign sibling-scope reuse (a second layout loop reusing
+    // `currentMain` in `ui/src/Stack.ts`, the repeated `const { a, b, c, d, e,
+    // f } = worldTf` matrix destructure in `core/src/tree/Scene.ts`) or
+    // destructured callback params in tests that intentionally mirror the outer
+    // name.
+    "no-shadow": "off",
+
+    // 19 findings, all in tests asserting that a constructor throws or emits a
+    // dev warning — `new Thing()` for its side effect is the assertion.
+    "no-new": "off"
+  }
+}

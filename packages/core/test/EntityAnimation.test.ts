@@ -35,6 +35,9 @@ describe('Entity animation', () => {
     const p = e.springTo({ opacity: 0 });
     let t = 0;
     const drivers = (e as unknown as { _drivers: Map<string, unknown> | null })._drivers;
+    // `drivers` is a stable reference whose `.size` shrinks as `update()` retires
+    // drivers — the binding is deliberately const, only the Map contents change.
+    // oxlint-disable-next-line eslint/no-unmodified-loop-condition
     for (let i = 0; i < 600 && (drivers?.size ?? 0) > 0; i++) e.update(16, (t += 16));
     await p;
     expect(e.opacity).toBe(0); // snapped exactly to target on completion
@@ -109,6 +112,9 @@ describe('Entity animation', () => {
     expect(e.hasPendingAnimations()).toBe(true);
     let t = 0;
     const drivers = (e as unknown as { _drivers: Map<string, unknown> | null })._drivers;
+    // `drivers` is a stable reference whose `.size` shrinks as `update()` retires
+    // drivers — the binding is deliberately const, only the Map contents change.
+    // oxlint-disable-next-line eslint/no-unmodified-loop-condition
     for (let i = 0; i < 600 && (drivers?.size ?? 0) > 0; i++) e.update(16, (t += 16));
     expect(e.hasPendingAnimations()).toBe(false);
   });

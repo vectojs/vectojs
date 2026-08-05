@@ -74,6 +74,9 @@ describe('DOMPortalEntity', () => {
         observe = observe;
         disconnect = disconnect;
         unobserve = vi.fn();
+        // The 1-arg constructor is load-bearing per the comment above: it keeps
+        // CodeQL from merging this stub into the global ResizeObserver type.
+        // oxlint-disable-next-line eslint/no-useless-constructor
         constructor(_callback: ResizeObserverCallback) {}
       } as any;
       try {

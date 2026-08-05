@@ -271,6 +271,9 @@ async function run(): Promise<LayoutFallbackBrowserResult> {
       name: 'workerCtorThrows',
       setup: () => {
         const saved = globalThis.Worker;
+        // A constructor-only class IS the stub: the test needs `new Worker()` to
+        // throw, which cannot be expressed without a constructor.
+        // oxlint-disable-next-line typescript/no-extraneous-class
         globalThis.Worker = class {
           constructor() {
             throw new DOMException('Blocked for the test', 'SecurityError');

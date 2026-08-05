@@ -249,6 +249,9 @@ test('no Worker at all: layout is computed on the calling thread, not dropped', 
 
 test('a throwing Worker constructor does not escape queueLayout', () => {
   const savedWorker = globalThis.Worker;
+  // A constructor-only class IS the stub: the test needs `new Worker()` to
+  // throw, which cannot be expressed without a constructor.
+  // oxlint-disable-next-line typescript/no-extraneous-class
   globalThis.Worker = class {
     constructor() {
       throw new DOMException('Blocked', 'SecurityError');

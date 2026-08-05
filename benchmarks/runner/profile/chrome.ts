@@ -372,6 +372,10 @@ export async function startChromeProfile(
     try {
       await new ActiveChromeProfile(client, options.tracePath).stop();
     } catch (stopError) {
+      // `stopError` is preserved in the AggregateError's `errors` array together
+      // with the original `error`. A `cause` chain would hold only one of the
+      // two, so this is strictly more information than the rule asks for.
+      // oxlint-disable-next-line eslint/preserve-caught-error
       throw new AggregateError(
         [error, stopError],
         'Chrome profile startup and trace finalization failed',
