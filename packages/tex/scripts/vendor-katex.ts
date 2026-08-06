@@ -951,10 +951,16 @@ function main() {
   const committedDir = join(pkgRoot, 'src/kernel');
   const outDir = check ? mkdtempSync(join(tmpdir(), 'vendor-katex-')) : committedDir;
 
+  // Check the hand-written files BEFORE clearing the output directory. This ran
+  // after the `rmSync` once, threw, and left `src/kernel/` missing its
+  // `VENDORED.md` — the delete had already happened and the write that recreates
+  // it never ran. Anything that can fail must fail while the committed tree is
+  // still intact.
+  const drifted = checkHandWritten(sourceDir, pkgRoot);
+
   if (!check) rmSync(committedDir, { recursive: true, force: true });
 
   const stats = vendor(sourceDir, outDir);
-  const drifted = checkHandWritten(sourceDir, pkgRoot);
 
   const totals = stats.reduce(
     (acc, s) => ({
