@@ -94,7 +94,7 @@ close_and_return() {
 }
 
 run_one() {
-  local browser="$1" bin class cmd addr waited out before profile_dir
+  local browser="$1" bin class cmd addr waited out profile_dir
   local timeout=$RUN_TIMEOUT extend=$RUN_EXTEND
   # A fresh, disposable profile/user-data dir per run — not just for a clean
   # slate, but for correctness: both browsers default to a SINGLE-INSTANCE
@@ -139,10 +139,12 @@ run_one() {
   }
 
   mkdir -p "$RESULTS"
-  before=$(find "$RESULTS" -name "*.json" | wc -l)
   STAMP="$RESULTS/.stamp-$browser"
   : >"$STAMP"
-  sleep 0.05
+  # A whole second, not 50ms: `find -newer` compares mtimes, and on a filesystem
+  # that only stores whole-second mtimes a result POSTed within the same second
+  # as the stamp is not "newer" than it. 50ms left that race open.
+  sleep 1
 
   echo "  launching $browser on workspace $WORKSPACE (incognito)…"
   # The exec rule places the window before it maps, so it never flashes onto
@@ -167,8 +169,19 @@ run_one() {
 
   waited=0
   while [ "$waited" -lt "$timeout" ]; do
-    if [ "$(find "$RESULTS" -name "*.json" | wc -l)" -gt "$before" ]; then
-      out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    # Completion = a result file NEWER THAN THIS RUN'S STAMP.
+    #
+    # This used to gate on the result *count* growing (`-gt "$before"`) and only
+    # then consult `-newer`. That silently could not detect a completed run: the
+    # page names its file `<name>-<engine>.json` deterministically, so a second
+    # run OVERWRITES the first rather than adding a file, and the count never
+    # grows. Measured 2026-08-06: a run whose page POSTed at 23:02:41 against a
+    # stamp from 23:00:45 was declared "timed out after 600s" while its own
+    # valid, all-gates-passing JSON sat in results/ the whole time — the 116s
+    # run cost 10 minutes of wall clock and read as a failure. Any stale result
+    # from a previous run disables count-based detection entirely.
+    out=$(find "$RESULTS" -name "*.json" -newer "$STAMP" | head -1)
+    if [ -n "$out" ]; then
       echo "  $browser -> $out"
       close_and_return "$addr"
       return 0
