@@ -4,7 +4,10 @@ tmp-probe/
 # deliverable. `scripts/generate-glyphs.ts` regenerates it byte-identically from
 # the pinned `katex` devDependency's TTFs, so a plain `bun install` is enough —
 # verified identical across all 20 fonts to the upstream repository's copies.
-# Only the subset it feeds is committed: `src/glyphs/glyphs.subset.json` is
-# imported by `src/emit/glyphTable.ts` at runtime, so the package must build
-# without running any generator.
+# Only the subset it feeds is committed, and both stages of that subset are:
+# `src/glyphs/glyphs.subset.json` is the human-readable build input, and
+# `src/glyphs/glyphs.subset.ts` is the compact binary table `src/emit/glyphTable.ts`
+# actually imports at runtime. Both are committed so the package builds without
+# running any generator, and so `encode-glyphs --check` can prove in CI that the
+# shipped table still matches its input.
 src/glyphs/glyphs.json

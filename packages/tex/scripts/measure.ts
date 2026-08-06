@@ -105,23 +105,45 @@ async function main(): Promise<void> {
     const engineSizes = sizes(engine);
 
     // ---- Part 2: kernel + emit with the glyph table excluded ---------------
-    // The glyph table is a JSON import, so the bundler inlines it. Measuring
-    // the code alone requires stubbing it, and the stub must keep the same
-    // shape or tree shaking will remove code that really ships.
+    // The glyph table is a base64 string in a generated module, which the
+    // bundler inlines. Measuring the code alone requires stubbing it, and the
+    // stub must keep the same shape — a module exporting `GLYPH_TABLE_BASE64` —
+    // or tree shaking will remove code that really ships.
+    //
+    // The stub carries a *valid* table with one face and zero glyphs rather than
+    // an empty string, because `GlyphTable`'s constructor validates the magic and
+    // version and would throw on garbage. It is built here with the same varint
+    // rules as `encode-glyphs.ts` rather than pasted as an opaque literal, so it
+    // stays readable and cannot silently drift into an invalid encoding.
     const stubDir = join(work, 'stub');
     mkdirSync(stubDir, { recursive: true });
+    const stubBytes: number[] = [];
+    const stubUvar = (v: number): void => {
+      let x = v;
+      while (x >= 0x80) {
+        stubBytes.push((x & 0x7f) | 0x80);
+        x >>>= 7;
+      }
+      stubBytes.push(x);
+    };
+    stubBytes.push(0x56, 0x47, 1); // magic 'V','G' + format version
+    stubUvar(1); // one face
+    const stubFace = 'Main-Regular';
+    stubUvar(stubFace.length);
+    for (const ch of stubFace) stubBytes.push(ch.charCodeAt(0));
+    stubUvar(1000); // unitsPerEm
+    stubUvar(0); // zero glyphs
     writeFileSync(
-      join(stubDir, 'glyphs.json'),
-      JSON.stringify({
-        unitsPerEm: { 'Main-Regular': 1000 },
-        glyphs: { 'Main-Regular': {} },
-      }),
+      join(stubDir, 'glyphs.subset.ts'),
+      `export const GLYPH_TABLE_BASE64 = ${JSON.stringify(
+        Buffer.from(stubBytes).toString('base64'),
+      )};\n`,
     );
     const codeEntry = join(work, 'code-entry.ts');
     const glyphTableSrc = readFileSync(join(pkgRoot, 'src/emit/glyphTable.ts'), 'utf8');
     const patchedGlyphTable = glyphTableSrc.replace(
-      /from ['"]\.\.\/glyphs\/glyphs(?:\.subset)?\.json['"]/,
-      `from ${JSON.stringify(join(stubDir, 'glyphs.json'))}`,
+      /from ['"]\.\.\/glyphs\/glyphs\.subset['"]/,
+      `from ${JSON.stringify(join(stubDir, 'glyphs.subset.ts'))}`,
     );
     if (patchedGlyphTable === glyphTableSrc) {
       throw new Error('measure: could not redirect the glyph table import; check glyphTable.ts');
@@ -167,10 +189,16 @@ async function main(): Promise<void> {
     const codeSizes = sizes(code);
 
     // ---- Part 3: the glyph tables on their own ----------------------------
+    // Two subset figures, because Phase 2 changed the encoding rather than the
+    // glyph set: `glyphs.subset.ts` is what ships, and `glyphs.subset.json` is
+    // the build input it was encoded from. Reporting both keeps the size win
+    // visible and attributable to the encoding rather than to a narrower corpus.
     const fullTablePath = join(pkgRoot, 'src/glyphs/glyphs.json');
-    const subsetPath = join(pkgRoot, 'src/glyphs/glyphs.subset.json');
+    const subsetPath = join(pkgRoot, 'src/glyphs/glyphs.subset.ts');
+    const subsetJsonPath = join(pkgRoot, 'src/glyphs/glyphs.subset.json');
     const fullTable = existsSync(fullTablePath) ? sizes(readFileSync(fullTablePath)) : null;
     const subsetTable = existsSync(subsetPath) ? sizes(readFileSync(subsetPath)) : null;
+    const subsetJson = existsSync(subsetJsonPath) ? sizes(readFileSync(subsetJsonPath)) : null;
 
     // ---- Part 4: the MathJax baseline this replaces ------------------------
     // Built in this tree with this bundler, so it is comparable rather than
@@ -238,7 +266,8 @@ async function main(): Promise<void> {
     );
     console.log('-'.repeat(70));
     console.log(row('kernel + emit (no glyphs)', codeSizes));
-    if (subsetTable) console.log(row(`glyph subset`, subsetTable));
+    if (subsetTable) console.log(row(`glyph subset, binary (ships)`, subsetTable));
+    if (subsetJson) console.log(row(`glyph subset, JSON (build input)`, subsetJson));
     console.log(row('engine, shipped (code + subset)', engineSizes));
     if (fullTable) console.log(row('glyph table, all 20 faces', fullTable));
     if (mathjax) {
@@ -268,6 +297,7 @@ async function main(): Promise<void> {
     Object.assign(report, {
       codeOnly: codeSizes,
       glyphSubset: subsetTable,
+      glyphSubsetJsonInput: subsetJson,
       engineShipped: engineSizes,
       glyphTableFull: fullTable,
       mathjaxBaseline: mathjax,
