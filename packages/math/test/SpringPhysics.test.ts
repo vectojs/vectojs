@@ -153,12 +153,30 @@ describe('SpringPhysics', () => {
       console.log(`[Benchmark] 50,000 springs update took: ${duration.toFixed(3)}ms`);
 
       // Every spring advanced from 0 toward its target of 100 and stayed finite.
+      //
+      // Scan first and assert once, reporting the first offender. Asserting
+      // inside the loop would run 3 * count expect() calls, and expect() is
+      // orders of magnitude more expensive than the comparison it wraps: at
+      // count = 50 000 that cost ~1 100 ms versus ~7 ms for the update loop
+      // above, which under a parallel run of every package crossed vitest's
+      // default 5 000 ms testTimeout and made this test flaky. A plain scan is
+      // both fast and equally diagnostic, since the index and value are named
+      // in the failure message.
+      let firstBadIndex = -1;
+      let firstBadValue = 0;
       for (let i = 0; i < count; i++) {
         const value = springs[i].value;
-        expect(Number.isFinite(value)).toBe(true);
-        expect(value).toBeGreaterThan(0);
-        expect(value).toBeLessThanOrEqual(100);
+        if (!Number.isFinite(value) || value <= 0 || value > 100) {
+          firstBadIndex = i;
+          firstBadValue = value;
+          break;
+        }
       }
+
+      expect(
+        firstBadIndex,
+        `spring[${firstBadIndex}] = ${firstBadValue}, expected a finite value in (0, 100]`,
+      ).toBe(-1);
     });
   });
 });
