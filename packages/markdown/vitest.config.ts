@@ -13,6 +13,7 @@ export default defineConfig({
       '@vectojs/text': pkgSrc('text'),
       '@vectojs/math': pkgSrc('math'),
       '@vectojs/animation': pkgSrc('animation'),
+      '@vectojs/tex': pkgSrc('tex'),
     },
   },
 });

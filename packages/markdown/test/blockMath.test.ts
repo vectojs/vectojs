@@ -14,13 +14,16 @@ import { MathBlock, Markdown, preloadMathJax } from '../src/Markdown';
  * as literal text. The result was a formula with a stray `$` painted on each
  * side.
  *
- * Separately, MathJax paints glyphs with `fill="currentColor"`, and this package
- * base64s the SVG into a `data:` URI. A data URI is an isolated document with no
- * CSS inheritance, so `currentColor` fell back to its initial value — black —
- * making every formula invisible against this package's own dark default theme.
+ * Separately, the formula's colour has to be baked into the SVG bytes. This
+ * package base64s the SVG into a `data:` URI, which is an isolated document with
+ * no CSS inheritance — under MathJax its `fill="currentColor"` glyphs therefore
+ * fell back to black, making every formula invisible against this package's own
+ * dark default theme. `@vectojs/tex` writes the colour directly instead, but the
+ * constraint is identical and the colour must still be part of the cache key.
  *
- * MathJax is imported lazily, so preload to make these assertions about WHAT is
- * produced rather than about load timing, as `inlineMathTypeset.test.ts` does.
+ * The math engine is imported lazily, so preload to make these assertions about
+ * WHAT is produced rather than about load timing, as `inlineMathTypeset.test.ts`
+ * does.
  */
 beforeAll(async () => {
   await preloadMathJax();
@@ -108,28 +111,58 @@ describe('$$...$$ renders as display math with no stray delimiters', () => {
 });
 
 describe('math SVG carries an explicit color', () => {
-  it('sets the theme text color on the SVG root', () => {
+  /**
+   * These four were written against MathJax's output shape and are rewritten,
+   * not deleted, because the behaviour they guard is unchanged and still
+   * breakable: a formula must paint in the theme's colour, and two documents on
+   * different themes must not share one cached bitmap.
+   *
+   * What changed is the mechanism. MathJax emitted `fill="currentColor"` on the
+   * glyphs and needed a `style="color:..."` injected on the root, because a
+   * `data:` URI is an isolated document where `currentColor` falls back to
+   * black. `@vectojs/tex` takes a `color` option and writes it directly as
+   * `fill` on the group wrapping every glyph, so there is no `currentColor` to
+   * resolve and no root `style` to preserve. Asserting on `color:#ff8800` or on
+   * the `style` attribute count would now be testing MathJax's serialization
+   * through an engine that is gone.
+   */
+  it('paints the glyphs in the theme text color', () => {
     const md = new Markdown('$$a+b$$', { theme: { textColor: '#ff8800' } });
-    expect(svgOf(mathBlocksOf(md)[0])).toContain('color:#ff8800');
+    const svg = svgOf(mathBlocksOf(md)[0]);
+    // The colour must reach the element that actually paints. Matching anywhere
+    // in the document would pass on a stray attribute that paints nothing.
+    expect(svg).toMatch(/<g fill="#ff8800">/);
   });
 
-  it('leaves currentColor on the glyphs for the root to resolve', () => {
+  it('leaves no unresolved currentColor in the isolated data URI', () => {
     const md = new Markdown('$$a+b$$', { theme: { textColor: '#ff8800' } });
-    // The fix must not rewrite fill/stroke — MathJax decides which parts paint.
-    expect(svgOf(mathBlocksOf(md)[0])).toContain('currentColor');
+    // A `data:` URI inherits no CSS, so any surviving `currentColor` resolves to
+    // black and the formula is invisible on this package's dark default theme.
+    // That was the original defect; this asserts the class cannot return.
+    expect(svgOf(mathBlocksOf(md)[0])).not.toContain('currentColor');
   });
 
-  it('preserves the root vertical-align the depth scrape reads', () => {
+  it('reports a depth that seats the formula on the baseline', () => {
+    // MathJax carried depth in a root `style="vertical-align:-N ex"` that the
+    // converter scraped back out, so the old test guarded that attribute. Depth
+    // now comes from the layout tree as a number, so assert the number: a
+    // formula with a descender must report a positive depth, or it renders
+    // sitting above the baseline it should hang below.
     const md = new Markdown('$$\\int_a^b f(x)\\,dx$$', {
       theme: { textColor: '#ff8800' },
     });
-    const svg = svgOf(mathBlocksOf(md)[0]);
-    // Injecting color must not clobber the existing root style, or the depth
-    // parse silently returns 0 and the formula sits on the wrong baseline.
-    expect(svg).toMatch(/vertical-align:\s*-?[\d.]+ex/);
-    // And it must not leave two style attributes — the second would be ignored.
-    const root = svg.match(/<svg\b[^>]*>/)?.[0] ?? '';
-    expect((root.match(/\bstyle=/g) ?? []).length).toBe(1);
+    const block = mathBlocksOf(md)[0];
+    expect(block).toBeDefined();
+    const svg = svgOf(block);
+    // The viewBox's minY is negative by the height above the baseline, and its
+    // height exceeds that by the depth below it. Both are required for the box
+    // to describe a formula that straddles the baseline.
+    const viewBox = /viewBox="(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+)"/.exec(svg);
+    expect(viewBox).not.toBeNull();
+    const minY = parseFloat(viewBox![2]);
+    const boxH = parseFloat(viewBox![4]);
+    expect(minY).toBeLessThan(0);
+    expect(boxH).toBeGreaterThan(-minY);
   });
 
   it('re-typesets rather than serving the previous theme colour', () => {
@@ -138,8 +171,8 @@ describe('math SVG carries an explicit color', () => {
     // theme's bitmap — invisible, not merely wrong, across a light/dark switch.
     const dark = new Markdown('$$a+b$$', { theme: { textColor: '#e2e8f0' } });
     const light = new Markdown('$$a+b$$', { theme: { textColor: '#111111' } });
-    expect(svgOf(mathBlocksOf(dark)[0])).toContain('color:#e2e8f0');
-    expect(svgOf(mathBlocksOf(light)[0])).toContain('color:#111111');
+    expect(svgOf(mathBlocksOf(dark)[0])).toMatch(/<g fill="#e2e8f0">/);
+    expect(svgOf(mathBlocksOf(light)[0])).toMatch(/<g fill="#111111">/);
   });
 
   it('gives inline math the surrounding run colour', () => {

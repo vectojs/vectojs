@@ -1,8 +1,10 @@
 {
   "name": "@vectojs/tex",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Zero-DOM TeX math typesetting for VectoJS: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer. Phase 1 prototype — not published.",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Zero-DOM TeX math typesetting for VectoJS: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer.",
   "keywords": [
     "tex",
     "latex",

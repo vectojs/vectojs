@@ -4,12 +4,11 @@ Canvas-native Markdown (with TeX math) rendering for [VectoJS](https://github.co
 
 `Markdown` is a high-level entity that parses Markdown with
 [`marked`](https://marked.js.org/), renders TeX math to SVG with
-[MathJax](https://www.mathjax.org/), and lays the result out using
-`@vectojs/ui` components (`RichText`, `Stack`, `Table`, `Text`, `Image`). It also
-exports `CodeBlock`.
+`@vectojs/tex`, and lays the result out using `@vectojs/ui` components
+(`RichText`, `Stack`, `Table`, `Text`, `Image`). It also exports `CodeBlock`.
 
 This package was split out of `@vectojs/ui` so that the heavy `marked` +
-`mathjax-full` dependencies are only pulled in by apps that actually render
+`@vectojs/tex` dependencies are only pulled in by apps that actually render
 Markdown. Because it depends on `@vectojs/ui` components, it sits **above** `ui`
 in the dependency graph — install it alongside `@vectojs/ui` and `@vectojs/core`.
 
@@ -135,26 +134,32 @@ converted once no matter how many documents or instances render it.
 Inline `$...$` math is a separate path: it is currently shown as styled source
 text, not typeset.
 
-#### MathJax is loaded on demand
+#### The math engine is loaded on demand
 
-MathJax is imported dynamically, the first time a document actually has a formula
-to typeset. It is by far the heaviest thing this package can pull in — measured
-against a browser bundle of a consumer that renders only prose:
+TeX math is typeset by `@vectojs/tex`, which is imported dynamically the first
+time a document actually has a formula. It is by far the heaviest thing this
+package can pull in — measured against a browser bundle of a consumer that renders
+only prose, built with code splitting and minification:
 
-| prose-only consumer       |       raw |    gzip |
-| ------------------------- | --------: | ------: |
-| eagerly imported (before) | 2,157,295 | 725,012 |
-| lazily imported (now)     |   339,767 | 106,095 |
+| prose-only consumer | raw | gzip | chunks |
+| ------------------------------- | --------: | ------: | -----: |
+| `mathjax-full` | 2,199,869 | 748,713 | 19 |
+| `@vectojs/tex` (now) | 758,249 | 273,754 | 3 |
+| no math at all (floor) | 379,224 | 118,670 | 3 |
 
-That is 85% of the bundle a document with no formulas used to carry, plus roughly
-150 ms of module evaluation at startup. Your bundler needs code splitting enabled
-to see this; without it the bytes are still in the output, just not evaluated
-until first use.
+Against that floor the math path itself is 630,043 gzip under `mathjax-full` and
+155,033 under `@vectojs/tex` — **4.06x smaller**. The eagerly-downloaded entry
+chunk a prose-only consumer actually pays for is 117,889 gzip, within 1 KB of the
+no-math floor.
+
+Your bundler needs code splitting enabled to see this; without it the bytes are
+still in the output, just not evaluated until first use.
 
 The tradeoff is that **the first formula on a page cannot be typeset
 synchronously.** It renders as a code block of TeX source — the same state an
 unclosed fence already shows — and is replaced once the module resolves. Every
-formula after that is synchronous again.
+formula after that is synchronous again. (The engine itself is synchronous; the
+lazy import is what defers it, and it is kept for the bundle size above.)
 
 While streaming this is invisible: the load starts as soon as an _opening_ math
 fence appears, several chunks before the closing one, so the formula is typeset on
@@ -175,6 +180,13 @@ const md = new Markdown("```math\n\\int_0^1 x\\,dx\n```"); // typeset synchronou
 from several places starts one load. `isMathJaxReady()` reports whether formulas
 currently typeset without waiting. If the load fails, formulas keep rendering as
 TeX source rather than throwing.
+
+Both names are historical: they date from when `mathjax-full` was the engine and
+mean "the math engine", whichever one that is. They keep those names because they
+are public API and a rename would break every consumer for cosmetics.
+
+A formula containing a symbol outside the engine's shipped glyph corpus also
+renders as TeX source rather than being drawn with that symbol missing.
 
 > Migrating from `@vectojs/ui` ≤ 1.x? `Markdown` and `CodeBlock` used to be
 > exported from `@vectojs/ui`. As of `@vectojs/ui@2.0.0` they live here — change
