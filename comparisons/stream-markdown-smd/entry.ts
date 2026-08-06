@@ -26,6 +26,27 @@
  * chunk and never revisits earlier text, which remains the better design; the
  * question this suite now answers is how much of that gap the boundary closes.
  *
+ * Two production streaming-Markdown renderers are measured on the same axis:
+ *
+ * - `streamdown` (2.5.0, Vercel) — shares our `marked`, and re-lexes the **whole
+ *   accumulated document** every chunk, plus a `remend()` pass over that same
+ *   whole document to auto-close unterminated syntax. Architecturally this is
+ *   the `wholeDocument` control arm, which makes it the interesting case: if a
+ *   real implementation reproduces the control's exponent, the control is
+ *   validated as a fair model of the competing strategy rather than a straw man
+ *   we built ourselves.
+ * - `markstream` (`stream-markdown-parser` 1.2.0, the parser behind
+ *   `markstream-vue`) — a `markdown-it` lineage parser via `markdown-it-ts`,
+ *   whose `StreamParser` re-tokenizes only a **tail segment** after the last
+ *   safe block boundary. That is the same strategy as our `incrementalLex`,
+ *   arrived at independently, and the characters-fed columns below show the two
+ *   agreeing to the byte.
+ *
+ * Both are driven through the same counting sink as every other arm, so neither
+ * pays for rendering: `streamdown`'s React/remark stage and `markstream`'s Vue
+ * stage are outside the measured region on purpose, exactly as our canvas and
+ * entity work are.
+ *
  * That is the axis measured here: **cost to stream a document in N chunks**,
  * which is a property of the strategy, not of either parser's constant factor.
  * Both arms are driven through an identical counting sink so that neither pays
@@ -52,8 +73,11 @@
  * `workerParity` arm below quantifies the postMessage overhead that the real
  * pipeline adds on top.
  */
-import { marked } from 'marked';
+import { Lexer, marked } from 'marked';
+import remend from 'remend';
+import { getMarkdown, parseMarkdownToStructure } from 'stream-markdown-parser';
 import * as smd from 'streaming-markdown';
+import { parseMarkdownIntoBlocks } from 'streamdown';
 import {
   type IncrementalLexCache,
   lexAppend,
@@ -350,6 +374,224 @@ function runSingleLex(doc: string): ArmResult {
   };
 }
 
+/**
+ * `streamdown` 2.5.0: `remend()` the accumulated document to auto-close
+ * unterminated syntax, then `parseMarkdownIntoBlocks()` it into block sources.
+ *
+ * This is streamdown's real per-chunk parse path, taken from its own component:
+ * `index.tsx` memoises `processedChildren = remend(children)` on `children` and
+ * `blocks = parseMarkdownIntoBlocksFn(processedChildren)` on that, so every new
+ * chunk invalidates both and re-runs them over the whole accumulated string.
+ *
+ * What is deliberately NOT in the measured region: the per-block
+ * remark→rehype→React stage. streamdown memoises `Block` on the block's
+ * `content` string, so that stage is block-incremental and only re-runs for
+ * blocks whose text changed. Including it would be comparing their rendering to
+ * our parsing (ground rule 4), and excluding it is the same choice made for our
+ * own entity building.
+ *
+ * `remend` is timed separately as well as together, because it is also
+ * O(document) per chunk and would otherwise be silently attributed to "parsing".
+ */
+function runStreamdown(chunks: string[]): {
+  result: ArmResult;
+  sink: Sink;
+  remendOnlyMs: number;
+  blocks: number;
+} {
+  const samples: number[] = [];
+  const remendSamples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+  let lastBlocks = 0;
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const sink: Sink = { tokens: 0, textChars: 0 };
+    let acc = '';
+    let remendElapsed = 0;
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      acc += c;
+      const r0 = performance.now();
+      const fixed = remend(acc);
+      remendElapsed += performance.now() - r0;
+      const blocks = parseMarkdownIntoBlocks(fixed);
+      // Identical counting sink to every other arm: count the units produced and
+      // the text they carry, and do nothing with them.
+      sink.tokens = blocks.length;
+      let chars = 0;
+      for (const b of blocks) chars += b.length;
+      sink.textChars = chars;
+    }
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) {
+      samples.push(elapsed);
+      remendSamples.push(remendElapsed);
+    }
+    lastSink = sink;
+    lastBlocks = sink.tokens;
+  }
+
+  const ms = median(samples);
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+    remendOnlyMs: median(remendSamples),
+    blocks: lastBlocks,
+  };
+}
+
+/**
+ * `stream-markdown-parser` 1.2.0, the parser behind `markstream-vue`.
+ *
+ * `parseMarkdownToStructure(acc, md, { final: false })` is what markstream calls
+ * per chunk. Its `factory` defaults `experimental.stream` to true, so this routes
+ * through `markdown-it-ts`'s `StreamParser`, which re-tokenizes only the tail
+ * after the last safe block boundary — the same strategy as `incrementalLex`.
+ *
+ * Note this arm produces a **full node structure** per chunk, not a token array:
+ * it is doing strictly more per call than our arm, whose entity building happens
+ * afterwards and outside this measurement. That asymmetry is stated rather than
+ * corrected, because there is no smaller call in its public API to compare
+ * against; the characters-fed column is the like-for-like figure.
+ *
+ * Vue is not involved. `stream-markdown-parser` is a standalone npm package with
+ * no Vue dependency, which is what makes it possible to separate the parser from
+ * the reactivity layer that markstream-vue's own 12073 ms self-report diagnoses.
+ */
+function runMarkstream(chunks: string[]): {
+  result: ArmResult;
+  sink: Sink;
+  nodes: number;
+} {
+  const samples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+  let lastNodes = 0;
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const sink: Sink = { tokens: 0, textChars: 0 };
+    // A fresh instance per trial, so trial N never reads trial N-1's stream
+    // cache — the same reason every other arm rebuilds its state per trial.
+    const md = getMarkdown(`bench-${t}`);
+    let acc = '';
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      acc += c;
+      const nodes = parseMarkdownToStructure(acc, md, { final: false });
+      sink.tokens = nodes.length;
+    }
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) samples.push(elapsed);
+    lastSink = sink;
+    lastNodes = sink.tokens;
+  }
+
+  const ms = median(samples);
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+    nodes: lastNodes,
+  };
+}
+
+/**
+ * Characters each competitor hands to its own tokenizer across the stream.
+ *
+ * This is the mechanism column, and it is the reason the arms above can be
+ * interpreted at all. It runs **outside** the timed loops: the instrumentation
+ * is a monkey-patch, and measuring through it would put the patch's overhead
+ * into the number the suite publishes.
+ *
+ * The entry point matters, and getting it wrong inverts the conclusion.
+ * `markstream`'s public `md.stream.parse` receives the **whole accumulated
+ * document** (measured 392.78x the document over a 784-chunk stream), which reads
+ * as "not incremental" — but `markdown-it-ts` then re-tokenizes only a tail
+ * internally, and its own stats report 783 tail reparses against 1 full parse.
+ * So the tokenizer entry `md.block.parse(src, …)` is patched instead, where `src`
+ * is the tail string itself.
+ *
+ * Each patch asserts it actually fired, because a silently-unpatched arm would
+ * report 0 characters and read as infinitely efficient.
+ */
+function measureCompetitorCharsFed(chunks: string[]): {
+  streamdownLexChars: number;
+  streamdownRemendChars: number;
+  markstreamTokenizerChars: number;
+  streamdownPatchFired: boolean;
+  markstreamPatchFired: boolean;
+} {
+  let streamdownLexChars = 0;
+  let lexCalls = 0;
+  {
+    const holder = Lexer as unknown as {
+      lex: (src: string, opts?: unknown) => unknown;
+    };
+    const orig = holder.lex;
+    holder.lex = (src: string, opts?: unknown) => {
+      streamdownLexChars += src.length;
+      lexCalls++;
+      return orig.call(Lexer, src, opts);
+    };
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      parseMarkdownIntoBlocks(remend(acc));
+    }
+    holder.lex = orig;
+  }
+  // remend sees the accumulated document on every chunk, so its characters are
+  // the sum of the growing prefixes.
+  let streamdownRemendChars = 0;
+  {
+    let acc = 0;
+    for (const c of chunks) {
+      acc += c.length;
+      streamdownRemendChars += acc;
+    }
+  }
+
+  let markstreamTokenizerChars = 0;
+  let blockCalls = 0;
+  {
+    const md = getMarkdown('chars-fed') as unknown as {
+      block: {
+        parse: (src: unknown, md: unknown, env: unknown, out: unknown[]) => void;
+      };
+    };
+    const orig = md.block.parse.bind(md.block);
+    md.block.parse = (src: unknown, m: unknown, env: unknown, out: unknown[]) => {
+      if (typeof src === 'string') markstreamTokenizerChars += src.length;
+      blockCalls++;
+      return orig(src, m, env, out);
+    };
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      parseMarkdownToStructure(acc, md as never, { final: false });
+    }
+    md.block.parse = orig as typeof md.block.parse;
+  }
+
+  return {
+    streamdownLexChars,
+    streamdownRemendChars,
+    markstreamTokenizerChars,
+    streamdownPatchFired: lexCalls > 0,
+    markstreamPatchFired: blockCalls > 0 && markstreamTokenizerChars > 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Gates — every one of these must hold before a timing figure means anything
 // ---------------------------------------------------------------------------
@@ -378,6 +620,24 @@ interface Gates {
   wholeDocumentMatchesOneShot: boolean;
   /** The document was actually split into more than one chunk. */
   streamed: boolean;
+  /**
+   * `streamdown`'s streamed block list is identical to what it produces from a
+   * one-shot parse of the finished document.
+   *
+   * Without this, a streaming arm could look cheap by settling on a different
+   * (wrong) block split than the library would produce given the whole text —
+   * the same failure mode `vectoTreeMatchesOneShot` exists to catch on our side.
+   */
+  streamdownMatchesOneShot: boolean;
+  /** `markstream`'s final node structure is identical to a one-shot parse. */
+  markstreamMatchesOneShot: boolean;
+  /**
+   * Both competitor characters-fed patches actually fired.
+   *
+   * A monkey-patch that silently fails to install reports 0 characters, which
+   * would read as a perfectly efficient parser rather than as a broken probe.
+   */
+  charsFedPatchesFired: boolean;
 }
 
 function evaluateGates(
@@ -386,6 +646,7 @@ function evaluateGates(
   smdSinkResult: Sink,
   vectoSink: Sink,
   oldSink: Sink,
+  charsFed: ReturnType<typeof measureCompetitorCharsFed>,
 ): Gates {
   const oneShot = marked.lexer(doc);
   // Re-drive the incremental arm once outside the timed loop to compare trees.
@@ -397,6 +658,32 @@ function evaluateGates(
     cache = res.cache;
   }
   const finalTokens = cache?.tokens ?? [];
+
+  // Re-drive each competitor once, outside the timed loops, and compare its final
+  // state to a one-shot parse of the finished document.
+  let sdStreamed: string[] = [];
+  {
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      sdStreamed = parseMarkdownIntoBlocks(remend(acc));
+    }
+  }
+  const sdOneShot = parseMarkdownIntoBlocks(doc);
+
+  let msStreamed = '';
+  {
+    const md = getMarkdown('gate-stream');
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      msStreamed = JSON.stringify(parseMarkdownToStructure(acc, md, { final: false }));
+    }
+  }
+  const msOneShot = JSON.stringify(
+    parseMarkdownToStructure(doc, getMarkdown('gate-oneshot'), { final: true }),
+  );
+
   return {
     sameSource: chunks.join('') === doc,
     bothParsed: smdSinkResult.tokens > 0 && vectoSink.tokens > 0 && oldSink.tokens > 0,
@@ -408,6 +695,9 @@ function evaluateGates(
     vectoTreeMatchesOneShot: JSON.stringify(finalTokens) === JSON.stringify(oneShot),
     wholeDocumentMatchesOneShot: oldSink.tokens === oneShot.length,
     streamed: chunks.length > 1,
+    streamdownMatchesOneShot: JSON.stringify(sdStreamed) === JSON.stringify(sdOneShot),
+    markstreamMatchesOneShot: msStreamed === msOneShot,
+    charsFedPatchesFired: charsFed.streamdownPatchFired && charsFed.markstreamPatchFired,
   };
 }
 
@@ -424,6 +714,19 @@ interface Row {
   vecto: ArmResult;
   /** The strategy this suite originally measured, kept as a control arm. */
   wholeDocument: ArmResult;
+  /**
+   * `streamdown` 2.5.0: remend + whole-document re-lex per chunk. Same strategy
+   * class as `wholeDocument`, but a real shipped implementation rather than our
+   * reproduction of one.
+   */
+  streamdown: ArmResult;
+  /** Of `streamdown`'s time, the part spent in `remend()` rather than lexing. */
+  streamdownRemendMs: number;
+  /**
+   * `stream-markdown-parser` 1.2.0 (markstream-vue's parser): tail reparse after
+   * the last safe block boundary. Same strategy class as `vecto`.
+   */
+  markstream: ArmResult;
   singleLex: ArmResult;
   prefixReuse: number;
   /**
@@ -433,6 +736,15 @@ interface Row {
    */
   charsLexed: number;
   wholeDocumentCharsLexed: number;
+  /**
+   * The same mechanism column for the two competitors, measured at each one's
+   * real tokenizer entry point rather than its public API entry point. See
+   * `measureCompetitorCharsFed` for why that distinction inverts the reading.
+   */
+  streamdownLexChars: number;
+  /** Characters `remend()` scans across the stream — also O(document) per chunk. */
+  streamdownRemendChars: number;
+  markstreamTokenizerChars: number;
   /** Whether the boundary held for this document, or the instance degraded. */
   degraded: boolean;
   gates: Gates;
@@ -459,9 +771,15 @@ async function main(): Promise<void> {
     const smdRun = runSmd(chunks);
     const vectoRun = runIncrementalStrategy(chunks);
     const oldRun = runWholeDocumentStrategy(chunks);
+    const streamdownRun = runStreamdown(chunks);
+    const markstreamRun = runMarkstream(chunks);
     const singleLex = runSingleLex(doc);
 
-    const gates = evaluateGates(doc, chunks, smdRun.sink, vectoRun.sink, oldRun.sink);
+    // Outside every timed loop: this installs monkey-patches, so timing through
+    // it would publish the probe's overhead as the library's cost.
+    const charsFed = measureCompetitorCharsFed(chunks);
+
+    const gates = evaluateGates(doc, chunks, smdRun.sink, vectoRun.sink, oldRun.sink, charsFed);
     const gatesPass = Object.values(gates).every(Boolean);
 
     rows.push({
@@ -471,9 +789,15 @@ async function main(): Promise<void> {
       smd: smdRun.result,
       vecto: vectoRun.result,
       wholeDocument: oldRun.result,
+      streamdown: streamdownRun.result,
+      streamdownRemendMs: streamdownRun.remendOnlyMs,
+      markstream: markstreamRun.result,
       singleLex,
       prefixReuse: vectoRun.prefixReuse,
       charsLexed: vectoRun.charsLexed,
+      streamdownLexChars: charsFed.streamdownLexChars,
+      streamdownRemendChars: charsFed.streamdownRemendChars,
+      markstreamTokenizerChars: charsFed.markstreamTokenizerChars,
       // What the old arm handed the lexer: every chunk saw the whole accumulated
       // document, so this is the sum of the growing prefix lengths.
       wholeDocumentCharsLexed: chunks.reduce((sum, _c, i) => sum + (i + 1) * CHUNK_CHARS, 0),
@@ -507,7 +831,17 @@ async function main(): Promise<void> {
       'no layout/canvas/a11y/math work — see the header comment for the full ' +
       'scope statement. Note the workload is prose: documents containing ' +
       'display math or link reference definitions degrade to whole-document ' +
-      'lexing by design, and the `degraded` field per row reports which path ran.',
+      'lexing by design, and the `degraded` field per row reports which path ran. ' +
+      'The `streamdown` arm measures remend + whole-document block splitting, NOT ' +
+      'its per-block remark/React stage, which is block-memoised and therefore ' +
+      'incremental; the `markstream` arm measures stream-markdown-parser with no ' +
+      'Vue involved at all, and produces a full node structure per chunk where our ' +
+      'arm produces tokens, so it does strictly more per call. Characters-fed for ' +
+      "both competitors is measured at each one's real tokenizer entry point " +
+      '(marked Lexer.lex, markdown-it-ts md.block.parse), not its public API ' +
+      "entry point: markstream's stream.parse receives the whole accumulated " +
+      'document but internally re-tokenizes only a tail, so the API-level figure ' +
+      'would misreport a boundary parser as a whole-document one.',
     chunkChars: CHUNK_CHARS,
     trials: TRIALS,
     warmups: WARMUPS,
@@ -522,16 +856,32 @@ async function main(): Promise<void> {
           smdExponent: scalingExponent(rows, (r) => r.smd.totalMs),
           vectoStrategyExponent: scalingExponent(rows, (r) => r.vecto.totalMs),
           wholeDocumentExponent: scalingExponent(rows, (r) => r.wholeDocument.totalMs),
+          // The claim the streamdown arm exists to test: does a real shipped
+          // implementation of the whole-document strategy land on the same
+          // exponent as our reproduction of it? If it does, `wholeDocument` is
+          // validated as a fair model rather than a straw man.
+          streamdownExponent: scalingExponent(rows, (r) => r.streamdown.totalMs),
+          streamdownRemendExponent: scalingExponent(rows, (r) => r.streamdownRemendMs),
+          markstreamExponent: scalingExponent(rows, (r) => r.markstream.totalMs),
           singleLexExponent: scalingExponent(rows, (r) => r.singleLex.totalMs),
           // The exponent is the claim this suite makes, so it is reported for the
           // characters handed to the lexer as well as for wall time. Wall time
           // alone can move for reasons unrelated to the strategy; the two
           // agreeing is what makes the attribution sound.
           vectoCharsLexedExponent: scalingExponent(rows, (r) => r.charsLexed),
+          streamdownLexCharsExponent: scalingExponent(rows, (r) => r.streamdownLexChars),
+          markstreamTokenizerCharsExponent: scalingExponent(
+            rows,
+            (r) => r.markstreamTokenizerChars,
+          ),
         }
       : null,
     versions: {
       smd: '0.2.15',
+      streamdown: '2.5.0',
+      remend: '1.3.0',
+      streamMarkdownParser: '1.2.0',
+      markdownItTs: '1.0.7',
       marked: (marked as unknown as { defaults?: unknown }) ? 'see package.json' : 'unknown',
     },
   };
