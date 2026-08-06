@@ -820,6 +820,14 @@ interface ContentSyncState {
    * against this epoch.
    */
   fontEpoch: number;
+  /**
+   * Scene's viewport epoch at the time of the sync.
+   *
+   * Needed only by the settled-walk fast path, whose two transforms are both
+   * viewport-independent: a resize re-tiers blocks without moving any of them, so
+   * without this a resized scene would keep DOM built for the old viewport.
+   */
+  viewportEpoch: number;
   /** World transform, flattened — a moved or scaled entity must re-place its DOM. */
   a: number;
   b: number;
@@ -849,6 +857,35 @@ interface ContentSyncState {
   height: number;
   /** Drives `aria-hidden` on the text copy. */
   interactive: boolean;
+  /**
+   * This entity's own LOCAL transform, plus its parent's WORLD transform, as of
+   * the last sync. Together these are what let a settled walk skip a block
+   * *before* composing its world transform or running any box test.
+   *
+   * The world transform is the parent's world matrix composed with this
+   * entity's local one (`Entity.getWorldTransform`), so if both inputs are
+   * unchanged the world matrix is unchanged **by construction** — and then so
+   * are the tier, the line band and the exact visibility flag, every one of
+   * which is derived from it. That is what makes the box tests provably
+   * redundant on an unchanged block rather than merely usually redundant.
+   *
+   * Recorded in addition to, not instead of, the flattened world matrix above:
+   * the world fields remain the authority whenever this cheap check does not
+   * hold, and are what a rotated or reparented entity is still compared on.
+   *
+   * `pa`…`pf` are the identity when the entity has no parent.
+   */
+  lx: number;
+  ly: number;
+  lScaleX: number;
+  lScaleY: number;
+  lRotation: number;
+  pa: number;
+  pb: number;
+  pc: number;
+  pd: number;
+  pe: number;
+  pf: number;
 }
 
 /**
@@ -1584,6 +1621,55 @@ export class Scene {
   private contentGridCalibrationStamp = '';
   /** Invalidates grid font calibration after browser font availability changes. */
   private contentFontEpoch = 0;
+  /**
+   * Bumped whenever the viewport itself changes shape, which re-tiers blocks
+   * without moving any of them.
+   *
+   * The settled-walk fast path in {@link syncContentProjection} decides a block
+   * is unchanged from its own local transform plus its parent's world transform.
+   * Both are viewport-independent, so a resize alone would slip past it and leave
+   * every block holding DOM built for the old viewport — a block that should have
+   * been promoted to the fine tier keeping no carriers, or a demoted one keeping
+   * carriers it no longer needs. Scrolling needs no such epoch: it moves the root,
+   * so every block's parent world transform changes and the check fails honestly.
+   */
+  private contentViewportEpoch = 0;
+  /**
+   * One-entry memo for a parent's world transform, held as scalars.
+   *
+   * The a11y walk visits all of one parent's children consecutively, so a
+   * one-entry memo hits for every child after the first — turning an
+   * O(children) sequence of `getWorldTransform()` calls, each of which
+   * allocates a fresh object on its cache-hit path
+   * ({@link Entity.getWorldTransform}), into one call per parent. Flattened to
+   * scalars rather than a cached object so the memo itself never allocates.
+   *
+   * Keyed on `(entity, syncSerial)`: the serial is bumped once per top-level
+   * sync, so a memo can never survive into a frame in which the parent has
+   * moved.
+   */
+  private _pwNode: Entity | null = null;
+  private _pwSerial = -1;
+  private _pwa = 1;
+  private _pwb = 0;
+  private _pwc = 0;
+  private _pwd = 1;
+  private _pwe = 0;
+  private _pwf = 0;
+  /** Incremented once per top-level `syncA11y`, invalidating `_pwNode`. */
+  private _syncSerial = 0;
+  /**
+   * Disables the settled-walk fast path in {@link syncContentProjection}.
+   *
+   * Exists so a benchmark can measure both arms in ONE run on ONE commit, rather
+   * than comparing two builds and inheriting every difference between them. Also
+   * lets a test assert that a behaviour is genuinely unchanged by the fast path
+   * rather than merely unobserved.
+   *
+   * Not part of the public API and not documented as an option: turning it on only
+   * makes a settled document slower, never more correct.
+   */
+  public disableSettledFastPath = false;
   /** Cached Canvas-to-client scale for the current font/viewport epoch. */
   private contentMetricScaleEpoch = -1;
   private contentMetricScaleX = 1;
@@ -4185,6 +4271,9 @@ export class Scene {
       // budget rather than refilling it per subtree.
       this.contentSemanticBudgetLeft = this.contentSemanticBudget;
       this.contentSemanticDeferred = false;
+      // Invalidate the one-entry parent-transform memo: a new walk may see a
+      // parent that has moved since the previous one.
+      this._syncSerial++;
       // Invalidate the selection memo: a new walk may see a selection the
       // previous one did not.
       this.contentSelectionPresentThisSync = null;
@@ -4786,6 +4875,27 @@ export class Scene {
    * rejected by an ancestor clip box that itself overlaps the viewport would sit
    * transparently on top of whatever is really drawn there.
    */
+  /**
+   * Load `parent`'s world transform into the `_pw*` scalar memo.
+   *
+   * Exists so the settled-walk fast path costs no allocation. The walk visits a
+   * parent's children consecutively, so this recomputes at most once per parent
+   * per sync and is a serial + identity comparison for every child after the
+   * first. See the `_pwNode` field for why it is keyed the way it is.
+   */
+  private readParentWorld(parent: Entity): void {
+    if (this._pwNode === parent && this._pwSerial === this._syncSerial) return;
+    const tf = parent.getWorldTransform();
+    this._pwa = tf.a;
+    this._pwb = tf.b;
+    this._pwc = tf.c;
+    this._pwd = tf.d;
+    this._pwe = tf.e;
+    this._pwf = tf.f;
+    this._pwNode = parent;
+    this._pwSerial = this._syncSerial;
+  }
+
   private projectionBoxVisible(
     node: Entity,
     tf: { a: number; b: number; c: number; d: number; e: number; f: number },
@@ -4919,6 +5029,93 @@ export class Scene {
   private syncContentProjection(node: Entity): void {
     if (!this.contentProjectionEnabled || !this.a11yRoot) return;
     let el = this.contentElements.get(node.id);
+
+    // Settled-walk fast path: answer "nothing about this block changed" from
+    // scalar field reads alone, BEFORE composing a world transform or running a
+    // single box test. (vectojs#350, CTX-0222)
+    //
+    // The dirty-track comparison further down already stops an unchanged block,
+    // but only after paying `getWorldTransform()` plus two `projectionBoxVisible()`
+    // calls, each an O(ancestor-depth) ancestor walk. On a settled document that
+    // is the *entire* remaining per-frame cost, and it is paid forever on a
+    // document where nothing changes: measured 3.0-3.2 ms at 10 000 blocks, 72%
+    // of a 4.16 ms frame at 240 Hz (CTX-0203, PX-0401). The resident tier pays it
+    // twice per block, because `contentSemanticMargin: Infinity` means the cheap
+    // semantic gate below never fires.
+    //
+    // Why the two recorded transforms are sufficient, and not merely a heuristic:
+    // `Entity.getWorldTransform()` composes the parent chain's world matrix with
+    // this entity's local `{x, y, scaleX, scaleY, rotation}` and nothing else. So
+    // an unchanged parent world matrix and unchanged local components imply an
+    // unchanged world matrix by construction. Everything the full path then
+    // derives — `tier`, `lineBand`, `visible` — is a pure function of that matrix,
+    // the node's box, and scene state that has its own recorded key
+    // (`fontEpoch`, and the viewport, handled below). Hence: same inputs, same
+    // outputs, no DOM write needed.
+    //
+    // The four things that can change WITHOUT touching either transform are all
+    // still checked here, and each one is load-bearing:
+    //
+    //   - `epoch` — the block's own text. A coarse resident block emits one text
+    //     node carrying its whole text, so a streaming edit to a block far above
+    //     the viewport would otherwise leave permanently stale text in the
+    //     accessibility tree and in find-in-page, with nothing to ever correct
+    //     it. This is why the fast path can never key on position alone.
+    //   - `fontEpoch` — a webfont finishing load or a browser zoom re-measures
+    //     every block without moving any of them.
+    //   - `width`/`height` — a re-wrapped block changes box without changing
+    //     position, which changes both its tier and its band.
+    //   - `interactive` — drives `aria-hidden` on the text copy.
+    //
+    // And the viewport: scrolling a document moves the ROOT, so every block's
+    // parent world matrix changes and the check correctly fails for all of them.
+    // A scene *resize* moves nothing, so `contentViewportEpoch` is bumped by the
+    // resize path and compared here; without it a re-tiered block would keep DOM
+    // built for the old viewport.
+    const prior0 = this.disableSettledFastPath ? undefined : this.contentSyncState.get(node.id);
+    if (prior0 !== undefined && el !== undefined) {
+      const epoch0 = node.getContentEpoch();
+      if (
+        epoch0 !== null &&
+        prior0.epoch === epoch0 &&
+        prior0.fontEpoch === this.contentFontEpoch &&
+        prior0.viewportEpoch === this.contentViewportEpoch &&
+        prior0.lx === node.x &&
+        prior0.ly === node.y &&
+        prior0.lScaleX === node.scaleX &&
+        prior0.lScaleY === node.scaleY &&
+        prior0.lRotation === node.rotation &&
+        prior0.width === node.width &&
+        prior0.height === node.height &&
+        prior0.interactive === node.interactive
+      ) {
+        const parent = node.parent;
+        if (parent === null) {
+          if (
+            prior0.pa === 1 &&
+            prior0.pb === 0 &&
+            prior0.pc === 0 &&
+            prior0.pd === 1 &&
+            prior0.pe === 0 &&
+            prior0.pf === 0
+          ) {
+            return;
+          }
+        } else {
+          this.readParentWorld(parent);
+          if (
+            prior0.pa === this._pwa &&
+            prior0.pb === this._pwb &&
+            prior0.pc === this._pwc &&
+            prior0.pd === this._pwd &&
+            prior0.pe === this._pwe &&
+            prior0.pf === this._pwf
+          ) {
+            return;
+          }
+        }
+      }
+    }
 
     const releaseProjectionEl = (): void => {
       if (el) {
@@ -5411,6 +5608,31 @@ export class Scene {
       const next = prior ?? ({} as ContentSyncState);
       next.epoch = epoch;
       next.fontEpoch = this.contentFontEpoch;
+      next.viewportEpoch = this.contentViewportEpoch;
+      // Inputs to the world transform, for the settled-walk fast path. Recorded
+      // from the node rather than derived from `worldTf`, because the point is to
+      // compare them next sync WITHOUT composing a world transform.
+      next.lx = node.x;
+      next.ly = node.y;
+      next.lScaleX = node.scaleX;
+      next.lScaleY = node.scaleY;
+      next.lRotation = node.rotation;
+      if (node.parent === null) {
+        next.pa = 1;
+        next.pb = 0;
+        next.pc = 0;
+        next.pd = 1;
+        next.pe = 0;
+        next.pf = 0;
+      } else {
+        this.readParentWorld(node.parent);
+        next.pa = this._pwa;
+        next.pb = this._pwb;
+        next.pc = this._pwc;
+        next.pd = this._pwd;
+        next.pe = this._pwe;
+        next.pf = this._pwf;
+      }
       next.a = a;
       next.b = b;
       next.c = c;
@@ -7118,6 +7340,12 @@ export class Scene {
     // fractional scale). Treat every explicit viewport resize as a cold text
     // projection metric boundary so prepared grids can recalibrate once.
     this.contentFontEpoch++;
+    // A resize re-tiers blocks without moving any of them, which is invisible to
+    // the settled-walk fast path's two transforms. Bumped explicitly rather than
+    // leaning on the `contentFontEpoch++` above: that one is about text metrics
+    // and could reasonably be narrowed later, and this guarantee should not
+    // silently depend on it.
+    this.contentViewportEpoch++;
     if (typeof (this.renderer as any).resize === 'function') {
       if ('maxDPR' in this.renderer) (this.renderer as any).maxDPR = this.maxDPR;
       (this.renderer as any).resize(width, height);
