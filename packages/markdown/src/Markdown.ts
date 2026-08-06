@@ -113,7 +113,27 @@ marked.use({
   ],
 });
 
-import { measureText, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
+import {
+  type ButtonOptions,
+  measureText,
+  RichText,
+  Stack,
+  Table,
+  Text,
+  Image,
+  UIComponent,
+} from '@vectojs/ui';
+import {
+  BlockAffordanceButton,
+  defaultSaveFile,
+  defaultWriteClipboard,
+  extensionForLanguage,
+  mimeForLanguage,
+  BlockWithAffordances,
+  tableContentOf,
+  tableToCsv,
+  tableToMarkdown,
+} from './blockAffordances';
 import { parseFrontMatterFields, scanFrontMatter } from './frontMatter';
 
 // @ts-ignore
@@ -1966,6 +1986,34 @@ export interface MarkdownOptions {
   selectable?: boolean;
   /** Emit a `vecto:markdown:parse` User Timing measure. Default `false`. */
   userTiming?: boolean;
+  /**
+   * Draw copy / download controls in the top-right corner of code blocks and
+   * tables. Default `false`.
+   *
+   * Opt-in rather than on by default because it adds two focusable stops per such
+   * block to the tab order, which a document with many code fences would make
+   * tedious to navigate past, and because a reader who cannot act on a control
+   * (no clipboard permission, no filesystem) is better served by not being
+   * offered one.
+   */
+  blockAffordances?: boolean;
+  /**
+   * Writes text to the clipboard for the copy controls.
+   *
+   * Injectable because the real path (`navigator.clipboard.writeText`) is absent
+   * in jsdom and, in a browser, rejects a write that did not originate in a user
+   * gesture — so a test can only assert the payload, never the platform call.
+   * Defaults to `navigator.clipboard.writeText` when available.
+   */
+  writeClipboard?: (text: string) => void;
+  /**
+   * Saves a generated file for the download controls.
+   *
+   * Defaults to an anchor-click download that revokes its object URL. Injectable
+   * for the same reason as {@link MarkdownOptions.writeClipboard}: jsdom has no
+   * download behaviour to observe.
+   */
+  saveFile?: (filename: string, content: string, mimeType: string) => void;
 }
 
 interface BlockMetrics {
@@ -1997,6 +2045,18 @@ export class Markdown extends UIComponent {
   public theme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
+  /**
+   * Whether code blocks and tables carry copy / download controls.
+   *
+   * Read when a block entity is built, so it affects blocks rendered from here on
+   * rather than retroactively; a document does not rebuild to gain or lose an
+   * affordance.
+   */
+  public blockAffordances: boolean;
+  /** Clipboard writer used by the copy controls. */
+  public writeClipboard: (text: string) => void;
+  /** File saver used by the download controls. */
+  public saveFile: (filename: string, content: string, mimeType: string) => void;
   private activeBlockMetrics: BlockMetrics | null = null;
   /**
    * Called after a streamed append has re-laid-out the document.
@@ -2225,6 +2285,9 @@ export class Markdown extends UIComponent {
     this.onLinkClick = opts.onLinkClick;
     this.selectable = opts.selectable ?? true;
     this._userTiming = opts.userTiming ?? false;
+    this.blockAffordances = opts.blockAffordances ?? false;
+    this.writeClipboard = opts.writeClipboard ?? defaultWriteClipboard;
+    this.saveFile = opts.saveFile ?? defaultSaveFile;
 
     this.content = new Stack({ direction: 'vertical', gap: 16 });
     this.add(this.content);
@@ -3208,6 +3271,77 @@ export class Markdown extends UIComponent {
    * policy for a zero-dimension source is a separate decision from notifying
    * the scene, which is the actual defect here.
    */
+  /**
+   * Wraps a block in its copy / download controls, or returns it untouched.
+   *
+   * The controls are built lazily through `make` so a document with
+   * `blockAffordances` off pays nothing — not the closures, not the measurement
+   * `BlockAffordanceButton` does in its constructor.
+   */
+  private withBlockAffordances(block: Entity, make: () => BlockAffordanceButton[]): Entity {
+    if (!this.blockAffordances) return block;
+    const controls = make();
+    return controls.length > 0 ? new BlockWithAffordances(block, controls) : block;
+  }
+
+  /** Copy and download controls for one fenced code block. */
+  private codeBlockAffordances(source: string, lang: string): BlockAffordanceButton[] {
+    const opts = this.affordanceButtonOptions();
+    return [
+      new BlockAffordanceButton('Copy code', 'Copied', () => this.writeClipboard(source), opts),
+      new BlockAffordanceButton(
+        'Download code',
+        'Saved',
+        () => this.saveFile(`code.${extensionForLanguage(lang)}`, source, mimeForLanguage(lang)),
+        opts,
+      ),
+    ];
+  }
+
+  /** Copy (as Markdown) and download (as CSV) controls for one table. */
+  private tableAffordances(tblToken: Tokens.Table): BlockAffordanceButton[] {
+    const content = tableContentOf(tblToken);
+    const opts = this.affordanceButtonOptions();
+    return [
+      // Markdown rather than CSV for the clipboard: the reader copied it out of a
+      // Markdown document and the overwhelmingly likely destination is another
+      // one. CSV is what the download is for, where a spreadsheet is the target.
+      new BlockAffordanceButton(
+        'Copy table',
+        'Copied',
+        () => this.writeClipboard(tableToMarkdown(content)),
+        opts,
+      ),
+      new BlockAffordanceButton(
+        'Download table',
+        'Saved',
+        () => this.saveFile('table.csv', tableToCsv(content), 'text/csv;charset=utf-8'),
+        opts,
+      ),
+    ];
+  }
+
+  /**
+   * Button styling for the affordances, derived from the document theme.
+   *
+   * Themed rather than hardcoded so a light-theme document does not get the dark
+   * default palette. `focusColor` is set explicitly from the theme's accent
+   * because `Button`'s default cyan is tuned for the dark palette and reads as
+   * off-brand elsewhere — while a focus ring is the one affordance a keyboard
+   * user cannot do without.
+   */
+  private affordanceButtonOptions(): ButtonOptions {
+    return {
+      font: `600 12px ${this.theme.bodyFont}`,
+      padding: 6,
+      radius: 6,
+      bg: this.theme.codeBgColor,
+      hoverBg: this.theme.tableHeaderBgColor,
+      color: this.theme.textColor,
+      focusColor: this.theme.codeColor,
+    };
+  }
+
   private paragraphImage(imgToken: Tokens.Image, availableWidth: number): Image {
     const initialWidth = Math.min(800, availableWidth);
     const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
@@ -4704,7 +4838,10 @@ export class Markdown extends UIComponent {
           if (mathBlock) return mathBlock;
         }
 
-        return new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable);
+        return this.withBlockAffordances(
+          new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable),
+          () => this.codeBlockAffordances(codeToken.text, lang),
+        );
       }
 
       // ── Blockquotes ──────────────────────────────────────────────────
@@ -4783,21 +4920,24 @@ export class Markdown extends UIComponent {
           row.map((cell) => this.tableCellRichText(cell, false, t)),
         );
 
-        return new Table({
-          headers,
-          rows,
-          // `| :--- | :---: | ---: |` already resolves to this on the token; it
-          // was previously discarded, so every column rendered left-aligned.
-          align: tblToken.align,
-          width: availableWidth,
-          textColor: t.textColor,
-          headerTextColor: t.headingColor,
-          font: `${t.fontSize - 2}px ${t.bodyFont}`,
-          borderColor: t.hrColor,
-          bg: t.tableBgColor,
-          headerBg: t.tableHeaderBgColor,
-          selectable: this.selectable,
-        });
+        return this.withBlockAffordances(
+          new Table({
+            headers,
+            rows,
+            // `| :--- | :---: | ---: |` already resolves to this on the token; it
+            // was previously discarded, so every column rendered left-aligned.
+            align: tblToken.align,
+            width: availableWidth,
+            textColor: t.textColor,
+            headerTextColor: t.headingColor,
+            font: `${t.fontSize - 2}px ${t.bodyFont}`,
+            borderColor: t.hrColor,
+            bg: t.tableBgColor,
+            headerBg: t.tableHeaderBgColor,
+            selectable: this.selectable,
+          }),
+          () => this.tableAffordances(tblToken),
+        );
       }
 
       // ── Horizontal rule ──────────────────────────────────────────────
