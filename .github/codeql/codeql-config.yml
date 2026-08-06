@@ -1,0 +1,23 @@
+# CodeQL scan configuration.
+#
+# Exists to exclude vendored third-party source from analysis. The reasoning
+# already applied to `oxfmt` and `oxlint` in `.oxfmtrc.json` / `.oxlintrc.json`
+# holds here: `packages/tex/src/kernel/` is KaTeX's parse and layout kernel,
+# copied by `packages/tex/scripts/vendor-katex.ts` and regenerated wholesale on
+# the next upstream bump. A fix applied there would be discarded by the next
+# vendor run, and editing it would make `git diff` against a new KaTeX release
+# unreadable — which is the property that makes the vendored copy auditable.
+#
+# Measured on PR #373: analysing it produced 19 alerts, 16 of them unused
+# declarations left behind by the MathML/DOM strip, plus one false-positive
+# `replace("*", "")` at `environments/array.ts` where the input comes from a
+# closed list of environment names in which `*` appears at most once, as a
+# suffix.
+# None is reachable from a VectoJS entry point and none is ours to fix.
+#
+# Our own code — the SVG emit layer, the build scripts, and the tests — is still
+# analysed. Only the copied kernel is excluded, so a real finding in the code we
+# write still fails the check.
+paths-ignore:
+  - packages/tex/src/kernel
+  - packages/tex/src/glyphs

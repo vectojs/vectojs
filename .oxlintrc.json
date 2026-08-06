@@ -1,6 +1,22 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
   "plugins": ["typescript"],
+  "ignorePatterns": [
+    // Vendored upstream source. `packages/tex/src/kernel/` is KaTeX's parse and
+    // layout kernel, copied by `packages/tex/scripts/vendor-katex.ts` from a
+    // pinned upstream commit and mechanically stripped of MathML and DOM
+    // emission. It is deliberately NOT reformatted or lint-fixed: the whole
+    // point of a reproducible codemod is that `git diff` against the next KaTeX
+    // release stays readable, and both formatting and lint autofixes would
+    // rewrite ~18k lines we do not own. Its findings are upstream's (unused
+    // imports left behind by the strip, a control-character regex in
+    // `domTree.ts`), so fixing them here would be edits the next vendor run
+    // silently discards. Our own hand-written code in `packages/tex/src/emit/`,
+    // `src/registry/`, `src/layout.ts`, `scripts/` and `test/` IS linted.
+    "packages/tex/src/kernel/**",
+    // Generated glyph outline tables, one enormous single-line JSON each.
+    "packages/tex/src/glyphs/**"
+  ],
   "categories": {
     "correctness": "error",
     "suspicious": "warn",

@@ -1,0 +1,30 @@
+import defineFunction, {ordargument} from "../../registry/defineFunction";
+import {makeFragment} from "../buildCommon";
+
+import * as html from "../buildHTML";
+
+defineFunction({
+    type: "htmlmathml",
+    names: ["\\html@mathml"],
+    numArgs: 2,
+    allowedInArgument: true,
+    allowedInText: true,
+
+    handler: ({parser}, args) => {
+        return {
+            type: "htmlmathml",
+            mode: parser.mode,
+            html:   ordargument(args[0]),
+            mathml: ordargument(args[1]),
+        };
+    },
+
+    htmlBuilder: (group, options) => {
+        const elements = html.buildExpression(
+            group.html,
+            options,
+            false
+        );
+        return makeFragment(elements);
+    },
+});

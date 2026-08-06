@@ -17,6 +17,8 @@
     "bun.lockb",
     ".DS_Store",
     "tmp/",
-    "docs/"
+    "docs/",
+    "packages/tex/src/kernel/",
+    "packages/tex/src/glyphs/"
   ]
 }

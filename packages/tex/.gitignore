@@ -1,0 +1,10 @@
+tmp-probe/
+
+# The full 20-face glyph table (1.2 MB) is a build intermediate, not a
+# deliverable. `scripts/generate-glyphs.ts` regenerates it byte-identically from
+# the pinned `katex` devDependency's TTFs, so a plain `bun install` is enough —
+# verified identical across all 20 fonts to the upstream repository's copies.
+# Only the subset it feeds is committed: `src/glyphs/glyphs.subset.json` is
+# imported by `src/emit/glyphTable.ts` at runtime, so the package must build
+# without running any generator.
+src/glyphs/glyphs.json

@@ -1,0 +1,47 @@
+This package contains material derived from KaTeX (https://github.com/KaTeX/KaTeX),
+used under the MIT license reproduced below.
+
+Two distinct kinds of derived material are present:
+
+1. Source code — `src/kernel/` is KaTeX's parse and layout kernel, copied by
+   `scripts/vendor-katex.ts` from upstream commit
+   5a5bf2060431aaed5eb3b549f6fab24f55e9e70a with the MathML builders and the DOM
+   emission methods removed. `src/registry/defineFunction.ts` and
+   `src/registry/defineEnvironment.ts` are hand-written reductions of the
+   upstream files of the same name. See `src/kernel/VENDORED.md`.
+
+2. Font outline data — `src/glyphs/*.json` holds glyph contours and advance
+   widths extracted from the KaTeX_* TrueType fonts by
+   `scripts/generate-glyphs.ts`. KaTeX licenses its fonts under the same MIT
+   terms as its code (`license: "MIT"` in both the repository and the published
+   katex@0.16.11 package, whose LICENSE is byte-identical to the repository's),
+   so this notice covers them too. The fonts themselves are derived from
+   Computer Modern and the MathJax TeX fonts.
+
+The SVG emit layer (`src/emit/`), the build scripts, and the tests are original
+VectoJS work under the repository's own license. KaTeX has no SVG output target,
+which is why that layer exists.
+
+--------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2013-2020 Khan Academy and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
