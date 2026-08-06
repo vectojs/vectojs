@@ -25,7 +25,7 @@
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "sideEffects": false,
+  "sideEffects": true,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -43,7 +43,8 @@
     "vendor": "bun run scripts/vendor-katex.ts",
     "glyphs": "bun run scripts/generate-glyphs.ts",
     "measure": "bun run scripts/measure.ts",
-    "subset": "bun run scripts/subset-glyphs.ts"
+    "subset": "bun run scripts/subset-glyphs.ts",
+    "encode-glyphs": "bun run scripts/encode-glyphs.ts"
   },
   "devDependencies": {
     "katex": "0.16.11",
