@@ -327,9 +327,9 @@ a reader should distrust — a straw man is easy to build by accident.
 | Sections                                  | 25    | 50    | 100   | 200   |
 | ----------------------------------------- | ----- | ----- | ----- | ----- |
 | streamdown − remend ÷ our control, Chrome | 0.98× | 1.05× | 1.17× | 1.12× |
-| the same, Firefox                         | 1.06× | 1.01× | 1.08× | 1.24× |
+| the same, Firefox                         | 1.06× | 1.01× | 1.08× | 1.23× |
 
-Within 1.0–1.24× at every size in both engines, and on the same exponent (2.049
+Within 1.0–1.23× at every size in both engines, and on the same exponent (2.049
 vs our control's 1.988 in Chrome; 2.057 vs 1.982 in Firefox). Characters fed to
 the lexer agree independently: 9 850 405 for streamdown against 9 847 040 for our
 control at 200 sections, a 0.03% difference from its slightly different block
