@@ -12,7 +12,7 @@
 //
 // The DOM baseline is included deliberately: it's the thing canvas libraries are
 // replacing, so it's the reference for "correct" text crispness and selection.
-// Source review of `references/{konva,fabric}` found ZERO `aria-`/`role=`
+// Source review of `references/canvas/{konva,fabric}` found ZERO `aria-`/`role=`
 // occurrences in either library's source; this page verifies that at runtime
 // rather than trusting the grep.
 import { Scene, Entity } from '@vectojs/core';

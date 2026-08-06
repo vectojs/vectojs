@@ -935,7 +935,7 @@ function main() {
   const check = args.includes('--check');
 
   const pkgRoot = resolve(import.meta.dir, '..');
-  const defaultSource = resolve(workspaceRoot(pkgRoot), 'references/KaTeX');
+  const defaultSource = resolve(workspaceRoot(pkgRoot), 'references/math/KaTeX');
   const sourceRepo = sourceIdx >= 0 ? resolve(args[sourceIdx + 1]) : defaultSource;
   const sourceDir = join(sourceRepo, 'src');
 
