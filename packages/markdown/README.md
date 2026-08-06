@@ -176,6 +176,56 @@ from several places starts one load. `isMathJaxReady()` reports whether formulas
 currently typeset without waiting. If the load fails, formulas keep rendering as
 TeX source rather than throwing.
 
+## Images
+
+An image renders in one of two ways, decided by where it is written.
+
+**On its own, or in a paragraph, blockquote or list item**, the paragraph splits
+into blocks and the image becomes an `Image` entity at its natural size, capped
+to the available width. This is the ordinary `![alt](url)` case.
+
+**On a line it shares with text** — in a heading, or in a table cell — it renders
+as an inline box in the text run, so the prose flows around it and selection and
+the accessible name still work. Its height is a multiple of the run's font size
+(`theme.inlineImageScale`, default `1.15`) and its width follows the image's
+natural aspect ratio, so a badge stays wide and a square icon stays square:
+
+```ts
+const md = new Markdown("# Build ![passing](https://img.example/badge.svg)");
+```
+
+This is a deliberate departure from HTML, which would render an inline image at
+its intrinsic size. A 512px logo written into an `h1` would otherwise tower over
+its own heading, and an inline box has to be sized before the image has decoded.
+The height is fixed up front for the same reason: the line box never moves, and
+only the width settles once the aspect ratio is known.
+
+The `alt` text is the accessible name and the copied text — never painted as
+visible prose. If the image fails to load, the box is replaced by the alt text
+rather than left as an invisible gap.
+
+## Syntax coverage
+
+Everything in [CommonMark](https://spec.commonmark.org/) plus the
+[GFM](https://github.github.com/gfm/) extensions this renderer draws: tables,
+strikethrough, task lists, autolinks, plus `$…$` / `$$…$$` TeX math and
+` ```math ` fences.
+
+Two constructs are deliberately **not** supported, and both are pinned by tests
+so the behaviour cannot drift silently:
+
+- **Definition lists.** `Term` then `: definition` renders as the two literal
+  lines the source contains, colon included.
+- **Raw HTML blocks.** `<details>`, `<div>`, `<iframe>` and HTML comments render
+  nothing at all.
+
+Definition lists are neither CommonMark nor GFM; when they arrive it will be
+through the same syntax-extension mechanism footnotes need. Raw HTML blocks
+cannot work in a zero-DOM renderer — there is no DOM to hand markup to. `<svg>`
+is the one exception, because a self-contained SVG document can be rasterized.
+
+Footnotes (`[^1]`) are **not yet parsed** and currently render as literal source.
+
 > Migrating from `@vectojs/ui` ≤ 1.x? `Markdown` and `CodeBlock` used to be
 > exported from `@vectojs/ui`. As of `@vectojs/ui@2.0.0` they live here — change
 > `import { Markdown } from '@vectojs/ui'` to `from '@vectojs/markdown'`.

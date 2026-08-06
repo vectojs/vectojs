@@ -111,6 +111,23 @@ export interface MarkdownTheme {
   quoteInnerGap?: number;
   /** Corner radius in px of an image. */
   imageRadius?: number;
+  /**
+   * Height of an image that renders *inline*, as a multiple of the run's font
+   * size.
+   *
+   * Applies only where an image shares a line with text — a heading or a table
+   * cell. An image that is its own block (the ordinary `![alt](url)` paragraph)
+   * still renders at its natural size capped to the available width, and ignores
+   * this.
+   *
+   * A cap rather than the natural size, because an inline object's box is fixed
+   * when the span is collected while the natural size is known only after the
+   * decode, and because a 512px logo written into an `h1` would otherwise tower
+   * over its own heading. The width follows the natural aspect ratio, so a wide
+   * badge stays wide. `1.15` keeps a square icon a little shorter than the line it
+   * sits on, which is where a cap-height glyph puts its own ink.
+   */
+  inlineImageScale?: number;
 }
 
 /**
@@ -156,6 +173,7 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   quoteBorderWidth: 4,
   quoteInnerGap: 8,
   imageRadius: 8,
+  inlineImageScale: 1.15,
 };
 
 /**
