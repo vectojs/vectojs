@@ -5,12 +5,13 @@ import { Entity, IRenderer } from '@vectojs/core';
  * accent bar, and a bare container for nested layouts.
  *
  * These live outside `Markdown.ts` because `MathBlock` extends
- * `MarkdownContainer`. A math module importing that base class back from
- * `Markdown.ts` would evaluate the `extends` clause during module
- * initialization and read the binding in its temporal dead zone, throwing
- * `ReferenceError` on import rather than failing a lint. 22 of 27 test files
- * enter through `../src/Markdown`, which is exactly the order that trips it.
- * See `forge/decisions/file-decomposition-2026-08.md`.
+ * `MarkdownContainer`. With the base class declared in `Markdown.ts`, a math
+ * module importing it back forms a cycle that resolves the binding to
+ * `undefined` when the `extends` clause is evaluated, throwing `TypeError:
+ * Class extends value undefined is not a constructor or null` on import.
+ * Verified by reintroducing it deliberately. 22 of 27 test files enter through
+ * `../src/Markdown`, which is the order that trips it. See
+ * `forge/decisions/file-decomposition-2026-08.md`.
  */
 
 /** A thin horizontal line (for `<hr>`). */

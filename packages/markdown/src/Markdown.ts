@@ -3,8 +3,6 @@ import {
   Entity,
   type DevtoolsDescriptor,
   IRenderer,
-  type InlineObjectBox,
-  type InlineObjectSurface,
   OBJECT_REPLACEMENT,
   type StyledSpan,
   type TextStyle,
@@ -23,6 +21,31 @@ import {
 } from './StreamController';
 import { HorizontalRule, MarkdownContainer, QuoteBorder } from './markdown-entities';
 import { CodeBlock } from './markdown-code';
+import {
+  containsInlineMath,
+  exToPx,
+  isMathJaxReady,
+  MATH_LANGS,
+  MathBlock,
+  paintInlineMath,
+  preloadMathJax,
+  rendersAsMath,
+  renderMathToSVGDataURI,
+  subscribeInlineMathRaster,
+  unsubscribeInlineMathRaster,
+} from './markdown-math';
+import {
+  collectSpans,
+  decodeEntities,
+  findUnclosedInline,
+  renderInlineToRichText,
+  type UnclosedInline,
+} from './markdown-inline';
+
+// `MathBlock`, `preloadMathJax` and `isMathJaxReady` were exported from this
+// module before the math cluster moved to `markdown-math.ts`. Re-exported so the
+// public API and every deep import stay valid.
+export { isMathJaxReady, MathBlock, preloadMathJax } from './markdown-math';
 
 // `CodeBlock`, `codeAtlasStats` and `codeAtlas` were exported from this module
 // before the code block moved to `markdown-code.ts`. Re-exported so the public
@@ -144,473 +167,6 @@ import { parseFrontMatterFields, scanFrontMatter } from './frontMatter';
 // @ts-ignore
 import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
 
-// ── MathJax Setup ────────────────────────────────────────────────────────────
-
-/**
- * MathJax is loaded on demand, the first time a document actually has a formula
- * to typeset.
- *
- * It is by far the heaviest thing this package can pull in: measured 2026-07-30,
- * a browser bundle of a consumer that imports `Markdown` and renders only prose
- * is 2,157,251 bytes (723,602 gzipped), and excluding `mathjax-full` takes that
- * to 337,894 (105,256 gzipped). MathJax is 85% of the bundle, and it used to be
- * unconditional: these were six static imports and the `htmlMathJax` document
- * below was constructed at module scope, so every consumer paid the bytes plus
- * ~155 ms of module evaluation and ~6 ms of setup whether or not any document
- * ever contained a fence. A dynamic import lets a bundler split it into its own
- * chunk (verified with `bun build --splitting`: the entry chunk drops to 725
- * bytes and MathJax lands in separate chunks fetched on first use).
- *
- * The cost of that is real and worth stating plainly: the FIRST formula on a
- * page cannot be typeset synchronously any more. It renders as a CodeBlock of
- * TeX source — the same honest "not typeset yet" state an unclosed fence already
- * uses — and is replaced once the module resolves. Call `preloadMathJax()` and
- * await it before constructing if you need the first formula to be typeset in
- * the same tick. Every formula after the module resolves is synchronous again.
- */
-type MathConverter = (formula: string, displayMode: boolean, color: string) => MathRender | null;
-
-let mathConverter: MathConverter | null = null;
-let mathLoad: Promise<void> | null = null;
-
-/**
- * Begin (or join) loading MathJax, resolving once formulas typeset synchronously.
- *
- * Idempotent and safe to call from anywhere: the promise is cached, so N callers
- * and N documents share one module load. Rejection is swallowed deliberately —
- * a failed load must degrade to TeX source in a CodeBlock, not reject a caller's
- * `await close()` or leave an unhandled rejection on the page. `mathConverter`
- * simply stays null and every formula keeps rendering as source.
- */
-
-/**
- * Read a named export off a dynamically imported CommonJS module.
- *
- * `mathjax-full` ships CommonJS, and a dynamic import of it does NOT reliably
- * put its exports on the namespace object. Bun's resolver hoists them, so
- * `const { liteAdaptor } = await import(...)` works under vitest — but esbuild
- * (and Rollup/webpack in the same situation) wraps the CJS module and emits only
- * `export default require_liteAdaptor()`, no named exports at all. Verified by
- * reading the generated chunk: `exports.liteAdaptor = liteAdaptor` inside the
- * wrapper, `export default require_liteAdaptor()` outside it, nothing else.
- *
- * So destructuring the namespace directly typechecks, passes every unit test,
- * and then fails in a real browser bundle with `liteAdaptor is not a function`.
- * That is exactly what happened here, and only the real-browser e2e caught it.
- * Prefer the named export when the bundler provided one, fall back to `default`.
- */
-function interop<K extends string>(mod: unknown, key: K): Record<K, any> {
-  const ns = mod as Record<string, unknown> & {
-    default?: Record<string, unknown>;
-  };
-  if (typeof ns?.[key] !== 'undefined') return ns as Record<K, any>;
-  const fallback = ns?.default;
-  if (fallback && typeof fallback[key] !== 'undefined') return fallback as Record<K, any>;
-  throw new Error(`mathjax-full module is missing export "${key}"`);
-}
-
-export function preloadMathJax(): Promise<void> {
-  if (mathLoad) return mathLoad;
-  mathLoad = (async () => {
-    const [mathjaxMod, texMod, svgMod, adaptorMod, handlerMod, packagesMod] = await Promise.all([
-      import('mathjax-full/js/mathjax.js'),
-      import('mathjax-full/js/input/tex.js'),
-      import('mathjax-full/js/output/svg.js'),
-      import('mathjax-full/js/adaptors/liteAdaptor.js'),
-      import('mathjax-full/js/handlers/html.js'),
-      import('mathjax-full/js/input/tex/AllPackages.js'),
-    ]);
-    const { mathjax } = interop(mathjaxMod, 'mathjax');
-    const { TeX } = interop(texMod, 'TeX');
-    const { SVG } = interop(svgMod, 'SVG');
-    const { liteAdaptor } = interop(adaptorMod, 'liteAdaptor');
-    const { RegisterHTMLHandler } = interop(handlerMod, 'RegisterHTMLHandler');
-    const { AllPackages } = interop(packagesMod, 'AllPackages');
-    const adaptor = liteAdaptor();
-    RegisterHTMLHandler(adaptor as never);
-    const tex = new TeX({ packages: AllPackages });
-    const svg = new SVG({ fontCache: 'local' });
-    const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
-    mathConverter = (formula, displayMode, color) =>
-      convertMathToSVGDataURI(
-        formula,
-        displayMode,
-        (f, d) => adaptor.innerHTML(htmlMathJax.convert(f, { display: d }) as never),
-        color,
-      );
-  })().catch((e) => {
-    console.error('MathJax failed to load; formulas will render as TeX source', e);
-  });
-  return mathLoad;
-}
-
-/** Whether formulas can be typeset without waiting. Exposed for tests. */
-export function isMathJaxReady(): boolean {
-  return mathConverter !== null;
-}
-
-/**
- * MathJax's x-height ratio: how many em one `ex` is.
- *
- * Its SVG output uses 1000 internal units per em and reports the box in `ex`, so
- * this is `unitsPerEx / 1000`. Measured 2026-07-31 against `mathjax-full` via
- * `liteAdaptor`: units/ex came out 442.0 for every probed formula, consistently
- * from both the width and height attributes (441.95–442.08). See
- * `tmp/agents/probe-ex-to-px.ts`.
- *
- * This replaced a hardcoded `* 8` whose comment read "1ex is approx 8px in our
- * font size". That constant is exact only near fontSize 18.1px, so it mis-sized
- * every formula at any other size — +13% at this package's own 16px default,
- * +51% at 12px, −43% at 32px.
- */
-const EX_PER_EM = 0.4421;
-
-/** Convert a MathJax `ex` measurement to px at a given font size. */
-function exToPx(ex: number, fontSize: number): number {
-  return ex * fontSize * EX_PER_EM;
-}
-
-/**
- * The px size out of a CSS font shorthand (`'bold 28px Inter, sans-serif'` → 28).
- *
- * `undefined` when there is no `px` size to read, so the caller can fall back to
- * the theme rather than silently substituting a wrong number. `@vectojs/ui` has an
- * equivalent `fontSizePx` in `measure.ts`, but it is not re-exported from that
- * package's barrel and it returns a hardcoded 16 on failure, which would hide a
- * malformed font behind a plausible-looking box.
- *
- * Deliberately not a regex. The obvious `/(\d+(?:\.\d+)?)px/` is polynomial: the
- * digit run can backtrack from every start position when no `px` follows, so a
- * font string of many digits costs O(n^2) — CodeQL flagged exactly that here
- * (`js/polynomial-redos`, high), and `font` comes from caller-supplied theme
- * input. Anchoring on `px` first and walking back over the digits is linear.
- */
-function fontSizeFromFont(font: string): number | undefined {
-  const pxIndex = font.indexOf('px');
-  if (pxIndex <= 0) return undefined;
-
-  let start = pxIndex;
-  while (start > 0) {
-    const ch = font[start - 1];
-    if ((ch >= '0' && ch <= '9') || ch === '.') start--;
-    else break;
-  }
-  if (start === pxIndex) return undefined;
-
-  const size = parseFloat(font.slice(start, pxIndex));
-  return Number.isFinite(size) ? size : undefined;
-}
-
-/**
- * A converted formula: its SVG data URI and the intrinsic box scraped off it.
- *
- * The box is in **`ex` units**, not px, because `ex` is font-relative and one
- * cached conversion is reused across runs of different sizes (inline math in a
- * heading versus body prose). Callers resolve to px with {@link exToPx} at the
- * size of the run the formula actually sits in.
- */
-interface MathRender {
-  uri: string;
-  /** Intrinsic width in `ex`. */
-  widthEx: number;
-  /** Intrinsic height in `ex`, ascent + descent. */
-  heightEx: number;
-  /**
-   * How far the box descends below the text baseline, in `ex`, as a positive
-   * number.
-   *
-   * MathJax emits this as `style="vertical-align:-N ex"` on the root `<svg>`.
-   * Measured on 8 formulas spanning subscripts, superscripts, fractions, big
-   * operators and radicals, it equals the viewBox-derived depth exactly, so it
-   * is read straight off the attribute rather than computed from the viewBox.
-   */
-  depthEx: number;
-}
-
-/**
- * Converted formulas, keyed on `<displayMode>\u0000<formula>`.
- *
- * `htmlMathJax.convert()` is the most expensive single call in this package, and
- * the same formula recurs constantly: a re-rendered document, a retried message,
- * the same identity written twice in one proof, and — the case that motivated
- * this — a closed fence whose `raw` grows by the newline that follows it, which
- * invalidates the token without changing the formula.
- *
- * Bounded by insertion order (oldest evicted first) rather than true LRU. The
- * access pattern is "convert once per formula, occasionally re-convert on a
- * rebuild", not a long-lived working set with hot and cold halves, so per-hit
- * recency bookkeeping would cost more than the eviction quality it buys.
- */
-const mathCache = new Map<string, MathRender>();
-const MATH_CACHE_LIMIT = 256;
-
-/**
- * Decoded raster for each inline formula's SVG, keyed by data URI.
- *
- * Module-level rather than per-instance because {@link collectSpans} is a free
- * function with no access to the owning entity, and because the same formula in
- * two documents decodes to the same bitmap. An entry is created on first paint
- * attempt, not eagerly: a formula that never scrolls into view is never decoded.
- *
- * Unbounded on purpose, unlike {@link mathCache}. Entries are `HTMLImageElement`
- * handles keyed by the URI already held in that bounded cache, so this map cannot
- * outgrow it by more than the formulas a document currently displays. A cap here
- * would evict a bitmap that is still on screen and make it flash back to blank.
- */
-const inlineMathRasters = new Map<string, InlineMathRaster>();
-
-interface InlineMathRaster {
-  /** `undefined` when this environment has no `Image` (SSR, plain unit tests). */
-  bitmap?: HTMLImageElement;
-  decoded: boolean;
-}
-
-/**
- * Called after an inline formula's raster decodes, so the owner can repaint.
- *
- * The paint callback cannot request its own repaint: it is handed a draw surface,
- * not the scene. Every live document subscribes, because a raster decoded for one
- * may be the bitmap another is waiting on — they share {@link inlineMathRasters}.
- */
-const inlineMathRasterWaiters = new Set<() => void>();
-
-/**
- * Ensure the raster for `uri` is decoding, and return it.
- *
- * Synchronous and idempotent: the paint path calls it on every frame the formula
- * is visible, and only the first call starts a decode.
- */
-function ensureInlineMathRaster(uri: string): InlineMathRaster {
-  const existing = inlineMathRasters.get(uri);
-  if (existing) return existing;
-
-  const entry: InlineMathRaster = { decoded: false };
-  inlineMathRasters.set(uri, entry);
-
-  // Guarded for the same reason `Image` guards it: jsdom and SSR have no
-  // `globalThis.Image`, and a formula must degrade to a blank box rather than
-  // throwing out of a layout.
-  if (typeof globalThis.Image !== 'undefined') {
-    const bitmap = new globalThis.Image();
-    bitmap.onload = () => {
-      entry.decoded = true;
-      for (const notify of inlineMathRasterWaiters) notify();
-    };
-    bitmap.src = uri;
-    entry.bitmap = bitmap;
-  }
-  return entry;
-}
-
-/**
- * Paint one inline formula into the box the layout engine reserved for it.
- *
- * Draws nothing until the raster has decoded — one frame of blank box, then a
- * repaint via {@link inlineMathRasterWaiters}. Drawing a placeholder slab instead
- * would flash a grey rectangle mid-sentence on every first paint.
- */
-function paintInlineMath(uri: string, surface: InlineObjectSurface, box: InlineObjectBox): void {
-  const raster = ensureInlineMathRaster(uri);
-  if (!raster.decoded || !raster.bitmap) return;
-  surface.drawImage(raster.bitmap, box.x, box.y, box.width, box.height);
-}
-
-const MATH_LANGS = new Set(['math', 'latex', 'tex']);
-
-/**
- * Whether a token subtree contains an `inlineMath` token.
- *
- * Recursive because inline math nests: inside `strong`/`em`, a link's children, a
- * list item's tokens, a blockquote, or a table cell. Used only to decide whether
- * to start the lazy MathJax load, so a false negative delays typesetting rather
- * than corrupting output — but a missed nesting site means a formula in, say, a
- * table cell never typesets at all.
- */
-function containsInlineMath(token: Token): boolean {
-  if (token.type === 'inlineMath') return true;
-  const anyToken = token as Tokens.Generic;
-  if (Array.isArray(anyToken.tokens) && anyToken.tokens.some(containsInlineMath)) {
-    return true;
-  }
-  // `list` holds items in `items`, and each item holds its own `tokens`.
-  if (Array.isArray(anyToken.items) && anyToken.items.some(containsInlineMath)) {
-    return true;
-  }
-  // `table` holds `header` cells and `rows` (an array of arrays of cells).
-  if (Array.isArray(anyToken.header) && anyToken.header.some(containsInlineMath)) {
-    return true;
-  }
-  if (Array.isArray(anyToken.rows)) {
-    for (const row of anyToken.rows as Token[][]) {
-      if (Array.isArray(row) && row.some(containsInlineMath)) return true;
-    }
-  }
-  return false;
-}
-
-/** Opening fence: up to three spaces, then three or more of ` or ~. */
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
-/** Closing fence: the same run, at least as long, then nothing but whitespace. */
-const FENCE_CLOSE_RE = /^ {0,3}(`+|~+)[ \t]*$/;
-
-/**
- * Whether a fenced-code token's source actually contains its closing fence.
- *
- * `marked` lexes an unterminated fence as a COMPLETE `code` token as soon as the
- * info string is read, so a formula streamed a few characters at a time arrives
- * as a long run of whole tokens, nearly all of them syntactically invalid TeX.
- * The token carries no "closed" flag (probed against marked 18.0.7: the keys are
- * exactly `type`, `raw`, `lang`, `text` whether or not the fence is closed), so
- * `raw` is the only signal. Per CommonMark a closing fence is a line of at least
- * as many of the SAME fence character as the opening, indented at most three
- * spaces, followed by nothing but whitespace.
- */
-function isFenceClosed(raw: string): boolean {
-  const lines = raw.split('\n');
-  const open = FENCE_OPEN_RE.exec(lines[0]);
-  if (!open) return false;
-  const marker = open[1][0];
-  const minLen = open[1].length;
-  for (let i = 1; i < lines.length; i++) {
-    const close = FENCE_CLOSE_RE.exec(lines[i]);
-    if (close && close[1][0] === marker && close[1].length >= minLen) return true;
-  }
-  return false;
-}
-
-/**
- * Whether this `code` token renders as a typeset formula rather than a CodeBlock.
- *
- * Single source of truth for that decision, because three places have to agree
- * on it: the render arm, the top-level in-place update path, and the blockquote
- * tail path. If the two update paths disagreed with the renderer they would call
- * `setCode` on an entity that is not a CodeBlock, or leave a CodeBlock on screen
- * where a formula belongs.
- *
- * An empty closed fence is deliberately NOT math: it renders as the empty
- * CodeBlock any other empty fence would, rather than as a zero-width image.
- */
-function rendersAsMath(token: Tokens.Code): boolean {
-  return (
-    MATH_LANGS.has((token.lang ?? '').toLowerCase()) &&
-    token.text.trim() !== '' &&
-    isFenceClosed(token.raw)
-  );
-}
-
-/**
- * A cached formula render, or null when one is not available *yet*.
- *
- * Null deliberately means two things at once — "MathJax is not loaded" and "the
- * conversion failed" — because the caller's response to both is identical: show
- * the TeX source in a CodeBlock. Keeping them one signal is what let the render
- * arm stay unchanged when loading became lazy. A cache hit is answered even
- * before MathJax loads, so a formula already converted once (the common case on
- * a re-render, and for the closed fence whose `raw` grows by a trailing newline)
- * never waits on the module.
- *
- * The cache lookup being ahead of the `mathConverter` check is intentional but
- * currently unobservable: `mathConverter` only ever goes null -> set, so nothing
- * can be in the cache while it is still null. Swapping the two lines changes no
- * behaviour today (confirmed by mutation: no test fails). It is written this way
- * so the cache stays authoritative if the converter ever becomes resettable.
- */
-function renderMathToSVGDataURI(
-  formula: string,
-  displayMode: boolean,
-  color: string,
-): MathRender | null {
-  // The color is part of the key because it is baked into the cached SVG bytes.
-  // Keying on the formula alone would serve a re-themed document the previous
-  // theme's bitmap, which is invisible rather than merely wrong when the two
-  // themes are light and dark.
-  const key = `${displayMode ? 1 : 0}\u0000${color}\u0000${formula}`;
-  const hit = mathCache.get(key);
-  if (hit) return hit;
-  if (!mathConverter) return null;
-  const converted = mathConverter(formula, displayMode, color);
-  if (converted) {
-    if (mathCache.size >= MATH_CACHE_LIMIT) {
-      const oldest = mathCache.keys().next().value;
-      if (oldest !== undefined) mathCache.delete(oldest);
-    }
-    mathCache.set(key, converted);
-  }
-  return converted;
-}
-
-/**
- * Give a MathJax SVG an explicit color so it survives base64 encoding.
- *
- * MathJax paints glyphs with `fill="currentColor"` and `stroke="currentColor"`,
- * which inherits the surrounding CSS color in an inline SVG. This package does
- * not inline it: {@link convertMathToSVGDataURI} base64s the markup into a
- * `data:image/svg+xml` URI and hands it to an `Image`. A data URI is a separate
- * document, so nothing is inherited and `currentColor` falls back to its initial
- * value — black. Against this package's own dark default theme
- * (`textColor: '#e2e8f0'` on a dark surface) that renders every formula
- * invisible, which is what dogfooding an editor demo surfaced.
- *
- * Setting `color` on the root establishes the value `currentColor` resolves to
- * *inside* that isolated document, so the existing `fill`/`stroke` attributes
- * are left untouched and MathJax keeps control of which parts paint.
- *
- * A root `style` already exists on MathJax output (it carries
- * `vertical-align`), so the color is prepended to it when present rather than
- * added as a second attribute — two `style` attributes would leave the second
- * ignored.
- */
-function applyMathColor(svg: string, color: string): string {
-  const openTag = svg.match(/<svg\b[^>]*>/);
-  if (!openTag) return svg;
-  const tag = openTag[0];
-  const colored = /\bstyle="/.test(tag)
-    ? tag.replace(/\bstyle="/, `style="color:${color};`)
-    : tag.replace(/^<svg\b/, `<svg style="color:${color}"`);
-  return svg.replace(tag, colored);
-}
-
-/**
- * Scrape a formula's SVG and intrinsic box out of a typeset call.
- *
- * `typeset` is injected rather than closed over so this stays free of any
- * `mathjax-full` reference — a static one here would defeat the lazy import and
- * pull the whole library back into the entry chunk.
- */
-function convertMathToSVGDataURI(
-  formula: string,
-  displayMode: boolean,
-  typeset: (formula: string, displayMode: boolean) => string,
-  color: string,
-): MathRender | null {
-  try {
-    const svgString = applyMathColor(typeset(formula, displayMode), color);
-
-    // Parse ex sizes (e.g. width="40.3ex" height="5.2ex")
-    const wMatch = svgString.match(/width="([^"]+)ex"/);
-    const hMatch = svgString.match(/height="([^"]+)ex"/);
-    const wEx = wMatch ? parseFloat(wMatch[1]) : 10;
-    const hEx = hMatch ? parseFloat(hMatch[1]) : 2;
-    // Depth below the baseline, from `style="vertical-align:-0.486ex"`. Negative
-    // in the attribute (CSS raises a positive vertical-align), positive here.
-    // Absent for a formula that sits entirely on the baseline.
-    const vMatch = svgString.match(/vertical-align:\s*(-?[\d.]+)ex/);
-    const depthEx = vMatch ? Math.max(0, -parseFloat(vMatch[1])) : 0;
-
-    // Use btoa since this executes in the browser
-    const base64 = btoa(unescape(encodeURIComponent(svgString)));
-    return {
-      uri: `data:image/svg+xml;base64,${base64}`,
-      widthEx: wEx,
-      heightEx: hEx,
-      depthEx,
-    };
-  } catch (e) {
-    console.error('MathJax error', e);
-    return null;
-  }
-}
-
 // ── Worker Setup ─────────────────────────────────────────────────────────────
 
 let markdownWorker: Worker | null = null;
@@ -725,350 +281,6 @@ if (typeof Worker !== 'undefined') {
   } catch (err) {
     console.warn('Failed to initialize MarkdownWorker', err);
   }
-}
-
-/**
- * One display formula: a `$$..$$` block or a closed ```` ```math ```` fence.
- *
- * A named class rather than a bare {@link MarkdownContainer} because the formula
- * needs a stable handle, and after the switch to an inline object it has none:
- * the typeset raster lives in a `paint` closure captured by the span, so removing
- * the `Image` entity left nothing exposing either the source or the SVG bytes.
- * Devtools, tests, and anything auditing what a formula actually rendered all
- * want that. `markstream-vue` reaches the same conclusion from the DOM side and
- * publishes `data-markstream-mode` on its math node for the same reason.
- *
- * Deliberately carries no typeset-vs-source flag. A formula MathJax has not
- * converted yet renders as a bare {@link CodeBlock} of its TeX, which this class
- * does not wrap — wrapping it would put a container between `content` and a
- * `CodeBlock` that the streamed `setCode` path locates by type. So a flag would
- * have exactly one reachable value, which is the dead-API trap that cost CTX-0208
- * a debugging pass. Add it together with wrapping the fallback, or not at all.
- */
-export class MathBlock extends MarkdownContainer {
-  /**
-   * The TeX source, exactly as written between the delimiters.
-   *
-   * Also the projected text and the accessible name, so this is the one string a
-   * reader can find, select, and copy.
-   */
-  public readonly formula: string;
-  /** The `data:image/svg+xml` URI of the typeset glyphs. */
-  public readonly svgUri: string;
-
-  constructor(formula: string, svgUri: string) {
-    super();
-    this.formula = formula;
-    this.svgUri = svgUri;
-  }
-
-  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
-    return {
-      kind: 'MathBlock',
-      groups: [
-        {
-          label: 'Math',
-          fields: [{ label: 'formula', value: this.formula, readOnly: true }],
-        },
-      ],
-    };
-  }
-}
-
-// ── Inline token → RichText entities ─────────────────────────────────────────
-
-/** Decode basic HTML entities that `marked` emits in token text. */
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
-/**
- * Recursively walk the inline token tree, accumulating {@link StyledSpan}s
- * with inherited style overrides (bold, italic, etc.).
- */
-function collectSpans(
-  tokens: Token[],
-  inherited: TextStyle,
-  theme: Required<MarkdownTheme>,
-  out: StyledSpan[],
-  /**
-   * The size the enclosing block is drawn at, when it is not the theme body size.
-   *
-   * Only inline math uses it: `ex` is font-relative, so a formula's reserved box
-   * has to be resolved against the size of the run it sits in. A heading carries
-   * its size in its `font` string rather than in any span style, so it cannot be
-   * recovered from `inherited`.
-   */
-  blockFontSize?: number,
-): void {
-  for (const token of tokens) {
-    switch (token.type) {
-      case 'strong': {
-        const t = token as Tokens.Strong;
-        if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out, blockFontSize);
-        } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, bold: true },
-          });
-        }
-        break;
-      }
-      case 'em': {
-        const t = token as Tokens.Em;
-        if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out, blockFontSize);
-        } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, italic: true },
-          });
-        }
-        break;
-      }
-      case 'del': {
-        // GFM `~~deleted~~`. Without this arm the token fell to `default:`, which
-        // pushes its text unstyled — the content rendered, so the omission looked
-        // like plain text rather than a missing feature.
-        const t = token as Tokens.Del;
-        if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, lineThrough: true }, theme, out, blockFontSize);
-        } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, lineThrough: true },
-          });
-        }
-        break;
-      }
-      case 'codespan': {
-        const t = token as Tokens.Codespan;
-        out.push({
-          text: decodeEntities(t.text),
-          // Inline code renders in the theme's monospace family (not just tinted
-          // prose) — TextStyle.fontFamily drives both measurement and drawing.
-          style: {
-            ...inherited,
-            color: theme.codeColor,
-            fontFamily: theme.codeFont,
-          },
-        });
-        break;
-      }
-      case 'br': {
-        // Hard break (trailing `\` / double space). The layout engine treats
-        // `\n` as a paragraph break, so a newline span renders it.
-        out.push({ text: '\n' });
-        break;
-      }
-      case 'html': {
-        // Inline HTML. `<br>` is the one tag with an inline-text meaning —
-        // table cells rely on it for line breaks (`| a<br>b |`). Everything
-        // else is markup: never print raw tags as visible text.
-        const t = token as Tokens.HTML;
-        const raw = t.raw ?? t.text ?? '';
-        const brCount = (raw.match(/<br\s*\/?>/gi) ?? []).length;
-        for (let i = 0; i < brCount; i++) out.push({ text: '\n' });
-        break;
-      }
-      case 'inlineMath': {
-        const t = token as any;
-        // Typeset into a reserved inline box when MathJax is available. The run's
-        // own size drives the conversion, so `$x$` inside a heading scales with
-        // the heading rather than with body prose.
-        const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
-        // Inherit the surrounding run's color, so `$x$` in a heading or a
-        // blockquote matches the prose around it rather than the body default.
-        const runColor = inherited.color ?? theme.textColor;
-        const rendered = renderMathToSVGDataURI(t.text, false, runColor);
-        if (rendered) {
-          // Bound outside the painter so the closure captures the URI rather than
-          // the whole `MathRender`, and so it cannot see a later loop iteration's.
-          const uri = rendered.uri;
-          out.push({
-            text: OBJECT_REPLACEMENT,
-            style: inherited,
-            object: {
-              width: exToPx(rendered.widthEx, runSize),
-              height: exToPx(rendered.heightEx, runSize),
-              depth: exToPx(rendered.depthEx, runSize),
-              // The TeX source is the accessible name: without it a screen reader
-              // receives only the invisible U+FFFC sentinel.
-              alt: t.text,
-              // Without this the box is reserved and stays empty. The engine does
-              // not draw objects, and nothing else in the tree holds the raster.
-              paint: (surface, box) => paintInlineMath(uri, surface, box),
-            },
-          });
-        } else {
-          // MathJax has not loaded yet, or conversion failed. Keep the previous
-          // styled-source rendering; `ensureMathJax()` retypesets from tokens once
-          // the library lands, so for a document that is merely waiting this is a
-          // transient state rather than the final output.
-          out.push({
-            text: decodeEntities(t.raw),
-            style: { ...inherited, color: theme.mathFallbackColor },
-          }); // yellow/gold for inline math
-        }
-        break;
-      }
-      case 'link': {
-        const t = token as Tokens.Link;
-        // Recurse into link children (they may contain bold/italic/code)
-        const linkStyle: TextStyle = {
-          ...inherited,
-          href: t.href,
-          color: theme.linkColor,
-        };
-        if (t.tokens && t.tokens.length > 0) {
-          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize);
-        } else {
-          out.push({ text: decodeEntities(t.text), style: linkStyle });
-        }
-        break;
-      }
-      case 'text': {
-        const t = token as Tokens.Text;
-        // Text tokens may themselves contain nested inline tokens (e.g. from
-        // paragraph splitting).  Recurse when present.
-        if ('tokens' in t && (t as any).tokens?.length) {
-          collectSpans((t as any).tokens, inherited, theme, out, blockFontSize);
-        } else {
-          const decoded = decodeEntities(t.text);
-          if (decoded) {
-            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
-            out.push({ text: decoded, style });
-          }
-        }
-        break;
-      }
-      default: {
-        // Fallback: grab raw `.text` if available
-        if ('text' in token) {
-          const decoded = decodeEntities((token as any).text);
-          if (decoded) {
-            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
-            out.push({ text: decoded, style });
-          }
-        }
-        break;
-      }
-    }
-  }
-}
-
-/**
- * One trailing inline construct that has opened but not closed yet.
- *
- * `at` is the index in the scanned text of the construct's first syntax
- * character, so the caller can split there: everything before it keeps whatever
- * `marked` already decided, everything after it is the construct's content.
- */
-interface UnclosedInline {
-  kind: 'strong' | 'em' | 'codespan' | 'link';
-  /** Index of the opening marker's first character. */
-  at: number;
-  /** Index just past the opening marker, where the content starts. */
-  contentAt: number;
-}
-
-/**
- * Find the last unclosed inline construct in one trailing text run.
- *
- * Only ever called with the text of the FINAL inline token of the document's
- * final paragraph. That is the only place an unclosed construct can be: a
- * construct that closed is already its own `strong`/`em`/`codespan`/`link`
- * token, so whatever syntax characters survive into a plain text token are
- * exactly the ones `marked` could not pair up.
- *
- * Returns `null` when nothing plausible is open, which is the common case and
- * must stay cheap — this runs once per streamed chunk.
- */
-function findUnclosedInline(text: string): UnclosedInline | null {
-  let best: UnclosedInline | null = null;
-
-  // Backtick first, and it wins outright. Inside a code span nothing else is
-  // syntax, so an emphasis marker to the right of an open backtick is content,
-  // not a competing candidate.
-  const tick = text.lastIndexOf('`');
-  if (tick !== -1 && tick < text.length - 1) {
-    return { kind: 'codespan', at: tick, contentAt: tick + 1 };
-  }
-  if (tick !== -1) return null;
-
-  // `**bo` / `*it`, and the `_` forms. Two requirements, both load-bearing:
-  // the marker run must be WHOLE (`\*{1,2}(?!\*)`), or `**` alone matches as a
-  // single `*` opening on a content of `*` and renders one italic asterisk; and
-  // it must be followed by a non-space, since CommonMark cannot open emphasis on
-  // `* ` and a marker with nothing after it has no content to style.
-  const emphasis = /(\*{1,2}(?!\*)|_{1,2}(?!_))(?=[^\s])/g;
-  for (let match = emphasis.exec(text); match !== null; match = emphasis.exec(text)) {
-    const marker = match[1];
-    const at = match.index;
-    // `_` cannot open emphasis intraword (`snake_case`, `a_b`), so requiring a
-    // boundary before it is what keeps identifiers from turning italic
-    // mid-stream. `*` has no such restriction in CommonMark.
-    if (marker[0] === '_' && at > 0 && /[\w]/.test(text[at - 1])) continue;
-    best = {
-      kind: marker.length === 2 ? 'strong' : 'em',
-      at,
-      contentAt: at + marker.length,
-    };
-  }
-
-  // `[label](url` — an unmatched `[` with no completed `](…)` after it. Checked
-  // last and only when it opens to the right of any emphasis candidate, for the
-  // same reason backticks win: the later opener is the one still collecting text.
-  const bracket = text.lastIndexOf('[');
-  if (bracket !== -1 && bracket < text.length - 1 && (best === null || bracket > best.at)) {
-    const closed = /\]\([^)]*\)/.test(text.slice(bracket));
-    if (!closed) {
-      best = { kind: 'link', at: bracket, contentAt: bracket + 1 };
-    }
-  }
-
-  return best;
-}
-
-/** Parse inline markdown tokens and produce a {@link RichText} entity. */
-function renderInlineToRichText(
-  tokens: Token[] | undefined,
-  fallbackText: string,
-  font: string,
-  color: string,
-  maxWidth: number,
-  theme: Required<MarkdownTheme>,
-  selectable: boolean,
-  onLinkClick?: (url: string) => void,
-): RichText {
-  const spans: StyledSpan[] = [];
-  if (tokens && tokens.length > 0) {
-    // `blockFontSize` carries the block's own size to the inline-math arm. A
-    // heading's size lives only in this `font` string — its spans carry no
-    // `fontSize` — so without it an `$x$` in an `h1` would reserve a body-sized
-    // box. Passed as its own argument rather than seeded into `inherited` so no
-    // text span gains an explicit fontSize it did not have before, which would
-    // change every heading's paragraph-memo key.
-    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font));
-  }
-  // Fallback: if no spans were produced, use the raw text
-  if (spans.length === 0) {
-    spans.push({ text: decodeEntities(fallbackText) });
-  }
-  return new RichText(spans, {
-    font,
-    color,
-    maxWidth,
-    linkColor: theme.linkColor,
-    selectable,
-    onLinkClick,
-  });
 }
 
 // ── Main Markdown component ─────────────────────────────────────────────────
@@ -1839,7 +1051,7 @@ export class Markdown extends UIComponent {
       this.scene?.markDirty();
     };
     this.inlineMathRepaint = repaint;
-    inlineMathRasterWaiters.add(repaint);
+    subscribeInlineMathRaster(repaint);
   }
 
   public override destroy(): void {
@@ -1865,7 +1077,7 @@ export class Markdown extends UIComponent {
     // as long as the page, so leaving the closure in it would retain this whole
     // entity tree after destroy.
     if (this.inlineMathRepaint) {
-      inlineMathRasterWaiters.delete(this.inlineMathRepaint);
+      unsubscribeInlineMathRaster(this.inlineMathRepaint);
       this.inlineMathRepaint = undefined;
     }
     // Release this instance's prior-raws entry in the (shared) worker, so a page
@@ -3237,7 +2449,7 @@ export class Markdown extends UIComponent {
    * queued while the first is outstanding.
    */
   private ensureMathJax(): void {
-    if (mathConverter || this.mathLoadPending || this.isDestroyed) return;
+    if (isMathJaxReady() || this.mathLoadPending || this.isDestroyed) return;
     this.mathLoadPending = true;
     void preloadMathJax().then(() => {
       this.mathLoadPending = false;
@@ -3247,7 +2459,7 @@ export class Markdown extends UIComponent {
       // A failed load leaves the converter null. Every formula stays TeX source,
       // which is exactly what is on screen already, so a rebuild would be pure
       // cost for an identical tree.
-      if (mathConverter) this.retypesetFromTokens();
+      if (isMathJaxReady()) this.retypesetFromTokens();
       // Settlement was held open for this; release it either way.
       this.flushAppendSettledWaiters();
     });
@@ -3826,7 +3038,7 @@ export class Markdown extends UIComponent {
     // rather than per-arm because inline math can appear in a heading, list item,
     // blockquote, or table cell, not just a paragraph.
     if (containsInlineMath(token)) {
-      if (!mathConverter) this.ensureMathJax();
+      if (!isMathJaxReady()) this.ensureMathJax();
       // A typeset formula paints from a raster that decodes asynchronously, and
       // the paint callback has no way to ask for a repaint itself. Subscribed here
       // rather than at span-collection time because that is a free function with
