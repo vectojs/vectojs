@@ -49,7 +49,7 @@ const REPO = resolve(HERE, '..');
  * `../tmp/pretext`, which no longer exists — `tmp/` is per-task scratch, and the
  * reference clones moved to `references/`. Override with `VECTO_PRETEXT_PATH`.
  */
-const PRETEXT = process.env.VECTO_PRETEXT_PATH ?? resolve(REPO, '../references/pretext');
+const PRETEXT = process.env.VECTO_PRETEXT_PATH ?? resolve(REPO, '../references/text/pretext');
 
 function loadPlaywright() {
   const pkgDir = dirname(execSync('readlink -f "$(which playwright)"').toString().trim());
