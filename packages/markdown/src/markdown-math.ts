@@ -3,9 +3,22 @@ import {
   type InlineObjectSurface,
   type DevtoolsDescriptor,
 } from '@vectojs/core';
+import type { emitSVG, layout } from '@vectojs/tex';
 import type { Token, Tokens } from 'marked';
 
 import { MarkdownContainer } from './markdown-entities';
+
+/**
+ * The two `@vectojs/tex` entry points, as types only.
+ *
+ * `import type` erases at compile time, so these create no module edge and the
+ * engine stays behind the dynamic `import()` in {@link preloadMathJax}. A value
+ * import of either — or of `KATEX_FONT_SCALE`, which is why that constant is
+ * re-declared below rather than imported — would pull the whole engine into
+ * every consumer's entry chunk and undo the split this module exists to keep.
+ */
+type TexLayout = typeof layout;
+type TexEmit = typeof emitSVG;
 
 /**
  * TeX math: the lazily loaded MathJax converter, the SVG data-URI cache, the
@@ -27,26 +40,32 @@ import { MarkdownContainer } from './markdown-entities';
  */
 
 /**
- * MathJax is loaded on demand, the first time a document actually has a formula
- * to typeset.
+ * The math engine is loaded on demand, the first time a document actually has a
+ * formula to typeset.
  *
- * It is by far the heaviest thing this package can pull in: measured 2026-07-30,
- * a browser bundle of a consumer that imports `Markdown` and renders only prose
- * is 2,157,251 bytes (723,602 gzipped), and excluding `mathjax-full` takes that
- * to 337,894 (105,256 gzipped). MathJax is 85% of the bundle, and it used to be
- * unconditional: these were six static imports and the `htmlMathJax` document
- * below was constructed at module scope, so every consumer paid the bytes plus
- * ~155 ms of module evaluation and ~6 ms of setup whether or not any document
- * ever contained a fence. A dynamic import lets a bundler split it into its own
- * chunk (verified with `bun build --splitting`: the entry chunk drops to 725
- * bytes and MathJax lands in separate chunks fetched on first use).
+ * `@vectojs/tex` is by far the heaviest thing this package can pull in, so the
+ * lazy import stays even though the engine itself is fully synchronous. Measured
+ * 2026-08-06 with `bun build --splitting --minify --target=browser` against a
+ * consumer that imports `Markdown` and renders only prose: 19 chunks totalling
+ * 2 199 869 bytes (748 713 gzipped) with `mathjax-full`, and 379 224
+ * (118 670 gzipped) with every `mathjax-full` import stubbed out. The math
+ * engine is 84% of that bundle. A static import would put all of it in the entry
+ * chunk, because `renderMathToSVGDataURI` is reachable from `Markdown`'s render
+ * arm and so cannot be tree-shaken — a prose-only consumer would pay the whole
+ * engine to render a paragraph.
  *
  * The cost of that is real and worth stating plainly: the FIRST formula on a
- * page cannot be typeset synchronously any more. It renders as a CodeBlock of
- * TeX source — the same honest "not typeset yet" state an unclosed fence already
+ * page cannot be typeset synchronously. It renders as a CodeBlock of TeX
+ * source — the same honest "not typeset yet" state an unclosed fence already
  * uses — and is replaced once the module resolves. Call `preloadMathJax()` and
  * await it before constructing if you need the first formula to be typeset in
  * the same tick. Every formula after the module resolves is synchronous again.
+ *
+ * The `MathJax` in the public names is historical. `preloadMathJax` and
+ * `isMathJaxReady` were named when `mathjax-full` was the engine, and they are
+ * public API pinned by `test/publicApi.test.ts`, so they keep those names rather
+ * than break every consumer over a rename. What they mean is "the math engine",
+ * whichever one that is.
  */
 type MathConverter = (formula: string, displayMode: boolean, color: string) => MathRender | null;
 
@@ -54,7 +73,8 @@ let mathConverter: MathConverter | null = null;
 let mathLoad: Promise<void> | null = null;
 
 /**
- * Begin (or join) loading MathJax, resolving once formulas typeset synchronously.
+ * Begin (or join) loading the math engine, resolving once formulas typeset
+ * synchronously.
  *
  * Idempotent and safe to call from anywhere: the promise is cached, so N callers
  * and N documents share one module load. Rejection is swallowed deliberately —
@@ -62,64 +82,21 @@ let mathLoad: Promise<void> | null = null;
  * `await close()` or leave an unhandled rejection on the page. `mathConverter`
  * simply stays null and every formula keeps rendering as source.
  */
-
-/**
- * Read a named export off a dynamically imported CommonJS module.
- *
- * `mathjax-full` ships CommonJS, and a dynamic import of it does NOT reliably
- * put its exports on the namespace object. Bun's resolver hoists them, so
- * `const { liteAdaptor } = await import(...)` works under vitest — but esbuild
- * (and Rollup/webpack in the same situation) wraps the CJS module and emits only
- * `export default require_liteAdaptor()`, no named exports at all. Verified by
- * reading the generated chunk: `exports.liteAdaptor = liteAdaptor` inside the
- * wrapper, `export default require_liteAdaptor()` outside it, nothing else.
- *
- * So destructuring the namespace directly typechecks, passes every unit test,
- * and then fails in a real browser bundle with `liteAdaptor is not a function`.
- * That is exactly what happened here, and only the real-browser e2e caught it.
- * Prefer the named export when the bundler provided one, fall back to `default`.
- */
-function interop<K extends string>(mod: unknown, key: K): Record<K, any> {
-  const ns = mod as Record<string, unknown> & {
-    default?: Record<string, unknown>;
-  };
-  if (typeof ns?.[key] !== 'undefined') return ns as Record<K, any>;
-  const fallback = ns?.default;
-  if (fallback && typeof fallback[key] !== 'undefined') return fallback as Record<K, any>;
-  throw new Error(`mathjax-full module is missing export "${key}"`);
-}
-
 export function preloadMathJax(): Promise<void> {
   if (mathLoad) return mathLoad;
   mathLoad = (async () => {
-    const [mathjaxMod, texMod, svgMod, adaptorMod, handlerMod, packagesMod] = await Promise.all([
-      import('mathjax-full/js/mathjax.js'),
-      import('mathjax-full/js/input/tex.js'),
-      import('mathjax-full/js/output/svg.js'),
-      import('mathjax-full/js/adaptors/liteAdaptor.js'),
-      import('mathjax-full/js/handlers/html.js'),
-      import('mathjax-full/js/input/tex/AllPackages.js'),
-    ]);
-    const { mathjax } = interop(mathjaxMod, 'mathjax');
-    const { TeX } = interop(texMod, 'TeX');
-    const { SVG } = interop(svgMod, 'SVG');
-    const { liteAdaptor } = interop(adaptorMod, 'liteAdaptor');
-    const { RegisterHTMLHandler } = interop(handlerMod, 'RegisterHTMLHandler');
-    const { AllPackages } = interop(packagesMod, 'AllPackages');
-    const adaptor = liteAdaptor();
-    RegisterHTMLHandler(adaptor as never);
-    const tex = new TeX({ packages: AllPackages });
-    const svg = new SVG({ fontCache: 'local' });
-    const htmlMathJax = mathjax.document('', { InputJax: tex, OutputJax: svg });
+    // One dynamic import of one ESM package, which is what replaced six dynamic
+    // imports of `mathjax-full`'s CommonJS entry points. Those needed an
+    // `interop` helper to read named exports, because esbuild wraps a CJS module
+    // and emits only `export default require_x()` — a defect that typechecked,
+    // passed every unit test, and failed in a real browser bundle with
+    // `liteAdaptor is not a function`. `@vectojs/tex` is ESM with real named
+    // exports, so the helper is gone rather than ported.
+    const { emitSVG, layout } = await import('@vectojs/tex');
     mathConverter = (formula, displayMode, color) =>
-      convertMathToSVGDataURI(
-        formula,
-        displayMode,
-        (f, d) => adaptor.innerHTML(htmlMathJax.convert(f, { display: d }) as never),
-        color,
-      );
+      convertMathToSVGDataURI(formula, displayMode, color, layout, emitSVG);
   })().catch((e) => {
-    console.error('MathJax failed to load; formulas will render as TeX source', e);
+    console.error('Math engine failed to load; formulas will render as TeX source', e);
   });
   return mathLoad;
 }
@@ -130,13 +107,30 @@ export function isMathJaxReady(): boolean {
 }
 
 /**
- * MathJax's x-height ratio: how many em one `ex` is.
+ * The math font's x-height ratio: how many em one `ex` is.
  *
- * Its SVG output uses 1000 internal units per em and reports the box in `ex`, so
- * this is `unitsPerEx / 1000`. Measured 2026-07-31 against `mathjax-full` via
- * `liteAdaptor`: units/ex came out 442.0 for every probed formula, consistently
- * from both the width and height attributes (441.95–442.08). See
- * `tmp/agents/probe-ex-to-px.ts`.
+ * Measured 2026-07-31 against `mathjax-full` via `liteAdaptor`, which reported
+ * its box in `ex` against 1000 internal units per em: units/ex came out 442.0 for
+ * every probed formula, consistently from both the width and height attributes
+ * (441.95–442.08). See `tmp/agents/probe-ex-to-px.ts`.
+ *
+ * It survived the switch to `@vectojs/tex` unchanged, and its exact value no
+ * longer affects what a reader sees. `@vectojs/tex` reports em rather than `ex`,
+ * so {@link EX_PER_KATEX_EM} divides by this constant on the way into the cache
+ * and {@link exToPx} multiplies by it on the way out — **it cancels**. Verified
+ * both arithmetically and by mutation: a 2 em formula at fontSize 16 resolves to
+ * 38.72 px whether this is 0.4421, 0.431, 0.5 or 0.3, and changing it to 0.31
+ * leaves all 11 tests in `test/mathBoxGeometry.test.ts` passing. Only
+ * `KATEX_FONT_SCALE` survives that round trip, which is why dropping it fails 3
+ * of those tests and mis-sizes every formula by 21%.
+ *
+ * So it is now an internal representation unit, not a measurement anything
+ * depends on. It is kept because `MathRender` stores `ex` deliberately: `ex` is
+ * font-relative, so one cached conversion is reused across runs of different
+ * sizes (a formula in a heading and the same formula in body prose). Do not read
+ * it as KaTeX's x-height — KaTeX's own `fontMetrics` reports `xHeight: 0.431`
+ * (`src/kernel/fontMetrics.ts:46`), 2.6% away from this, and the two are not the
+ * same quantity.
  *
  * This replaced a hardcoded `* 8` whose comment read "1ex is approx 8px in our
  * font size". That constant is exact only near fontSize 18.1px, so it mis-sized
@@ -145,7 +139,7 @@ export function isMathJaxReady(): boolean {
  */
 const EX_PER_EM = 0.4421;
 
-/** Convert a MathJax `ex` measurement to px at a given font size. */
+/** Convert an `ex` measurement to px at a given font size. */
 export function exToPx(ex: number, fontSize: number): number {
   return ex * fontSize * EX_PER_EM;
 }
@@ -445,73 +439,110 @@ export function renderMathToSVGDataURI(
 }
 
 /**
- * Give a MathJax SVG an explicit color so it survives base64 encoding.
+ * Padding around the ink, in KaTeX em, passed explicitly to {@link emitSVG}.
  *
- * MathJax paints glyphs with `fill="currentColor"` and `stroke="currentColor"`,
- * which inherits the surrounding CSS color in an inline SVG. This package does
- * not inline it: {@link convertMathToSVGDataURI} base64s the markup into a
- * `data:image/svg+xml` URI and hands it to an `Image`. A data URI is a separate
- * document, so nothing is inherited and `currentColor` falls back to its initial
- * value — black. Against this package's own dark default theme
- * (`textColor: '#e2e8f0'` on a dark surface) that renders every formula
- * invisible, which is what dogfooding an editor demo surfaced.
- *
- * Setting `color` on the root establishes the value `currentColor` resolves to
- * *inside* that isolated document, so the existing `fill`/`stroke` attributes
- * are left untouched and MathJax keeps control of which parts paint.
- *
- * A root `style` already exists on MathJax output (it carries
- * `vertical-align`), so the color is prepended to it when present rather than
- * added as a second attribute — two `style` attributes would leave the second
- * ignored.
+ * `emitSVG` defaults to this same value, but it is named and passed here because
+ * the box arithmetic below depends on it: the SVG's `width`/`height` attributes
+ * include it on all sides while `EmitResult.{width,height,depth}` do not. Taking
+ * the default would silently couple this module's geometry to another package's
+ * default, and a change there would misalign every formula with nothing pointing
+ * at the cause.
  */
-function applyMathColor(svg: string, color: string): string {
-  const openTag = svg.match(/<svg\b[^>]*>/);
-  if (!openTag) return svg;
-  const tag = openTag[0];
-  const colored = /\bstyle="/.test(tag)
-    ? tag.replace(/\bstyle="/, `style="color:${color};`)
-    : tag.replace(/^<svg\b/, `<svg style="color:${color}"`);
-  return svg.replace(tag, colored);
-}
+const MATH_PAD_EM = 0.05;
 
 /**
- * Scrape a formula's SVG and intrinsic box out of a typeset call.
+ * KaTeX's own font scale, duplicated from `@vectojs/tex`'s `KATEX_FONT_SCALE`.
  *
- * `typeset` is injected rather than closed over so this stays free of any
- * `mathjax-full` reference — a static one here would defeat the lazy import and
- * pull the whole library back into the entry chunk.
+ * That package exports the same constant, and importing it would be the obvious
+ * thing to do — but a value import creates a static module edge and pulls the
+ * entire engine into every consumer's entry chunk, which is the one property
+ * {@link preloadMathJax}'s dynamic import exists to protect. So it is re-declared
+ * here, and `test/mathBoxGeometry.test.ts` asserts the two stay equal by
+ * importing both, which is a test-time cost only.
+ *
+ * The value is upstream's: `.katex { font-size: 1.21em }` in `katex.scss:24`.
+ */
+const KATEX_FONT_SCALE = 1.21;
+
+/**
+ * How many `ex` one KaTeX em is.
+ *
+ * Two constants compose here. `@vectojs/tex` emits geometry in the span tree's
+ * own em, and KaTeX renders at `font-size: 1.21em` (`katex.scss:24`, exported as
+ * `KATEX_FONT_SCALE`), so one em of emitted geometry is 1.21x the consumer's font
+ * size. {@link EX_PER_EM} then converts the consumer's em to `ex`.
+ *
+ * Verified against real KaTeX in Chromium rather than derived: four display-mode
+ * formulas spanning 1.79–2.93 em of total height all measured **19.3559 px per
+ * em at font-size 16** (spread 0.033%), and 19.3559/16 = 1.20975 against the
+ * constant's 1.21 — agreement to 0.02%. Width was not re-derived here because
+ * KaTeX's `.katex-html` bounding box is the *line* box (a constant 21.00 px at
+ * font-size 16 for every inline formula, whatever it contains), which makes a
+ * DOM width probe meaningless; Phase 1 had already validated emitted width
+ * against real KaTeX to 0.004%.
+ */
+const EX_PER_KATEX_EM = KATEX_FONT_SCALE / EX_PER_EM;
+
+/**
+ * Typeset a formula through `@vectojs/tex` and package it as a {@link MathRender}.
+ *
+ * `layout` and `emitSVG` are injected rather than imported at module scope so
+ * this file holds no static reference to `@vectojs/tex` — a static one would
+ * defeat the lazy import in {@link preloadMathJax} and pull the whole engine into
+ * every consumer's entry chunk, prose-only ones included.
+ *
+ * ## Why the box is not `EmitResult`'s box
+ *
+ * `EmitResult.{width,height,depth}` describe the **ink**. The emitted SVG's
+ * `width`/`height` attributes describe the ink **plus `padEm` on all four
+ * sides**, and it is the SVG that gets rasterized into the box reserved here —
+ * `paintInlineMath` calls `drawImage(bitmap, x, y, box.width, box.height)`, which
+ * stretches the whole image to whatever box it is given. Reporting the ink box
+ * would therefore squash every formula by the padding, and reporting a depth
+ * without the padding would seat every formula `padEm` too high above the
+ * baseline. Both are uniform enough to look like a font-metric bug rather than an
+ * arithmetic one, so the padding terms are written out explicitly below.
+ *
+ * ## Degrading
+ *
+ * Returns `null` on a parse failure and on any glyph the shipped table lacks
+ * (`EmitResult.missing`), which the caller renders as TeX source in a CodeBlock.
+ * A partially-drawn formula silently missing a symbol is worse than showing the
+ * source: the source is at least correct and copyable, whereas `\sum` rendered
+ * with its operator absent reads as a different equation.
  */
 function convertMathToSVGDataURI(
   formula: string,
   displayMode: boolean,
-  typeset: (formula: string, displayMode: boolean) => string,
   color: string,
+  layout: TexLayout,
+  emitSVG: TexEmit,
 ): MathRender | null {
   try {
-    const svgString = applyMathColor(typeset(formula, displayMode), color);
+    const emitted = emitSVG(layout(formula, { displayMode }), {
+      color,
+      padEm: MATH_PAD_EM,
+    });
 
-    // Parse ex sizes (e.g. width="40.3ex" height="5.2ex")
-    const wMatch = svgString.match(/width="([^"]+)ex"/);
-    const hMatch = svgString.match(/height="([^"]+)ex"/);
-    const wEx = wMatch ? parseFloat(wMatch[1]) : 10;
-    const hEx = hMatch ? parseFloat(hMatch[1]) : 2;
-    // Depth below the baseline, from `style="vertical-align:-0.486ex"`. Negative
-    // in the attribute (CSS raises a positive vertical-align), positive here.
-    // Absent for a formula that sits entirely on the baseline.
-    const vMatch = svgString.match(/vertical-align:\s*(-?[\d.]+)ex/);
-    const depthEx = vMatch ? Math.max(0, -parseFloat(vMatch[1])) : 0;
+    // A whitelist miss. The engine emits no placement for a glyph it cannot
+    // resolve, so the formula would render with that symbol simply absent.
+    if (emitted.missing.length > 0) return null;
 
-    // Use btoa since this executes in the browser
-    const base64 = btoa(unescape(encodeURIComponent(svgString)));
+    const pad2 = MATH_PAD_EM * 2;
+    // `btoa` rather than a TextEncoder chain, matching what this did under
+    // MathJax: the output is ASCII-safe SVG markup and this runs in a browser.
+    const base64 = btoa(unescape(encodeURIComponent(emitted.svg)));
     return {
       uri: `data:image/svg+xml;base64,${base64}`,
-      widthEx: wEx,
-      heightEx: hEx,
-      depthEx,
+      widthEx: (emitted.width + pad2) * EX_PER_KATEX_EM,
+      heightEx: (emitted.height + emitted.depth + pad2) * EX_PER_KATEX_EM,
+      depthEx: (emitted.depth + MATH_PAD_EM) * EX_PER_KATEX_EM,
     };
   } catch (e) {
-    console.error('MathJax error', e);
+    // A TeX parse error, which is the common case: a reader mid-formula in a
+    // streamed document has written syntactically invalid TeX in every frame
+    // until they finish it.
+    console.error('Math typesetting error', e);
     return null;
   }
 }
