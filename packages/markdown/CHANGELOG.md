@@ -1,5 +1,61 @@
 # @vectojs/markdown
 
+## 0.14.0
+
+### Minor Changes
+
+- 1b105d7: Add opt-in copy / download controls to code blocks and tables
+
+  A reader could see a code block or a table but not take it away. `blockAffordances: true` now draws a copy and a download control in the top-right corner of every fenced code block and every table.
+
+  The controls are `@vectojs/ui` `Button`s rather than a bespoke a11y hotspot. `Button` already projects `tag: 'button'` with an accessible name, drives its focus ring from real DOM focus/blur, and handles hover and the disabled state; a hand-rolled hotspot would have had to re-earn all of it. Verified in real Chromium **and** real Firefox: four controls project as real `<button>` elements, a pointer click and a focused `Enter` each deliver the payload, and the accessible name changes to a confirmation and reverts. Firefox's clipboard permission model differs from Chrome's, so both engines were a requirement rather than a nicety.
+
+  A wrapper entity owns the corner placement because both candidate parents already own their children's geometry — `Stack` positions each child in flow and `Table` recomputes `x`/`y`/`width`/`height` from its column widths — so a control added directly to either would be moved on the next layout.
+
+  Serialization follows `streamdown`, including two details that are commonly omitted and each a real defect when missing: the object URL is revoked after the download click, and CSV carries a UTF-8 BOM so Excel on Windows does not read the file in the system ANSI codepage and corrupt every non-ASCII cell. The BOM is emitted by `tableToCsv` rather than by the file-saving primitive, so it survives a caller supplying its own `saveFile` — a property of the CSV belongs to the CSV.
+
+  A table copies as Markdown and downloads as CSV: the reader took it out of a Markdown document, so another Markdown document is the likely destination for a paste, while a spreadsheet is what a file is for. Column alignment is reproduced from the token, so a copied table re-lexes to the alignment it had.
+
+  Off by default. It adds two focusable stops per block, which a document with many fences would make tedious to tab past, and a reader who cannot act on a control is better served by not being offered one.
+
+### Patch Changes
+
+- 384597b: Render images nested inside links, emphasis and list items
+
+  `paragraphHasImage` and the paragraph render arm both tested
+  `token.tokens?.some((c) => c.type === 'image')` — **direct children only** —
+  while `marked` nests an image as deeply as the source does:
+
+  | source           | token shape                               |
+  | ---------------- | ----------------------------------------- |
+  | `![a](u)`        | `paragraph > image`                       |
+  | `[![a](u)](d)`   | `paragraph > link > image`                |
+  | `- item ![a](u)` | `list > list_item > text > [text, image]` |
+
+  Any nesting therefore failed the predicate, fell through to `inlineRunRichText`,
+  which has no image support, and the image vanished with no warning. This is the
+  same shape of defect as the list-item block children fixed earlier: a predicate
+  over direct children gating a construct that legitimately nests.
+
+  The predicate now recurses over descendants, and the render arm flattens nested
+  images to the top of the inline run before splitting it, so an image inside a
+  link, inside emphasis, or several levels down all reach `paragraphImage`. A
+  wrapper that also held text is replaced by its children rather than dropped, so
+  the prose around the image survives; a wrapper with no image keeps its own token
+  and therefore its styling and click handling.
+
+  A list item needs one more step, because its lead run carries the marker and is
+  one `RichText`. The lead keeps its prose with images stripped out, and those
+  images render as blocks beneath it. Excluding the whole child from the lead
+  instead does not work: an empty lead makes `listItemSpans` fall back to the
+  item's **raw** `text`, which rendered `- item ![a](u)` as literal Markdown source
+  above the correctly-split block.
+
+  Reference-style `![alt][id]` was reported as a third failing form. It is not: the
+  token is `paragraph > image` with `href` resolved, byte-identical in shape to a
+  working plain image, and it renders both one-shot and streamed. A regression test
+  records that so it is not re-investigated.
+
 ## 0.13.0
 
 ### Minor Changes
