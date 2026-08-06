@@ -30,6 +30,8 @@
   <a href="https://www.npmjs.com/package/@vectojs/video-exporter"><img alt="video-exporter" src="https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee"></a>
 </p>
 
+> Render only what is visible, materialize only what is usable, retain only what is necessary.
+
 VectoJS draws a scene graph onto one `<canvas>`. Layout, hit-testing, animation, text flow, and
 render scheduling operate on a Virtual Math Tree (VMT), while interactive entities project a thin
 semantic DOM layer for accessibility and automation.
