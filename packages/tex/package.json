@@ -1,0 +1,54 @@
+{
+  "name": "@vectojs/tex",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zero-DOM TeX math typesetting for VectoJS: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer. Phase 1 prototype — not published.",
+  "keywords": [
+    "tex",
+    "latex",
+    "katex",
+    "math",
+    "svg",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/tex"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE-KaTeX"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "vendor": "bun run scripts/vendor-katex.ts",
+    "glyphs": "bun run scripts/generate-glyphs.ts",
+    "measure": "bun run scripts/measure.ts",
+    "subset": "bun run scripts/subset-glyphs.ts"
+  },
+  "devDependencies": {
+    "katex": "0.16.11",
+    "tsup": "^8.3.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
