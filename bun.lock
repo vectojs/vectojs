@@ -38,7 +38,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.32.0",
+      "version": "1.32.1",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.6.0",
@@ -107,7 +107,7 @@
     },
     "packages/markdown": {
       "name": "@vectojs/markdown",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "dependencies": {
         "marked": "^18.0.7",
         "mathjax-full": "^3.2.2",
