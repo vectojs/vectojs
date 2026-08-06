@@ -804,10 +804,11 @@ function vendor(sourceDir: string, outDir: string): FileStats[] {
 
   for (const rel of collectSourceFiles(sourceDir)) {
     const from = join(sourceDir, rel);
-    if (!existsSync(from)) {
+    const bytes = tryRead(from);
+    if (bytes === null) {
       throw new Error(`vendor-katex: expected source file is missing: ${from}`);
     }
-    const original = readFileSync(from, 'utf8');
+    const original = bytes.toString('utf8');
     const baseName = rel.split('/').pop() as string;
 
     let output = original;
@@ -855,26 +856,47 @@ function vendor(sourceDir: string, outDir: string): FileStats[] {
  * The recorded hashes live in `src/registry/UPSTREAM.json`, written on the first
  * run and compared on every later one.
  */
+/**
+ * Read a file, returning `null` if it does not exist.
+ *
+ * Preferred over `existsSync(p) && readFileSync(p)` throughout this script: the
+ * two-step form is a time-of-check/time-of-use race, and the single-step form is
+ * also the only one that cannot report a file as present and then fail to read
+ * it. Any error other than a missing file still propagates — a permission error
+ * should stop the vendor run, not be silently treated as absence.
+ */
+function tryRead(path: string): Buffer | null {
+  try {
+    return readFileSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
 function checkHandWritten(sourceDir: string, pkgRoot: string): string[] {
   const manifestPath = join(pkgRoot, 'src/registry/UPSTREAM.json');
   const current: Record<string, string> = {};
 
+  // Read and branch on ENOENT rather than checking existence and then reading:
+  // the two-step form leaves a time-of-check/time-of-use gap, and here it would
+  // also hash a file that had been replaced between the check and the read,
+  // which is precisely the drift this guard exists to detect.
   for (const name of HAND_WRITTEN) {
     const upstream = join(sourceDir, name);
-    if (!existsSync(upstream)) {
-      current[name] = 'missing';
-      continue;
-    }
-    current[name] = createHash('sha256').update(readFileSync(upstream)).digest('hex').slice(0, 16);
+    const bytes = tryRead(upstream);
+    current[name] =
+      bytes === null ? 'missing' : createHash('sha256').update(bytes).digest('hex').slice(0, 16);
   }
 
-  if (!existsSync(manifestPath)) {
+  const manifest = tryRead(manifestPath);
+  if (manifest === null) {
     mkdirSync(dirname(manifestPath), { recursive: true });
     writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`);
     return [];
   }
 
-  const recorded = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, string>;
+  const recorded = JSON.parse(manifest.toString('utf8')) as Record<string, string>;
   return HAND_WRITTEN.filter((name) => recorded[name] !== current[name]);
 }
 

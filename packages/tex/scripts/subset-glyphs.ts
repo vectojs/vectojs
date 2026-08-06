@@ -29,7 +29,7 @@
  *   --report  print the demand table and exit without writing.
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
 import { emitSVG } from '../src/emit/svg';
@@ -192,14 +192,23 @@ function main(): void {
     outIdx >= 0 ? resolve(args[outIdx + 1]) : join(pkgRoot, 'src/glyphs/glyphs.subset.json');
 
   const fullPath = join(pkgRoot, 'src/glyphs/glyphs.json');
-  if (!existsSync(fullPath)) {
+  // Read once and keep the bytes: every figure below is derived from this single
+  // read rather than a later `statSync`/`readFileSync` of the same path. Checking
+  // for existence first and reading afterwards is a time-of-check/time-of-use
+  // gap, and re-reading for the size and the gzip could report three mutually
+  // inconsistent numbers if the generator ran concurrently.
+  let fullBytes: Buffer;
+  try {
+    fullBytes = readFileSync(fullPath);
+  } catch (err) {
+    const reason = (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'no full table' : String(err);
     console.error(
-      `subset-glyphs: no full table at ${fullPath}\n` +
+      `subset-glyphs: ${reason} at ${fullPath}\n` +
         `Run \`bun run scripts/generate-glyphs.ts\` first.`,
     );
     process.exit(1);
   }
-  const full = JSON.parse(readFileSync(fullPath, 'utf8')) as {
+  const full = JSON.parse(fullBytes.toString('utf8')) as {
     unitsPerEm: Record<string, number>;
     glyphs: Record<string, Record<string, { path: string; advance: number }>>;
   };
@@ -263,9 +272,9 @@ function main(): void {
   const json = JSON.stringify(subset);
   writeFileSync(outPath, json);
 
-  const fullSize = statSync(fullPath).size;
+  const fullSize = fullBytes.byteLength;
   const subSize = json.length;
-  const fullGz = gzipSync(readFileSync(fullPath), { level: 9 }).length;
+  const fullGz = gzipSync(fullBytes, { level: 9 }).length;
   const subGz = gzipSync(Buffer.from(json), { level: 9 }).length;
 
   console.log(`subset-glyphs: ${kept} glyphs across ${fonts.length} faces -> ${outPath}`);
