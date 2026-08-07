@@ -1,5 +1,136 @@
 # @vectojs/markdown
 
+## 0.15.0
+
+### Minor Changes
+
+- 4c83ccb: Render images in headings and table cells, which previously vanished.
+
+  There was no `case 'image'` in the inline switch, so `Tokens.Image` fell to
+  `default:`, which pushes `.text` — the **alt text rendered as ordinary prose** and
+  the picture was gone. Nothing threw and nothing was blank, so `# Title ![logo](u)`
+  simply read as "Title logo". Images in paragraphs, blockquotes and list items were
+  unaffected; they render through paragraph splitting, so this was 2 of 4 contexts.
+
+  An image sharing a line with text now renders as an inline box, reusing the same
+  mechanism inline math uses, which keeps selection and the accessible name. Its
+  height is `theme.inlineImageScale` (new, default `1.15`) times the run's font size
+  and its width follows the natural aspect ratio, so a badge stays wide. A failed
+  load degrades to the alt text rather than leaving an invisible gap.
+
+  Also fixed: `containsImage` walked only `.tokens`, so it returned false for an
+  image inside a `table` (whose cells live in `header`/`rows`) or a `list` (whose
+  items live in `items`). A table-cell image therefore never learned its own aspect
+  ratio and kept the square box it had reserved before decoding.
+
+  Two behaviours that were previously undocumented and untested are now both pinned
+  and described in the README: a definition list renders as its two literal lines,
+  and a non-SVG raw HTML block renders nothing. Backslash escapes are pinned too —
+  they worked only because `Tokens.Escape.text` is already unescaped and the
+  `default:` arm happened to push it.
+
+- 1d94445: Typeset math through `@vectojs/tex` instead of `mathjax-full`, completing Phase 3
+  of the in-house TeX engine. The `mathjax-full` dependency is removed.
+
+  **The math path is 4.06x smaller.** Measured with one bundler invocation
+  (`bun build --splitting --minify --target=browser`) against a consumer that
+  imports `Markdown`, before and after, so the delta is attributable to the swap:
+  the whole bundle goes from 19 chunks / 2 199 869 raw / 748 713 gzip to 3 chunks /
+  758 249 raw / 273 754 gzip — **63.4% smaller**. Isolating the math path against a
+  no-math floor (the same consumer with every engine import stubbed, 118 670 gzip)
+  gives 630 043 gzip for MathJax versus 155 033 for `@vectojs/tex`. A prose-only
+  consumer's eagerly-downloaded entry chunk is unchanged (118 320 → 117 889 gzip).
+
+  No public API change. `MathBlock`, `preloadMathJax` and `isMathJaxReady` keep
+  their names and behaviour, and `MathRender` stays module-private. The `MathJax` in
+  those two names is now historical — they mean "the math engine" — kept because
+  `test/publicApi.test.ts` pins them and renaming would break every consumer for
+  cosmetics.
+
+  The lazy dynamic import stays, though the new engine is fully synchronous.
+  Bundle size is what motivates it, not engine synchrony: the engine is 84% of the
+  bundle above, and `renderMathToSVGDataURI` is reachable from the render arm, so a
+  static import cannot be tree-shaken and a prose-only consumer would pay the whole
+  engine to render a paragraph. The first formula on a page therefore still renders
+  as TeX source until the module resolves, and `preloadMathJax()` is still the way
+  to avoid that.
+
+  What the swap removed: six dynamic imports of `mathjax-full`'s CommonJS entry
+  points, the `interop` helper they needed (esbuild wraps a CJS module and emits
+  only `export default require_x()`, a defect that typechecked and passed every
+  unit test before failing in a real browser bundle), and
+  `convertMathToSVGDataURI`'s regex-scraping of `width="..ex"` and
+  `vertical-align:-N ex` back out of MathJax's serialized SVG. Geometry now comes
+  from the layout tree as numbers.
+
+  Colour handling changed mechanism but not behaviour. MathJax painted glyphs with
+  `fill="currentColor"` and needed a `style="color:…"` injected on the root, because
+  a `data:` URI is an isolated document where `currentColor` falls back to black —
+  invisible against this package's own dark default theme. `@vectojs/tex` takes a
+  `color` option and writes it directly, so there is no `currentColor` left to
+  resolve. Colour remains part of the cache key.
+
+  A formula containing a glyph outside the shipped corpus degrades to TeX source in
+  a `CodeBlock`, the same state an unclosed fence uses. Rendering anyway would show
+  a formula with a symbol silently absent, which reads as a different equation.
+
+  Adds `test/mathBoxGeometry.test.ts` (11 tests), which pins the px box a formula
+  reserves. Nothing previously read that box — `widthEx`, `heightEx`, `depthEx` and
+  `exToPx` appeared in no test — so the entire suite passed while the box was
+  sabotaged five different ways, including a uniform 21% mis-size of every formula.
+  All five sabotages now fail.
+
+- 2c569a8: Centralize Markdown theme tokens: hoist every hardcoded color, font size and
+  spacing value into `MarkdownTheme`.
+
+  `MarkdownTheme` gains 18 keys covering the values that were previously literals
+  at their use sites: `linkColor` (which had five separate copies),
+  `mathFallbackColor`, the four `syntax*Color` keys (previously function-local
+  constants inside the highlighter, unreachable from outside), `headingSizes`,
+  `codeFontSize`, `tableFontSize`, `codeLineHeight`, `bodyLineHeight`, and the
+  spacing set `blockGap`, `codePadding`, `codeRadius`, `listGap`, `listItemGap`,
+  `quoteIndent`, `quoteInnerGap`, `quoteBorderWidth`, `imageRadius`.
+
+  Two keys are derived rather than fixed, so overriding one value no longer
+  silently desynchronizes another:
+
+  - `tableFontSize` defaults to `fontSize - 2`, so raising only `fontSize` still
+    scales tables.
+  - `quoteTextColor` defaults to `textColor`. It was declared and defaulted but
+    **never read** — blockquote text was not themeable at all despite the key
+    existing. It is now applied.
+
+  `CodeBlock`'s constructor accepts a partial `MarkdownTheme` and resolves it
+  against the defaults. It previously required a fully-populated theme, so a
+  caller passing a hand-built literal written against the old 12-key shape would
+  throw `lineHeight must be a positive finite number` once size keys became
+  theme-driven. No existing caller needs to change.
+
+### Patch Changes
+
+- cc662fe: Split `Markdown.ts` into six domain modules — `theme`, `markdown-entities`,
+  `markdown-image`, `markdown-code`, `markdown-math` and `markdown-inline` —
+  taking the file from 5172 to 3315 lines ahead of the queued syntax work
+  (footnotes, the image arm, a fenced-block renderer registry), each of which adds
+  arms to switches inside it.
+
+  No public API change: every symbol previously exported from `Markdown.ts` is
+  re-exported from it, and a new `test/publicApi.test.ts` pins that surface,
+  including binding identity across the re-export so `instanceof` keeps working.
+  `MathRender` stays module-private as before.
+
+  Two module-level bindings that would otherwise have to be exported across a file
+  boundary are now encapsulated instead. The three `mathConverter` reads in the
+  component were pure null-checks and now call the `isMathJaxReady()` that already
+  returned exactly that, and `inlineMathRasterWaiters` gained subscribe/unsubscribe
+  functions so the `Set` stays private to the math module.
+
+  `mathjax-full` is now referenced from exactly one file, which is what Phase 3 of
+  the in-house TeX engine has to replace.
+
+- Updated dependencies [1d94445]
+  - @vectojs/tex@0.1.0
+
 ## 0.14.0
 
 ### Minor Changes
