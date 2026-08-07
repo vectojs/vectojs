@@ -41,10 +41,10 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.32.3",
+      "version": "1.32.4",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
-        "@vectojs/layout": "^0.7.0",
+        "@vectojs/layout": "^0.8.0",
         "@vectojs/math": "^0.1.1",
         "@vectojs/text": "^0.3.0",
       },
@@ -97,7 +97,7 @@
     },
     "packages/layout": {
       "name": "@vectojs/layout",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@vectojs/text": "^0.3.0",
       },
@@ -174,7 +174,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.13.1",
+      "version": "2.14.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.12.1",
