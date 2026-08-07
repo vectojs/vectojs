@@ -92,6 +92,18 @@ const mirroredRich = new RichText(
 mirroredRich.scaleX = -1;
 mirroredRich.scaleY = 1.2;
 mirroredRich.rotation = Math.PI / 12;
+// A baseline-shifted run (superscript-style): the '2' draws on its own baseline
+// above the surrounding runs while staying in the same projected line. The e2e
+// asserts the traced fillText y differs by exactly the shift and the DOM
+// selection still overlaps the glyphs.
+const shiftedRich = new RichText(
+  [
+    { text: 'H', style: { fontSize: 20 } },
+    { text: '2', style: { fontSize: 12, baselineShift: 4 } },
+    { text: 'O', style: { fontSize: 20 } },
+  ],
+  { font: '16px serif', maxWidth: 190 },
+).setPosition(40, 430);
 const flowProjection = new FlowProjectionEntity().setPosition(820, 230);
 const rtl = new Text('مرحبا بك في VectoJS', {
   font: '24px serif',
@@ -155,6 +167,7 @@ scene.add(largeCode);
 scene.add(rich);
 scene.add(rotatedText);
 scene.add(mirroredRich);
+scene.add(shiftedRich);
 scene.add(flowProjection);
 scene.add(rtl);
 scene.add(ligature);
@@ -203,6 +216,7 @@ function lineBaseline(root: HTMLElement, lineIndex: number): number {
   rich,
   rotatedText,
   mirroredRich,
+  shiftedRich,
   flowProjection,
   rtl,
   ligature,

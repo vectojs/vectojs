@@ -125,6 +125,22 @@ export interface TextStyle {
    * `~~deleted~~`), so it must be expressible independently of any destination.
    */
   lineThrough?: boolean;
+  /**
+   * Vertical offset of this run's baseline in px, **positive = UP** (the CSS
+   * `vertical-align` convention: superscript is positive, subscript negative).
+   *
+   * Render-only in the horizontal sense — advances are unchanged — but it IS a
+   * measurement change: a run shifted far enough that its glyph box would leave
+   * the line box grows the line, exactly like a tall inline object. Modest
+   * shifts (a superscript at 0.75em raised ~0.3em) fit inside the existing
+   * slack `0.8 * (pMax - gfs)` above a smaller run and grow nothing.
+   *
+   * The sign is the opposite of {@link InlineObject.depth} (positive = below
+   * the baseline there) on purpose: baseline shift is written the way a web
+   * author thinks of vertical-align, while `depth` mirrors MathJax's emitted
+   * CSS, whose values are already sign-flipped relative to the visual sense.
+   */
+  baselineShift?: number;
   /** Hyperlink destination; carried through to the positioned nodes for hit-testing / a11y. */
   href?: string;
 }
@@ -586,6 +602,36 @@ function objectRangeEquals(
   return true;
 }
 
+/**
+ * Grow `pMax` so a baseline-shifted glyph fits inside the line box, or return
+ * `pMax` unchanged when the shift fits the existing slack.
+ *
+ * The line box is `1.5 * pMax` tall with the shared baseline at `0.8 * pMax`
+ * (ascent ratio 0.8 / descent 0.2, the same split the glyph `y` placement
+ * uses). A raised run (`shift > 0`) must keep its glyph top — baseline minus
+ * the shift minus `0.8 * gfs` — at or below the line top; a lowered run
+ * (`shift < 0`) must keep its glyph bottom — baseline plus `0.2 * gfs` minus
+ * the shift — at or above the line bottom. Everything else (the dominant case:
+ * a superscript at 0.75em raised ~0.3em) fits the slack above/below a smaller
+ * run and grows nothing, keeping line rhythm identical to unstyled text.
+ *
+ * Shared by all three pMax walks (`measurePrepared`, `layoutPrepared`, and the
+ * zero-GC buffer path) so a line's height can never diverge between them.
+ */
+function shiftedExtent(gfs: number, shift: number, pMax: number): number {
+  if (shift > 0) {
+    // Raised: top = 0.8*pMax - shift - 0.8*gfs must stay >= 0 (line top).
+    const need = shift + 0.8 * gfs;
+    if (need > 0.8 * pMax) return need / 0.8;
+  } else if (shift < 0) {
+    // Lowered: bottom = 0.8*pMax - shift + 0.2*gfs must stay <= 1.5*pMax,
+    // i.e. the descent slack 0.7*pMax must cover -shift + 0.2*gfs.
+    const need = -shift + 0.2 * gfs;
+    if (need > 0.7 * pMax) return need / 0.7;
+  }
+  return pMax;
+}
+
 function styleRangeEquals(
   a: Array<TextStyle | undefined>,
   b: Array<TextStyle | undefined>,
@@ -615,7 +661,8 @@ function styleRangeEquals(
       // agree on what "same style" means, and a future reordering that reached the
       // streaming path first would otherwise silently reuse prefix shaping measured
       // in a different family.
-      x.fontFamily !== y.fontFamily
+      x.fontFamily !== y.fontFamily ||
+      x.baselineShift !== y.baselineShift
     ) {
       return false;
     }
@@ -1114,7 +1161,7 @@ export class LayoutEngine {
     const fingerprint = (idx: number): string => {
       const s = styleAt[idx];
       const base = s
-        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}`
+        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}/${s.baselineShift ?? ''}`
         : '';
       const o = objectAt[idx];
       // `alt` is in the key even though it changes no advance: it reaches the
@@ -1569,6 +1616,8 @@ export class LayoutEngine {
         for (const glyph of word.glyphs) {
           const gfs = glyph.style?.fontSize ?? fontSize;
           if (gfs > pMax) pMax = gfs;
+          const shift = glyph.style?.baselineShift ?? 0;
+          if (shift !== 0) pMax = shiftedExtent(gfs, shift, pMax);
         }
       }
       const lineHeight = pMax * 1.5;
@@ -1792,12 +1841,16 @@ export class LayoutEngine {
 
       // Tallest run in the paragraph drives line height + the shared baseline, so
       // mixed-size inline runs sit on one baseline (plain text: pMax === fontSize,
-      // making every offset below collapse to the original behavior).
+      // making every offset below collapse to the original behavior). A run whose
+      // baseline is shifted far enough to leave the line box grows it too, via
+      // the same `shiftedExtent` the measure and buffer paths use.
       let pMax = fontSize;
       for (const word of paragraph.words) {
         for (const glyph of word.glyphs) {
           const gfs = glyph.style?.fontSize ?? fontSize;
           if (gfs > pMax) pMax = gfs;
+          const shift = glyph.style?.baselineShift ?? 0;
+          if (shift !== 0) pMax = shiftedExtent(gfs, shift, pMax);
         }
       }
       // An inline object is a fixed box, not a scaled em: the part of it ABOVE the
@@ -1932,12 +1985,17 @@ export class LayoutEngine {
             // delta, not by their full em-box delta, so mixed-size glyphs share
             // one real baseline in every Canvas 2D implementation.
             //
+            // A baseline-shifted run moves along its OWN baseline, so its top
+            // subtracts the shift (`baselineShift` is positive = up) from the
+            // shared-baseline position. The line box already grew to fit it, if
+            // it needed to, in the pMax pass above.
+            //
             // An object is a fixed box rather than a scaled em, so it is placed by
             // sitting its BOTTOM at `baseline + depth`: its top is therefore
             // `baseline - (height - depth)`. The baseline is at `pMax * 0.8`.
             y: glyph.object
               ? currentY + pMax * 0.8 - (glyph.object.height - (glyph.object.depth ?? 0))
-              : currentY + (pMax - gfs) * 0.8,
+              : currentY + (pMax - gfs) * 0.8 - (glyph.style?.baselineShift ?? 0),
             width: charWidth,
             height: glyph.object ? glyph.object.height : gfs,
             style: glyph.style,
@@ -2070,8 +2128,10 @@ export class LayoutEngine {
         buffer.xs[i] = x;
         // Canvas text is positioned by baseline while `y` is the local top, so
         // offset smaller runs by their BASELINE delta (0.8em), not the full
-        // em-box delta — mixed-size glyphs then share one real baseline.
-        buffer.ys[i] = currentY + (lineMax - buffer.hs[i]) * 0.8;
+        // em-box delta — mixed-size glyphs then share one real baseline. A
+        // per-glyph baseline shift (positive = up) moves the glyph along its
+        // own baseline, mirroring the allocating path.
+        buffer.ys[i] = currentY + (lineMax - buffer.hs[i]) * 0.8 - buffer.baselineShifts[i];
         x += buffer.ws[i];
       }
     };
@@ -2087,12 +2147,15 @@ export class LayoutEngine {
 
       // Tallest run in the paragraph drives line height + the shared baseline
       // (plain single-size text: pMax === fontSize, so every offset below
-      // collapses to the original behavior).
+      // collapses to the original behavior). A baseline-shifted run that would
+      // leave the line box grows it, matching the allocating path.
       let pMax = fontSize;
       for (const word of paragraph.words) {
         for (const glyph of word.glyphs) {
           const gfs = glyph.style?.fontSize ?? fontSize;
           if (gfs > pMax) pMax = gfs;
+          const shift = glyph.style?.baselineShift ?? 0;
+          if (shift !== 0) pMax = shiftedExtent(gfs, shift, pMax);
         }
       }
       const lineHeight = pMax * 1.5;
@@ -2143,6 +2206,7 @@ export class LayoutEngine {
           buffer.ys[idx] = currentY;
           buffer.ws[idx] = charWidth;
           buffer.hs[idx] = gfs;
+          buffer.baselineShifts[idx] = glyph.style?.baselineShift ?? 0;
           buffer.levels[idx] = (glyph.level ?? paragraphBaseLevel) & 0x7f;
           buffer.count++;
 
@@ -2172,6 +2236,8 @@ export class LayoutResultBuffer {
   ws: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Heights of each glyph. */
   hs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Baseline shift (px, positive = up) of each glyph; 0 for unshifted. */
+  baselineShifts: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Character for each glyph slot. */
   chars: string[] = Array.from({ length: LayoutResultBuffer.CAPACITY });
   /** Resolved BiDi embedding level of each glyph (even = LTR, odd = RTL). Used
