@@ -179,6 +179,29 @@ export interface InlineObject {
    */
   alt?: string;
   /**
+   * What this object draws, when `alt` does not determine it.
+   *
+   * Part of the paragraph memo key and of inline-object equality, exactly like
+   * {@link alt}, and for the same reason: two objects that compare equal share a
+   * cached paragraph, and a cached paragraph carries the FIRST one's
+   * {@link paint}. So an object whose picture is chosen by something other than
+   * its accessible name must say so here, or the second is painted as the first.
+   *
+   * A Markdown image sets it to the image's URL: `![badge](pass.svg)` and
+   * `![badge](fail.svg)` have identical `alt`, identical metrics, and different
+   * pictures — a badge column in a table is the ordinary case, and without this
+   * every row paints the first row's badge. Inline math does NOT need it, because
+   * its data URI is a pure function of the TeX source that already lands in
+   * `alt`.
+   *
+   * Not a cache key for the drawing itself and not read during paint — it only
+   * has to differ when the painters differ. A URL, a hash, or any stable string
+   * is fine; an identity that varies per call (a counter, `Math.random()`) would
+   * defeat the memo instead, the same way putting the closure itself in the key
+   * would.
+   */
+  key?: string;
+  /**
    * Draws the object's content into the box the engine reserved for it.
    *
    * The engine never calls this — it does not render. A text renderer painting a
@@ -202,8 +225,8 @@ export interface InlineObject {
    * closure. That is safe when the drawing is a function of `alt` — inline math's
    * URI is a pure function of its TeX source, so both closures draw the same
    * thing. A consumer whose painter draws something `alt` does not determine must
-   * distinguish the two through `alt`, because adding the closure to the key would
-   * defeat the memo entirely: a fresh closure per call never compares equal.
+   * set {@link key}, because adding the closure to the key would defeat the memo
+   * entirely: a fresh closure per call never compares equal.
    */
   paint?: (surface: InlineObjectSurface, box: InlineObjectBox) => void;
 }
@@ -554,7 +577,8 @@ function objectRangeEquals(
       x.width !== y.width ||
       x.height !== y.height ||
       (x.depth ?? 0) !== (y.depth ?? 0) ||
-      x.alt !== y.alt
+      x.alt !== y.alt ||
+      x.key !== y.key
     ) {
       return false;
     }
@@ -1095,8 +1119,13 @@ export class LayoutEngine {
       const o = objectAt[idx];
       // `alt` is in the key even though it changes no advance: it reaches the
       // accessible name, so two formulas that differ only in alt text must not
-      // share a cached paragraph or the second is announced as the first.
-      return o ? `${base}/@${o.width},${o.height},${o.depth ?? 0},${o.alt ?? ''}` : base;
+      // share a cached paragraph or the second is announced as the first. `key` is
+      // in for the same reason one step further out — it identifies what the
+      // object PAINTS when `alt` does not, so without it two images with the same
+      // alt and different URLs share a paragraph and the second draws the first.
+      return o
+        ? `${base}/@${o.width},${o.height},${o.depth ?? 0},${o.alt ?? ''},${o.key ?? ''}`
+        : base;
     };
     const styleSig = (start: number, len: number): string => {
       let sig = '';

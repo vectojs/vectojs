@@ -53,12 +53,15 @@ export { isMathJaxReady, MathBlock, preloadMathJax } from './markdown-math';
 export { CodeBlock, codeAtlas, codeAtlasStats } from './markdown-code';
 import {
   containsImage,
+  ensureInlineImageRaster,
   expectedImageParagraphChildren,
   imagesOf,
   lastIndexOfImage,
   liftNestedImages,
   paragraphHasImage,
   stripImages,
+  subscribeInlineImageRaster,
+  unsubscribeInlineImageRaster,
 } from './markdown-image';
 import { headingSize, resolveTheme, type MarkdownTheme } from './theme';
 
@@ -439,6 +442,20 @@ export class Markdown extends UIComponent {
    * field only so {@link destroy} can remove the exact closure it added.
    */
   private inlineMathRepaint?: () => void;
+  /**
+   * This instance's entry in the inline-image decode waiters, or `undefined` if it
+   * has never rendered an image. Held as a field only so {@link destroy} can remove
+   * the exact closure it added.
+   */
+  private inlineImageRemeasure?: () => void;
+  /**
+   * URLs whose decoded aspect ratio this document has already reserved a box for.
+   *
+   * The guard that makes the re-measure fire once per image rather than once per
+   * decode-notification-per-image: the waiter set is module-level, so a page of
+   * many documents tells all of them about all decodes.
+   */
+  private readonly inlineImagesMeasured = new Set<string>();
   /**
    * True while this document is waiting on the lazy MathJax load.
    *
@@ -1054,6 +1071,115 @@ export class Markdown extends UIComponent {
     subscribeInlineMathRaster(repaint);
   }
 
+  /**
+   * Re-measure this document when an inline image's raster finishes decoding.
+   *
+   * Inline images differ from inline formulas in one way that matters: a formula's
+   * box is known synchronously the moment it typesets, while an image's aspect
+   * ratio arrives only with the decode. The span reserved a square until then, so a
+   * decode that reports anything else has invalidated a WIDTH, and a repaint into
+   * the old box would letterbox or stretch the picture.
+   *
+   * So this rebuilds through {@link retypesetFromTokens} — the same late-arrival
+   * path MathJax uses — but only when a reserved width actually changed. Every live
+   * document is notified for every decode, including images it does not contain, so
+   * an unconditional rebuild here would be O(documents x images) full re-renders
+   * for a page of many blocks.
+   *
+   * Subscribed lazily and held as a field for the same two reasons as its math
+   * counterpart: a document with no images costs nothing, and `destroy` must remove
+   * the exact closure it added.
+   */
+  private subscribeInlineImageRemeasure(): void {
+    if (this.inlineImageRemeasure || this.isDestroyed) return;
+    const remeasure = () => {
+      if (this.isDestroyed) return;
+      // Cheap rejection first: only rebuild when one of THIS document's inline
+      // image spans would now reserve a different box. `markDirty` alone is enough
+      // for a decode that merely filled a box whose size was already correct.
+      if (this.inlineImageBoxesStale()) this.retypesetFromTokens();
+      else this.scene?.markDirty();
+    };
+    this.inlineImageRemeasure = remeasure;
+    subscribeInlineImageRaster(remeasure);
+  }
+
+  /**
+   * Whether any inline image in this document has just learned it is not square.
+   *
+   * An inline image's span reserves a square box before its raster decodes, because
+   * that is the only shape available without a natural size. The decode supplies the
+   * real aspect ratio, so a non-square image needs one rebuild to reserve the right
+   * width — and exactly one. Every live document is notified of every decode on the
+   * page, including images it does not contain, so this has to answer "did MY
+   * geometry just change" and not merely "did something decode".
+   *
+   * Walks the tokens rather than the entity tree: the reserved box is a function of
+   * the raster's aspect ratio, which is available here, and a token walk cannot be
+   * confused by an entity a previous rebuild already corrected.
+   *
+   * Only headings and table cells are inspected. Every other context splits an image
+   * into its own block whose `Image` entity resizes itself in `onLoad`, so a rebuild
+   * for one of those would be pure cost.
+   */
+  private inlineImageBoxesStale(): boolean {
+    const stale = (tokens: Token[] | undefined): boolean => {
+      let changed = false;
+      for (const token of tokens ?? []) {
+        if (token.type === 'image') {
+          const href = (token as Tokens.Image).href;
+          // Already accounted for: the spans hold this URL's real aspect ratio, so a
+          // later notification must not rebuild for it again. Without this the
+          // predicate stays true forever and every decode anywhere on the page costs
+          // this document a full re-render.
+          if (this.inlineImagesMeasured.has(href)) continue;
+          const raster = ensureInlineImageRaster(href);
+          // A failed decode has to rebuild too: the span arm replaces the reserved
+          // box with the alt text, and without a rebuild the document keeps an
+          // invisible gap where the picture will never appear.
+          if (raster.failed) {
+            this.inlineImagesMeasured.add(href);
+            changed = true;
+            continue;
+          }
+          if (!raster.decoded || !raster.naturalWidth || !raster.naturalHeight) {
+            continue;
+          }
+          this.inlineImagesMeasured.add(href);
+          // A square is what the span already reserved, so it needs no rebuild.
+          // Compared as an aspect rather than a width so the answer does not depend
+          // on which run the image happens to sit in.
+          if (raster.naturalWidth !== raster.naturalHeight) changed = true;
+          continue;
+        }
+        // Not an early return: every image has to be marked measured on this pass,
+        // or one that decoded in the same tick is left to trigger a second rebuild.
+        if (stale((token as Tokens.Generic).tokens as Token[] | undefined)) {
+          changed = true;
+        }
+      }
+      return changed;
+    };
+
+    let changed = false;
+    for (const token of this.tokens) {
+      if (token.type === 'heading') {
+        if (stale((token as Tokens.Heading).tokens)) changed = true;
+      } else if (token.type === 'table') {
+        const table = token as Tokens.Table;
+        for (const cell of table.header) {
+          if (stale(cell.tokens)) changed = true;
+        }
+        for (const row of table.rows) {
+          for (const cell of row) {
+            if (stale(cell.tokens)) changed = true;
+          }
+        }
+      }
+    }
+    return changed;
+  }
+
   public override destroy(): void {
     // Set before the controller teardown below, which reaches this instance again
     // through the host's `release` hook: settlement work must know the tree is
@@ -1079,6 +1205,10 @@ export class Markdown extends UIComponent {
     if (this.inlineMathRepaint) {
       unsubscribeInlineMathRaster(this.inlineMathRepaint);
       this.inlineMathRepaint = undefined;
+    }
+    if (this.inlineImageRemeasure) {
+      unsubscribeInlineImageRaster(this.inlineImageRemeasure);
+      this.inlineImageRemeasure = undefined;
     }
     // Release this instance's prior-raws entry in the (shared) worker, so a page
     // that creates and drops many blocks doesn't retain their raws forever.
@@ -3045,6 +3175,16 @@ export class Markdown extends UIComponent {
       // no access to this instance.
       this.subscribeInlineMathRepaint();
     }
+
+    // An image that shares a line with text (heading, table cell) renders as an
+    // inline object whose box is fixed when its span is collected, before the
+    // raster has decoded and therefore before its aspect ratio is known. The
+    // decode is what supplies it, so unlike math this needs a re-measure and not
+    // only a repaint. Subscribed for any image-bearing token: a paragraph image
+    // does not need it (its `Image` entity resizes itself in `onLoad`), but
+    // distinguishing the contexts here would duplicate the paragraph-splitting
+    // decision, and a redundant subscription costs one no-op rebuild check.
+    if (containsImage([token])) this.subscribeInlineImageRemeasure();
 
     switch (token.type) {
       // ── Headings ─────────────────────────────────────────────────────

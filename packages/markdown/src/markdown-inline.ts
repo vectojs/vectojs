@@ -2,6 +2,7 @@ import { OBJECT_REPLACEMENT, type StyledSpan, type TextStyle } from '@vectojs/co
 import { RichText } from '@vectojs/ui';
 import type { Token, Tokens } from 'marked';
 
+import { ensureInlineImageRaster, paintInlineImage } from './markdown-image';
 import { exToPx, fontSizeFromFont, paintInlineMath, renderMathToSVGDataURI } from './markdown-math';
 import type { MarkdownTheme } from './theme';
 
@@ -154,6 +155,56 @@ export function collectSpans(
             style: { ...inherited, color: theme.mathFallbackColor },
           }); // yellow/gold for inline math
         }
+        break;
+      }
+      case 'image': {
+        // An image sharing a line with text: a heading or a table cell. A
+        // paragraph, blockquote or list item never reaches this arm — those route
+        // through paragraph splitting, which gives the image its own block and its
+        // own `Image` entity at natural size.
+        //
+        // Before this arm existed the token fell to `default:`, which pushes
+        // `.text` — so a heading rendered its ALT TEXT as ordinary prose and the
+        // picture silently vanished. Nothing was blank and nothing threw, which is
+        // why it went unnoticed: `# Title ![logo](u)` read as "Title logo".
+        const t = token as Tokens.Image;
+        const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
+        const raster = ensureInlineImageRaster(t.href);
+        // A failed decode has no picture to show, so fall back to the alt text
+        // rather than reserving a box that will stay empty forever.
+        if (raster.failed) {
+          out.push({ text: decodeEntities(t.text), style: inherited });
+          break;
+        }
+        const height = runSize * theme.inlineImageScale;
+        // Square until the decode reports an aspect ratio. The height never
+        // changes, so the line box is stable from the first frame and only the
+        // width settles — see `theme.inlineImageScale`.
+        const aspect =
+          raster.naturalWidth && raster.naturalHeight
+            ? raster.naturalWidth / raster.naturalHeight
+            : 1;
+        const src = t.href;
+        out.push({
+          text: OBJECT_REPLACEMENT,
+          style: inherited,
+          object: {
+            width: height * aspect,
+            height,
+            // Sits on the baseline like a cap-height glyph rather than hanging
+            // below it; an image has no descender to align.
+            depth: 0,
+            // The accessible name, and what a copy yields. Without it the
+            // invisible U+FFFC sentinel is all a screen reader receives.
+            alt: t.text,
+            // What this object PAINTS, which `alt` does not determine: two badges
+            // can share alt text and differ in URL. Without it the paragraph memo
+            // serves the first one's painter to the second and every row of a badge
+            // column draws the first row's badge.
+            key: src,
+            paint: (surface, box) => paintInlineImage(src, surface, box),
+          },
+        });
         break;
       }
       case 'link': {
