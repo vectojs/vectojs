@@ -16,9 +16,11 @@
  * the real kernel and the real emit layer over a corpus and records exactly
  * which `(face, codepoint)` pairs were asked for.
  *
- * Coverage is therefore a property of the corpus. `--report` prints what a
- * given corpus demands without writing anything, and the emitter reports every
- * miss in `EmitResult.missing`, so a gap is observable rather than silent.
+ * Coverage is therefore a property of the corpus **and of the modes each
+ * formula is laid out in** — see `collectDemand`, which unions inline and
+ * display. `--report` prints what a given corpus demands without writing
+ * anything, and the emitter reports every miss in `EmitResult.missing`, so a gap
+ * is observable rather than silent.
  *
  * Usage:
  *   bun run scripts/subset-glyphs.ts [--corpus <file>] [--out <file>] [--report]
@@ -135,6 +137,9 @@ const DEFAULT_CORPUS = [
   '\\text{0123456789 .,;:!?()[]-+*/=}',
 ];
 
+/** The full table's glyph map: face -> codepoint (as string) -> outline. */
+type FullGlyphs = Record<string, Record<string, { path: string; advance: number }>>;
+
 interface Demand {
   /** face -> set of codepoints. */
   byFont: Map<string, Set<number>>;
@@ -144,30 +149,81 @@ interface Demand {
   missing: Set<string>;
 }
 
-/** Runs the kernel and emit layer over a corpus, recording glyph demand. */
-function collectDemand(corpus: readonly string[]): Demand {
+/**
+ * Runs the kernel and emit layer over a corpus, recording glyph demand.
+ *
+ * **Every formula is laid out in both display modes**, and the union is the
+ * demand. This is not redundancy: display style selects larger variants that
+ * inline style never requests, so subsetting in one mode ships a table that
+ * cannot typeset the other. Measured before this was fixed, the 69-formula
+ * corpus in inline mode alone demanded 561 glyphs and reported nothing missing,
+ * while the same corpus in display mode demanded 8 more — the whole
+ * `Size2-Regular` face for `\sum \int \prod \oint` and tall `( ) [ ]`. Those
+ * formulas degraded silently to raw TeX source at runtime.
+ *
+ * `Size1-Regular` and `Size3-Regular` were both already present, which is what
+ * made the missing face easy to overlook.
+ *
+ * ## Why this needs the full table, and why `missing` is cross-checked
+ *
+ * `emitSVG` resolves outlines through `getGlyph`, which reads **the shipped
+ * subset** — the very artifact this script writes. So `EmitResult.missing` means
+ * "absent from the current subset", not "absent from the full table", and the
+ * collector cannot use it as a failure signal directly: a glyph the subset lacks
+ * emits no placement, never enters `byFont`, and the subset could therefore
+ * never grow to include it. That is a bootstrap deadlock, and it is what kept
+ * `Size2-Regular` out even after both display modes were laid out.
+ *
+ * Each `missing` key is therefore looked up in the full table. Present there
+ * means **genuine new demand**, and it is promoted into `byFont`. Absent from
+ * both is a real gap and is reported. Demand is safe to collect this way because
+ * it is decided by `layout` — the span tree names its faces and codepoints
+ * before any outline is resolved — so a missing outline changes glyph *metrics*,
+ * never which glyphs a formula asks for.
+ */
+function collectDemand(corpus: readonly string[], fullGlyphs: FullGlyphs): Demand {
   const byFont = new Map<string, Set<number>>();
   const failures: { tex: string; error: string }[] = [];
   const missing = new Set<string>();
 
+  const demand = (font: string, code: number): void => {
+    let set = byFont.get(font);
+    if (!set) {
+      set = new Set();
+      byFont.set(font, set);
+    }
+    set.add(code);
+  };
+
   for (const tex of corpus) {
-    let result;
-    try {
-      result = emitSVG(layout(tex));
-    } catch (error) {
-      failures.push({ tex, error: (error as Error).message.slice(0, 160) });
-      continue;
-    }
-    for (const p of result.placements) {
-      let set = byFont.get(p.font);
-      if (!set) {
-        set = new Set();
-        byFont.set(p.font, set);
+    for (const displayMode of [false, true]) {
+      let result;
+      try {
+        result = emitSVG(layout(tex, { displayMode }));
+      } catch (error) {
+        failures.push({
+          tex: displayMode ? `${tex}  (display)` : tex,
+          error: (error as Error).message.slice(0, 160),
+        });
+        continue;
       }
-      set.add(p.code);
-    }
-    for (const m of result.missing) {
-      missing.add(`${m}  <- ${tex}`);
+      for (const p of result.placements) {
+        demand(p.font, p.code);
+      }
+      // Union `missing` with the placements above. A glyph the subset lacks
+      // emits no placement at all, so a placement-only accounting reports that
+      // display mode adds nothing and the gap never surfaces.
+      for (const m of result.missing) {
+        const sep = m.lastIndexOf('/U+');
+        const font = m.slice(0, sep);
+        const code = Number.parseInt(m.slice(sep + 3), 16);
+
+        if (fullGlyphs[font]?.[String(code)]) {
+          demand(font, code);
+        } else {
+          missing.add(`${m}  <- ${tex}${displayMode ? '  (display)' : ''}`);
+        }
+      }
     }
   }
 
@@ -213,7 +269,7 @@ function main(): void {
     glyphs: Record<string, Record<string, { path: string; advance: number }>>;
   };
 
-  const demand = collectDemand(corpus);
+  const demand = collectDemand(corpus, full.glyphs);
 
   if (demand.failures.length > 0) {
     console.error(`subset-glyphs: ${demand.failures.length} formula(s) failed to lay out:`);
@@ -226,6 +282,10 @@ function main(): void {
     process.exit(1);
   }
 
+  // A miss that survives `collectDemand`'s cross-check is absent from the full
+  // table too, so no subset of it can satisfy the corpus. Either the extractor
+  // did not emit the face or the corpus asks for a symbol KaTeX has no outline
+  // for; both are build failures rather than something to ship around.
   if (demand.missing.size > 0) {
     console.error(
       `subset-glyphs: ${demand.missing.size} glyph(s) demanded but absent from the full table:`,
@@ -295,6 +355,13 @@ function pct(part: number, whole: number): string {
   return whole === 0 ? 'n/a' : `${((part / whole) * 100).toFixed(1)}%`;
 }
 
-main();
+// Only run as a script. This module also exports `collectDemand` and
+// `DEFAULT_CORPUS` for the coverage test, and an unconditional call here made
+// merely importing either one rewrite `src/glyphs/glyphs.subset.json` as an
+// import side effect — a test that reads the corpus would silently regenerate
+// the shipped table it is meant to be checking.
+if (import.meta.main) {
+  main();
+}
 
 export { collectDemand, DEFAULT_CORPUS };

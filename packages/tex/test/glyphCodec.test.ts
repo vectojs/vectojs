@@ -61,7 +61,10 @@ describe('glyph table binary codec', () => {
   it('decodes every shipped glyph to byte-identical SVG path data', () => {
     const all = sourceGlyphs();
     // Guard the guard: an empty source would make the loop below vacuously pass.
-    expect(all.length).toBe(561);
+    // Exact rather than a lower bound so an unintended *shrink* fails too — the
+    // corpus is subset in both display modes, and a regression that dropped one
+    // mode would quietly cut the table back to 561.
+    expect(all.length).toBe(569);
 
     const mismatches: string[] = [];
     for (const want of all) {
