@@ -35,7 +35,13 @@
  *   (TTF outlines to SVG paths) and narrowed by `scripts/subset-glyphs.ts`.
  */
 
-export { type EmitOptions, type EmitResult, emitSVG, type GlyphPlacement } from './emit/svg';
+export {
+  type EmitOptions,
+  type EmitResult,
+  emitSVG,
+  type GlyphPlacement,
+  KATEX_FONT_SCALE,
+} from './emit/svg';
 export { type FontName, type ResolvedFont, resolveFont, sizingRatio } from './emit/fonts';
 export {
   type Glyph,

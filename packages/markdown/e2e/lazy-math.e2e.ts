@@ -8,11 +8,11 @@ import { type BrowserCase, bothEngines, closeServer } from '../../core/e2e/_shar
 import type { InlineMathBrowserResult, LazyMathBrowserResult } from './lazy-math.fixture';
 
 /**
- * The lazy MathJax load, in a real browser.
+ * The lazy math-engine load, in a real browser.
  *
  * Two things here cannot be checked anywhere else. First, the fixture is bundled
  * with **code splitting**, so this also asserts the structural claim the change
- * exists for: MathJax must land in its own chunk and the entry chunk must not
+ * exists for: the engine must land in its own chunk and the entry chunk must not
  * contain it. A unit test cannot see chunk layout. Second, only a real engine
  * decodes the SVG data URI, so `imageDecoded` is what proves the typeset formula
  * is a real raster rather than a placeholder slab.
@@ -95,17 +95,17 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     assert.equal(
       result.readyBeforeAnyFormula,
       false,
-      `${browserCase.name}: importing @vectojs/markdown must not load MathJax`,
+      `${browserCase.name}: importing @vectojs/markdown must not load the math engine`,
     );
     assert.equal(
       result.entityBeforeLoad,
       'CodeBlock',
-      `${browserCase.name}: a formula awaiting MathJax must show its TeX source`,
+      `${browserCase.name}: a formula awaiting the math engine must show its TeX source`,
     );
     assert.equal(
       result.entityAfterLoad,
       'MathBlock/RichText',
-      `${browserCase.name}: the formula must be typeset once MathJax lands`,
+      `${browserCase.name}: the formula must be typeset once the math engine lands`,
     );
     assert.equal(
       result.imageDecoded,
@@ -139,7 +139,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     assert.equal(
       inline.objectsBeforeLoad,
       0,
-      `${where}: a formula must not reserve a box before MathJax lands`,
+      `${where}: a formula must not reserve a box before the math engine lands`,
     );
     assert.equal(inline.objectsAfterLoad, 1, `${where}: one formula must reserve exactly one box`);
     assert.equal(
@@ -208,8 +208,8 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
 async function main(): Promise<void> {
   const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-  // Code splitting is the point: it is how a consumer's bundler keeps MathJax out
-  // of the entry chunk, and it is the arrangement this change is meant to enable.
+  // Code splitting is the point: it is how a consumer's bundler keeps the math
+  // engine out of the entry chunk, and it is the arrangement this change is meant to enable.
   const fixture = await build({
     entryPoints: [join(packageRoot, 'e2e/lazy-math.fixture.ts')],
     bundle: true,
@@ -230,26 +230,33 @@ async function main(): Promise<void> {
   const entryName = [...chunks.keys()].find((n) => n.startsWith('lazy-math.fixture'));
   if (!entryName) throw new Error('Failed to bundle the lazy-math fixture entry');
 
-  // Structural assertion: MathJax's IMPLEMENTATION is not in the entry chunk, and
-  // it is in some lazily-loaded chunk.
+  // Structural assertion: the math engine's IMPLEMENTATION is not in the entry
+  // chunk, and it is in some lazily-loaded chunk.
   //
-  // Matched on internal class names (`MmlNode`, `TeXAtom`, `SVGWrapper`) rather
-  // than on the string "mathjax" or "liteAdaptor". Those appear in the entry
-  // legitimately and always will: the dynamic `import("mathjax-full/...")`
-  // specifiers are literals in the entry, and `liteAdaptor` is the name this
-  // package destructures. An earlier version of this check matched them and
-  // failed against a bundle that was in fact splitting correctly.
-  const IMPL = /MmlNode|TeXAtom|SVGWrapper|AbstractMmlNode/;
+  // Matched on internal identifiers from `@vectojs/tex`'s vendored KaTeX kernel
+  // rather than on the string "KaTeX" or on the import specifier. The specifier
+  // `"@vectojs/tex"` is a literal in the entry by construction, and the string
+  // "KaTeX" appears there too — the font-face names (`KaTeX_Main`, `KaTeX_Size2`)
+  // are referenced in this package's own docstrings and constants. Matching
+  // either would fail against a bundle that is in fact splitting correctly,
+  // which is precisely the mistake an earlier version of this check made against
+  // MathJax by matching "mathjax" and "liteAdaptor".
+  //
+  // Verified empirically at the time of writing: with these four markers the
+  // entry chunk is 816 KB and clean, and all four land in a single 570 KB lazy
+  // chunk. `KaTeX` alone would have matched the entry and produced a false
+  // failure.
+  const IMPL = /MacroExpander|defineFunction|buildExpression|makeSpan/;
   const entrySource = chunks.get(entryName)!;
   assert.equal(
     IMPL.test(entrySource),
     false,
-    'MathJax implementation must not be in the entry chunk; the lazy import is not splitting',
+    'Math engine implementation must not be in the entry chunk; the lazy import is not splitting',
   );
-  const mathjaxSomewhere = [...chunks.entries()].some(
+  const engineSomewhere = [...chunks.entries()].some(
     ([name, text]) => name !== entryName && IMPL.test(text),
   );
-  assert.equal(mathjaxSomewhere, true, 'MathJax must be present in a lazily-loaded chunk');
+  assert.equal(engineSomewhere, true, 'The math engine must be present in a lazily-loaded chunk');
 
   const entryBytes = Buffer.byteLength(entrySource);
   const totalBytes = [...chunks.values()].reduce((sum, t) => sum + Buffer.byteLength(t), 0);

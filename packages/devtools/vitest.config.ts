@@ -16,6 +16,10 @@ export default defineConfig({
       '@vectojs/animation': new URL('../animation/src/index.ts', import.meta.url).pathname,
       '@vectojs/ui': new URL('../ui/src/index.ts', import.meta.url).pathname,
       '@vectojs/markdown': new URL('../markdown/src/index.ts', import.meta.url).pathname,
+      // markdown's math path lazily imports @vectojs/tex; because the alias
+      // above resolves markdown to source, that import is resolved under *this*
+      // config and needs its own entry.
+      '@vectojs/tex': new URL('../tex/src/index.ts', import.meta.url).pathname,
       '@vectojs/devtools/headless': new URL('./src/headless.ts', import.meta.url).pathname,
     },
   },

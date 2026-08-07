@@ -19,7 +19,7 @@ declare global {
  */
 export interface InlineMathBrowserResult {
   /**
-   * Before MathJax lands, the formula is still gold `#fcd34d` TeX source and
+   * Before the math engine lands, the formula is still gold `#fcd34d` TeX source and
    * reserves nothing.
    */
   objectsBeforeLoad: number;
@@ -73,7 +73,7 @@ export interface InlineMathBrowserResult {
 }
 
 export interface LazyMathBrowserResult {
-  /** MathJax must NOT be loaded merely because `@vectojs/markdown` was imported. */
+  /** The engine must NOT be loaded merely because `@vectojs/markdown` was imported. */
   readyBeforeAnyFormula: boolean;
   /** A closed fence renders as a CodeBlock of TeX source while the module loads. */
   entityBeforeLoad: string;
@@ -216,7 +216,7 @@ async function paintAndSample(box: ProbedNode | undefined): Promise<{
     let ink = 0;
     for (let i = 0; i < data.length; i += 4) {
       // Anything visible. The scene paints on a transparent canvas, so a drawn
-      // pixel is one with alpha; the colour is MathJax's and not worth pinning.
+      // pixel is one with alpha; the colour is the theme's and not worth pinning.
       if (data[i + 3] > 8) ink++;
     }
     return ink;
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
     document.body.appendChild(canvas);
 
     // Nothing has asked for a formula yet, so importing the package must not have
-    // pulled MathJax in. This is the whole point of the lazy import: in a real
+    // pulled the engine in. This is the whole point of the lazy import: in a real
     // browser the chunk has not even been fetched at this line.
     const readyBeforeAnyFormula = isMathJaxReady();
 
@@ -293,7 +293,7 @@ async function main(): Promise<void> {
     const secondFormulaSynchronous = kindOf(second).startsWith('MathBlock');
 
     // Settlement: a fresh document streaming a formula must hand onStable a
-    // typeset entity. MathJax is already loaded here, so this checks the
+    // typeset entity. The engine is already loaded here, so this checks the
     // steady-state path rather than the load wait (covered in unit tests).
     const streamed = new Markdown('');
     let stableSawTypeset = false;
@@ -306,7 +306,7 @@ async function main(): Promise<void> {
     await stream.close();
 
     // ── Inline `$...$` ──────────────────────────────────────────────────────
-    // MathJax is loaded by now, so this is the steady-state path: the box is
+    // The engine is loaded by now, so this is the steady-state path: the box is
     // reserved during the first layout rather than after a rebuild.
     const inlineAfter = new Markdown(INLINE_SOURCE);
     const inlineRich = richTextOf(inlineAfter);

@@ -201,36 +201,28 @@ async function main(): Promise<void> {
     const subsetJson = existsSync(subsetJsonPath) ? sizes(readFileSync(subsetJsonPath)) : null;
 
     // ---- Part 4: the MathJax baseline this replaces ------------------------
-    // Built in this tree with this bundler, so it is comparable rather than
-    // quoted from a record whose probe directory no longer exists.
-    let mathjax: Sizes | null = null;
-    // `mathjax-full` is a dependency of `@vectojs/markdown`, so bun installs it
-    // into `packages/markdown/node_modules`. An entry point in a temp directory
-    // cannot resolve it, so write the entry inside that package instead and
-    // remove it afterwards.
-    const mjHost = resolve(pkgRoot, '../markdown');
-    const mjEntry = join(mjHost, `.measure-mathjax-entry.${process.pid}.ts`);
-    writeFileSync(
-      mjEntry,
-      `import { mathjax } from 'mathjax-full/js/mathjax.js';\n` +
-        `import { TeX } from 'mathjax-full/js/input/tex.js';\n` +
-        `import { SVG } from 'mathjax-full/js/output/svg.js';\n` +
-        `import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';\n` +
-        `import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';\n` +
-        `import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';\n` +
-        `globalThis.__mj = { mathjax, TeX, SVG, liteAdaptor, RegisterHTMLHandler, AllPackages };\n`,
-    );
-    try {
-      mathjax = sizes(bundle(mjEntry, work, 'mathjax'));
-    } catch (error) {
-      console.warn(
-        `measure: could not bundle the MathJax baseline (${
-          (error as Error).message.split('\n')[0]
-        }). Run \`bun install\` so @vectojs/markdown's deps are present.`,
-      );
-    } finally {
-      rmSync(mjEntry, { force: true });
-    }
+    // Pinned rather than rebuilt, because `mathjax-full` is no longer installed
+    // anywhere in this repo: Phase 3 removed it from `@vectojs/markdown`, which
+    // was the only package that depended on it, so there is nothing left to
+    // resolve an entry point against.
+    //
+    // These numbers were produced by the code this block replaces, on
+    // `carryctx/ctx-0235-tex-math` immediately before the dependency was
+    // removed, bundling `mathjax-full`'s `AllPackages` + `SVG` + `liteAdaptor`
+    // through `bundle()` below — the same function, bundler and flags still used
+    // for our own parts above, so the comparison remains like-for-like.
+    //
+    // Reproducing it requires `bun add -D mathjax-full` in a scratch directory
+    // and rebuilding the entry that used to live here; it is recorded in the
+    // CTX-0235 task record. Deliberately not left as a graceful `null`: this is
+    // the one figure the whole three-phase exercise exists to establish, and a
+    // silently absent baseline would let a regression in our own size pass
+    // unnoticed.
+    const mathjax: Sizes = {
+      raw: 1_819_116,
+      gzip: 619_768,
+      brotli: 464_569,
+    };
 
     // ---- Part 5: typeset latency ------------------------------------------
     // Reported for information only. It is a **JavaScriptCore** figure because
