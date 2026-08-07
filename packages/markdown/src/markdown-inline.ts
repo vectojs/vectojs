@@ -77,6 +77,35 @@ export function collectSpans(
         // pushes its text unstyled — the content rendered, so the omission looked
         // like plain text rather than a missing feature.
         const t = token as Tokens.Del;
+        // marked's GFM tokenizer emits `del` for a SINGLE-tilde run too, so
+        // `H~2~O` arrived here and painted the `2` struck through. That is the one
+        // construct this renderer got actively wrong rather than merely not
+        // supporting: every unsupported construct falls back to visible literal
+        // source, which a reader can see and interpret, but H2̶O silently changes
+        // meaning and gives no hint that subscript was intended.
+        //
+        // `raw` is what distinguishes them — `~2~` vs `~~gone~~` — because `text`
+        // is identical either way. Single-tilde therefore re-emits its delimiters
+        // as literal characters and recurses unstruck, so the source is visible
+        // and inner markup still renders (`~*em*~` keeps its emphasis).
+        //
+        // True subscript needs a baseline-shift field on `TextStyle`, which does
+        // not exist; see `forge/decisions/markdown-syntax-coverage-2026-08.md`.
+        // When it lands, this arm is where subscript hooks in.
+        const isStrikethrough = t.raw?.startsWith('~~') ?? true;
+        if (!isStrikethrough) {
+          // Omit an empty style object rather than attach one, matching the `text`
+          // arm: a span's style participates in the paragraph memo key.
+          const plain = Object.keys(inherited).length > 0 ? inherited : undefined;
+          out.push({ text: '~', style: plain });
+          if (t.tokens) {
+            collectSpans(t.tokens, inherited, theme, out, blockFontSize);
+          } else {
+            out.push({ text: decodeEntities(t.text), style: plain });
+          }
+          out.push({ text: '~', style: plain });
+          break;
+        }
         if (t.tokens) {
           collectSpans(t.tokens, { ...inherited, lineThrough: true }, theme, out, blockFontSize);
         } else {
