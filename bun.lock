@@ -110,7 +110,7 @@
     },
     "packages/markdown": {
       "name": "@vectojs/markdown",
-      "version": "0.15.0",
+      "version": "0.16.1",
       "dependencies": {
         "@vectojs/tex": "^0.1.0",
         "marked": "^18.0.7",
