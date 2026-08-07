@@ -3,6 +3,7 @@ import { RichText } from '@vectojs/ui';
 import type { Token, Tokens } from 'marked';
 
 import { ensureInlineImageRaster, paintInlineImage } from './markdown-image';
+import { footnoteMarker } from './markdown-footnote';
 import { exToPx, fontSizeFromFont, paintInlineMath, renderMathToSVGDataURI } from './markdown-math';
 import type { MarkdownTheme } from './theme';
 
@@ -203,6 +204,32 @@ export function collectSpans(
             // column draws the first row's badge.
             key: src,
             paint: (surface, box) => paintInlineImage(src, surface, box),
+          },
+        });
+        break;
+      }
+      case 'footnoteRef': {
+        // A reference marker: smaller than the run it sits in, and tinted. Without
+        // this arm the token would fall to `default:`, which pushes `.text` — and
+        // the token has no `text` field, so the marker would silently vanish and
+        // the sentence would read as though the reference had never been written.
+        //
+        // Size is the only signal available. `TextStyle` has no baseline shift, so
+        // a raised superscript cannot be expressed, and faking one through an
+        // inline object would mean rasterizing text: `InlineObjectSurface` exposes
+        // `drawImage` and nothing else.
+        //
+        // No `href`. A marker is a cross-reference to a sibling block, not a URL,
+        // and giving it one would underline it and route a click to the consumer's
+        // `onLinkClick` with a destination that does not exist.
+        const t = token as unknown as { label: string };
+        const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
+        out.push({
+          text: footnoteMarker(t.label),
+          style: {
+            ...inherited,
+            fontSize: runSize * theme.footnoteMarkerScale,
+            color: theme.footnoteColor,
           },
         });
         break;

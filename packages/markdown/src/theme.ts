@@ -44,6 +44,21 @@ export interface MarkdownTheme {
   /** Link text color. */
   linkColor?: string;
   /**
+   * Color of a footnote reference marker and of the label on its definition.
+   *
+   * Defaults to {@link MarkdownTheme.linkColor} so a marker reads as a
+   * cross-reference in whatever palette the caller supplied, rather than being
+   * pinned to the stock accent. Derived in {@link resolveTheme}, so overriding
+   * only `linkColor` recolours footnote markers too.
+   *
+   * A marker is deliberately **not** a link: it carries no `href`, so it is
+   * neither underlined nor routed to `onLinkClick`. There is no destination to
+   * give it — the definition is a sibling block in the same document, not a URL —
+   * and synthesising one (`'#fn-1'`) would hand a consumer's click handler a
+   * string it would try to open as a page.
+   */
+  footnoteColor?: string;
+  /**
    * Color for TeX source shown verbatim when a formula could not be typeset.
    * Deliberately distinct from body text so an untypeset formula is visible as
    * a failure rather than reading as prose.
@@ -84,6 +99,17 @@ export interface MarkdownTheme {
    * silently break.
    */
   tableFontSize?: number;
+  /**
+   * Size of a footnote reference marker, as a multiple of the size of the run it
+   * sits in.
+   *
+   * Relative rather than absolute so a marker in a heading scales with the
+   * heading, exactly as inline math and inline images do. Smaller than the
+   * surrounding prose is the whole visual signal that `[1]` is a reference and
+   * not literal text, since {@link TextStyle} has no baseline shift and a raised
+   * superscript is therefore not expressible — see `markdown-footnote.ts`.
+   */
+  footnoteMarkerScale?: number;
   /** Code-block line height in px. */
   codeLineHeight?: number;
   /**
@@ -151,6 +177,7 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   tableBgColor: 'rgba(15, 15, 25, 0.4)',
   tableHeaderBgColor: 'rgba(255, 255, 255, 0.08)',
   linkColor: '#38bdf8',
+  footnoteColor: '#38bdf8',
   mathFallbackColor: '#fcd34d',
   syntaxKeywordColor: '#c084fc',
   syntaxStringColor: '#86efac',
@@ -162,6 +189,7 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   headingSizes: [32, 28, 24, 20, 18, 16],
   codeFontSize: 15,
   tableFontSize: 14,
+  footnoteMarkerScale: 0.75,
   codeLineHeight: 24,
   bodyLineHeight: 24,
   blockGap: 16,
@@ -195,6 +223,13 @@ export function resolveTheme(theme?: MarkdownTheme): Required<MarkdownTheme> {
   // would pin quotes to the stock colour and silently ignore that override.
   if (theme?.quoteTextColor === undefined) {
     merged.quoteTextColor = merged.textColor;
+  }
+  // A footnote marker follows the link colour unless the caller says otherwise,
+  // for the same reason: it reads as a cross-reference, so a caller who recoloured
+  // links has already expressed what a cross-reference should look like. A literal
+  // default would pin markers to the stock accent and silently ignore that.
+  if (theme?.footnoteColor === undefined) {
+    merged.footnoteColor = merged.linkColor;
   }
   return merged;
 }
