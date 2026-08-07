@@ -1126,6 +1126,26 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
           ? ligatureProjectionRect.height / ligatureProjectionLineHeight
           : 1;
 
+      // CTX-0243: the baseline-shifted run must draw 4px above the runs beside
+      // it (its own baseline, not the shared one) while staying in ONE projected
+      // line whose DOM text reads H2O. Keyed by the exact font shorthand so other
+      // entities' draws can never alias into the delta.
+      const shiftTrace = ((window as any).__vectoFillTrace ?? []) as Array<{
+        text: string;
+        x: number;
+        y: number;
+        font: string;
+      }>;
+      const drawY = (text: string, font: string): number[] =>
+        // The scene re-renders every rAF, so each glyph draws once per frame with
+        // identical coordinates; report all occurrences (several per browser case)
+        // and let the assertions below pick the last.
+        shiftTrace
+          .filter((entry) => entry.text === text && entry.font === font)
+          .map((entry) => entry.y);
+      const shiftedProjection = app.shiftedRich.getContentProjection?.();
+      const shiftedDom = app.scene.getContentElement(app.shiftedRich.id) as HTMLElement | null;
+
       return {
         baselines: {
           text: {
@@ -1160,6 +1180,14 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         codeGrid: { cellWidth: codeCellWidth, lines: codeGrid },
         maxCodeOverlap: Math.max(0, ...overlaps),
         codeOverlapDetails: overlapDetails,
+        shiftedRich: {
+          hY: drawY('H', '20px serif'),
+          twoY: drawY('2', '12px serif'),
+          oY: drawY('O', '20px serif'),
+          projLines: shiftedProjection?.lines?.length ?? -1,
+          projText: shiftedProjection?.text ?? '',
+          domText: shiftedDom?.textContent ?? '',
+        },
       };
     });
 
@@ -1222,6 +1250,32 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         Math.abs(values.actual - values.expected) <= 1,
         `${browserCase.name} ${name} baseline expected ${values.expected}, got ${values.actual}`,
       );
+    }
+    // CTX-0243: baseline shift. The '2' run draws on its OWN baseline — exactly
+    // `shift` above the 20px runs beside it — yet stays inside the single
+    // projected line (and its DOM text) that holds H2O. The delta is invariant
+    // under DPR/zoom because it is a difference of two draws in the same frame.
+    {
+      const s = result.shiftedRich;
+      assert.ok(
+        s.hY.length >= 1 && s.twoY.length >= 1 && s.oY.length >= 1,
+        `${browserCase.name} shiftedRich drew ${JSON.stringify(s)}`,
+      );
+      assert.ok(
+        Math.abs(s.hY.at(-1)! - s.twoY.at(-1)! - 4) <= 0.5,
+        `${browserCase.name} '2' must draw 4px above H (got ${s.hY.at(-1)} vs ${s.twoY.at(-1)})`,
+      );
+      assert.ok(
+        Math.abs(s.hY.at(-1)! - s.oY.at(-1)!) <= 0.5,
+        `${browserCase.name} H and O share one baseline (got ${s.hY.at(-1)} vs ${s.oY.at(-1)})`,
+      );
+      assert.equal(
+        s.projLines,
+        1,
+        `${browserCase.name} shifted run must stay in its line's projection`,
+      );
+      assert.equal(s.projText, 'H2O', `${browserCase.name} projection text must read H2O`);
+      assert.equal(s.domText, 'H2O', `${browserCase.name} DOM text must read H2O`);
     }
     // CTX-0019: the selection box must overlap the drawn glyphs at this DPR/zoom.
     // Both rects are in client px; the tolerance is a few client px to absorb

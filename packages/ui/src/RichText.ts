@@ -575,8 +575,14 @@ export class RichText extends UIComponent {
     const groups: LayoutResult['nodes'][] = [];
     for (const node of this.result.nodes) {
       const previous = groups.at(-1);
-      const baseline = node.y + node.height * 0.8;
-      const previousBaseline = previous ? previous[0].y + previous[0].height * 0.8 : Number.NaN;
+      // Group by the UNSHIFTED baseline: a baseline-shifted run (a superscript,
+      // a footnote marker) belongs to its line's projection and DOM box, not in
+      // a line of its own — the shift only moves the run within the shared
+      // line, and the line box already grew to contain it.
+      const baseline = node.y + (node.style?.baselineShift ?? 0) + node.height * 0.8;
+      const previousBaseline = previous
+        ? previous[0].y + (previous[0].style?.baselineShift ?? 0) + previous[0].height * 0.8
+        : Number.NaN;
       if (!previous || Math.abs(previousBaseline - baseline) > 0.01) groups.push([node]);
       else previous.push(node);
     }
@@ -678,8 +684,7 @@ export class RichText extends UIComponent {
   }
 
   public render(r: IRenderer): void {
-    for (const { nodes, projection: line } of this.visualLineGroups()) {
-      const baseline = line.y + line.baseline;
+    for (const { nodes } of this.visualLineGroups()) {
       let runStart = -1;
       let runText = '';
       let runFont = '';
@@ -687,6 +692,11 @@ export class RichText extends UIComponent {
       let runWidth = 0;
       let runStruck = false;
       let runSize = 0;
+      // The canvas baseline this run draws at. Nodes on one visual line share a
+      // baseline only while unshifted; a baseline-shifted run carries its own
+      // (`y + 0.8h`), and that value joins the coalescing key so a shifted run
+      // never merges into an unshifted one.
+      let runBaseline = 0;
 
       /**
        * Emit the pending run as ONE `fillText`, or fall back to per-character
@@ -713,11 +723,17 @@ export class RichText extends UIComponent {
        * one segment spans them. Struck-ness joins the coalescing key below, so a
        * run is never part struck.
        */
-      const strikeRun = (x: number, width: number, color: string, size: number): void => {
+      const strikeRun = (
+        x: number,
+        width: number,
+        color: string,
+        size: number,
+        atBaseline: number,
+      ): void => {
         // Sit the line on the visual middle of lowercase rather than the text
         // centre: `baseline - size * 0.5` would cut the ascenders of a run like
         // "TALL", and a descender-relative offset drifts with font size.
-        const y = baseline - size * 0.28;
+        const y = atBaseline - size * 0.28;
         r.beginPath();
         r.moveTo(x, y);
         r.lineTo(x + width, y);
@@ -727,18 +743,18 @@ export class RichText extends UIComponent {
 
       const flushRun = (): void => {
         if (runStart < 0) return;
-        if (runStruck) strikeRun(runStart, runWidth, runColor, runSize);
+        if (runStruck) strikeRun(runStart, runWidth, runColor, runSize, runBaseline);
         if (runText.length === 1) {
-          r.fillText(runText, runStart, baseline, runFont, runColor);
+          r.fillText(runText, runStart, runBaseline, runFont, runColor);
         } else {
           const shaped = measureText(runText, runFont);
           if (Math.abs(shaped - runWidth) <= COALESCE_TOLERANCE_PX) {
-            r.fillText(runText, runStart, baseline, runFont, runColor);
+            r.fillText(runText, runStart, runBaseline, runFont, runColor);
           } else {
             // Kerning/ligatures would shift glyphs: draw them where layout said.
             let x = runStart;
             for (const ch of runText) {
-              r.fillText(ch, x, baseline, runFont, runColor);
+              r.fillText(ch, x, runBaseline, runFont, runColor);
               x += measureText(ch, runFont);
             }
           }
@@ -777,13 +793,16 @@ export class RichText extends UIComponent {
         const font = this.nodeFont(node.style, size);
         const isLink = !!node.style?.href;
         const color = node.style?.color ?? (isLink ? this.linkColor : this.color);
+        // This glyph's canvas baseline: its own `y + 0.8h`. Unshifted nodes on a
+        // line all land on the shared baseline; a shifted run lands on its own.
+        const nodeBaseline = node.y + node.height * 0.8;
 
         // Links keep their per-glyph path: each needs its own underline segment,
         // so there is nothing to coalesce.
         if (isLink) {
           flushRun();
-          r.fillText(node.char, node.x, baseline, font, color);
-          const uy = baseline + 2;
+          r.fillText(node.char, node.x, nodeBaseline, font, color);
+          const uy = nodeBaseline + 2;
           r.beginPath();
           r.moveTo(node.x, uy);
           r.lineTo(node.x + node.width, uy);
@@ -792,7 +811,7 @@ export class RichText extends UIComponent {
           // link is reachable and must get its line here too — this branch
           // never reaches `flushRun`'s strike.
           if (node.style?.lineThrough) {
-            strikeRun(node.x, node.width, color, size);
+            strikeRun(node.x, node.width, color, size, nodeBaseline);
           }
           continue;
         }
@@ -807,8 +826,11 @@ export class RichText extends UIComponent {
           font === runFont &&
           color === runColor &&
           // Struck-ness is part of the key, or one line would be stroked across
-          // a run that is only partly struck.
+          // a run that is only partly struck. So is the baseline: a shifted run
+          // draws at its own y, and merging it into an unshifted run would drop
+          // the shift and move its glyphs back onto the shared baseline.
           struck === runStruck &&
+          nodeBaseline === runBaseline &&
           Math.abs(node.x - (runStart + runWidth)) <= COALESCE_TOLERANCE_PX;
 
         if (!contiguous) {
@@ -818,6 +840,7 @@ export class RichText extends UIComponent {
           runColor = color;
           runStruck = struck;
           runSize = size;
+          runBaseline = nodeBaseline;
         }
         runText += node.char;
         runWidth = node.x + node.width - runStart;

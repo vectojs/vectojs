@@ -540,4 +540,65 @@ describe('strikethrough (GFM del)', () => {
     large.render(b.r);
     expect(b.lines[0].width).toBeGreaterThan(a.lines[0].width);
   });
+
+  it('draws a baseline-shifted run on its own baseline', () => {
+    // Positive shift = up: the run's fillText y must sit exactly `shift` above
+    // its unshifted neighbour's, and the two glyphs stay on the same visual line.
+    const { r, calls } = recordingRenderer();
+    new RichText([{ text: 'a' }, { text: 'b', style: { baselineShift: 5 } }]).render(r);
+    const a = calls.find((c) => c.text === 'a')!;
+    const b = calls.find((c) => c.text === 'b')!;
+    expect(b.y).toBeCloseTo(a.y - 5, 5);
+  });
+
+  it('does not coalesce a shifted run into an unshifted one', () => {
+    // The run baseline is part of the coalescing key: without it, the shifted
+    // glyphs would be merged into the preceding run and drawn back on the
+    // shared baseline, silently dropping the shift.
+    const { r, calls } = recordingRenderer();
+    new RichText([{ text: 'ab' }, { text: 'cd', style: { baselineShift: 5 } }]).render(r);
+    expect(calls.map((c) => c.text)).toEqual(['ab', 'cd']);
+    const shifted = calls.find((c) => c.text === 'cd')!;
+    const plain = calls.find((c) => c.text === 'ab')!;
+    expect(shifted.y).toBeCloseTo(plain.y - 5, 5);
+  });
+
+  it('coalesces adjacent shifted glyphs that share one shift', () => {
+    const { r, calls } = recordingRenderer();
+    new RichText([{ text: 'ab', style: { baselineShift: 5 } }]).render(r);
+    expect(calls.map((c) => c.text)).toEqual(['ab']);
+  });
+
+  it('strikes a shifted run on its own baseline', () => {
+    // The strike line hangs off the run's own baseline, or it would cut through
+    // the WRONG vertical position of a raised run. A 12px run raised 3px fits
+    // the line's slack (0.8*(16-12) = 3.2px), so the line does not grow and the
+    // raised run's baseline genuinely sits 3px above the shared one.
+    const shifted = strikeRecordingRenderer();
+    new RichText([
+      { text: 'o', style: { fontSize: 12, baselineShift: 3 } },
+      { text: 'x', style: { lineThrough: true, fontSize: 12, baselineShift: 3 } },
+    ]).render(shifted.r);
+    const plain = strikeRecordingRenderer();
+    new RichText([{ text: 'x', style: { lineThrough: true, fontSize: 12 } }]).render(plain.r);
+    expect(shifted.lines).toHaveLength(1);
+    expect(plain.lines).toHaveLength(1);
+    expect(shifted.lines[0].y1).toBeCloseTo(plain.lines[0].y1 - 3, 5);
+  });
+
+  it("keeps a shifted run inside its line's projection", () => {
+    // A shifted run must not split its visual line: it renders within the shared
+    // line box, so the projection must still describe ONE line holding all text.
+    const rt = new RichText([{ text: 'a' }, { text: 'b', style: { baselineShift: 5 } }]);
+    const lines = rt.getContentProjection()!.lines!;
+    expect(lines).toHaveLength(1);
+    expect(lines[0].text).toBe('ab');
+    // And the projected line baseline tracks the UNSHIFTED baseline, so the DOM
+    // selection box lands where the surrounding text is.
+    const baseline = lines[0].baseline;
+    const { r, calls } = recordingRenderer();
+    rt.render(r);
+    const a = calls.find((c) => c.text === 'a')!;
+    expect(a.y).toBeCloseTo(lines[0].y + baseline, 5);
+  });
 });
