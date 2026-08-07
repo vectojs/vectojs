@@ -21,6 +21,7 @@ import {
 } from './StreamController';
 import { HorizontalRule, MarkdownContainer, QuoteBorder } from './markdown-entities';
 import { CodeBlock } from './markdown-code';
+import { FOOTNOTE_EXTENSIONS, type FootnoteDefToken, footnoteMarker } from './markdown-footnote';
 import {
   containsInlineMath,
   exToPx,
@@ -92,7 +93,11 @@ function lexMarkdown(text: string, userTiming: boolean): TokensList {
 }
 
 marked.use({
+  // `FOOTNOTE_EXTENSIONS` is shared with `MarkdownWorker.ts` rather than spelled
+  // out twice: the two registration sites must agree exactly, or the worker
+  // returns tokens this renderer has no arm for.
   extensions: [
+    ...FOOTNOTE_EXTENSIONS,
     {
       name: 'blockMath',
       level: 'block',
@@ -344,6 +349,9 @@ interface BlockMetrics {
  * - **Unordered / ordered lists** with bullets / numbers
  * - **Horizontal rules**
  * - **Inline code** (via backticks)
+ * - **Footnotes** — `[^1]` renders as a small tinted `[1]` marker, and
+ *   `[^1]: note` as its own block. Single-line definitions only; see
+ *   `markdown-footnote.ts`.
  *
  * @example
  * const md = new Markdown('# Hello\\nSome *text*', { maxWidth: 600 });
@@ -965,6 +973,16 @@ export class Markdown extends UIComponent {
 
       case 'hr': {
         if (entity instanceof HorizontalRule) entity.width = availableWidth;
+        return;
+      }
+
+      case 'footnoteDef': {
+        // Its own arm rather than joining `heading`/`paragraph` above: those
+        // dispatch on `RichText` vs `Stack` because an image can split them, which
+        // a definition never is. Reaching the `default:` arm instead would be a
+        // silent no-op — that arm only handles `Text`, and this builds a
+        // `RichText`, so a resized definition would keep its old width forever.
+        if (entity instanceof RichText) entity.setMaxWidth(availableWidth);
         return;
       }
 
@@ -3070,6 +3088,12 @@ export class Markdown extends UIComponent {
       case 'list':
       case 'table':
       case 'hr':
+      // A footnote definition is the only block-level token this package adds, so
+      // it is the only one for which this three-way lockstep (here,
+      // `renderToken`, `reflowToken`) has to be established rather than inherited.
+      // It renders its own block, so it produces an entity — see `renderToken`'s
+      // arm for why in place rather than collected into a document footer.
+      case 'footnoteDef':
         return true;
       default:
         return 'text' in token;
@@ -3413,6 +3437,46 @@ export class Markdown extends UIComponent {
           }),
           () => this.tableAffordances(tblToken),
         );
+      }
+
+      // ── Footnote definition (`[^1]: note`) ───────────────────────────
+      case 'footnoteDef': {
+        // Rendered WHERE IT STANDS, as its own block, rather than being collected
+        // into a document-end footer. Both are defensible and the choice is
+        // silent, so it is written down here.
+        //
+        // A footer would have to be an entity belonging to no token, which breaks
+        // the one invariant this file leans on hardest: `updateTokens` maps token
+        // indices to child-entity indices, and `producesEntity` exists precisely
+        // because a mismatch there updates or destroys the WRONG entity. A
+        // synthesized trailing child is exactly that mismatch, and it would have
+        // to be maintained across every streamed append.
+        //
+        // In place also costs the reader almost nothing: definitions are
+        // conventionally written at the bottom of the document already, so this
+        // renders them roughly where a footer would put them, and it stays correct
+        // when they are not. Nothing is silently dropped and nothing is
+        // synthesized.
+        const fnToken = token as FootnoteDefToken;
+        const spans: StyledSpan[] = [
+          {
+            text: footnoteMarker(fnToken.label),
+            style: { color: t.footnoteColor },
+          },
+          { text: ' ' },
+        ];
+        // The body's inline markup is deliberately NOT parsed. The tokenizer keeps
+        // `body` as source text, so `**bold**` in a note shows its asterisks. That
+        // is the honest shape of a single-line-only definition and it keeps the
+        // token free of a nested inline tree the incremental differ would have to
+        // reason about; parsing it is a contained follow-up, not a silent gap.
+        if (fnToken.body) spans.push({ text: decodeEntities(fnToken.body) });
+        return new RichText(spans, {
+          font: bodyFont,
+          color: t.textColor,
+          maxWidth: availableWidth,
+          selectable: this.selectable,
+        });
       }
 
       // ── Horizontal rule ──────────────────────────────────────────────

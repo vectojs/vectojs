@@ -5,6 +5,7 @@ import {
   lexAppend,
   lexFull,
 } from './incrementalLex';
+import { FOOTNOTE_EXTENSIONS } from './markdown-footnote';
 
 interface WorkerTimingSpan {
   name: string;
@@ -54,7 +55,10 @@ function endUserTiming(span: WorkerTimingSpan | null): void {
 }
 
 marked.use({
+  // Shared with `Markdown.ts`'s registration — see the lockstep note there and in
+  // `markdown-footnote.ts`. esbuild inlines this import into the worker bundle.
   extensions: [
+    ...FOOTNOTE_EXTENSIONS,
     {
       name: 'blockMath',
       level: 'block',
