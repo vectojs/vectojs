@@ -196,14 +196,40 @@ marked.use({
       tokenizer(src) {
         // Display math: `$$...$$`, opening at the start of a line (up to three
         // spaces of indent, as CommonMark allows for other block starts). The
-        // content may span lines; the first closing `$$` ends it.
+        // content may span lines; the first closing `$$` or blank line ends it.
         //
         // This must exist as a *block* rule. The inline `inlineMath` rule below
         // deliberately refuses `$$` to protect currency ("$5 to $10"), so with
         // no block rule marked's text tokenizer consumes the leading `$`, the
         // inline rule then matches the inner `$...$` pair, and the outer two
         // dollars are painted as literal text on either side of the formula.
-        const match = /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+        //
+        // **Blank-line termination**: a blank line inside `$$..$$` ends the
+        // construct, so `(?:(?!\n\n)[\s\S])+?` replaces a bare `[\s\S]+?` —
+        // any character *except* across a blank line, stopping at the first
+        // `\n\n` or closing `$$`. `$$\nopen\n\npara\n$$\n` is therefore a
+        // paragraph run rather than one formula spanning the gap.
+        //
+        // This closes the FORWARD half of the reach `incrementalLex.ts`
+        // documents: an unterminated `$$` can no longer absorb arbitrarily much
+        // following text once its closing fence arrives.
+        //
+        // It does **not** on its own make math documents lex incrementally, and
+        // must not be described as if it did. `hasBlockMathOpener` still
+        // degrades any instance containing a line-start `$$`
+        // (`incrementalLex.ts`), because the BACKWARD half of the reach is
+        // independent of this regex: `start()` above reports a position to
+        // marked's `blockTokens`, which clips the paragraph tokenizer and merges
+        // the next paragraph into the clipped one — a `$$` ahead re-groups
+        // paragraphs already emitted. Verified after this change: `lexFull` on
+        // `'Intro.\n\n$$\nx = 1\n$$\n\nAfter.\n'` still reports
+        // `degradedReason: 'block-math'`.
+        //
+        // So the streaming payoff is still owed, and lifting the gate is a
+        // separate change that has to answer the backward reach. Do not quote a
+        // speedup here until `degradedReason` is null for a math document and
+        // the number comes from `benchmarks/run-browsers.sh`.
+        const match = /^ {0,3}\$\$((?:(?!\n\n)[\s\S])+?)\$\$[ \t]*(?:\n|$)/.exec(src);
         if (match) {
           return {
             type: 'blockMath',

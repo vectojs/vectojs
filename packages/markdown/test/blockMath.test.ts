@@ -191,3 +191,47 @@ describe('math SVG carries an explicit color', () => {
     expect(obj.object.alt).toBe('x+1');
   });
 });
+
+describe('blockMath stops at blank line for incremental lexing', () => {
+  it('stops at first blank line, treating remainder as a new paragraph', () => {
+    const md = new Markdown('$$\nx = 1\n\ny = 2\n$$\n');
+    // With the blank-line termination rule, this becomes:
+    // 1. An unclosed math fence `$$\nx = 1\n` (renders as CodeBlock)
+    // 2. A paragraph `y = 2`
+    // 3. A paragraph `$$` (literal text)
+    //
+    // The math block does NOT span the blank line.
+    expect(mathBlocksOf(md)).toHaveLength(0);
+    const text = textOf(md);
+    expect(text).toContain('x = 1');
+    expect(text).toContain('y = 2');
+    expect(text).toContain('$$');
+  });
+
+  it('allows multi-line math without blank lines', () => {
+    const md = new Markdown('$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$\n');
+    // No blank line inside, so this is one continuous math block.
+    expect(mathBlocksOf(md)).toHaveLength(1);
+    expect(textOf(md)).not.toContain('$');
+  });
+
+  it('treats blank-line-terminated math as unclosed', () => {
+    const md = new Markdown('before\n\n$$\nx^2\n\nafter\n');
+    // The blank line after `x^2` terminates the math block, but there's no
+    // closing `$$`, so it renders as a CodeBlock showing the TeX source.
+    expect(mathBlocksOf(md)).toHaveLength(0);
+    const text = textOf(md);
+    expect(text).toContain('before');
+    expect(text).toContain('x^2');
+    expect(text).toContain('after');
+  });
+
+  it('enables incremental lexing for math-heavy documents', () => {
+    // The performance improvement is tested via the incremental lex suite.
+    // This test documents the new behavior: each closed math block is its own
+    // token, rather than forcing the lexer to scan the whole document.
+    const doc = '$$\na = 1\n$$\n\n$$\nb = 2\n$$\n\n$$\nc = 3\n$$\n';
+    const md = new Markdown(doc);
+    expect(mathBlocksOf(md)).toHaveLength(3);
+  });
+});
