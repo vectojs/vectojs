@@ -20,11 +20,21 @@ Introduces a new registry system that allows custom renderers to be registered f
 
 **Changes:**
 
-- Code and math block rendering now uses the registry internally
-- Built-in renderers (code, math) are auto-registered at module initialization
-- Registry follows the same lazy-load + cache pattern as math rendering
-- Graceful fallback to `CodeBlock` when no renderer is available
-- Fully backward compatible - existing code/math blocks work unchanged
+- Purely additive: the registry is consulted only for languages the built-in
+  `code` and `math` arms do not already claim, so both keep their exact existing
+  paths and are deliberately **not** registry entries. Display math depends on
+  instance state the registry cannot reach (it subscribes for raster repaint and
+  wraps its formula in a `RichText` inline object so selection, find-in-page and
+  the a11y projection reach it), and a module-level copy of that logic diverges
+  silently.
+- Registry follows the same lazy-load + `incomplete → ready → error` pattern as
+  math rendering, prefetching on the opening fence so a streamed block can render
+  synchronously once it closes.
+- A renderer is only invoked once its fence is **closed**, the same rule math
+  already applies — a half-arrived source is never handed to a renderer as final.
+- Graceful fallback to `CodeBlock` when no renderer is registered, its load has
+  not resolved, it failed to load, or it returned `null`.
+- Fully backward compatible — existing code/math blocks are untouched.
 
 **Example:**
 

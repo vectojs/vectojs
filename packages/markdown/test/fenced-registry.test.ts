@@ -176,17 +176,25 @@ describe('FencedBlockRegistry', () => {
     });
   });
 
-  describe('built-in renderers', () => {
-    it('has code block renderers registered', () => {
-      expect(hasFencedBlockRenderer('javascript')).toBe(true);
-      expect(hasFencedBlockRenderer('python')).toBe(true);
-      expect(hasFencedBlockRenderer('rust')).toBe(true);
-    });
-
-    it('has math renderers registered', () => {
-      expect(hasFencedBlockRenderer('math')).toBe(true);
-      expect(hasFencedBlockRenderer('latex')).toBe(true);
-      expect(hasFencedBlockRenderer('tex')).toBe(true);
+  /**
+   * `code` and `math` are deliberately NOT registry entries.
+   *
+   * An earlier revision of this work registered them as "built-in" renderers and
+   * had the render arm consult the registry first. That required re-implementing
+   * instance-bound logic at module level, and the copy silently diverged: it
+   * called `MathBlock` with the wrong arity and dropped the `RichText` inline
+   * object that carries selection, find-in-page and the a11y projection. Seven
+   * `streamingMath` tests caught it — these tests did not, because they only ever
+   * exercise fake renderers.
+   *
+   * So the registry is purely additive, and this asserts that: claiming a
+   * built-in language must not be possible by accident.
+   */
+  describe('built-ins are not registry entries', () => {
+    it('leaves code and math languages unclaimed', () => {
+      for (const lang of ['javascript', 'python', 'rust', 'math', 'latex', 'tex']) {
+        expect(hasFencedBlockRenderer(lang)).toBe(false);
+      }
     });
   });
 });
