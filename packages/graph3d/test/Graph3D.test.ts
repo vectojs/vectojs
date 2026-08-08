@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Graph3D } from '../src/Graph3D';
 import type { GraphData } from '../src/types';
 
@@ -105,7 +105,10 @@ describe('Graph3D', () => {
   it('throws on links referencing unknown node ids', () => {
     const graph = new Graph3D();
     expect(() =>
-      graph.setGraphData({ nodes: [{ id: 'a' }], links: [{ source: 'a', target: 'ghost' }] }),
+      graph.setGraphData({
+        nodes: [{ id: 'a' }],
+        links: [{ source: 'a', target: 'ghost' }],
+      }),
     ).toThrow(/unknown node id/);
   });
 
@@ -164,5 +167,102 @@ describe('Graph3D', () => {
     const raycaster = new THREE.Raycaster();
     raycaster.set(new THREE.Vector3(0, 0, 10), new THREE.Vector3(0, 0, -1));
     expect(graph.pickNode(raycaster)).toBeNull();
+  });
+});
+
+describe('Graph3D.applyPositions undersized array', () => {
+  /** 3 nodes need 9 floats; this supplies 6, so node 2 would read past the end. */
+  const SHORT = new Float32Array([1, 2, 3, -4, 5, -6]);
+
+  it('writes no NaN transform and leaves the bounding sphere finite', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+    graph.applyPositions(POSITIONS);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    graph.applyPositions(SHORT);
+    warn.mockRestore();
+
+    const mesh = findInstancedMesh(graph);
+    // Every instance matrix element stays finite. Before the guard, node 2 read
+    // three `undefined`s and `setPosition` wrote NaN into its matrix.
+    const matrix = new THREE.Matrix4();
+    for (let i = 0; i < mesh.count; i++) {
+      mesh.getMatrixAt(i, matrix);
+      for (const element of matrix.elements) expect(Number.isFinite(element)).toBe(true);
+    }
+    // A NaN sphere is the damaging part: frustum culling rejects the whole mesh,
+    // so one missing tail position blanks the entire graph.
+    const sphere = mesh.boundingSphere!;
+    expect(Number.isFinite(sphere.radius)).toBe(true);
+    expect(Number.isFinite(sphere.center.x)).toBe(true);
+    expect(Number.isFinite(sphere.center.y)).toBe(true);
+    expect(Number.isFinite(sphere.center.z)).toBe(true);
+    graph.dispose();
+  });
+
+  it('leaves the previous good positions in place rather than partially writing', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+    graph.applyPositions(POSITIONS);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    graph.applyPositions(SHORT);
+    warn.mockRestore();
+
+    // Node 1 keeps the position from the last valid call — the guard returns
+    // before writing anything, so there is no half-applied frame.
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    findInstancedMesh(graph).getMatrixAt(1, matrix);
+    position.setFromMatrixPosition(matrix);
+    expect([position.x, position.y, position.z]).toEqual([-4, 5, -6]);
+    graph.dispose();
+  });
+
+  it('warns once per setGraphData, not once per frame', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // applyPositions is a per-frame layout callback: an unlatched warn would
+    // emit at the display refresh rate and bury the rest of the console.
+    for (let i = 0; i < 5; i++) graph.applyPositions(SHORT);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // A new graph is a new caller contract, so the latch resets.
+    graph.setGraphData(DATA);
+    graph.applyPositions(SHORT);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+    graph.dispose();
+  });
+
+  it('accepts an array longer than the node count', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    graph.applyPositions(new Float32Array([...POSITIONS, 99, 99, 99]));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    findInstancedMesh(graph).getMatrixAt(2, matrix);
+    position.setFromMatrixPosition(matrix);
+    expect([position.x, position.y, position.z]).toEqual([7, -8, 9]);
+    graph.dispose();
+  });
+
+  it('does not warn for an empty graph applied an empty array', () => {
+    const graph = new Graph3D();
+    graph.setGraphData({ nodes: [], links: [] });
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    graph.applyPositions(new Float32Array(0));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+    graph.dispose();
   });
 });
