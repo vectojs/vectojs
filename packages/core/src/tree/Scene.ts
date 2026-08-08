@@ -6242,17 +6242,6 @@ export class Scene {
     let selFocusOffset = 0;
     let selectionSnapshotTaken = false;
     let selectionMoved = false;
-    const snapshotSelection = (): void => {
-      selectionSnapshotTaken = true;
-      if (typeof window === 'undefined' || typeof window.getSelection !== 'function') return;
-      const live = window.getSelection();
-      if (!live?.anchorNode || !live.focusNode) return;
-      selection = live;
-      selAnchorNode = live.anchorNode;
-      selFocusNode = live.focusNode;
-      selAnchorOffset = live.anchorOffset;
-      selFocusOffset = live.focusOffset;
-    };
 
     this.a11yOrderCursors.clear();
     for (let i = 0; i < totalLen; i++) {
@@ -6272,8 +6261,25 @@ export class Scene {
         const refocus = document.activeElement === expected;
         // Resolved on the first move of the pass and reused for the rest, so the
         // forced layout is paid once per REORDERING pass rather than once per
-        // moved element.
-        if (!selectionSnapshotTaken) snapshotSelection();
+        // moved element. Inlined rather than factored into a helper closure: an
+        // assignment made inside a closure is invisible to TypeScript's
+        // control-flow analysis, which then narrows `selection` to `null` for the
+        // whole function and rejects the restore below as a property access on
+        // `never`.
+        if (!selectionSnapshotTaken) {
+          selectionSnapshotTaken = true;
+          const live =
+            typeof window !== 'undefined' && typeof window.getSelection === 'function'
+              ? window.getSelection()
+              : null;
+          if (live?.anchorNode && live.focusNode) {
+            selection = live;
+            selAnchorNode = live.anchorNode;
+            selFocusNode = live.focusNode;
+            selAnchorOffset = live.anchorOffset;
+            selFocusOffset = live.focusOffset;
+          }
+        }
         // A move only breaks the selection when an endpoint lives inside the
         // moved subtree, so each subsequent moved element costs one `contains`
         // against the snapshot — no further `Selection` access.
