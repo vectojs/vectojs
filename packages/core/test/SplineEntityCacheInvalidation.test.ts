@@ -145,4 +145,97 @@ describe('SplineEntity cache invalidation', () => {
     expect(entity.doc).toBe(newDoc);
     expect(entity.lineWidth).toBe(7);
   });
+
+  describe('containsGradient recompute on doc swap', () => {
+    /** Same geometry as `sampleDoc`, but the stroke is a gradient. */
+    const gradientDoc: SplineDocument = {
+      type: 'Spline',
+      equations: [
+        {
+          color_rgb: {
+            start_pos: [0, 0],
+            end_pos: [1, 1],
+            stops: [
+              [0, [1, 0, 0]],
+              [1, [0, 0, 1]],
+            ],
+          },
+          data: [
+            {
+              start_t: 0,
+              end_t: 1,
+              x_poly: [0, 1, 0, 0],
+              y_poly: [0, 0, 1, 0],
+            },
+          ],
+        },
+      ],
+      bounding_box: [0, 0, 100, 100],
+    };
+
+    it('sets containsGradient when a solid doc is replaced by a gradient one', () => {
+      // `containsGradient` selects the render path: `render()` only takes the
+      // bake path when it is false. It used to be `readonly`, computed once in
+      // the constructor, so this swap left it stale at `false` and sent a
+      // gradient document through `bake()` — which has no gradient support and
+      // substitutes `defaultColor`, flattening the gradient to one solid color
+      // with no warning.
+      const entity = new SplineEntity(sampleDoc, { cache: true });
+      const priv = entity as unknown as { containsGradient: boolean };
+      expect(priv.containsGradient).toBe(false);
+
+      entity.doc = gradientDoc;
+      expect(priv.containsGradient).toBe(true);
+    });
+
+    it('clears containsGradient when a gradient doc is replaced by a solid one', () => {
+      // The reverse direction matters for performance rather than correctness:
+      // a stale `true` permanently disables baking for an entity that is now
+      // bakeable, paying per-frame stroking forever.
+      const entity = new SplineEntity(gradientDoc, { cache: true });
+      const priv = entity as unknown as { containsGradient: boolean };
+      expect(priv.containsGradient).toBe(true);
+
+      entity.doc = sampleDoc;
+      expect(priv.containsGradient).toBe(false);
+    });
+
+    it('detects a gradient on a path, not only on an equation', () => {
+      const entity = new SplineEntity(sampleDoc);
+      const priv = entity as unknown as { containsGradient: boolean };
+
+      entity.doc = {
+        type: 'Polyline',
+        paths: [
+          {
+            color_rgb: {
+              start_pos: [0, 0],
+              end_pos: [1, 0],
+              stops: [
+                [0, [0, 1, 0]],
+                [1, [0, 0, 1]],
+              ],
+            },
+            data: [
+              { x: 0, y: 0 },
+              { x: 10, y: 10 },
+            ],
+          },
+        ],
+      };
+      expect(priv.containsGradient).toBe(true);
+    });
+
+    it('keeps the bake path for a solid doc after the swap', () => {
+      // Guards the flag's actual consumer: render() must still be willing to
+      // bake a solid document that arrived via the setter.
+      const entity = new SplineEntity(gradientDoc, { cache: true });
+      const priv = entity as unknown as {
+        containsGradient: boolean;
+        cache: boolean;
+      };
+      entity.doc = sampleDoc;
+      expect(priv.cache && !priv.containsGradient).toBe(true);
+    });
+  });
 });

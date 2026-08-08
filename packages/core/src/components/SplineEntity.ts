@@ -170,8 +170,12 @@ export class SplineEntity extends Entity {
   /** Logical (CSS-pixel) size of the baked bitmap — the blit destination size. */
   private bakedWidth = 0;
   private bakedHeight = 0;
-  /** Gradient strokes can't be baked to a solid-color bitmap; they render per-frame. */
-  private readonly containsGradient: boolean;
+  /**
+   * Gradient strokes can't be baked to a solid-color bitmap; they render
+   * per-frame. Derived from `_doc`, so it is NOT readonly — assigning a new
+   * document has to recompute it (see the `doc` setter).
+   */
+  private containsGradient: boolean;
   /** Lazily-flattened polylines (one Float32Array of [x,y,...] per segment) for hit-testing. */
   private polylines: Float32Array[] | null = null;
 
@@ -189,6 +193,13 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
+    // MUST be recomputed here, not just in the constructor: it selects the
+    // render path. Swapping a solid-color document for one containing a
+    // gradient while this still read `false` sent the gradient down the bake
+    // path, where `bake()` has no gradient support and falls back to
+    // `defaultColor` — the gradient silently rendered as one flat color, with
+    // the per-frame `resolveColor` path never reached.
+    this.containsGradient = this.computeContainsGradient();
   }
 
   /**
@@ -222,12 +233,22 @@ export class SplineEntity extends Entity {
     this.bounds = this.computeBounds();
     this.width = this.bounds.width;
     this.height = this.bounds.height;
-    const isGradient = (c: SplineColor) => c !== null && !Array.isArray(c);
-    this.containsGradient =
-      (this._doc.equations?.some((eq) => isGradient(eq.color_rgb)) ?? false) ||
-      (this._doc.paths?.some((p) => isGradient(p.color_rgb)) ?? false);
+    this.containsGradient = this.computeContainsGradient();
     // Enable a11y shadow layer by default so pointer events are dispatched.
     this.interactive = true;
+  }
+
+  /**
+   * Whether any stroke in the current document is a gradient. Shared by the
+   * constructor and the `doc` setter so both stay in agreement — the flag picks
+   * the render path, so a stale value renders a gradient as a flat color.
+   */
+  private computeContainsGradient(): boolean {
+    const isGradient = (c: SplineColor) => c !== null && !Array.isArray(c);
+    return (
+      (this._doc.equations?.some((eq) => isGradient(eq.color_rgb)) ?? false) ||
+      (this._doc.paths?.some((p) => isGradient(p.color_rgb)) ?? false)
+    );
   }
 
   /** Clear cached baked canvas and hit-test polylines. */
