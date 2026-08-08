@@ -36,7 +36,6 @@ import {
   containsInlineMath,
   exToPx,
   isMathJaxReady,
-  MATH_LANGS,
   MathBlock,
   paintInlineMath,
   preloadMathJax,
@@ -52,6 +51,13 @@ import {
   renderInlineToRichText,
   type UnclosedInline,
 } from './markdown-inline';
+import {
+  registerFencedBlockRenderer,
+  ensureFencedBlockRenderer,
+  renderFencedBlock,
+} from './markdown-fenced-registry';
+import { codeBlockRenderer, CODE_BLOCK_LANGS } from './markdown-fenced-code';
+import { mathBlockRendererSpec, MATH_LANGS as MATH_RENDERER_LANGS } from './markdown-fenced-math';
 
 // `MathBlock`, `preloadMathJax` and `isMathJaxReady` were exported from this
 // module before the math cluster moved to `markdown-math.ts`. Re-exported so the
@@ -83,6 +89,22 @@ export type { MarkdownTheme } from './theme';
 export type { MarkdownThemePresetName } from './markdown-presets';
 export { isPresetName, PRESET_THEMES, resolvePresetTheme } from './markdown-presets';
 
+// Fenced block registry: pluggable rendering for code fences keyed by info string.
+// Exposed as public API for registering custom renderers (Mermaid, Graphviz, etc.).
+export {
+  registerFencedBlockRenderer,
+  unregisterFencedBlockRenderer,
+  hasFencedBlockRenderer,
+  isFencedBlockRendererReady,
+  ensureFencedBlockRenderer,
+  renderFencedBlock,
+} from './markdown-fenced-registry';
+export type {
+  FencedBlockRenderer,
+  FencedBlockRendererSpec,
+  FencedBlockRenderOptions,
+} from './markdown-fenced-registry';
+
 /**
  * Monotonic clock, falling back to `Date.now` where `performance` is absent.
  *
@@ -110,6 +132,34 @@ function mapsEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string
   }
   return true;
 }
+
+/**
+ * Register built-in fenced block renderers.
+ *
+ * Code blocks are registered synchronously (no lazy load), while math blocks
+ * use the existing lazy-load machinery. This happens at module initialization
+ * so the registry is populated before any `Markdown` instance renders.
+ *
+ * Custom renderers (Mermaid, Graphviz, etc.) are registered by the consumer via
+ * the public `registerFencedBlockRenderer` API.
+ */
+(function initializeBuiltinRenderers() {
+  // Register code block renderer for common programming languages.
+  // This is synchronous — no lazy load, just a wrapper around `CodeBlock`.
+  for (const lang of CODE_BLOCK_LANGS) {
+    registerFencedBlockRenderer(lang, {
+      async load() {
+        return codeBlockRenderer;
+      },
+    });
+  }
+
+  // Register math block renderer for math languages (math, latex, tex).
+  // This uses the existing lazy-load machinery from `markdown-math.ts`.
+  for (const lang of MATH_RENDERER_LANGS) {
+    registerFencedBlockRenderer(lang, mathBlockRendererSpec);
+  }
+})();
 
 function lexMarkdown(text: string, userTiming: boolean): TokensList {
   if (!userTiming) return marked.lexer(text);
@@ -3447,27 +3497,40 @@ export class Markdown extends UIComponent {
         const codeToken = token as Tokens.Code;
         const lang = (codeToken.lang ?? '').toLowerCase();
 
-        // A math fence is typeset only once its closing fence arrives. While it
-        // is still open it renders as an ordinary CodeBlock showing the TeX
-        // source, which is both the honest thing to show (the formula genuinely
-        // is not finished) and the cheap one: MathJax is the most expensive call
-        // in this package, and converting every prefix of a streamed formula
-        // spends all of it on syntactically invalid TeX that renders as an error
-        // glyph nobody wants to see. As a CodeBlock it also gets the existing
-        // `setCode` in-place update, so the growing source costs one mutator
-        // call per chunk instead of a rebuild.
-        // Begin loading MathJax as soon as a math fence appears, even while it is
-        // still open. During a stream that prefetch is what hides the lazy load
-        // entirely: the module is fetched over the several chunks it takes the
-        // formula to arrive, so the closing fence typesets on the synchronous
-        // path below.
-        if (MATH_LANGS.has(lang)) this.ensureMathJax();
+        // Begin loading the renderer for this language as soon as a fence appears,
+        // even while it is still open (incomplete). During a stream this prefetch
+        // hides the lazy load entirely: the module is fetched over the several
+        // chunks it takes the fence to close, so the closing fence can render on
+        // the synchronous path below.
+        //
+        // For math fences specifically: an open fence renders as an ordinary
+        // CodeBlock showing the TeX source, which is both the honest thing to show
+        // (the formula genuinely is not finished) and the cheap one: MathJax is
+        // the most expensive call in this package, and converting every prefix of
+        // a streamed formula spends all of it on syntactically invalid TeX that
+        // renders as an error glyph nobody wants to see. As a CodeBlock it also
+        // gets the existing `setCode` in-place update, so the growing source costs
+        // one mutator call per chunk instead of a rebuild.
+        ensureFencedBlockRenderer(lang);
 
-        if (rendersAsMath(codeToken)) {
-          const mathBlock = this.renderDisplayMath(codeToken.text, availableWidth);
-          if (mathBlock) return mathBlock;
+        // Try the registry first. If a renderer is registered and ready, use it.
+        // Math fences are only rendered once closed (see `rendersAsMath`), so an
+        // open math fence falls through to the CodeBlock below.
+        const registryOptions = {
+          theme: t,
+          availableWidth,
+          selectable: this.selectable,
+        };
+        const rendered = renderFencedBlock(codeToken.text, lang, registryOptions);
+        if (rendered) {
+          return this.withBlockAffordances(rendered, () =>
+            this.codeBlockAffordances(codeToken.text, lang),
+          );
         }
 
+        // Fallback: no renderer registered, renderer not loaded yet, or renderer
+        // returned null (e.g., empty source, open fence). Render as a plain code
+        // block.
         return this.withBlockAffordances(
           new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable),
           () => this.codeBlockAffordances(codeToken.text, lang),
