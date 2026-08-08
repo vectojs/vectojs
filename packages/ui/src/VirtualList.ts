@@ -563,13 +563,17 @@ export class VirtualList<T = unknown> extends UIComponent {
   }
 
   private _bindEvents(): void {
-    this.on('wheel', (e: WheelEvent) => {
+    this.on('wheel', (e) => {
       if (e.ctrlKey) return;
       e.preventDefault();
-      this._targetY += e.deltaY;
+      const deltaY = e.deltaY ?? 0;
+      const deltaMode = e.deltaMode ?? 0;
+      let scrollDelta = deltaY;
+      if (deltaMode === 1) scrollDelta = deltaY * 16;
+      else if (deltaMode === 2) scrollDelta = deltaY * this.height;
+      this._targetY += scrollDelta;
       this._clamp();
       this._latchBottom();
-      this.scene?.markDirty();
     });
     this.on('pointerdown', (e: { localY?: number }) => {
       if (e.localY === undefined) return;

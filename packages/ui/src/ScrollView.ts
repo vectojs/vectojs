@@ -76,10 +76,17 @@ export class ScrollView extends UIComponent {
     // engaged — visibly stepping/jumping instead of gliding.
     this.content.setTransition({ y: opts.scrollPhysics ?? 'spring' });
 
-    this.on('wheel', (e: WheelEvent) => {
+    this.on('wheel', (e) => {
       if (e.ctrlKey) return; // Allow browser zoom (Ctrl+wheel)
       e.preventDefault();
-      this.targetY -= e.deltaY;
+      const deltaY = e.deltaY ?? 0;
+      const deltaMode = e.deltaMode ?? 0;
+      // Convert deltaMode: 0=pixels (unchanged), 1=lines (~16px), 2=pages (viewport height)
+      let scrollDelta = deltaY;
+      if (deltaMode === 1)
+        scrollDelta = deltaY * 16; // line mode
+      else if (deltaMode === 2) scrollDelta = deltaY * this.height; // page mode
+      this.targetY -= scrollDelta;
       this.clampTarget();
       this.content.y = this.targetY; // retargets the spring; preserves velocity
     });
