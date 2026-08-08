@@ -2782,6 +2782,16 @@ export class Scene {
    *  else the canvas). Stored so `destroy()` detaches from the same element. */
   private pointerEventTarget: HTMLElement | null = null;
   private hasWarnedZeroSize: boolean = false;
+  /**
+   * Latch for {@link Scene.resize}'s invalid-dimension warning.
+   *
+   * Separate from `hasWarnedZeroSize`: that one fires for a tolerated zero-size
+   * scene at `start()`, this one for a rejected resize, and sharing the flag
+   * would let either suppress the other's first (and only) report. Latched
+   * because `resize()` is commonly driven from a `ResizeObserver`, which would
+   * otherwise warn on every frame of a drag.
+   */
+  private hasWarnedInvalidResize: boolean = false;
   private fontLoadHandler: (() => void) | null = null;
 
   // ── Dev-mode warning infrastructure ──────────────────────────────
@@ -7479,8 +7489,38 @@ export class Scene {
 
   /**
    * Manually resize the Scene's viewport.
+   *
+   * Rejects a negative or non-finite dimension, keeping the last known-good
+   * size. `0` is accepted: a zero-size scene is tolerated and warned about at
+   * {@link start} instead, and rejecting it here would contradict that.
    */
   public resize(width: number, height: number): void {
+    // Reject rather than clamp. Storing the arguments verbatim let `Scene.width`
+    // read -10 (or NaN) while the canvas element, whose width/height setters
+    // clamp or no-op, sat at 0 — the logical viewport and the backing store
+    // disagreeing, with culling and a11y geometry then computed from the bogus
+    // value. Clamping would invent a viewport the caller never asked for and
+    // hide the bug at the call site; returning leaves the previous size intact,
+    // which is the safer state for a formula-driven resize that briefly produces
+    // garbage. (carryctx CTX-0276, DEC-0013)
+    //
+    // `0` stays valid: `start()` already warns about a zero-size scene rather
+    // than rejecting it (`hasWarnedZeroSize` below), and the DPR change handler
+    // re-invokes `resize(this.width, this.height)`, which on a legitimately
+    // 0-size scene must still rescale the backing store.
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) {
+      // Latched: `resize()` is commonly driven from a `ResizeObserver`, so an
+      // unlatched warning would spam every frame of a drag.
+      if (!this.hasWarnedInvalidResize) {
+        console.warn(
+          `[VectoJS] Scene.resize() ignored invalid dimensions (width: ${width}, height: ${height}). ` +
+            'Width and height must be finite and non-negative; the previous viewport size was kept.',
+        );
+        this.hasWarnedInvalidResize = true;
+      }
+      return;
+    }
+
     this.width = width;
     this.height = height;
     // Browser zoom emits resize and may change native Range geometry even

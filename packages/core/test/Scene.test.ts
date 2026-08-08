@@ -2592,3 +2592,134 @@ describe('Scene User Timing', () => {
     }
   });
 });
+
+/**
+ * `resize()` used to store its arguments verbatim, so `Scene.width` could read
+ * -10 (or NaN) while the canvas element — whose width/height setters clamp or
+ * no-op — sat at 0. The logical viewport and the backing store then disagreed,
+ * and culling plus a11y geometry were computed from the bogus value.
+ *
+ * The chosen policy is warn-and-return rather than clamping, and `0` stays valid
+ * (`start()` warns about a zero-size scene rather than rejecting it, and the DPR
+ * change handler re-invokes `resize(this.width, this.height)`). Recorded as
+ * carryctx DEC-0013.
+ */
+describe('Scene.resize() dimension validation', () => {
+  function makeScene() {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    // The shared mock ctx cannot service CanvasRenderer.resize; this suite is
+    // about Scene's own bookkeeping, not the renderer's pixel math.
+    (scene as any).renderer = {};
+    scene.resize(800, 600);
+    return scene;
+  }
+
+  for (const [label, width, height] of [
+    ['a negative width', -10, 600],
+    ['a negative height', 800, -10],
+    ['NaN', Number.NaN, 600],
+    ['Infinity', Number.POSITIVE_INFINITY, 600],
+    ['-Infinity', 800, Number.NEGATIVE_INFINITY],
+  ] as const) {
+    it(`ignores ${label} and keeps the previous size`, () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const scene = makeScene();
+
+        scene.resize(width, height);
+
+        expect(scene.width).toBe(800);
+        expect(scene.height).toBe(600);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  }
+
+  it('leaves the canvas backing store untouched on a rejected resize', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = makeScene();
+      const gpuCanvas = { width: 800, height: 600, style: {} };
+      (scene as any).gpuCanvas = gpuCanvas;
+
+      scene.resize(-10, -10);
+
+      // Guards the width/height assertions above from passing while the change
+      // still reached the renderers: the early return must precede all of them.
+      expect(gpuCanvas.width).toBe(800);
+      expect(gpuCanvas.height).toBe(600);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns once, not per call', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = makeScene();
+
+      // `resize()` is commonly driven from a ResizeObserver, so an unlatched
+      // warning would fire on every frame of a drag.
+      scene.resize(-1, 600);
+      scene.resize(Number.NaN, 600);
+      scene.resize(800, -5);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('accepts a valid resize', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = makeScene();
+
+      scene.resize(1024, 512);
+
+      expect(scene.width).toBe(1024);
+      expect(scene.height).toBe(512);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('accepts a zero dimension, which start() warns about instead', () => {
+    // The over-rejection direction, and the reason `0` is not lumped in with the
+    // invalid values: `start()` owns the zero-size policy, and the DPR handler
+    // re-invokes `resize(this.width, this.height)` on whatever size the scene
+    // currently has.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = makeScene();
+
+      scene.resize(0, 0);
+
+      expect(scene.width).toBe(0);
+      expect(scene.height).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('still applies a valid resize after a rejected one', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const scene = makeScene();
+
+      scene.resize(-10, 600);
+      scene.resize(1024, 512);
+
+      // The rejection must not latch anything but the warning.
+      expect(scene.width).toBe(1024);
+      expect(scene.height).toBe(512);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
