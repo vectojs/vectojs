@@ -6214,6 +6214,46 @@ export class Scene {
     // Filling each parent's indices from 0 upwards is also what keeps the focus
     // sentinel last: it is the one child of `a11yRoot` never collected here, so
     // every positioned element is placed before it.
+    //
+    // Moving a node also destroys any `Selection` anchored inside its subtree —
+    // the same class of collateral damage as the focus loss handled below.
+    // Measured in CTX-0207 with the document parked and the write head ~300
+    // sections away: a selection held 176 chars across three sync passes and
+    // collapsed in the exact pass that MOVED its carrier (`removedNodes` and
+    // `addedNodes` both recorded the same node, `isConnected` stayed true, so no
+    // eviction path was involved).
+    //
+    // The endpoints are snapshotted at most ONCE per pass, and only once a move
+    // is actually about to happen. Reading any `Selection` property forces a
+    // synchronous layout (CTX-0203 measured ~0.5ms per read in real Chrome, with
+    // no cheap property to probe with), so the read is deliberately NOT hoisted
+    // above the loop: a pass that reorders nothing — the steady state — pays
+    // nothing at all. It must still precede the first `insertBefore`, because
+    // after that the live endpoints are already gone.
+    //
+    // `contentSelectionPresentThisSync` is deliberately NOT used as the gate
+    // here. That memo is invalidated by `syncA11y`, and this pass also runs in
+    // frames where `syncA11y` is skipped (`a11yElements.size > 0` alone reaches
+    // it), so it can hold a value describing an earlier frame.
+    let selection: Selection | null = null;
+    let selAnchorNode: Node | null = null;
+    let selFocusNode: Node | null = null;
+    let selAnchorOffset = 0;
+    let selFocusOffset = 0;
+    let selectionSnapshotTaken = false;
+    let selectionMoved = false;
+    const snapshotSelection = (): void => {
+      selectionSnapshotTaken = true;
+      if (typeof window === 'undefined' || typeof window.getSelection !== 'function') return;
+      const live = window.getSelection();
+      if (!live?.anchorNode || !live.focusNode) return;
+      selection = live;
+      selAnchorNode = live.anchorNode;
+      selFocusNode = live.focusNode;
+      selAnchorOffset = live.anchorOffset;
+      selFocusOffset = live.focusOffset;
+    };
+
     this.a11yOrderCursors.clear();
     for (let i = 0; i < totalLen; i++) {
       const expected =
@@ -6230,8 +6270,40 @@ export class Scene {
         // Escape-to-close (Dropdown.ts:95,123) silently died because opening the
         // popup reordered the mirror that held focus. Restore it after the move.
         const refocus = document.activeElement === expected;
+        // Resolved on the first move of the pass and reused for the rest, so the
+        // forced layout is paid once per REORDERING pass rather than once per
+        // moved element.
+        if (!selectionSnapshotTaken) snapshotSelection();
+        // A move only breaks the selection when an endpoint lives inside the
+        // moved subtree, so each subsequent moved element costs one `contains`
+        // against the snapshot — no further `Selection` access.
+        if (
+          !selectionMoved &&
+          ((selAnchorNode !== null && expected.contains(selAnchorNode)) ||
+            (selFocusNode !== null && expected.contains(selFocusNode)))
+        ) {
+          selectionMoved = true;
+        }
         parent.insertBefore(expected, current || null);
         if (refocus) expected.focus({ preventScroll: true });
+      }
+    }
+
+    // Restore after the whole pass rather than per move: a selection spanning
+    // two carriers can have both of them moved, and re-applying between the two
+    // would only be undone by the second move.
+    //
+    // A move preserves the text nodes themselves, so the snapshotted nodes and
+    // offsets are still valid as-is. That is why this needs no offset remapping,
+    // unlike `preserveContentSelectionAcrossRebuild`, which reasons in linear
+    // character offsets because a rebuild replaces the nodes.
+    if (selectionMoved && selection && selAnchorNode && selFocusNode) {
+      try {
+        selection.setBaseAndExtent(selAnchorNode, selAnchorOffset, selFocusNode, selFocusOffset);
+      } catch {
+        // Engine rejected the range — an endpoint detached by the prune pass, or
+        // a shape it will not accept. Leaving the selection as the move left it
+        // is the honest outcome; there is nothing valid to restore onto.
       }
     }
 
