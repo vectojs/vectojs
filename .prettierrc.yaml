@@ -1,0 +1,37 @@
+# NOT a formatting authority. `oxfmt` (.oxfmtrc.json) is the only gate — see
+# AGENTS.md. This file exists purely defensively, and mirrors .oxfmtrc.json.
+#
+# Why it is needed: Prettier 3.x IS present in this repo's node_modules, as a
+# transitive devDependency of packages/layout, packages/markdown and changesets,
+# and editor tooling (e.g. an LSP formatter, mason-installed binaries) commonly
+# resolves a global one too. Any such pass that finds NO Prettier config formats
+# with Prettier's DEFAULTS: double quotes and an 80-column print width. That
+# rewrites an entire source file, so a small change arrives as a diff hundreds or
+# thousands of lines wide. Measured on Scene.ts: a 1-line edit produced
+# "1284 insertions, 761 deletions", every import restyled to double quotes.
+#
+# With this file present the same pass is a near no-op: the 1-line edit above
+# becomes a 29-line diff, and quote style is preserved. Repo-wide, Prettier under
+# this config disagrees with the committed (oxfmt-formatted) source in only
+# 8 files / 68 lines, and every one is one of exactly two constructs:
+#
+#   1. union-type breaking — oxfmt puts each member on its own `| Foo` line where
+#      Prettier joins them onto one line if they fit (7 of the 8 files);
+#   2. a negated parenthesized condition — `if (!(a && b))` (Scene.ts only).
+#
+# So `bunx oxfmt --write` remains the authority and always gets the last word:
+# run it before committing, and check `git diff --stat` against your intent.
+#
+# Note .prettierignore does NOT reliably suppress these passes (verified: an
+# ignored file was still rewritten, while this config's options WERE honored), so
+# mirroring the options is the only lever that works.
+#
+# Keep these values in sync with .oxfmtrc.json.
+printWidth: 100
+tabWidth: 2
+useTabs: false
+semi: true
+singleQuote: true
+trailingComma: all
+bracketSpacing: true
+arrowParens: always
