@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 2.15.0
+
+### Minor Changes
+
+- Add `underline`, `highlightColor` and `abbrTitle` fields to `TextStyle`, so rich text can express inserted (`++ins++`), marked/highlighted (`==mark==`) and abbreviation runs. All three are additive rendering-only fields, following the same shape as the existing `lineThrough`/`baselineShift`: layout advances are unchanged, and a consumer decides whether to draw anything. `RichText` gains `underlineRun`, `highlightRun` and `abbrRun` draw helpers — an underline below the baseline (matching the link-underline offset), a background fill behind the run's own glyph box, and a dotted underline for a recognised abbreviation.
+
 ## 2.14.0
 
 ### Minor Changes
