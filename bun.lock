@@ -41,7 +41,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.32.6",
+      "version": "1.32.7",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.9.0",
@@ -81,7 +81,7 @@
     },
     "packages/graph3d": {
       "name": "@vectojs/graph3d",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "dependencies": {
         "d3-force-3d": "^3.0.6",
       },
@@ -174,7 +174,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.15.0",
+      "version": "2.15.1",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.12.1",
