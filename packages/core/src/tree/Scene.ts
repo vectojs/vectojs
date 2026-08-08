@@ -5682,6 +5682,47 @@ export class Scene {
       // selection sitting in an untouched line must survive, or streaming would
       // wipe it every frame.
       this.clearContentGridState(node.id, el, false);
+
+      // Strip any direct TEXT-node children before building carriers.
+      //
+      // A block promoted from the coarse tier arrives holding exactly one text
+      // node: the coarse branch projects the whole block as
+      // `el.textContent = projection.text`. Everything below addresses carriers
+      // through `el.children` and trims the tail with `lastElementChild`, both of
+      // which are element-only views — so that text node is invisible to this
+      // whole function and simply stays put, and `el.textContent` then reads the
+      // block twice (probed: 78 chars for a 39-char source, exactly 2x).
+      // Find-in-page matches the orphan at the wrong geometry, a screen reader
+      // announces the block twice, and the dev-mode projection equality check
+      // compares against a doubled string.
+      //
+      // The non-grid carrier branch never had this problem because it opens with
+      // `el.replaceChildren()`. The grid path deliberately cannot do that — reuse
+      // of unchanged carrier lines is what keeps streaming affordable — so it has
+      // to remove the text nodes specifically, leaving element children alone.
+      //
+      // Guarded on there being a first child, so the steady state (streaming
+      // append, scroll) pays one `firstChild` read and no DOM writes.
+      if (el.firstChild !== null) {
+        let scan: ChildNode | null = el.firstChild;
+        let strippedSelection = false;
+        while (scan !== null) {
+          const next: ChildNode | null = scan.nextSibling;
+          if (scan.nodeType === 3 /* Node.TEXT_NODE */) {
+            // A selection anchored in the coarse text node cannot survive its
+            // removal, so release it here rather than leaving a Range pointing at
+            // a detached node. `selectionLine` below only ever sees carrier lines
+            // (it looks for `data-vecto-grid-line`), so it cannot cover this.
+            if (!strippedSelection) {
+              strippedSelection = true;
+              this.releaseContentSelectionForRebuild(el);
+            }
+            scan.remove();
+          }
+          scan = next;
+        }
+      }
+
       const projectionLines = projection.lines ?? [];
       const selectionLine = this.contentGridSelectionLine(el);
       let rebuiltSelectionLine = false;
