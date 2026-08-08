@@ -28,9 +28,11 @@ $$
 ```
 
 **Scope, stated precisely**: this removes the tokenizer's unbounded forward
-reach, which is a correctness and blast-radius fix. It does **not** by itself
-make math documents lex incrementally: `incrementalLex` still degrades an
-instance to whole-document lexing whenever a line-start `$$` is present
-(`hasBlockMathOpener`, reason `'block-math'`), because that gate also guards a
-_backward_ reach through marked's `startBlock` paragraph clip. Lifting the gate
-is separate work and is not attempted here, so no streaming speedup is claimed.
+reach, which is a correctness and blast-radius fix. On its own it did **not**
+make math documents lex incrementally, because `incrementalLex` also guarded a
+_backward_ reach through marked's `startBlock` paragraph clip. That remaining
+half is done in
+[`incremental-lex-blockmath-gate`](./incremental-lex-blockmath-gate.md), which
+narrows the gate and carries the streaming measurement; the forward guard here
+was also widened there from `(?!\n\n)` to `(?!\n[ \t]*\n)`, since a
+whitespace-only line is a blank line to marked but was not to this lookahead.

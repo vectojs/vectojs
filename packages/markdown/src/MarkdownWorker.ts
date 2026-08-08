@@ -78,14 +78,19 @@ marked.use({
       tokenizer(src) {
         // Display math: `$$...$$`, opening at the start of a line (up to three
         // spaces of indent, as CommonMark allows for other block starts). The
-        // content may span lines; the first closing `$$` ends it.
+        // content may span lines; the first closing `$$` or a blank line ends
+        // it.
+        //
+        // **Blank-line termination**: `(?:(?!\n[ \t]*\n)[\s\S])+?` stops at the
+        // first blank line (including whitespace-only lines) or closing `$$`.
+        // Kept in lockstep with Markdown.ts's blockMath tokenizer.
         //
         // This must exist as a *block* rule. The inline `inlineMath` rule below
         // deliberately refuses `$$` to protect currency ('$5 to $10'), so with
         // no block rule marked's text tokenizer consumes the leading `$`, the
         // inline rule then matches the inner `$...$` pair, and the outer two
         // dollars are painted as literal text on either side of the formula.
-        const match = /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+        const match = /^ {0,3}\$\$((?:(?!\n[ \t]*\n)[\s\S])+?)\$\$[ \t]*(?:\n|$)/.exec(src);
         if (match) {
           return {
             type: 'blockMath',

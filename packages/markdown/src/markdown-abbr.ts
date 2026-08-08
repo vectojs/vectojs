@@ -51,7 +51,7 @@ export interface AbbrDefToken {
  * `DEF_RE` is: a tokenizer whose match can span a blank line reaches
  * arbitrarily far ahead of its own token, which is the property that forces an
  * `incrementalLex.ts` instance to degrade outright rather than merely capping
- * its boundary (see `hasBlockMathOpener`'s note there). A continuation line is
+ * its boundary (see `hasFootnoteDefOpener`'s note there). A continuation line is
  * rare enough for an abbreviation definition that dropping it (it becomes an
  * ordinary paragraph, still visible, just not merged into the definition) is a
  * far better trade than disabling incremental lexing for every document that
@@ -102,8 +102,8 @@ export const ABBR_EXTENSIONS: TokenizerAndRendererExtension[] = [
  * Whether `text` contains an abbreviation-definition line at all.
  *
  * Cheap reject first (`*[` is rare outside this construct), matching every
- * other opener-detector in this package (`hasBlockMathOpener`,
- * `hasContainerOpener`).
+ * other opener-detector in this package (`hasContainerOpener`,
+ * `hasFootnoteDefOpener`).
  */
 export function hasAbbrDef(text: string): boolean {
   if (text.includes('*[') === false) return false;

@@ -27,7 +27,8 @@
  * ## Why the boundary rule is what it is
  *
  * The rule: cut immediately after a `space` token that has **at least one token
- * following it**, and never when a link reference definition exists.
+ * following it**, never past the first of two adjacent `paragraph` tokens, and
+ * never when a link reference definition exists.
  *
  * Three properties of `marked`'s block lexer (18.0.7) make that safe, and each
  * was measured exhaustively rather than reasoned about:
@@ -58,13 +59,21 @@
  *    a `list` is only taken once a *further* token exists after it — at which
  *    point the list can no longer grow. This is {@link cutIsSettled}.
  *
- *    **Our own `blockMath` extension breaks locality in both directions**, which
- *    is why {@link hasBlockMathOpener} degrades outright:
- *    - *Forward*: the tokenizer is `/^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/`
- *      and `[\s\S]+?` crosses blank lines, so an unterminated `$$` reaches
- *      arbitrarily far ahead. Measured: `'$$\nopen\n\npara\n'` lexes to
- *      `[paragraph, space, paragraph]`, and appending `'\n$$\n'` collapses all
- *      three into one `blockMath` token.
+ *    **Our own `blockMath` extension reaches in both directions**, and each
+ *    direction is answered separately — neither degrades the instance any more:
+ *    - *Forward*: the tokenizer's content group is
+ *      `(?:(?!\n[ \t]*\n)[\s\S])+?`, so it stops at the first blank line and an
+ *      unterminated `$$` can no longer absorb arbitrarily much following text.
+ *      vectojs#394 introduced the guard as a bare `(?!\n\n)`, which left a hole:
+ *      that is not marked's own notion of a blank line (`/^[ \t]*$/` per line).
+ *      Measured against marked 18.0.7, `'$$\nx\n   \n$$\n'` was still **one**
+ *      `blockMath` token spanning the whitespace-only line, and marked pushes a
+ *      real `space` token for that line — so a cut could be banked there and
+ *      then swallowed when the closing `$$` arrived. The lookahead is now
+ *      `\n[ \t]*\n`, and the two tokenizer copies (`Markdown.ts` and
+ *      `MarkdownWorker.ts`, both registering on the shared `marked` singleton)
+ *      are in lockstep; `MarkdownWorker.ts` had been left on the pre-#394 regex
+ *      entirely.
  *    - *Backward*: `blockTokens` clips the text handed to the paragraph
  *      tokenizer whenever an extension's `startBlock` hook reports a position,
  *      and sets a flag that merges the **next** paragraph into the clipped one.
@@ -73,13 +82,26 @@
  *      `'Term\n: definition-ish\n| partial | table |\n| --- |\n\nAfter.\n'`
  *      plus a trailing `'\n$$\nx\n'`: without the extension it is
  *      `paragraph, paragraph`; with it registered the two become **one** merged
- *      paragraph. Capping the boundary cannot fix a backwards reach, so any
- *      line-start `$$` degrades the instance instead. That is only correct
- *      because `start()` returns `undefined` when no line-start `$$` exists, so
- *      with none present the clip never fires and the merge is impossible.
+ *      paragraph.
  *
- *    Any future block-level extension that supplies `start()` or whose tokenizer
- *    can span a blank line needs the same treatment.
+ *      That reach is real but **narrow**, which is what this module used to get
+ *      wrong. Reading marked's merge condition — `lastParagraphClipped &&
+ *      tokens.at(-1)?.type === 'paragraph'` — the rewrite can only ever fuse two
+ *      **adjacent** `paragraph` tokens. Any token between them blocks it, and it
+ *      was measured: inserting a blank line (a `space`) or a `# H` heading
+ *      between the pair leaves both paragraphs intact when the same `$$` is
+ *      appended. Since a stable cut always lands immediately *after* a `space`
+ *      token, the last token of a stable prefix is never a `paragraph`, so a
+ *      pair can never straddle a boundary. Capping the cut below the pair is
+ *      therefore sufficient, and that is {@link paragraphPairCap} — a line-start
+ *      `$$` no longer degrades anything. The cap is also transient: once the
+ *      `$$` arrives the pair has already merged into one token, the pair is
+ *      gone, and the boundary advances normally.
+ *
+ *    Any future block-level extension whose tokenizer can span a blank line
+ *    needs the forward treatment; one that supplies `start()` needs the backward
+ *    one, and {@link paragraphPairCap} already covers every such extension,
+ *    because the clip is marked's mechanism rather than `blockMath`'s.
  *
  *    **`footnoteDef`'s continuation-consuming tokenizer has the identical
  *    forward-reach shape**, added when it grew from single-line-only to
@@ -87,8 +109,9 @@
  *    `markdown-footnote.ts` scans forward through blank-line runs looking for
  *    an indented line, exactly as `blockMath`'s regex crosses them. It supplies
  *    no `start()` (so the backward-reach half of `blockMath`'s hazard does not
- *    apply), but the forward half does, so `hasFootnoteDefOpener` degrades the
- *    instance the same way `hasBlockMathOpener`/`hasContainerOpener` do.
+ *    apply), but the forward half does — and unlike `blockMath` its reach is not
+ *    bounded by a blank line, so `hasFootnoteDefOpener` degrades the instance
+ *    the same way `hasContainerOpener` does.
  * 3. **Link reference definitions break prefix reuse entirely.** `marked`
  *    collects every `def` while block-lexing and only then resolves reflinks
  *    across the *whole* document, so a definition arriving late retroactively
@@ -152,8 +175,6 @@ export type DegradeReason =
   | 'link-definition'
   /** A carriage return desyncs `raw`-length offsets from source offsets. */
   | 'carriage-return'
-  /** A line-start `$$` lets `blockMath` reach outside its own token. */
-  | 'block-math'
   /** An open `:::` fence lets `container` reach outside its own token. */
   | 'container'
   /**
@@ -194,28 +215,30 @@ function asTokensList(tokens: Token[], links: TokensList['links']): TokensList {
   return list;
 }
 
-/** A `$$` at the start of a line, up to three spaces of indent. */
-const BLOCK_MATH_OPEN = /^ {0,3}\$\$/m;
-
 /**
- * Whether `text` contains a `$$` display-math opener at the start of a line.
+ * The first index `i` at or after `from` where `tokens[i]` and `tokens[i + 1]`
+ * are **both** `paragraph`, or `tokens.length` if there is none.
  *
- * This is exactly the condition under which `blockMath`'s `start()` hook returns
- * a position, and therefore exactly the condition under which the extension can
- * reach outside its own token — forwards through an unterminated `$$`, and
- * backwards through marked's `startBlock` paragraph clip. See the module comment.
- * Either reach invalidates a stable prefix, so its presence degrades the instance
- * rather than merely capping the boundary.
+ * This is the exact shape marked's `startBlock` paragraph clip can rewrite, and
+ * the reason a line-start `$$` no longer degrades the instance outright. See the
+ * module comment for the measurement; the short version is that the clip merges
+ * the second paragraph into the first, so the merge needs two **adjacent**
+ * `paragraph` tokens and any token between them (a `space`, a `heading`) blocks
+ * it. Returning the pair's first index gives the caller a cut ceiling: a cut at
+ * or below `i` keeps `tokens[i]` — the token a merge would rewrite — out of the
+ * stable prefix.
  *
- * Deliberately over-conservative: it matches line-start `$$` inside fenced code,
- * where the tokenizer would never reach it — but so does the extension's own
- * `start()` hook, so this is no more conservative than marked itself.
+ * A pair can never straddle an existing boundary, because a cut always lands
+ * immediately after a `space` token, so the last token of a stable prefix is a
+ * `space` and never a `paragraph`. That is what makes scanning from the current
+ * boundary sufficient rather than rescanning the whole document each chunk, and
+ * it is what keeps this O(tail) like everything else in the hot path.
  */
-function hasBlockMathOpener(text: string): boolean {
-  // Cheap reject first: the overwhelmingly common chunk has no `$` at all, and
-  // this runs on every streamed chunk.
-  if (text.includes('$$') === false) return false;
-  return BLOCK_MATH_OPEN.test(text);
+function paragraphPairCap(tokens: readonly Token[], from: number): number {
+  for (let i = from; i + 1 < tokens.length; i++) {
+    if (tokens[i]!.type === 'paragraph' && tokens[i + 1]!.type === 'paragraph') return i;
+  }
+  return tokens.length;
 }
 
 /**
@@ -248,11 +271,17 @@ function cutIsSettled(tokens: readonly Token[], at: number): boolean {
  * returns the index just past it. `minCut` keeps the boundary monotonic — a cut
  * at or before the current one is not progress, and re-lexing text that is
  * already stable is the very thing this exists to avoid.
+ *
+ * `cap` is the exclusive ceiling from {@link paragraphPairCap}: no cut may pull
+ * the first token of an adjacent `paragraph` pair into the stable prefix, since
+ * a later line-start `$$` can still rewrite it.
  */
-function findStableCut(tokens: readonly Token[], minCut: number): number {
+function findStableCut(tokens: readonly Token[], minCut: number, cap: number): number {
   // `i` is the index of the last token that would become stable, so the cut is
-  // `i + 1`; starting at `length - 2` is what enforces the one-token lag.
-  for (let i = tokens.length - 2; i >= minCut; i--) {
+  // `i + 1`; starting at `length - 2` is what enforces the one-token lag, and
+  // `cap - 1` is what keeps the cut at or below `cap`.
+  const start = Math.min(tokens.length - 2, cap - 1);
+  for (let i = start; i >= minCut; i--) {
     if (tokens[i]!.type !== 'space') continue;
     if (cutIsSettled(tokens, i + 1) === false) continue;
     return i + 1;
@@ -329,11 +358,18 @@ function unboundedCache(source: string, tokens: TokensList): IncrementalLexCache
 function cacheFromFullLex(source: string, tokens: TokensList): IncrementalLexCache {
   if (hasLinkDefinitions(tokens)) return degradedCache(source, tokens, 'link-definition');
   if (source.includes('\r')) return degradedCache(source, tokens, 'carriage-return');
-  if (hasBlockMathOpener(source)) return degradedCache(source, tokens, 'block-math');
   if (hasContainerOpener(source)) return degradedCache(source, tokens, 'container');
   if (hasFootnoteDefOpener(source)) return degradedCache(source, tokens, 'footnote-def');
 
-  const cut = findStableCut(tokens, 1);
+  // `blockMath` no longer degrades outright. The backward-reach mechanism
+  // (marked's `startBlock` paragraph clip) can only rewrite an adjacent
+  // `paragraph` pair — two consecutive paragraph tokens with no token between
+  // them. A `space` or any other token between them blocks the merge. Since a
+  // stable cut always lands immediately after a `space` token, no pair can
+  // straddle the boundary. So it is sufficient to exclude the pair's range
+  // from the candidate cut window.
+  const cap = paragraphPairCap(tokens, 0);
+  const cut = findStableCut(tokens, 1, cap);
   if (cut < 0) return unboundedCache(source, tokens);
   if (advanceTiles(tokens, 0, cut, source, 0) === false) return unboundedCache(source, tokens);
 
@@ -400,14 +436,10 @@ export function lexAppend(prev: IncrementalLexCache, append: string): Incrementa
   const tail = prev.tail + append;
 
   // Scanning the tail alone is sufficient, and is what keeps this O(window)
-  // rather than O(document). `prev` is not degraded, so its source held no
-  // line-start `$$`; the only new one is in `append` or straddles the junction,
-  // and the tail contains both — it always includes at least the final character
-  // of `prev.source`, because the boundary requires a token after the `space` and
-  // every token has a non-empty `raw`. The tail also always begins at a real line
-  // start (a `space` token ends with a newline), so `^` in the tail means `^` in
-  // the document: no false positives, no false negatives.
-  if (hasBlockMathOpener(tail)) return degradeTo(source, 'block-math');
+  // rather than O(document). The tail always includes at least the final
+  // character of `prev.source` (the boundary requires a token after the `space`
+  // and every token has a non-empty `raw`), so any new `:::` or `[^` opener in
+  // `append` or straddling the junction is captured here.
   if (hasContainerOpener(tail)) return degradeTo(source, 'container');
   if (hasFootnoteDefOpener(tail)) return degradeTo(source, 'footnote-def');
 
@@ -423,7 +455,13 @@ export function lexAppend(prev: IncrementalLexCache, append: string): Incrementa
   let stableCount = prev.stableCount;
   let stableOffset = prev.stableOffset;
   let newTail = tail;
-  const cut = findStableCut(tokens, prev.stableCount + 1);
+  // The cap scan starts at the current boundary rather than at 0: a pair cannot
+  // straddle it, because the last token of a stable prefix is always a `space`.
+  const cut = findStableCut(
+    tokens,
+    prev.stableCount + 1,
+    paragraphPairCap(tokens, prev.stableCount),
+  );
   // Declining an unverifiable advance costs one chunk of window growth and heals
   // on the next one; degrading would cost the rest of the stream.
   if (cut > prev.stableCount && advanceTiles(tokens, prev.stableCount, cut, tail, 0)) {

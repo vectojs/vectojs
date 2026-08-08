@@ -136,6 +136,33 @@ const CORPUS: Record<string, string> = {
   blockMath: 'Intro.\n\n$$\nx = \\frac{1}{2}\n$$\n\nAfter math.\n',
   partialBlockMath: 'Intro.\n\n$$\nx = \\frac{1}{2}\n',
   inlineMath: 'Intro with $x + 1$ inline.\n\nAnd $y^2$ here.\n',
+  // Several formulae, so a boundary has to be placed BETWEEN math blocks rather
+  // than only before the first one.
+  manyBlockMath:
+    'Intro.\n\n$$\na = 1\n$$\n\nMiddle prose.\n\n$$\nb = 2\n$$\n\nMore prose.\n\n$$\nc = 3\n$$\n\nEnd.\n',
+  // The BACKWARD-reach witness: `startBlock`'s paragraph clip merges two
+  // ADJACENT `paragraph` tokens when a line-start `$$` appears later. The
+  // partial table is what produces the adjacent pair — the table rule rejects a
+  // header/delimiter column mismatch, so both lines land as separate paragraphs.
+  // Measured against marked 18.0.7: without the trailing `$$` this is
+  // `[paragraph, paragraph, space, paragraph]`, and with it the first two become
+  // ONE merged paragraph. A cut must never bank the first of that pair.
+  mathAfterAdjacentParagraphs:
+    'Term\n: definition-ish\n| partial | table |\n| --- |\n\nAfter.\n\n$$\nx = 1\n$$\n',
+  // The same pair, but the `$$` never arrives — the cut must still be correct.
+  adjacentParagraphsNoMath: 'Term\n: definition-ish\n| partial | table |\n| --- |\n\nAfter.\n',
+  // A `heading` between the two paragraphs blocks the merge, so this shape is
+  // safe and must NOT lose its boundary.
+  mathAfterSeparatedParagraphs:
+    'Term\n: definition-ish\n\n# H\n\n| partial | table |\n| --- |\n\nAfter.\n\n$$\nx = 1\n$$\n',
+  // The FORWARD-reach witness for a WHITESPACE-ONLY blank line. `(?!\n\n)`
+  // alone did not block it: measured against marked 18.0.7, `'$$\nx\n   \n$$\n'`
+  // was one `blockMath` token spanning the gap, and marked pushes a real `space`
+  // token for that line — so a cut could be banked there and then swallowed when
+  // the closing `$$` arrived.
+  mathBlankLineSpaces: 'A.\n\n$$\nopen\n   \nB.\n\nC.\n',
+  mathBlankLineTab: 'A.\n\n$$\nopen\n\t\nB.\n\nC.\n',
+  mathBlankLineThenClose: 'A.\n\n$$\nopen\n   \nB.\n$$\n\nC.\n',
 
   // `:::` containers are a VectoJS extension with the same forward-reach
   // hazard as `blockMath`: an unterminated fence must degrade the instance.
@@ -485,6 +512,85 @@ describe('incrementalLex — degradation is correct, permanent, and observable',
     for (let i = 0; i < 30; i++) doc += `Para ${i} using [a].\n\n`;
     const { finalCache } = streamAndCompare(doc, 16);
     expect(finalCache.degraded).toBe(true);
+  });
+});
+
+describe('incrementalLex \u2014 a line-start `$$` no longer degrades the instance', () => {
+  // The streaming payoff vectojs#394 left owed. Before this change,
+  // `hasBlockMathOpener` degraded any instance whose source held a line-start
+  // `$$`, so a math document re-lexed its whole accumulated source on every
+  // chunk. The gate is now narrowed to the shape marked's `startBlock` paragraph
+  // clip can actually rewrite \u2014 an ADJACENT `paragraph` pair \u2014 measured in
+  // `paragraphPairCap`'s doc comment.
+  it('keeps an ordinary math document incremental', () => {
+    const doc = 'Intro.\n\n$$\nx = \\frac{1}{2}\n$$\n\nAfter math.\n';
+    const { finalCache } = streamAndCompare(doc, 1);
+    expect(finalCache.degraded).toBe(false);
+    expect(finalCache.degradedReason).toBe(null);
+  });
+
+  it('establishes a real boundary on a long streamed math document', () => {
+    let doc = '';
+    for (let i = 0; i < 60; i++) {
+      doc += `## Section ${i}\n\nProse ${i} before the formula.\n\n$$\na_{${i}} = ${i}\n$$\n\n`;
+    }
+    const { finalCache, maxCharsLexed } = streamWindows(doc, 32);
+    expect(finalCache.degraded).toBe(false);
+    // The decisive assertion: every chunk of this document used to re-lex the
+    // whole accumulated length, because `hasBlockMathOpener` degraded it on the
+    // first `$$`. Measured after this change: 3 800 chars, boundary at 99.5%,
+    // largest single lex 61 chars. The no-math control for the same shape is
+    // 62, so a math document now streams like prose.
+    expect(doc.length).toBeGreaterThan(3000);
+    expect(finalCache.stableOffset).toBeGreaterThan(doc.length * 0.9);
+    expect(maxCharsLexed).toBeLessThan(200);
+  });
+
+  it('refuses to bank a paragraph pair a later `$$` could rewrite', () => {
+    // The witness that made the blanket gate look necessary. Two ADJACENT
+    // paragraph tokens, then a `$$` ahead: marked's clip merges the second into
+    // the first, rewriting a token a naive boundary would already have called
+    // stable. `streamAndCompare` proves the tokens stay right; the `stableCount`
+    // assertion proves it is the cap doing it and not luck.
+    const doc = 'Term\n: definition-ish\n| partial | table |\n| --- |\n\nAfter.\n\n$$\nx\n$$\n';
+    const { finalCache } = streamAndCompare(doc, 1);
+    expect(finalCache.degraded).toBe(false);
+
+    // The load-bearing assertion is on the INTERMEDIATE state, not the final
+    // one. At this prefix the pair is present and unmerged --
+    // `[paragraph, paragraph, space, paragraph]` -- so the cap forbids every
+    // cut and no prefix may be banked. Without the cap a cut lands at 3 and the
+    // arriving `$$` then rewrites token 0, corrupting an already-stable prefix.
+    const beforeMath = 'Term\n: definition-ish\n| partial | table |\n| --- |\n\nAfter.\n';
+    const mid = lexFull(beforeMath).cache;
+    expect(mid.tokens.map((t: Token) => t.type)).toEqual([
+      'paragraph',
+      'paragraph',
+      'space',
+      'paragraph',
+    ]);
+    expect(mid.stableCount).toBe(0);
+    expect(mid.degraded).toBe(false);
+
+    // And the cap is transient rather than terminal: once the `$$` arrives the
+    // clip merges the pair into one paragraph, the pair no longer exists, and
+    // the boundary advances. That is the whole advantage over degrading, which
+    // never recovers.
+    expect(finalCache.stableCount).toBe(4);
+  });
+
+  it('terminates `$$` at a whitespace-only blank line', () => {
+    // `Markdown.ts`'s guard was `(?!\n\n)`, which is not marked's own notion of
+    // a blank line (`/^[ \t]*$/` per line). Measured against marked 18.0.7
+    // before this change: `'$$\nx\n   \n$$\n'` was ONE `blockMath` token
+    // spanning the whitespace-only line, and marked pushes a real `space` token
+    // for that line \u2014 so a cut could land there and then be swallowed when the
+    // closing `$$` arrived. That hole had to close before the gate could narrow.
+    expect(marked.lexer('$$\nx\n   \n$$\n').some((t) => t.type === 'blockMath')).toBe(false);
+    // A tab-only blank line is the same case.
+    expect(marked.lexer('$$\nx\n\t\n$$\n').some((t) => t.type === 'blockMath')).toBe(false);
+    // A real formula with no blank line inside still tokenizes.
+    expect(marked.lexer('$$\nx = 1\n$$\n').some((t) => t.type === 'blockMath')).toBe(true);
   });
 });
 
