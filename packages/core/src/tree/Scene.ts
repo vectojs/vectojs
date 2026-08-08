@@ -5727,6 +5727,19 @@ export class Scene {
       const selectionLine = this.contentGridSelectionLine(el);
       let rebuiltSelectionLine = false;
 
+      // A selection outside the new window loses its carrier either way: past the
+      // end it is trimmed below, before the start it is overwritten by the
+      // materialize loop, which reindexes `children[0..]` onto the new window.
+      // Evaluated here rather than inside the trim loop because that loop runs
+      // only when the window SHRANK — scrolling keeps the length identical, so a
+      // start that moves past the selection took no path that noticed.
+      if (
+        selectionLine !== null &&
+        (selectionLine < gridWindow.start || selectionLine >= gridWindow.end)
+      ) {
+        rebuiltSelectionLine = true;
+      }
+
       // Reuse carrier lines that did not change.
       //
       // The old code called `el.replaceChildren()` and rebuilt one `<span>` per
@@ -5866,12 +5879,6 @@ export class Scene {
       // copy/find.
       const windowLength = gridWindow.end - gridWindow.start;
       while (el.children.length > windowLength) {
-        // A selection outside the retained window loses its carrier, so treat it
-        // as rebuilt and release it rather than leaving a Selection pointing at a
-        // detached node.
-        if (selectionLine !== null && selectionLine >= gridWindow.end) {
-          rebuiltSelectionLine = true;
-        }
         el.lastElementChild?.remove();
       }
       // Only now drop the selection, and only if the line holding it was actually
