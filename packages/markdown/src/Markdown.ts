@@ -205,31 +205,23 @@ marked.use({
         // dollars are painted as literal text on either side of the formula.
         //
         // **Blank-line termination**: a blank line inside `$$..$$` ends the
-        // construct, so `(?:(?!\n\n)[\s\S])+?` replaces a bare `[\s\S]+?` —
-        // any character *except* across a blank line, stopping at the first
-        // `\n\n` or closing `$$`. `$$\nopen\n\npara\n$$\n` is therefore a
-        // paragraph run rather than one formula spanning the gap.
+        // construct, so `(?:(?!\n[ \t]*\n)[\s\S])+?` replaces a bare
+        // `[\s\S]+?` — any character *except* across a blank line, stopping at
+        // the first blank line or closing `$$`. `$$\nopen\n\npara\n$$\n` is
+        // therefore a paragraph run rather than one formula spanning the gap.
         //
-        // This closes the FORWARD half of the reach `incrementalLex.ts`
-        // documents: an unterminated `$$` can no longer absorb arbitrarily much
-        // following text once its closing fence arrives.
+        // The lookahead matches marked's own notion of a blank line
+        // (`/^[ \t]*$/` per line), not just `\n\n`. A bare `(?!\n\n)` left a
+        // hole: measured against marked 18.0.7, `'$$\nx\n   \n$$\n'` was still
+        // ONE `blockMath` token spanning the whitespace-only line, and marked
+        // pushes a real `space` token for that line — so an incremental cut
+        // could be placed there and then be swallowed when the closing `$$`
+        // arrived. Widening the lookahead is what actually closes the FORWARD
+        // half of the reach `incrementalLex.ts` documents.
         //
-        // It does **not** on its own make math documents lex incrementally, and
-        // must not be described as if it did. `hasBlockMathOpener` still
-        // degrades any instance containing a line-start `$$`
-        // (`incrementalLex.ts`), because the BACKWARD half of the reach is
-        // independent of this regex: `start()` above reports a position to
-        // marked's `blockTokens`, which clips the paragraph tokenizer and merges
-        // the next paragraph into the clipped one — a `$$` ahead re-groups
-        // paragraphs already emitted. Verified after this change: `lexFull` on
-        // `'Intro.\n\n$$\nx = 1\n$$\n\nAfter.\n'` still reports
-        // `degradedReason: 'block-math'`.
-        //
-        // So the streaming payoff is still owed, and lifting the gate is a
-        // separate change that has to answer the backward reach. Do not quote a
-        // speedup here until `degradedReason` is null for a math document and
-        // the number comes from `benchmarks/run-browsers.sh`.
-        const match = /^ {0,3}\$\$((?:(?!\n\n)[\s\S])+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+        // Kept in lockstep with MarkdownWorker.ts's blockMath tokenizer, which
+        // registers the same extension on the shared `marked` singleton.
+        const match = /^ {0,3}\$\$((?:(?!\n[ \t]*\n)[\s\S])+?)\$\$[ \t]*(?:\n|$)/.exec(src);
         if (match) {
           return {
             type: 'blockMath',

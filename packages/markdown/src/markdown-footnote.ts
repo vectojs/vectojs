@@ -150,14 +150,15 @@ function consumeContinuation(rest: string): { raw: string; body: string; open: b
  * {@link consumeContinuation} can still be scanning forward (an open
  * continuation) when more text arrives.
  *
- * Used by `incrementalLex.ts`'s degrade check, mirroring `hasBlockMathOpener`
- * and `hasContainerOpener`: a footnote definition's continuation-consuming
- * tokenizer has the exact same forward-reach hazard those two document, now
- * that it can span a blank line. Deliberately does not try to determine
+ * Used by `incrementalLex.ts`'s degrade check, mirroring `hasContainerOpener`:
+ * a footnote definition's continuation-consuming tokenizer has the exact same
+ * forward-reach hazard a `:::` fence does, now that it can span a blank line.
+ * (`blockMath` used to be the third member of this set; its tokenizer now stops
+ * at a blank line, so it no longer degrades — see `paragraphPairCap`.) Deliberately does not try to determine
  * whether a SPECIFIC header's continuation is still open — that would need to
  * replicate the tokenizer's own scan — and instead degrades on the mere
  * presence of any header, which is safe (if conservative) the same way
- * `hasBlockMathOpener` accepts matching inside a fenced code block it would
+ * `hasContainerOpener` accepts matching inside a fenced code block it would
  * never actually reach.
  */
 export function hasFootnoteDefOpener(text: string): boolean {

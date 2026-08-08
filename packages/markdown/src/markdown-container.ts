@@ -109,11 +109,17 @@ function findBodyEnd(text: string): number {
  * `[paragraph, space, paragraph]` (an ordinary unterminated-fence-reads-as-
  * text fallback), and appending `\n\nWorld\n:::\n` collapses ALL of it into a
  * single `container` token whose nested tokens are `[paragraph('Hello'),
- * space, paragraph('World')]` — the same shape `blockMath`'s doc comment
- * documents for `$$`. `incrementalLex.ts`'s `hasContainerOpener()` therefore
- * degrades an instance the same way `hasBlockMathOpener()` does, using the
- * same `OPEN_RE` this module exports for that check to share the exact
- * definition of "a fence is open" with the tokenizer.
+ * space, paragraph('World')]` — the same forward-reach shape `blockMath`'s
+ * `$$` used to have. `incrementalLex.ts`'s `hasContainerOpener()` therefore
+ * degrades an instance outright, using the same `OPEN_RE` this module exports
+ * for that check to share the exact definition of "a fence is open" with the
+ * tokenizer.
+ *
+ * Note `blockMath` no longer degrades: its tokenizer now stops at a blank line,
+ * so its forward reach is bounded and its backward reach is handled by
+ * `paragraphPairCap`. A `:::` fence still spans blank lines by design — that is
+ * the whole point of a container — so the forward hazard is real here and the
+ * blanket degrade stays.
  *
  * ## Why an extension is enough
  *
@@ -169,7 +175,7 @@ export const CONTAINER_EXTENSIONS: TokenizerAndRendererExtension[] = [
 /** Whether `text` contains a `:::` opener that {@link OPEN_RE} would match. */
 export function hasContainerOpener(text: string): boolean {
   // Cheap reject first: the overwhelmingly common chunk has no `:::` at all,
-  // and this runs on every streamed chunk (mirrors `hasBlockMathOpener`).
+  // and this runs on every streamed chunk (mirrors `hasFootnoteDefOpener`).
   if (text.includes(':::') === false) return false;
   return new RegExp(OPEN_RE.source, 'm').test(text);
 }
