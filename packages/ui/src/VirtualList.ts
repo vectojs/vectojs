@@ -574,6 +574,14 @@ export class VirtualList<T = unknown> extends UIComponent {
       this._targetY += scrollDelta;
       this._clamp();
       this._latchBottom();
+      // Required, and not redundant with `hasPendingAnimations()`: the loop's
+      // `isIdle` check reads `frameHadAnimation`, which is only refreshed during
+      // a RENDERED frame's tree walk. Once the scene has gone idle it skips the
+      // walk entirely (`onDemand`) or drops to 2 FPS (`always` + autoThrottle),
+      // so nothing would ever observe the new `_targetY` and re-arm the loop.
+      // markDirty() is what wakes that first frame; every other path that moves
+      // `_targetY` (pointermove, scrollTo, setItems) does the same.
+      this.scene?.markDirty();
     });
     this.on('pointerdown', (e: { localY?: number }) => {
       if (e.localY === undefined) return;
