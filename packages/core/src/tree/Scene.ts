@@ -6953,6 +6953,20 @@ export class Scene {
         this.initializingWebGPU = true;
         this.initWebGPUContext(computeEntities)
           .then((newDevice) => {
+            // `destroy()` may have run while this promise was pending. Without
+            // this the device is created AFTER teardown and never released — one
+            // leaked GPU device per occurrence — and the manager plus its
+            // pipelines are built against a scene that is already gone. A bare
+            // `return` would leak the same device in a different shape, so the
+            // device must be destroyed explicitly. Mirrors the recovery path's
+            // handler, which has had this guard since it was written.
+            if (this.destroyed) {
+              newDevice.destroy();
+              // Nothing will consume this flag on a destroyed scene, but leaving
+              // it true advertises an init that is no longer in flight.
+              this.initializingWebGPU = false;
+              return;
+            }
             this.device = newDevice;
             this.initializingWebGPU = false;
             const format = navigator.gpu ? navigator.gpu.getPreferredCanvasFormat() : 'rgba8unorm';

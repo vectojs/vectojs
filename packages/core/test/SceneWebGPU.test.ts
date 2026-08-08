@@ -420,4 +420,138 @@ describe('Scene WebGPU Orchestration & lost Recovery Integration', () => {
       });
     }
   });
+
+  describe('destroy() during a pending first-frame init', () => {
+    /**
+     * `requestDevice` that stays pending until the test resolves it, so
+     * `destroy()` can run strictly between the request and its fulfillment —
+     * the window in which the init handler used to publish a device onto an
+     * already-torn-down scene.
+     */
+    function deferredDevice(): { resolve: () => void } {
+      let release: () => void = () => {};
+      mockAdapter.requestDevice = vi.fn(
+        () =>
+          new Promise((resolveDevice) => {
+            release = () => resolveDevice(mockDevice);
+          }),
+      );
+      return { resolve: () => release() };
+    }
+
+    it('destroys the arriving device instead of adopting it', async () => {
+      const originalGpu = (navigator as any).gpu;
+      Object.defineProperty(navigator, 'gpu', {
+        value: mockGpu,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        const deferred = deferredDevice();
+        scene = new Scene(canvas);
+        scene.add(new ComputeParticleEntity({ maxParticles: 10 }));
+
+        // Kick off the async init, then tear down while it is still in flight.
+        scene.render(scene.getRenderer(), 16, 0);
+        await new Promise(process.nextTick);
+        expect((scene as any).initializingWebGPU).toBe(true);
+        expect((scene as any).device).toBeNull();
+
+        scene.destroy();
+        mockDevice.destroy.mockClear();
+
+        deferred.resolve();
+        await new Promise(process.nextTick);
+
+        // Released, not adopted: a bare early return would leak the device just
+        // as surely as adopting it, only less visibly.
+        expect(mockDevice.destroy).toHaveBeenCalledTimes(1);
+        expect((scene as any).device).toBeNull();
+        expect((scene as any).manager).toBeNull();
+        expect((scene as any).initializingWebGPU).toBe(false);
+      } finally {
+        Object.defineProperty(navigator, 'gpu', {
+          value: originalGpu,
+          configurable: true,
+          writable: true,
+        });
+      }
+    });
+
+    it('builds no pipelines against the destroyed scene', async () => {
+      const originalGpu = (navigator as any).gpu;
+      Object.defineProperty(navigator, 'gpu', {
+        value: mockGpu,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        const deferred = deferredDevice();
+        scene = new Scene(canvas);
+        scene.add(new ComputeParticleEntity({ maxParticles: 10 }));
+
+        scene.render(scene.getRenderer(), 16, 0);
+        await new Promise(process.nextTick);
+
+        scene.destroy();
+        mockDevice.createComputePipeline.mockClear();
+        mockDevice.createRenderPipeline.mockClear();
+        mockDevice.createBuffer.mockClear();
+
+        deferred.resolve();
+        await new Promise(process.nextTick);
+
+        // Guards the assertion above from passing for the wrong reason: the
+        // handler must return before `initPipelines`/`setupEntityResources`, not
+        // merely avoid assigning `this.device`.
+        expect(mockDevice.createComputePipeline).not.toHaveBeenCalled();
+        expect(mockDevice.createRenderPipeline).not.toHaveBeenCalled();
+        expect(mockDevice.createBuffer).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(navigator, 'gpu', {
+          value: originalGpu,
+          configurable: true,
+          writable: true,
+        });
+      }
+    });
+
+    it('still adopts the device when the scene survives the init', async () => {
+      // The over-rejection direction: the guard must not break the ordinary
+      // deferred-resolution path, which is what every other WebGPU test relies
+      // on implicitly.
+      const originalGpu = (navigator as any).gpu;
+      Object.defineProperty(navigator, 'gpu', {
+        value: mockGpu,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        const deferred = deferredDevice();
+        scene = new Scene(canvas);
+        scene.add(new ComputeParticleEntity({ maxParticles: 10 }));
+
+        scene.render(scene.getRenderer(), 16, 0);
+        await new Promise(process.nextTick);
+        mockDevice.destroy.mockClear();
+
+        deferred.resolve();
+        await new Promise(process.nextTick);
+
+        expect((scene as any).device).toBe(mockDevice);
+        expect((scene as any).manager).toBeDefined();
+        expect((scene as any).initializingWebGPU).toBe(false);
+        expect(mockDevice.destroy).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(navigator, 'gpu', {
+          value: originalGpu,
+          configurable: true,
+          writable: true,
+        });
+      }
+    });
+  });
 });
