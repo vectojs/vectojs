@@ -67,9 +67,15 @@ export class Circle extends Entity {
     // in culling bounds. Without this, strokes at viewport edges are clipped.
     const inflation = this.stroke !== null ? this.strokeWidth / 2 : 0;
     const fullRadius = r + inflation;
+    // `fullRadius > 0 ? -fullRadius : 0` rather than a bare `-fullRadius`:
+    // negating a zero yields -0, and while `-0 === 0`, `Object.is(-0, 0)` is
+    // false — so a zero-radius unstroked circle's bounds would fail a
+    // `toEqual({ x: 0, … })` assertion and any consumer that identity-compares
+    // origins.
+    const origin = fullRadius > 0 ? -fullRadius : 0;
     return {
-      x: -fullRadius,
-      y: -fullRadius,
+      x: origin,
+      y: origin,
       width: fullRadius * 2,
       height: fullRadius * 2,
     };
