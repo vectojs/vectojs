@@ -62,11 +62,16 @@ export class Circle extends Entity {
   }
 
   public override getBounds(): Bounds {
+    const r = this._radius;
+    // Inflate by strokeWidth/2 when stroke is present to include the full stroke
+    // in culling bounds. Without this, strokes at viewport edges are clipped.
+    const inflation = this.stroke !== null ? this.strokeWidth / 2 : 0;
+    const fullRadius = r + inflation;
     return {
-      x: -this._radius,
-      y: -this._radius,
-      width: this._radius * 2,
-      height: this._radius * 2,
+      x: -fullRadius,
+      y: -fullRadius,
+      width: fullRadius * 2,
+      height: fullRadius * 2,
     };
   }
 

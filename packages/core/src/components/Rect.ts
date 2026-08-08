@@ -50,7 +50,15 @@ export class Rect extends Entity {
   }
 
   public override getBounds(): Bounds {
-    return { x: 0, y: 0, width: this.width, height: this.height };
+    // Inflate by strokeWidth/2 when stroke is present to include the full stroke
+    // in culling bounds. Without this, strokes at viewport edges are clipped.
+    const inflation = this.stroke !== null ? this.strokeWidth / 2 : 0;
+    return {
+      x: -inflation,
+      y: -inflation,
+      width: this.width + inflation * 2,
+      height: this.height + inflation * 2,
+    };
   }
 
   /**

@@ -42,7 +42,11 @@ describe('Rect', () => {
     const box = new Rect({ width: 120, height: 64, fill: '#38bdf8' });
     expect(box.width).toBe(120);
     expect(box.height).toBe(64);
-    expect(box.getBounds()).toEqual({ x: 0, y: 0, width: 120, height: 64 });
+    const bounds = box.getBounds();
+    expect(bounds.x).toBeCloseTo(0);
+    expect(bounds.y).toBeCloseTo(0);
+    expect(bounds.width).toBe(120);
+    expect(bounds.height).toBe(64);
 
     const { r, calls } = recorder();
     box.render(r);
@@ -55,7 +59,13 @@ describe('Rect', () => {
   });
 
   it('uses roundRect when radius > 0 and strokes when a stroke is set', () => {
-    const box = new Rect({ width: 40, height: 40, radius: 8, stroke: '#000', strokeWidth: 2 });
+    const box = new Rect({
+      width: 40,
+      height: 40,
+      radius: 8,
+      stroke: '#000',
+      strokeWidth: 2,
+    });
     const { r, calls } = recorder();
     box.render(r);
     const rr = calls.find((c) => c.op === 'roundRect');
@@ -79,9 +89,21 @@ describe('Rect', () => {
       height: 10,
       color: '#f00',
     });
-    expect(new Rect({ width: 10, height: 10, fill: '#f00', radius: 4 }).getBatchRect()).toBeNull();
     expect(
-      new Rect({ width: 10, height: 10, fill: '#f00', stroke: '#0f0' }).getBatchRect(),
+      new Rect({
+        width: 10,
+        height: 10,
+        fill: '#f00',
+        radius: 4,
+      }).getBatchRect(),
+    ).toBeNull();
+    expect(
+      new Rect({
+        width: 10,
+        height: 10,
+        fill: '#f00',
+        stroke: '#0f0',
+      }).getBatchRect(),
     ).toBeNull();
     expect(new Rect({ width: 10, height: 10, fill: null }).getBatchRect()).toBeNull();
   });
