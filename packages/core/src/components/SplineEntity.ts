@@ -158,8 +158,8 @@ function distSqToSegment(
  * scene.add(new SplineEntity(doc).setPosition(100, 100));
  */
 export class SplineEntity extends Entity {
-  public doc: SplineDocument;
-  public lineWidth: number;
+  private _doc: SplineDocument;
+  private _lineWidth: number;
   public defaultColor: string;
   public hitTolerance: number;
   private cache: boolean;
@@ -176,6 +176,35 @@ export class SplineEntity extends Entity {
   private polylines: Float32Array[] | null = null;
 
   /**
+   * The spline document to render. Assigning a new document invalidates all
+   * caches (baked canvas, flattened polylines, bounds).
+   */
+  public get doc(): SplineDocument {
+    return this._doc;
+  }
+  public set doc(value: SplineDocument) {
+    if (this._doc === value) return;
+    this._doc = value;
+    this.invalidateCache();
+    this.bounds = this.computeBounds();
+    this.width = this.bounds.width;
+    this.height = this.bounds.height;
+  }
+
+  /**
+   * Stroke width in local units. Assigning a new value invalidates the baked
+   * canvas and hit-test polylines so visual and hit geometry stay consistent.
+   */
+  public get lineWidth(): number {
+    return this._lineWidth;
+  }
+  public set lineWidth(value: number) {
+    if (this._lineWidth === value) return;
+    this._lineWidth = value;
+    this.invalidateCache();
+  }
+
+  /**
    * When `true`, the renderer draws a rounded-rect outline of the entity's
    * local bounds after painting the curves. Useful for drag feedback and
    * debugging hit areas. Defaults to `false`.
@@ -184,8 +213,8 @@ export class SplineEntity extends Entity {
 
   constructor(doc: SplineDocument, opts: SplineOptions = {}) {
     super();
-    this.doc = doc;
-    this.lineWidth = opts.lineWidth ?? 2;
+    this._doc = doc;
+    this._lineWidth = opts.lineWidth ?? 2;
     this.cache = opts.cache ?? true;
     this.defaultColor = opts.defaultColor ?? '#e2e8f0';
     this.hitMode = opts.hitTest ?? 'curve';
@@ -195,23 +224,30 @@ export class SplineEntity extends Entity {
     this.height = this.bounds.height;
     const isGradient = (c: SplineColor) => c !== null && !Array.isArray(c);
     this.containsGradient =
-      (this.doc.equations?.some((eq) => isGradient(eq.color_rgb)) ?? false) ||
-      (this.doc.paths?.some((p) => isGradient(p.color_rgb)) ?? false);
+      (this._doc.equations?.some((eq) => isGradient(eq.color_rgb)) ?? false) ||
+      (this._doc.paths?.some((p) => isGradient(p.color_rgb)) ?? false);
     // Enable a11y shadow layer by default so pointer events are dispatched.
     this.interactive = true;
   }
 
+  /** Clear cached baked canvas and hit-test polylines. */
+  private invalidateCache(): void {
+    this.baked = false;
+    this.offscreen = null;
+    this.polylines = null;
+  }
+
   private computeBounds(): Bounds {
-    if (this.doc.bounding_box) {
-      const [minX, minY, maxX, maxY] = this.doc.bounding_box;
+    if (this._doc.bounding_box) {
+      const [minX, minY, maxX, maxY] = this._doc.bounding_box;
       return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
     }
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    if (this.doc.equations) {
-      for (const eq of this.doc.equations) {
+    if (this._doc.equations) {
+      for (const eq of this._doc.equations) {
         for (const seg of eq.data) {
           const b = polySegmentToBezier(seg);
           for (const [x, y] of [
@@ -228,8 +264,8 @@ export class SplineEntity extends Entity {
         }
       }
     }
-    if (this.doc.paths) {
-      for (const path of this.doc.paths) {
+    if (this._doc.paths) {
+      for (const path of this._doc.paths) {
         for (const pt of path.data) {
           if (pt.x < minX) minX = pt.x;
           if (pt.x > maxX) maxX = pt.x;
@@ -297,15 +333,15 @@ export class SplineEntity extends Entity {
   private getPolylines(): Float32Array[] {
     if (this.polylines) return this.polylines;
     const out: Float32Array[] = [];
-    if (this.doc.equations) {
-      for (const eq of this.doc.equations) {
+    if (this._doc.equations) {
+      for (const eq of this._doc.equations) {
         for (const seg of eq.data) {
           out.push(flattenBezier(polySegmentToBezier(seg), HIT_SAMPLES));
         }
       }
     }
-    if (this.doc.paths) {
-      for (const path of this.doc.paths) {
+    if (this._doc.paths) {
+      for (const path of this._doc.paths) {
         const pts = new Float32Array(path.data.length * 2);
         for (let i = 0; i < path.data.length; i++) {
           pts[i * 2] = path.data[i].x;
@@ -336,8 +372,8 @@ export class SplineEntity extends Entity {
   }
 
   private strokeEquations(r: IRenderer): void {
-    if (this.doc.equations) {
-      for (const eq of this.doc.equations) {
+    if (this._doc.equations) {
+      for (const eq of this._doc.equations) {
         const stroke = this.resolveColor(eq.color_rgb, r);
         r.beginPath();
         for (const seg of eq.data) {
@@ -348,8 +384,8 @@ export class SplineEntity extends Entity {
         r.stroke(stroke, this.lineWidth);
       }
     }
-    if (this.doc.paths) {
-      for (const path of this.doc.paths) {
+    if (this._doc.paths) {
+      for (const path of this._doc.paths) {
         const stroke = this.resolveColor(path.color_rgb, r);
         r.beginPath();
         if (path.data.length > 0) {
@@ -397,8 +433,8 @@ export class SplineEntity extends Entity {
     ctx.lineWidth = this.lineWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    if (this.doc.equations) {
-      for (const eq of this.doc.equations) {
+    if (this._doc.equations) {
+      for (const eq of this._doc.equations) {
         ctx.strokeStyle =
           eq.color_rgb === null
             ? this.defaultColor
@@ -414,8 +450,8 @@ export class SplineEntity extends Entity {
         ctx.stroke();
       }
     }
-    if (this.doc.paths) {
-      for (const path of this.doc.paths) {
+    if (this._doc.paths) {
+      for (const path of this._doc.paths) {
         ctx.strokeStyle =
           path.color_rgb === null
             ? this.defaultColor
