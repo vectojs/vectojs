@@ -64,6 +64,57 @@ export interface MarkdownTheme {
    * a failure rather than reading as prose.
    */
   mathFallbackColor?: string;
+  /**
+   * Background fill painted behind `==marked==` text (`markdown-it-mark`),
+   * consumed as {@link TextStyle.highlightColor}.
+   *
+   * A fixed default rather than derived from another theme key, unlike
+   * {@link footnoteColor}'s link-color derivation: CSS `mark`'s UA-stylesheet
+   * default (`background-color: Mark`, a yellow highlight) is not related to
+   * any other color in this theme, so there is nothing sensible to derive it
+   * from.
+   */
+  markHighlightColor?: string;
+  /**
+   * Accent/border color for a `:::kind` container, keyed by the lowercased
+   * `kind` word (`:::warning` → `containerColors.warning`).
+   *
+   * A `Record`, not one flat key per kind, because the vocabulary of kinds is
+   * open — `:::caution`, `:::success` and a project's own house style all
+   * have to resolve to *something* without a signature change here. Looked up
+   * through {@link containerColor} rather than read directly, which is what
+   * applies {@link containerDefaultColor} for a kind absent from the map (or
+   * for a bare `:::` with no kind at all).
+   *
+   * The four defaults mirror the common `note`/`tip`/`warning`/`danger`
+   * vocabulary of `markdown-it-container`/Docusaurus/mdBook admonitions;
+   * `info` aliases `note`'s color, since the two are used interchangeably
+   * across those tools and a project picking one is not expressing a second,
+   * distinct semantic.
+   */
+  containerColors?: Readonly<Record<string, string>>;
+  /**
+   * Accent/border color for a container whose `kind` is absent from
+   * {@link containerColors} — including a bare `:::` with no kind at all.
+   * Deliberately neutral (slate) rather than an error color: an unrecognised
+   * kind is a project's own vocabulary the theme does not know about, not a
+   * mistake.
+   */
+  containerDefaultColor?: string;
+  /**
+   * Background fill painted behind a `:::` container's full content area,
+   * one flat value for every kind rather than a per-kind tint.
+   *
+   * Real callout components (Docusaurus admonitions, mdBook, GitHub's own
+   * `[!NOTE]`) vary the ACCENT (border/label) by kind but keep one neutral
+   * background across all of them — the color is what signals severity, and a
+   * differently-tinted background per kind would fight the accent bar for
+   * that job rather than support it. Translucent so it composites against
+   * whatever surface a container is nested in (a container inside a
+   * blockquote inside a list), matching {@link codeBgColor}'s and
+   * {@link markHighlightColor}'s own translucent-overlay convention.
+   */
+  containerBgColor?: string;
 
   // ── Syntax highlighting ───────────────────────────────────────────────────
   /** Code-block keyword color. */
@@ -76,6 +127,19 @@ export interface MarkdownTheme {
   syntaxNumberColor?: string;
 
   // ── Typography ────────────────────────────────────────────────────────────
+  /**
+   * Enable `markdown-it`-style typographic substitutions: `--`/`---` to en/em
+   * dash, `...` to an ellipsis, `(c)`/`(r)`/`(tm)` to their symbols, `+-` to
+   * `±`, and straight quotes to curly ones (intra-run only — see
+   * {@link applyTypography}'s doc for why cross-boundary pairing is out of
+   * scope).
+   *
+   * Off by default, matching `markdown-it`'s own `typographer` option: these
+   * substitutions rewrite characters the author did not literally type, so
+   * applying them unconditionally would silently change a document's source
+   * rather than only its rendering.
+   */
+  typographer?: boolean;
   /** Body font. */
   bodyFont?: string;
   /** Monospace font for code. */
@@ -110,6 +174,47 @@ export interface MarkdownTheme {
    * superscript is therefore not expressible — see `markdown-footnote.ts`.
    */
   footnoteMarkerScale?: number;
+  /**
+   * Size of a subscript run (`H~2~O`'s `2`), as a multiple of the size of the
+   * run it sits in.
+   *
+   * Mirrors `markdown-it-sub`'s ~0.75em. Relative rather than absolute for the
+   * same reason as {@link footnoteMarkerScale}: a subscript inside a heading
+   * scales with the heading rather than reserving a body-sized glyph.
+   */
+  subscriptScale?: number;
+  /**
+   * Baseline shift for a subscript run, in em of the size of the run it sits
+   * in (the *unscaled* surrounding run, matching CSS `vertical-align: sub`,
+   * which is relative to the parent's font size rather than the subscript's
+   * own reduced one).
+   *
+   * Sign matches `TextStyle.baselineShift`: negative moves the run down. `-0.15`
+   * sits in markdown-it's ~-0.15em to -0.2em range; nothing in that range reaches
+   * the line-growth threshold at the default {@link subscriptScale}, so a lone
+   * subscript run does not grow its line (see `DEC-0001`'s degenerate case).
+   */
+  subscriptShift?: number;
+  /**
+   * Size of a superscript run (`19^th^`'s `th`), as a multiple of the size of
+   * the run it sits in. Mirrors `subscriptScale`; see that doc for why relative.
+   */
+  superscriptScale?: number;
+  /**
+   * Baseline shift for a superscript run, in em of the size of the run it sits
+   * in (the *unscaled* surrounding run — see {@link subscriptShift} for why).
+   *
+   * Positive, unlike `subscriptShift`: `TextStyle.baselineShift` is positive =
+   * up. `0.2` mirrors `subscriptShift`'s magnitude and, measured against
+   * `shiftedExtent()` at the default {@link superscriptScale}, is the largest
+   * shift that stays inside the line's existing growth slack for a lone raised
+   * run (see `DEC-0001`'s degenerate case) — `0.25` and up already force
+   * growth at this scale, which was measured directly rather than assumed:
+   * an earlier draft of this default (`0.3`, markdown-it's own superscript
+   * figure) was picked from that library's CSS without checking it against
+   * this engine's `shiftedExtent()` math, and it does force growth here.
+   */
+  superscriptShift?: number;
   /** Code-block line height in px. */
   codeLineHeight?: number;
   /**
@@ -135,6 +240,19 @@ export interface MarkdownTheme {
   quoteBorderWidth?: number;
   /** Vertical gap in px between blocks inside a blockquote. */
   quoteInnerGap?: number;
+  /**
+   * Left indent in px of a `:::` container's contents, from its accent
+   * border. Mirrors {@link quoteIndent} — a container is visually a
+   * blockquote with a label and a per-kind color, not a structurally
+   * different shape.
+   */
+  containerIndent?: number;
+  /** Width in px of a `:::` container's accent border. Mirrors {@link quoteBorderWidth}. */
+  containerBorderWidth?: number;
+  /** Vertical gap in px between blocks inside a `:::` container. Mirrors {@link quoteInnerGap}. */
+  containerInnerGap?: number;
+  /** Corner radius in px of a `:::` container's background fill. */
+  containerRadius?: number;
   /** Corner radius in px of an image. */
   imageRadius?: number;
   /**
@@ -167,6 +285,7 @@ export interface MarkdownTheme {
  * value a caller actually gets.
  */
 export const DEFAULT_THEME: Required<MarkdownTheme> = {
+  typographer: false,
   textColor: '#e2e8f0',
   headingColor: '#f8fafc',
   codeColor: '#a5f3fc',
@@ -179,6 +298,17 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   linkColor: '#38bdf8',
   footnoteColor: '#38bdf8',
   mathFallbackColor: '#fcd34d',
+  markHighlightColor: 'rgba(250, 204, 21, 0.35)',
+  containerColors: {
+    note: '#38bdf8',
+    info: '#38bdf8',
+    tip: '#4ade80',
+    warning: '#fbbf24',
+    danger: '#f87171',
+    caution: '#f87171',
+  },
+  containerDefaultColor: '#94a3b8',
+  containerBgColor: 'rgba(148, 163, 184, 0.08)',
   syntaxKeywordColor: '#c084fc',
   syntaxStringColor: '#86efac',
   syntaxCommentColor: '#64748b',
@@ -190,6 +320,10 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   codeFontSize: 15,
   tableFontSize: 14,
   footnoteMarkerScale: 0.75,
+  subscriptScale: 0.75,
+  subscriptShift: -0.15,
+  superscriptScale: 0.75,
+  superscriptShift: 0.2,
   codeLineHeight: 24,
   bodyLineHeight: 24,
   blockGap: 16,
@@ -200,6 +334,10 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   quoteIndent: 16,
   quoteBorderWidth: 4,
   quoteInnerGap: 8,
+  containerIndent: 16,
+  containerBorderWidth: 4,
+  containerInnerGap: 8,
+  containerRadius: 8,
   imageRadius: 8,
   inlineImageScale: 1.15,
 };
@@ -247,4 +385,17 @@ export function headingSize(theme: Required<MarkdownTheme>, depth: number): numb
   if (sizes.length === 0) return theme.fontSize;
   const idx = Math.min(Math.max(depth, 1) - 1, sizes.length - 1);
   return sizes[idx] ?? theme.fontSize;
+}
+
+/**
+ * Accent/border color for a `:::kind` container, looked up case-insensitively
+ * (`:::Warning` and `:::warning` resolve identically — a container's `kind` is
+ * a fixed vocabulary word, not case-sensitive prose) against
+ * {@link MarkdownTheme.containerColors}. Falls back to
+ * {@link MarkdownTheme.containerDefaultColor} for a kind the map does not
+ * carry, and for a bare `:::` with no kind (`kind` is `undefined`).
+ */
+export function containerColor(theme: Required<MarkdownTheme>, kind: string | undefined): string {
+  if (kind === undefined) return theme.containerDefaultColor;
+  return theme.containerColors[kind.toLowerCase()] ?? theme.containerDefaultColor;
 }

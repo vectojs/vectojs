@@ -28,6 +28,133 @@ export function decodeEntities(text: string): string {
 }
 
 /**
+ * `markdown-it`'s `typographer` substitutions: dashes, ellipsis, trademark
+ * symbols, and quote pairs contained within one run of prose.
+ *
+ * Off by default (`theme.typographer`), matching markdown-it's own default —
+ * these are characters the author did not literally type, so applying them
+ * unconditionally would silently rewrite a document's source.
+ *
+ * ## Quote pairing is INTRA-RUN only
+ *
+ * `"quoted"` becomes curly only when both its opening and closing `"` are in
+ * the SAME decoded text run. A quote that spans an inline-markup boundary
+ * (`"quoted *emphasis* text"` splits into three text tokens around the `em`)
+ * is not paired across that boundary and stays straight. `collectSpans`
+ * recurses per-token with no shared mutable state across siblings, and
+ * markdown-it's own quote rule needs exactly that — a per-paragraph
+ * open/close stack — to pair nested and cross-boundary quotes. Threading that
+ * state through this module's recursion is a materially larger change,
+ * deferred until a real document exercises the gap.
+ *
+ * ## Apostrophes vs. quote delimiters
+ *
+ * A `'` between two letters (`it's`, `y'all`) is a contraction, not a quote
+ * delimiter, and is replaced with a closing curly quote BEFORE quote pairing
+ * runs — otherwise `it's fine, 'nice' day` would pair the apostrophe in
+ * `it's` with the opening `'` of `'nice'`, consuming both instead of matching
+ * `'nice'` on its own.
+ */
+export function applyTypography(text: string): string {
+  let out = text;
+  // Symbols first, longest literal match first so `(tm)` cannot be partially
+  // consumed by a shorter pattern.
+  out = out.replace(/\(tm\)/gi, '\u2122');
+  out = out.replace(/\(c\)/gi, '\u00a9');
+  out = out.replace(/\(r\)/gi, '\u00ae');
+  // Em dash before en dash: a `---` run must resolve to one em dash, not an
+  // em dash's worth of en-dash pairs plus a stray hyphen.
+  out = out.replace(/---/g, '\u2014');
+  out = out.replace(/--/g, '\u2013');
+  // Exactly three dots; a fourth is left as a literal trailing period, the
+  // same behaviour markdown-it's own ellipsis rule has.
+  out = out.replace(/\.{3}/g, '\u2026');
+  out = out.replace(/([A-Za-z])'([A-Za-z])/g, '$1\u2019$2');
+  out = out.replace(/"([^"\n]*)"/g, '\u201c$1\u201d');
+  out = out.replace(/'([^'\n]*)'/g, '\u2018$1\u2019');
+  return out;
+}
+
+/**
+ * Decode entities and, when the theme requests it, apply
+ * {@link applyTypography}. The single call site every literal-prose branch in
+ * {@link collectSpans} routes through, so enabling `typographer` covers every
+ * surface that already flows through `collectSpans` (paragraphs, headings,
+ * list items, table cells, links, emphasis, ins/mark/sub/sup) without a
+ * second call site to keep in sync.
+ *
+ * Deliberately NOT used for `codespan`, `html`, an unresolved `emoji`
+ * shortcode's literal fallback, or `inlineMath`'s failed-typeset source
+ * fallback — none of those are prose a reader would want rewritten: a code
+ * span's `it's` must stay a literal apostrophe, and TeX source shown on a
+ * typeset failure must stay byte-identical to what was written.
+ */
+function decodeProse(text: string, theme: Required<MarkdownTheme>): string {
+  const decoded = decodeEntities(text);
+  return theme.typographer ? applyTypography(decoded) : decoded;
+}
+
+/**
+ * Empty by construction, so every {@link collectSpans} call site that has no
+ * abbreviation dictionary to thread through (nested recursive calls that
+ * already received one further up, or a caller that never collected one) can
+ * share one object instead of allocating a fresh empty `Map` per call.
+ */
+const NO_ABBREVIATIONS: ReadonlyMap<string, string> = new Map();
+
+/**
+ * Split `text` into one or more spans, applying `abbr`'s
+ * `markdown-it-abbr`-style dotted-underline treatment to any whole-word (or
+ * whole-phrase) term match, and push each resulting span into `out` with
+ * `style` (plus `abbrTitle` on the matched ones).
+ *
+ * This is the single call site the abbreviation feature enters through: every
+ * prose-emitting leaf in {@link collectSpans} (`strong`/`em`/`sup`/`ins`/
+ * `mark`/subscript/`link`/`text`/the fallback arm) routes its decoded text
+ * through this instead of a bare `out.push({ text, style })`, so a
+ * `*[HTML]: …` definition applies uniformly across every kind of styled run —
+ * `**HTML**`, `*HTML*`, a plain `HTML` — without a special case per construct.
+ * `codespan`, `html`, an unresolved emoji shortcode, and the math fallback do
+ * NOT route through this, matching {@link decodeProse}'s own exclusions:
+ * abbreviation matching is prose treatment, not something a code span's
+ * literal characters should be subject to.
+ *
+ * Longest-term-first, case-sensitive, whole-word/-phrase matching: sorting the
+ * dictionary's terms by descending length before building the alternation
+ * means `HTML5` (if separately defined) wins over `HTML` at a position where
+ * both would otherwise match, mirroring `markdown-it-abbr`'s own greedy
+ * behavior. `\b` boundaries on both ends keep `HTML5` from lighting up a
+ * `HTML`-only definition, and a multi-word term (`*[JS Engine]: …`) matches
+ * across the internal space the same way a single word does.
+ *
+ * When `abbr` is empty — the overwhelmingly common case, since most documents
+ * define no abbreviations at all — this degrades to a single push with no
+ * regex work, so the feature costs nothing for a document that never uses it.
+ */
+function emitProse(
+  text: string,
+  style: TextStyle | undefined,
+  abbr: ReadonlyMap<string, string>,
+  out: StyledSpan[],
+): void {
+  if (!text) return;
+  if (abbr.size === 0) {
+    out.push({ text, style });
+    return;
+  }
+  const terms = [...abbr.keys()].sort((a, b) => b.length - a.length);
+  const pattern = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const re = new RegExp(`\\b(?:${pattern})\\b`, 'g');
+  let last = 0;
+  for (let match = re.exec(text); match !== null; match = re.exec(text)) {
+    if (match.index > last) out.push({ text: text.slice(last, match.index), style });
+    out.push({ text: match[0], style: { ...style, abbrTitle: abbr.get(match[0]) } });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), style });
+}
+
+/**
  * Recursively walk the inline token tree, accumulating {@link StyledSpan}s
  * with inherited style overrides (bold, italic, etc.).
  */
@@ -45,30 +172,31 @@ export function collectSpans(
    * recovered from `inherited`.
    */
   blockFontSize?: number,
+  /**
+   * The document's `*[TERM]: definition` dictionary, applied to every prose
+   * leaf via {@link emitProse}. Defaults to {@link NO_ABBREVIATIONS} so every
+   * call site that has none to thread — nested recursive calls, and callers
+   * predating this feature — costs nothing extra.
+   */
+  abbr: ReadonlyMap<string, string> = NO_ABBREVIATIONS,
 ): void {
   for (const token of tokens) {
     switch (token.type) {
       case 'strong': {
         const t = token as Tokens.Strong;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out, blockFontSize);
+          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out, blockFontSize, abbr);
         } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, bold: true },
-          });
+          emitProse(decodeProse(t.text, theme), { ...inherited, bold: true }, abbr, out);
         }
         break;
       }
       case 'em': {
         const t = token as Tokens.Em;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out, blockFontSize);
+          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out, blockFontSize, abbr);
         } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, italic: true },
-          });
+          emitProse(decodeProse(t.text, theme), { ...inherited, italic: true }, abbr, out);
         }
         break;
       }
@@ -78,41 +206,47 @@ export function collectSpans(
         // like plain text rather than a missing feature.
         const t = token as Tokens.Del;
         // marked's GFM tokenizer emits `del` for a SINGLE-tilde run too, so
-        // `H~2~O` arrived here and painted the `2` struck through. That is the one
-        // construct this renderer got actively wrong rather than merely not
-        // supporting: every unsupported construct falls back to visible literal
-        // source, which a reader can see and interpret, but H2̶O silently changes
-        // meaning and gives no hint that subscript was intended.
+        // `H~2~O` arrives here as well as `~~gone~~`. `raw` is what distinguishes
+        // them — `~2~` vs `~~gone~~` — because `text` is identical either way.
         //
-        // `raw` is what distinguishes them — `~2~` vs `~~gone~~` — because `text`
-        // is identical either way. Single-tilde therefore re-emits its delimiters
-        // as literal characters and recurses unstruck, so the source is visible
-        // and inner markup still renders (`~*em*~` keeps its emphasis).
-        //
-        // True subscript needs a baseline-shift field on `TextStyle`, which does
-        // not exist; see `forge/decisions/markdown-syntax-coverage-2026-08.md`.
-        // When it lands, this arm is where subscript hooks in.
+        // Single-tilde is now real subscript (DEC-0001's baseline-shift field
+        // landed): the run scales down and drops below the baseline, exactly like
+        // `markdown-it-sub`. Before that field existed, this arm re-emitted the
+        // literal `~` delimiters and recursed unstruck instead — the only honest
+        // fallback available at the time, since a lowered run could not be
+        // expressed at all. See `DEC-01KZDK44` for that history.
         const isStrikethrough = t.raw?.startsWith('~~') ?? true;
         if (!isStrikethrough) {
-          // Omit an empty style object rather than attach one, matching the `text`
-          // arm: a span's style participates in the paragraph memo key.
-          const plain = Object.keys(inherited).length > 0 ? inherited : undefined;
-          out.push({ text: '~', style: plain });
+          // The run's own size drives the subscript size, the same pattern
+          // inline math and the footnote marker use: a subscript inside a
+          // heading scales with the heading rather than reserving a body-sized
+          // glyph. `subscriptShift` is in em of this UNSCALED size (CSS
+          // `vertical-align: sub` is relative to the parent's font, not the
+          // subscript's own reduced one), so it is computed before scaling.
+          const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
+          const subStyle: TextStyle = {
+            ...inherited,
+            fontSize: runSize * theme.subscriptScale,
+            baselineShift: runSize * theme.subscriptShift,
+          };
           if (t.tokens) {
-            collectSpans(t.tokens, inherited, theme, out, blockFontSize);
+            collectSpans(t.tokens, subStyle, theme, out, blockFontSize, abbr);
           } else {
-            out.push({ text: decodeEntities(t.text), style: plain });
+            emitProse(decodeProse(t.text, theme), subStyle, abbr, out);
           }
-          out.push({ text: '~', style: plain });
           break;
         }
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, lineThrough: true }, theme, out, blockFontSize);
+          collectSpans(
+            t.tokens,
+            { ...inherited, lineThrough: true },
+            theme,
+            out,
+            blockFontSize,
+            abbr,
+          );
         } else {
-          out.push({
-            text: decodeEntities(t.text),
-            style: { ...inherited, lineThrough: true },
-          });
+          emitProse(decodeProse(t.text, theme), { ...inherited, lineThrough: true }, abbr, out);
         }
         break;
       }
@@ -238,15 +372,19 @@ export function collectSpans(
         break;
       }
       case 'footnoteRef': {
-        // A reference marker: smaller than the run it sits in, and tinted. Without
-        // this arm the token would fall to `default:`, which pushes `.text` — and
-        // the token has no `text` field, so the marker would silently vanish and
-        // the sentence would read as though the reference had never been written.
+        // A reference marker: smaller than the run it sits in, raised, and
+        // tinted. Without this arm the token would fall to `default:`, which
+        // pushes `.text` — and the token has no `text` field, so the marker
+        // would silently vanish and the sentence would read as though the
+        // reference had never been written.
         //
-        // Size is the only signal available. `TextStyle` has no baseline shift, so
-        // a raised superscript cannot be expressed, and faking one through an
-        // inline object would mean rasterizing text: `InlineObjectSurface` exposes
-        // `drawImage` and nothing else.
+        // A TRUE superscript now that `TextStyle.baselineShift` exists
+        // (`DEC-0001`) — this arm used to signal by size alone, since faking a
+        // raise through an inline object would have meant rasterizing text
+        // (`InlineObjectSurface` exposes only `drawImage`). Reuses
+        // `theme.superscriptShift` rather than a footnote-specific constant:
+        // there is nothing footnote-specific about how far a raised run sits
+        // above the baseline, only about how small it is.
         //
         // No `href`. A marker is a cross-reference to a sibling block, not a URL,
         // and giving it one would underline it and route a click to the consumer's
@@ -258,9 +396,71 @@ export function collectSpans(
           style: {
             ...inherited,
             fontSize: runSize * theme.footnoteMarkerScale,
+            baselineShift: runSize * theme.superscriptShift,
             color: theme.footnoteColor,
           },
         });
+        break;
+      }
+      case 'sup': {
+        // `markdown-it`-style superscript (`19^th^`): shrink and raise, the
+        // mirror image of the single-tilde subscript arm above. New token type
+        // (`markdown-superscript.ts`), not an existing one repurposed — nothing
+        // in `marked`'s own grammar tokenizes bare `^…^` at all.
+        const t = token as unknown as { text: string };
+        const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
+        emitProse(
+          decodeProse(t.text, theme),
+          {
+            ...inherited,
+            fontSize: runSize * theme.superscriptScale,
+            baselineShift: runSize * theme.superscriptShift,
+          },
+          abbr,
+          out,
+        );
+        break;
+      }
+      case 'ins': {
+        // `markdown-it-ins`-style insert (`++inserted++`): underline, the same
+        // shape as `del`'s strikethrough but as a plain boolean flag rather
+        // than a color, matching `TextStyle.underline`. New token type
+        // (`markdown-ins-mark.ts`) — nothing in `marked`'s own grammar
+        // tokenizes bare `++…++` at all.
+        const t = token as unknown as { text: string };
+        emitProse(decodeProse(t.text, theme), { ...inherited, underline: true }, abbr, out);
+        break;
+      }
+      case 'mark': {
+        // `markdown-it-mark`-style highlight (`==marked==`): a background fill
+        // behind the run, at the theme's default highlight color.
+        // `TextStyle.highlightColor` is a color rather than a boolean because,
+        // unlike `underline`/`lineThrough`, CSS `mark` has no inherent color of
+        // its own to imply — see that field's doc for why.
+        const t = token as unknown as { text: string };
+        emitProse(
+          decodeProse(t.text, theme),
+          { ...inherited, highlightColor: theme.markHighlightColor },
+          abbr,
+          out,
+        );
+        break;
+      }
+      case 'emoji': {
+        // `:wink:`-style shortcode, already resolved to its character by
+        // `markdown-emoji.ts`'s tokenizer — an unknown shortcode never
+        // reaches this arm at all (the tokenizer returns `undefined` and lets
+        // `inlineText` carry the literal `:name:` through as plain text). No
+        // style change: the resolved character is exactly a run of plain
+        // text, colored/sized/weighted like any other codepoint the browser's
+        // font stack shapes via `fillText`. Mirrors the `text` arm's
+        // `style: undefined` convention when `inherited` carries no
+        // overrides, rather than pushing an empty `{}` — the two arms must
+        // agree, since an emoji can appear either bare or nested inside bold/
+        // italic/etc, exactly like plain text can.
+        const t = token as unknown as { text: string };
+        const style = Object.keys(inherited).length > 0 ? inherited : undefined;
+        out.push({ text: t.text, style });
         break;
       }
       case 'link': {
@@ -271,10 +471,18 @@ export function collectSpans(
           href: t.href,
           color: theme.linkColor,
         };
-        if (t.tokens && t.tokens.length > 0) {
-          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize);
+        // An autolink (`<http://…>`, or a bare URL GFM autolinks) never has a
+        // `title` key at all — even a bracket-form link with no title carries
+        // `title: null`. Its visible text is the URL itself, not authored prose,
+        // so it must never be typographer-rewritten: `--` in a path segment is
+        // part of the address, not a dash a reader typed as punctuation.
+        const isAutolink = !('title' in t);
+        if (isAutolink) {
+          out.push({ text: t.text, style: linkStyle });
+        } else if (t.tokens && t.tokens.length > 0) {
+          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize, abbr);
         } else {
-          out.push({ text: decodeEntities(t.text), style: linkStyle });
+          emitProse(decodeProse(t.text, theme), linkStyle, abbr, out);
         }
         break;
       }
@@ -283,24 +491,20 @@ export function collectSpans(
         // Text tokens may themselves contain nested inline tokens (e.g. from
         // paragraph splitting).  Recurse when present.
         if ('tokens' in t && (t as any).tokens?.length) {
-          collectSpans((t as any).tokens, inherited, theme, out, blockFontSize);
+          collectSpans((t as any).tokens, inherited, theme, out, blockFontSize, abbr);
         } else {
-          const decoded = decodeEntities(t.text);
-          if (decoded) {
-            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
-            out.push({ text: decoded, style });
-          }
+          const decoded = decodeProse(t.text, theme);
+          const style = Object.keys(inherited).length > 0 ? inherited : undefined;
+          emitProse(decoded, style, abbr, out);
         }
         break;
       }
       default: {
         // Fallback: grab raw `.text` if available
         if ('text' in token) {
-          const decoded = decodeEntities((token as any).text);
-          if (decoded) {
-            const style = Object.keys(inherited).length > 0 ? inherited : undefined;
-            out.push({ text: decoded, style });
-          }
+          const decoded = decodeProse((token as any).text, theme);
+          const style = Object.keys(inherited).length > 0 ? inherited : undefined;
+          emitProse(decoded, style, abbr, out);
         }
         break;
       }
@@ -391,6 +595,8 @@ export function renderInlineToRichText(
   theme: Required<MarkdownTheme>,
   selectable: boolean,
   onLinkClick?: (url: string) => void,
+  /** The document's `*[TERM]: definition` dictionary — see {@link emitProse}. */
+  abbr: ReadonlyMap<string, string> = NO_ABBREVIATIONS,
 ): RichText {
   const spans: StyledSpan[] = [];
   if (tokens && tokens.length > 0) {
@@ -400,7 +606,7 @@ export function renderInlineToRichText(
     // box. Passed as its own argument rather than seeded into `inherited` so no
     // text span gains an explicit fontSize it did not have before, which would
     // change every heading's paragraph-memo key.
-    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font));
+    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font), abbr);
   }
   // Fallback: if no spans were produced, use the raw text
   if (spans.length === 0) {

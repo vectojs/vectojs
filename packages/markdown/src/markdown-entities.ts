@@ -61,3 +61,34 @@ export class MarkdownContainer extends Entity {
   }
   render(_r: any): void {}
 }
+
+/**
+ * A rounded-rect background fill for a `:::` container's full content area.
+ *
+ * A separate leaf rather than folding the fill into {@link QuoteBorder}: a
+ * blockquote's accent bar is the ONLY visual besides its text, but a container
+ * additionally has a background — real callout components (Docusaurus
+ * admonitions, mdBook, GitHub's `[!NOTE]`) all paint one — and the two need
+ * independent geometry (the fill spans the full width, the bar is a narrow
+ * strip at `x=0`), so one entity cannot own both a `width`/`height` box and a
+ * bar `width`.
+ */
+export class ContainerBackground extends Entity {
+  color: string;
+  radius: number;
+  constructor(w: number, h: number, color: string, radius: number) {
+    super();
+    this.width = w;
+    this.height = h;
+    this.color = color;
+    this.radius = radius;
+  }
+  isPointInside(): boolean {
+    return false;
+  }
+  render(r: IRenderer): void {
+    r.beginPath();
+    r.roundRect(0, 0, this.width, this.height, this.radius);
+    r.fill(this.color);
+  }
+}

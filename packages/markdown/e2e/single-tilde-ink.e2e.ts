@@ -7,7 +7,7 @@ import puppeteer, { type Browser } from 'puppeteer-core';
 import { type BrowserCase, bothEngines, closeServer } from '../../core/e2e/_shared/browsers';
 
 /**
- * `H~2~O` must not paint a strike line; `H~~2~~O` must.
+ * `H~2~O` must not paint a strike line (it is subscript now); `H~~2~~O` must.
  *
  * The unit suite (`test/singleTilde.test.ts`) asserts span styles, which stops one
  * step short of the defect a reader experienced. This closes that gap with real
@@ -85,7 +85,9 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     const { single, double, plain } = result;
 
     // The projected text, which is what a screen reader and a copy both yield.
-    assert.equal(single.text, '~Hello world~', `${browserCase.name} single-tilde text`);
+    // Subscript no longer prints its `~` delimiters — it is a supported
+    // construct now, not a literal-source fallback.
+    assert.equal(single.text, 'Hello world', `${browserCase.name} single-tilde text`);
     assert.equal(double.text, 'Hello world', `${browserCase.name} double-tilde text`);
     assert.equal(plain.text, 'Hello world', `${browserCase.name} plain text`);
 

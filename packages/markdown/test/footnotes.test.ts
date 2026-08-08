@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { RichText } from '@vectojs/ui';
-import { marked, type Tokens } from 'marked';
+import { RichText, Stack } from '@vectojs/ui';
+import { marked, type Token, type Tokens } from 'marked';
 import { Markdown } from '../src/Markdown';
 import { footnoteMarker } from '../src/markdown-footnote';
 import { DEFAULT_THEME, resolveTheme } from '../src/theme';
@@ -421,5 +421,121 @@ describe('footnote streaming', () => {
     expect(texts[0]).toBe('Alpha.');
     expect(texts[1]).toContain('note one');
     expect(texts[2]).toBe('Beta. more text');
+  });
+});
+
+/**
+ * Multi-paragraph footnote bodies: `[^1]: header` followed by an indented
+ * continuation block. Per GFM/markdown-it, a run of blank lines followed by a
+ * four-space (or tab) indented line extends the definition; the first
+ * non-blank, non-indented line ends it.
+ */
+describe('multi-paragraph footnote bodies', () => {
+  const MULTI_PARA = '[^1]: First line.\n\n    Second para.\n\nAfter.\n';
+
+  it('lexes the continuation into the footnoteDef token, not a stray paragraph', () => {
+    // Only two top-level tokens, not three: `consumeContinuation` correctly
+    // stops at offset 19 (rolling back the unconfirmed trailing blank before
+    // "After."), so our OWN tokenizer's raw is
+    // '[^1]: First line.\n\n    Second para.\n'. But `Lexer.blockTokens` then
+    // merges the FOLLOWING lone-`\n` `space` token into the preceding token's
+    // `raw` (the same built-in behaviour the module comment documents for
+    // every other block type), which is why the token actually observed here
+    // carries a second trailing newline and no separate `space` token appears.
+    // That merge is marked's own, pre-existing behaviour — not something this
+    // tokenizer introduces — so asserting the post-merge shape is the correct
+    // pin, not a workaround.
+    const tokens = marked.lexer(MULTI_PARA);
+    expect(tokens.map((t) => t.type)).toEqual(['footnoteDef', 'paragraph']);
+    const def = tokens[0] as unknown as { raw: string; body: string; tokens: Token[] };
+    expect(def.raw).toBe('[^1]: First line.\n\n    Second para.\n\n');
+    expect(def.body).toBe('First line.');
+    expect(def.tokens.map((t) => t.type)).toEqual(['space', 'paragraph']);
+  });
+
+  it('never swallows an unconfirmed trailing blank line into the CONTINUATION scan', () => {
+    // The bug the continuation scanner was specifically built to avoid: a
+    // header with NO continuation must not eat the blank line that follows it
+    // as part of ITS OWN look-ahead — `consumeContinuation` must return `open:
+    // false` at offset 0, not swallow the blank run hoping for an indented line
+    // that never arrives. The token still ends up carrying that blank line in
+    // its `raw` afterwards, but via marked's own lone-`\n`-merge (see the test
+    // above) — a fully different, and harmless, mechanism from the bug this
+    // guards against. Distinguishing the two is why `consumeContinuation` is
+    // also unit-tested directly, below.
+    const tokens = marked.lexer('[^1]: Note.\n\nAfter.\n');
+    expect(tokens.map((t) => t.type)).toEqual(['footnoteDef', 'paragraph']);
+    const def = tokens[0] as unknown as { raw: string; tokens: Token[] };
+    expect(def.raw).toBe('[^1]: Note.\n\n');
+    // No continuation content at all: the tokenizer's own scan found nothing,
+    // so `tokens` is empty regardless of what marked merges in afterwards.
+    expect(def.tokens).toEqual([]);
+  });
+
+  it('tiles the source with its raw strings across a continuation', () => {
+    for (const src of [
+      MULTI_PARA,
+      '[^1]: First.\n\n    Second.\n\n    Third.\n\nAfter.\n',
+      'One.\n\n[^1]: note one\n\nTwo.\n',
+      '[^1]: First line.\n\n    Second para.\n',
+    ]) {
+      expect(
+        marked
+          .lexer(src)
+          .map((t) => t.raw)
+          .join(''),
+        src,
+      ).toBe(src);
+    }
+  });
+
+  it('renders the continuation paragraph indented under the marker', () => {
+    const md = new Markdown(MULTI_PARA, { maxWidth: 600 });
+    const def = md.content.children[0];
+    expect(def).toBeInstanceOf(Stack);
+    const text = projectedText(md);
+    expect(text).toContain('First line.');
+    expect(text).toContain('Second para.');
+    expect(text).toContain('After.');
+  });
+
+  it('renders a single-line definition as a plain RichText, unaffected', () => {
+    // Regression: the overwhelming majority case must not gain a Stack wrapper
+    // it does not need.
+    const md = new Markdown(MULTI, { maxWidth: 600 });
+    const def = md.content.children[1];
+    expect(def).toBeInstanceOf(RichText);
+  });
+
+  it('reflows a multi-paragraph definition to a new width', () => {
+    const md = new Markdown(MULTI_PARA, { maxWidth: 600 });
+    const def = md.content.children[0] as Stack;
+    md.setMaxWidth(300);
+    expect(md.content.children[0]).toBe(def);
+    // The header RichText (first child of the Stack) picks up the new width.
+    const header = def.children[0] as RichText;
+    expect(header.maxWidth).toBe(300);
+  });
+
+  it('keeps a multi-paragraph definition intact when appended incrementally', () => {
+    const md = new Markdown('Intro.\n\n[^1]: First line.\n\n    Second', { maxWidth: 600 });
+    md.appendMarkdown(' para.\n\nAfter.\n');
+    const text = projectedText(md);
+    expect(text).toContain('First line.');
+    expect(text).toContain('Second para.');
+    expect(text).toContain('After.');
+    expect(text).toContain('Intro.');
+  });
+
+  it('degrades incremental lexing while a footnote header is present', () => {
+    // Not re-testing `incrementalLex.ts`'s own corpus here — this pins the
+    // observable effect at the `Markdown` level: a document containing any
+    // `[^label]:` header still converges to the same tree whether streamed a
+    // character at a time or built in one shot, which is the property that
+    // matters to a caller regardless of which path got there.
+    const whole = new Markdown(MULTI_PARA, { maxWidth: 600 });
+    const streamed = new Markdown('', { maxWidth: 600 });
+    for (const ch of MULTI_PARA) streamed.appendMarkdown(ch);
+    expect(projectedText(streamed)).toBe(projectedText(whole));
   });
 });
