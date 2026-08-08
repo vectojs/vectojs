@@ -35,6 +35,7 @@ import { SUPERSCRIPT_EXTENSIONS } from './markdown-superscript';
 import {
   containsInlineMath,
   exToPx,
+  isFenceClosed,
   isMathJaxReady,
   MATH_LANGS,
   MathBlock,
@@ -52,6 +53,11 @@ import {
   renderInlineToRichText,
   type UnclosedInline,
 } from './markdown-inline';
+import {
+  ensureFencedBlockRenderer,
+  hasFencedBlockRenderer,
+  renderFencedBlock,
+} from './markdown-fenced-registry';
 
 // `MathBlock`, `preloadMathJax` and `isMathJaxReady` were exported from this
 // module before the math cluster moved to `markdown-math.ts`. Re-exported so the
@@ -83,6 +89,22 @@ export type { MarkdownTheme } from './theme';
 export type { MarkdownThemePresetName } from './markdown-presets';
 export { isPresetName, PRESET_THEMES, resolvePresetTheme } from './markdown-presets';
 
+// Fenced block registry: pluggable rendering for code fences keyed by info string.
+// Exposed as public API for registering custom renderers (Mermaid, Graphviz, etc.).
+export {
+  registerFencedBlockRenderer,
+  unregisterFencedBlockRenderer,
+  hasFencedBlockRenderer,
+  isFencedBlockRendererReady,
+  ensureFencedBlockRenderer,
+  renderFencedBlock,
+} from './markdown-fenced-registry';
+export type {
+  FencedBlockRenderer,
+  FencedBlockRendererSpec,
+  FencedBlockRenderOptions,
+} from './markdown-fenced-registry';
+
 /**
  * Monotonic clock, falling back to `Date.now` where `performance` is absent.
  *
@@ -110,6 +132,37 @@ function mapsEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string
   }
   return true;
 }
+
+/**
+ * Code and math are deliberately NOT registry entries.
+ *
+ * The first version of this registry migrated both into it as "built-ins", and
+ * that was wrong in a way worth recording, because the shape of the mistake is
+ * what the registry's contract now exists to prevent.
+ *
+ * A registry renderer is a module-level function: it receives only
+ * `(source, lang, options)`. But both built-in paths depend on *instance* state
+ * that no such function can reach — `renderDisplayMath` calls
+ * `this.subscribeInlineMathRepaint()` (without which an `onDemand` scene leaves
+ * the formula blank forever once its raster decodes asynchronously) and wraps the
+ * glyphs in a one-object `RichText` so the formula reaches selection,
+ * find-in-page and copy. Re-implementing them as standalone functions therefore
+ * produced *copies*, and the copies silently diverged: `MathBlock` was
+ * constructed as `(mathRender, source, width, theme, selectable)` when its real
+ * signature is `(formula, svgUri)`, so `formula` held a `MathRender` object and
+ * every assertion on `.formula` failed. Registering those copies made them
+ * shadow the correct paths, breaking 7 tests in `streamingMath.test.ts`.
+ *
+ * A registry entry also cannot decide whether a math fence is *closed*: that
+ * needs `token.raw` (see `isFenceClosed`), and a renderer only ever sees
+ * `token.text`. An open ```` ```math ```` fence must stay a `CodeBlock` of TeX
+ * source, so routing math through the registry typeset it early.
+ *
+ * So the registry is an extension point for languages this package does not
+ * implement, not an abstraction over the two it does. `renderToken`'s `code` arm
+ * keeps its original code/math logic verbatim and consults the registry only for
+ * languages neither built-in claims.
+ */
 
 function lexMarkdown(text: string, userTiming: boolean): TokensList {
   if (!userTiming) return marked.lexer(text);
@@ -3468,6 +3521,41 @@ export class Markdown extends UIComponent {
           if (mathBlock) return mathBlock;
         }
 
+        // Registry: a language claimed by a *plugin* renderer (Mermaid, Graphviz,
+        // …) is rendered by it. Consulted only after the two built-in arms above,
+        // so `code` and `math` keep their exact existing paths — they are NOT
+        // registry entries, deliberately. Both depend on instance state the
+        // registry cannot reach: display math needs `subscribeInlineMathRepaint()`
+        // and wraps its formula in a `RichText` inline object so selection,
+        // find-in-page and the a11y projection reach it. A module-level copy of
+        // that logic silently diverged (wrong `MathBlock` arity, no `RichText`
+        // wrapper) and broke 7 streaming-math tests, so the built-ins stay here
+        // and the registry stays purely additive.
+        //
+        // Prefetch on every fence, including an open one: during a stream the
+        // module is then fetched over the several chunks the fence takes to close,
+        // so the closing fence renders on the synchronous path.
+        if (hasFencedBlockRenderer(lang)) {
+          ensureFencedBlockRenderer(lang);
+          // `raw`, not just `text`: a renderer has to be able to tell an open
+          // fence from a closed one, exactly as `rendersAsMath` does above, or it
+          // renders a half-arrived source as if it were final.
+          if (isFenceClosed(codeToken.raw)) {
+            const rendered = renderFencedBlock(codeToken.text, lang, {
+              theme: t,
+              availableWidth,
+              selectable: this.selectable,
+            });
+            if (rendered) {
+              return this.withBlockAffordances(rendered, () =>
+                this.codeBlockAffordances(codeToken.text, lang),
+              );
+            }
+          }
+        }
+
+        // Fallback: no plugin renderer, not loaded yet, fence still open, or the
+        // renderer returned null. Render as a plain code block.
         return this.withBlockAffordances(
           new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable),
           () => this.codeBlockAffordances(codeToken.text, lang),
