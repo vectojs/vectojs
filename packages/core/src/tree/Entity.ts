@@ -612,6 +612,11 @@ export class VectoJSEvent<N = unknown> {
     return (this.nativeEvent as { deltaY?: number })?.deltaY;
   }
 
+  /** Native wheel delta mode (0=pixels, 1=lines, 2=pages), if this wraps a `WheelEvent`. */
+  get deltaMode(): number | undefined {
+    return (this.nativeEvent as { deltaMode?: number })?.deltaMode;
+  }
+
   /** Native pointer X, if this wraps a pointer/mouse event. */
   get clientX(): number | undefined {
     return (this.nativeEvent as { clientX?: number })?.clientX;

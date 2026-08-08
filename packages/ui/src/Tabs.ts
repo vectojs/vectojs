@@ -186,18 +186,33 @@ export class Tabs extends UIComponent {
       this.scene?.markDirty();
     });
 
-    this.on('wheel', (e: { deltaY?: number; deltaX?: number; nativeEvent?: Event }) => {
-      const max = this._maxScroll();
-      if (max <= 0) return;
-      const d =
-        Math.abs(e.deltaX ?? 0) > Math.abs(e.deltaY ?? 0) ? (e.deltaX ?? 0) : (e.deltaY ?? 0);
-      const next = Math.max(0, Math.min(max, this._scrollX + d));
-      if (next !== this._scrollX) {
-        this._scrollX = next;
-        (e.nativeEvent as Event | undefined)?.preventDefault?.();
-        this.scene?.markDirty();
-      }
-    });
+    this.on(
+      'wheel',
+      (e: { deltaY?: number; deltaX?: number; deltaMode?: number; nativeEvent?: Event }) => {
+        const max = this._maxScroll();
+        if (max <= 0) return;
+        const deltaY = e.deltaY ?? 0;
+        const deltaX = e.deltaX ?? 0;
+        const deltaMode = e.deltaMode ?? 0;
+        // Convert delta based on mode
+        let scrollDeltaY = deltaY;
+        let scrollDeltaX = deltaX;
+        if (deltaMode === 1) {
+          scrollDeltaY = deltaY * 16;
+          scrollDeltaX = deltaX * 16;
+        } else if (deltaMode === 2) {
+          scrollDeltaY = deltaY * this.height;
+          scrollDeltaX = deltaX * this.width;
+        }
+        const d = Math.abs(scrollDeltaX) > Math.abs(scrollDeltaY) ? scrollDeltaX : scrollDeltaY;
+        const next = Math.max(0, Math.min(max, this._scrollX + d));
+        if (next !== this._scrollX) {
+          this._scrollX = next;
+          (e.nativeEvent as Event | undefined)?.preventDefault?.();
+          this.scene?.markDirty();
+        }
+      },
+    );
 
     this.on('pointerleave', () => {
       this._hoverIdx = -1;
