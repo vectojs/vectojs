@@ -1,5 +1,158 @@
 # @vectojs/markdown
 
+## 0.18.0
+
+### Minor Changes
+
+- d2063b2: Stop the `blockMath` tokenizer at a blank line
+
+  **Behaviour change**: a `$$` display-math block now ends at the first blank
+  line. Previously its content pattern crossed blank lines, so an unterminated
+  `$$` reached arbitrarily far ahead and could absorb the rest of the document
+  once a later `$$` arrived.
+
+  **Before**: `$$\nx = 1\n\ny = 2\n$$\n` was one `blockMath` token whose body
+  (`x = 1\n\ny = 2`) is not valid TeX.
+
+  **After**: the same source is an unclosed fence (rendered as a `CodeBlock`
+  showing the TeX source), then a `y = 2` paragraph, then a `$$` paragraph.
+
+  **Migration**: multi-line math without blank lines is unaffected, which covers
+  `aligned`, `cases`, `matrix` and every other multi-line environment:
+
+  ```markdown
+  $$
+  \begin{aligned}
+  a &= b \\
+  c &= d
+  \end{aligned}
+  $$
+  ```
+
+  **Scope, stated precisely**: this removes the tokenizer's unbounded forward
+  reach, which is a correctness and blast-radius fix. On its own it did **not**
+  make math documents lex incrementally, because `incrementalLex` also guarded a
+  _backward_ reach through marked's `startBlock` paragraph clip. That remaining
+  half is done in
+  [`incremental-lex-blockmath-gate`](./incremental-lex-blockmath-gate.md), which
+  narrows the gate and carries the streaming measurement; the forward guard here
+  was also widened there from `(?!\n\n)` to `(?!\n[ \t]*\n)`, since a
+  whitespace-only line is a blank line to marked but was not to this lookahead.
+
+- 9eadff9: Add fenced-block renderer registry for pluggable code fence rendering
+
+  Introduces a new registry system that allows custom renderers to be registered for specific code fence languages (info strings). This enables extending Markdown with new languages (Mermaid, Graphviz, etc.) without modifying the core renderer.
+
+  **New exports:**
+
+  - `registerFencedBlockRenderer(lang, spec)` - Register a lazy-loadable renderer
+  - `unregisterFencedBlockRenderer(lang)` - Unregister a renderer
+  - `hasFencedBlockRenderer(lang)` - Check if a renderer is registered
+  - `isFencedBlockRendererReady(lang)` - Check if a renderer is loaded
+  - `ensureFencedBlockRenderer(lang)` - Prefetch a renderer module
+  - `renderFencedBlock(source, lang, options)` - Render using the registry
+  - `FencedBlockRenderer` type - Renderer function signature
+  - `FencedBlockRendererSpec` type - Lazy-loadable renderer specification
+  - `FencedBlockRenderOptions` type - Options passed to renderers
+
+  **Changes:**
+
+  - Purely additive: the registry is consulted only for languages the built-in
+    `code` and `math` arms do not already claim, so both keep their exact existing
+    paths and are deliberately **not** registry entries. Display math depends on
+    instance state the registry cannot reach (it subscribes for raster repaint and
+    wraps its formula in a `RichText` inline object so selection, find-in-page and
+    the a11y projection reach it), and a module-level copy of that logic diverges
+    silently.
+  - Registry follows the same lazy-load + `incomplete → ready → error` pattern as
+    math rendering, prefetching on the opening fence so a streamed block can render
+    synchronously once it closes.
+  - A renderer is only invoked once its fence is **closed**, the same rule math
+    already applies — a half-arrived source is never handed to a renderer as final.
+  - Graceful fallback to `CodeBlock` when no renderer is registered, its load has
+    not resolved, it failed to load, or it returned `null`.
+  - Fully backward compatible — existing code/math blocks are untouched.
+
+  **Example:**
+
+  ```typescript
+  import { registerFencedBlockRenderer } from "@vectojs/markdown";
+
+  registerFencedBlockRenderer("mermaid", {
+    async load() {
+      const mermaid = await import("mermaid");
+      return (source, lang, options) => {
+        // ... render Mermaid diagram
+        return entity;
+      };
+    },
+  });
+  ```
+
+### Patch Changes
+
+- abb55ec: Stream math documents incrementally instead of degrading to whole-document lexing
+
+  A line-start `$$` no longer forces `incrementalLex` to re-lex the entire
+  accumulated source on every chunk. The `'block-math'` degrade reason is now
+  unreachable, so a streamed document containing display math keeps a stable
+  block boundary exactly like prose.
+
+  Measured on real headed browsers via `benchmarks/run-browsers.sh`
+  (`markdown-stream-math`, Chrome 240.04 Hz / Firefox 239.56 Hz), streaming a
+  26 760-char document of 200 heading/prose/formula sections in 32-char chunks
+  against an in-process control that re-lexes the whole accumulated source per
+  chunk (what a degraded instance does):
+
+  | engine  | before   | after   | speedup    | math/prose ratio |
+  | ------- | -------- | ------- | ---------- | ---------------- |
+  | Chrome  | 501.6 ms | 3.60 ms | **139.3x** | 0.984            |
+  | Firefox | 577.0 ms | 5.98 ms | **96.5x**  | 0.874            |
+
+  The mechanism, from `incrementalLex`'s own counters rather than the clock:
+  characters fed to `marked.lexer()` fall **215.9x** (11 222 472 to 51 983), the
+  largest single chunk lexes **105** characters at every document size tested
+  (25/50/100/200 sections) where the control grows to the full 26 760, and the
+  boundary settles at **99.84%** of the document. The `math/prose ratio` column is
+  the parity claim: an identical document with formulas replaced by paragraphs of
+  comparable length costs the same, so math is no longer a special case. Deep
+  token-tree equality against a whole-document lex is asserted before any timing
+  is taken.
+
+  This completes the work
+  [`blockmath-blank-line`](./blockmath-blank-line.md) started. That changeset
+  closed the tokenizer's _forward_ reach; two things remained.
+
+  **The backward reach, narrowed rather than accepted.** marked's `blockTokens`
+  clips the text handed to the paragraph tokenizer whenever an extension's
+  `startBlock` hook reports a position, and merges the next paragraph into the
+  clipped one. `blockMath` supplies `start()`, so a `$$` ahead can re-group
+  paragraphs already emitted — which is why the gate degraded outright. Measured
+  against marked 18.0.7, the merge additionally requires `tokens.at(-1)?.type ===
+'paragraph'`, so it can only rewrite **two adjacent `paragraph` tokens**; any
+  token between them, a `space` or a `heading`, blocks it. A stable cut always
+  lands immediately after a `space` token, so such a pair can never straddle a
+  boundary. The blanket source scan is therefore replaced by a cut ceiling that
+  keeps an adjacent pair out of the stable prefix, and the condition is transient:
+  once the `$$` arrives and the pair merges, the boundary advances.
+
+  **A hole in the forward guard.** The previous lookahead was `(?!\n\n)`, which is
+  not marked's own notion of a blank line (`/^[ \t]*$/` per line). Measured:
+  `'$$\nx\n   \n$$\n'` was still ONE `blockMath` token spanning the
+  whitespace-only line, while marked pushes a real `space` token for that line —
+  so a cut could be placed there and then swallowed when the closing `$$`
+  arrived. The guard is now `(?!\n[ \t]*\n)` in both registration sites.
+
+  **Behaviour change, extending `blockmath-blank-line`'s**: a whitespace-only line
+  now terminates `$$` just as a bare blank line does. `'$$\nx\n   \n$$\n'` is a
+  paragraph run rather than one formula. Multi-line math without blank lines is
+  unaffected, so `aligned`, `cases` and `matrix` still work.
+
+  **Also fixed**: `MarkdownWorker.ts` carried the pre-`blockmath-blank-line`
+  tokenizer (`[\s\S]+?`, no blank-line guard) while `Markdown.ts` carried the
+  guarded one. Both register `blockMath` on the shared `marked` singleton, so the
+  effective rule depended on module import order. The two are now identical.
+
 ## 0.17.0
 
 ### Minor Changes

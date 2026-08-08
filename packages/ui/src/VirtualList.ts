@@ -278,6 +278,14 @@ export class VirtualList<T = unknown> extends UIComponent {
       }
       this._restoreAnchor(anchor);
     } else {
+      // Non-keyed path: drop all pooled entities before reconcile so _reconcile
+      // remounts everything fresh. Before this fix, _pool was never cleared, so
+      // _reconcile reused the pooled entities without calling renderItem again —
+      // every overlapping index kept the OLD item's content.
+      for (const ent of this._pool.values()) {
+        super.remove(ent);
+      }
+      this._pool.clear();
       this._targetY = 0;
       this._scrollY = 0;
     }
@@ -402,7 +410,11 @@ export class VirtualList<T = unknown> extends UIComponent {
     const index = this._heights.indexAt(top);
     const key = this._keyAt(index);
     if (key === undefined) return null;
-    return { kind: 'item', key, offsetWithin: top - this._heights.prefix(index) };
+    return {
+      kind: 'item',
+      key,
+      offsetWithin: top - this._heights.prefix(index),
+    };
   }
 
   /**
@@ -711,9 +723,21 @@ export class VirtualList<T = unknown> extends UIComponent {
         {
           label: 'Scroll',
           fields: [
-            { label: 'scrollY', value: Math.round(this._scrollY * 10) / 10, readOnly: true },
-            { label: 'targetY', value: Math.round(this._targetY * 10) / 10, readOnly: true },
-            { label: 'velocityY', value: Math.round(this._velY * 10) / 10, readOnly: true },
+            {
+              label: 'scrollY',
+              value: Math.round(this._scrollY * 10) / 10,
+              readOnly: true,
+            },
+            {
+              label: 'targetY',
+              value: Math.round(this._targetY * 10) / 10,
+              readOnly: true,
+            },
+            {
+              label: 'velocityY',
+              value: Math.round(this._velY * 10) / 10,
+              readOnly: true,
+            },
             { label: 'dragging', value: this._drag, readOnly: true },
           ],
         },
