@@ -103,11 +103,35 @@ describe('Circle and Rect getBounds() stroke inflation', () => {
         strokeWidth: 0,
       });
       const bounds = rect.getBounds();
-      // strokeWidth 0 means no inflation
-      expect(bounds.x).toBe(-0); // 0/2 = 0, but negation gives -0
-      expect(bounds.y).toBe(-0);
+      // strokeWidth 0 means no inflation, and the origin must be a positive zero:
+      // `toBe` is Object.is, which separates -0 from 0.
+      expect(Object.is(bounds.x, 0)).toBe(true);
+      expect(Object.is(bounds.y, 0)).toBe(true);
       expect(bounds.width).toBe(100);
       expect(bounds.height).toBe(50);
+    });
+
+    it('returns a positive zero origin when unstroked (never -0)', () => {
+      // Regression: `x: -inflation` yielded -0 for every unstroked rect. `-0 === 0`
+      // is true, so nothing crashed, but `Object.is(-0, 0)` is false — a
+      // `toEqual({ x: 0, … })` assertion fails and any consumer that
+      // identity-compares an origin sees a different value than before the
+      // inflation change. The unstroked result must stay byte-identical.
+      const bounds = new Rect({
+        width: 10,
+        height: 10,
+        fill: '#f00',
+      }).getBounds();
+      expect(Object.is(bounds.x, -0)).toBe(false);
+      expect(Object.is(bounds.y, -0)).toBe(false);
+      expect(bounds).toEqual({ x: 0, y: 0, width: 10, height: 10 });
+    });
+
+    it('Circle with radius 0 and no stroke also returns a positive zero origin', () => {
+      const bounds = new Circle({ radius: 0, fill: '#f00' }).getBounds();
+      expect(Object.is(bounds.x, -0)).toBe(false);
+      expect(Object.is(bounds.y, -0)).toBe(false);
+      expect(bounds).toEqual({ x: 0, y: 0, width: 0, height: 0 });
     });
   });
 });

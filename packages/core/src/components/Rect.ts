@@ -53,9 +53,15 @@ export class Rect extends Entity {
     // Inflate by strokeWidth/2 when stroke is present to include the full stroke
     // in culling bounds. Without this, strokes at viewport edges are clipped.
     const inflation = this.stroke !== null ? this.strokeWidth / 2 : 0;
+    // `inflation > 0 ? -inflation : 0` rather than a bare `-inflation`: negating
+    // a zero yields -0, and while `-0 === 0`, `Object.is(-0, 0)` is false — so an
+    // unstroked rect's bounds would fail a `toEqual({ x: 0, … })` assertion and
+    // any consumer that identity-compares origins. Keep the no-stroke result
+    // byte-identical to the pre-inflation behaviour.
+    const origin = inflation > 0 ? -inflation : 0;
     return {
-      x: -inflation,
-      y: -inflation,
+      x: origin,
+      y: origin,
       width: this.width + inflation * 2,
       height: this.height + inflation * 2,
     };

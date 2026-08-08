@@ -44,6 +44,16 @@ export class Graph3D {
   private readonly scratchMatrix = new THREE.Matrix4();
   private readonly scratchColor = new THREE.Color();
 
+  /**
+   * Latched so an undersized `positions` array warns once instead of every
+   * frame: `applyPositions` is called from the layout tick, so a bare
+   * `console.warn` here would emit at the display refresh rate (240/s on this
+   * workspace's panel) and bury the rest of the console. Same reason as
+   * `Scene.hasWarnedZeroSize`. Reset by `setGraphData`, since a new graph is a
+   * new contract between caller and renderer.
+   */
+  private hasWarnedShortPositions = false;
+
   constructor(options: Graph3DOptions = {}) {
     this.nodeRadius = options.nodeRadius ?? 4;
     this.nodeSegments = options.nodeSegments ?? 12;
@@ -60,6 +70,7 @@ export class Graph3D {
    */
   public setGraphData(data: GraphData): void {
     this.clearMeshes();
+    this.hasWarnedShortPositions = false;
 
     const nodeCount = data.nodes.length;
     const indexById = new Map<string | number, number>();
@@ -126,6 +137,30 @@ export class Graph3D {
    * endpoints. Call after every layout step that moved something.
    */
   public applyPositions(positions: Float32Array): void {
+    // A `positions` array shorter than the graph it is applied to used to read
+    // past its end. `positions[i]` on a Float32Array is `undefined` out of
+    // range, not 0, so every read past the end produced NaN — NaN instance
+    // matrices (the node vanishes) and a NaN bounding sphere, which makes
+    // frustum culling reject the WHOLE mesh and blanks the graph rather than
+    // just the missing tail. Bail before writing anything instead.
+    //
+    // `nodeCount * 3` is the whole requirement: `setGraphData` resolves every
+    // link endpoint through `indexById` and throws on an unknown id, so no
+    // endpoint can name a node index >= nodeCount. That is why the link loop
+    // below needs no bounds check of its own.
+    const nodeCount = this.nodeMesh?.count ?? 0;
+    if (positions.length < nodeCount * 3) {
+      if (!this.hasWarnedShortPositions) {
+        this.hasWarnedShortPositions = true;
+        console.warn(
+          `[VectoJS] Graph3D.applyPositions received ${positions.length} floats but the graph has ` +
+            `${nodeCount} nodes, which needs ${nodeCount * 3}. Skipping the update to avoid writing ` +
+            'NaN transforms. This warning is emitted once per setGraphData().',
+        );
+      }
+      return;
+    }
+
     if (this.nodeMesh) {
       const count = this.nodeMesh.count;
       // Track the bounds inline. `nodeMesh` keeps frustum culling ON, so its

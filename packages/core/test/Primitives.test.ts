@@ -42,11 +42,7 @@ describe('Rect', () => {
     const box = new Rect({ width: 120, height: 64, fill: '#38bdf8' });
     expect(box.width).toBe(120);
     expect(box.height).toBe(64);
-    const bounds = box.getBounds();
-    expect(bounds.x).toBeCloseTo(0);
-    expect(bounds.y).toBeCloseTo(0);
-    expect(bounds.width).toBe(120);
-    expect(bounds.height).toBe(64);
+    expect(box.getBounds()).toEqual({ x: 0, y: 0, width: 120, height: 64 });
 
     const { r, calls } = recorder();
     box.render(r);
