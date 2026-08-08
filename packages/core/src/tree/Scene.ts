@@ -56,6 +56,7 @@ import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
 
+// --- domain: a11y-projection — role tables, focus predicate, box rebase (extraction 2) ---
 /**
  * Roles for which `aria-valuenow` is valid. It is defined as a NUMBER on range
  * widgets only; setting it elsewhere is both a disallowed attribute and an
@@ -237,6 +238,7 @@ function rebaseChildBox(
   return REBASED_BOX;
 }
 
+// --- domain: render-scheduler — phase/dirty telemetry types (extraction 6) ---
 /**
  * A timed phase of a frame.
  *
@@ -327,6 +329,7 @@ export interface DirtyReasonEntry {
   lastFrame: number;
 }
 
+// --- domain: scene-facade — construction options (stays on Scene) ---
 /**
  * Options for {@link Scene}.
  */
@@ -558,6 +561,7 @@ const SCENE_FIELD_NOT_OPTION: Record<string, string> = {
   devMode: 'set the static `Scene.devMode = true` before constructing',
 };
 
+// --- domain: scene-facade — dev-mode option-key validation ---
 /** Levenshtein distance, bounded — only used for dev-mode key suggestions. */
 function editDistance(a: string, b: string): number {
   const m = a.length;
@@ -598,9 +602,11 @@ function closestOptionKey(key: string): string | undefined {
   return bestScore <= limit ? best : undefined;
 }
 
+// --- domain: render-scheduler — reduced-motion cap ---
 /** Frame-rate the loop is capped to when the OS requests reduced motion. */
 export const REDUCED_MOTION_FPS = 30;
 
+// --- domain: wasm-backend-facade — accelerator reporting types (extraction 1) ---
 /**
  * Why an accelerator did or did not run on the most recent frame.
  *
@@ -658,6 +664,7 @@ export interface AcceleratorReport {
   particle: AcceleratorStatus;
 }
 
+// --- domain: render-scheduler — frame stats ---
 /**
  * Live render-loop telemetry, read from {@link Scene.frameStats}. See that
  * getter for how each field is measured.
@@ -681,6 +688,7 @@ export interface FrameStats {
   dirty: boolean;
 }
 
+// --- domain: a11y-projection — exported a11y tree shape ---
 export interface A11yTreeNode {
   id: string;
   tag: string;
@@ -694,6 +702,7 @@ export interface A11yTreeNode {
   children: A11yTreeNode[];
 }
 
+// --- domain: content-projection — budgets, line windows, caret/selection helpers (extraction 3) ---
 /**
  * Parse an inline `"<n>px"` style value into a positive number, or `null` for
  * anything else (empty, percentages, calc(), zero).
@@ -744,6 +753,7 @@ function parseInlinePx(value: string | undefined): number | null {
  */
 export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 256;
 
+// --- domain: wasm-backend-facade — run-table rejection limit ---
 /**
  * How many CONSECUTIVE `uploadRuns` rejections disable the WASM transform
  * backend for a scene's lifetime.
@@ -763,6 +773,7 @@ export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 256;
  */
 const WASM_UPLOAD_REJECT_LIMIT = 3;
 
+// --- domain: content-projection (resumes) ---
 /**
  * Which tier of content projection a block gets.
  *
@@ -1369,6 +1380,38 @@ function extendSelection(
   selection.addRange(range);
 }
 
+/*
+ * Domain banners
+ * ==============
+ *
+ * `// --- domain: xxx ---` banners below mark which of the decomposition's
+ * domains each region belongs to (forge/decisions/file-decomposition-2026-08.md,
+ * §2). They are navigation aid and extraction plan, not a promise that a domain
+ * is contiguous — several are not, and the banners are here precisely so a wrong
+ * cut is visible before any code moves.
+ *
+ * Planned collaborators, in the decided (ascending-risk) order:
+ *
+ *   1. WasmBackendFacade      — pure facade, zero state coupling
+ *   2. A11yProjectionManager  — deepest logic, highest value
+ *   3. ContentProjectionManager
+ *   4. HitTester
+ *   5. ContextAndResize
+ *   6. RenderScheduler        — last; maxFPS/renderMode/dirty threading
+ *
+ * `Scene` stays the facade with an unchanged public API. Collaborators depend
+ * only on its stable public surface and never call back into its privates.
+ *
+ * Three things the banners make visible, each of which contradicts the naive cut:
+ *
+ * - The WASM region is not one domain. `_ensureHitGrid` and `_findEntityAtWasm`
+ *   live inside it but are hit-test, and `_tickBatchedDrivers` is the scheduler.
+ *   Extraction 1 must leave all three behind.
+ * - a11y and content projection interleave with the scheduler in the field block
+ *   rather than sitting in three runs, so 2, 3 and 6 each touch the same region.
+ * - Portal coordination is a ninth domain that is NOT in the six and stays here.
+ */
+
 /**
  * Top-level orchestrator that owns the entity tree, drive the render loop,
  * and maintains the accessibility/automation shadow layer.
@@ -1382,6 +1425,7 @@ function extendSelection(
  * scene.start();
  */
 export class Scene {
+  // --- domain: context-and-resize — renderer registration statics (extraction 5) ---
   private static webglCreator: WebGLPointRendererCreator | null = null;
   private static webgpuManagerClass: any = null;
   /** Upper bound (ms) on a single frame's `dt`. Caps the giant elapsed gap a
@@ -1397,6 +1441,7 @@ export class Scene {
     Scene.webgpuManagerClass = managerClass;
   }
 
+  // --- domain: scene-facade — tree, renderer, canvas ---
   private root: Entity;
   public overlayRoot: Entity;
   private renderer: IRenderer;
@@ -1411,6 +1456,7 @@ export class Scene {
   private lastTime: number = 0;
   public canvas: HTMLCanvasElement;
 
+  // --- domain: render-scheduler — mode, phase timing, frame telemetry, FPS caps ---
   /**
    * Redraw strategy:
    * - `'always'` (default): re-render every animation frame (legacy behavior).
@@ -1585,6 +1631,7 @@ export class Scene {
     return !!this.forcedColorsQuery?.matches;
   }
 
+  // --- domain: a11y-projection — sync throttle and shadow-DOM state ---
   /**
    * Throttle interval (ms) for the a11y/automation shadow sync. `0` = every
    * frame. See {@link SceneOptions.a11ySyncInterval}.
@@ -1600,6 +1647,8 @@ export class Scene {
   // server-side (e.g. headless layout / vector export) without jsdom.
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
+
+  // --- domain: content-projection — projected DOM, sync state, calibration, selection ---
   /** DOM nodes mirroring static text content, keyed by entity id. */
   private contentElements: Map<string, HTMLElement> = new Map();
   /**
@@ -1745,11 +1794,15 @@ export class Scene {
   private blankRegionSelectionDrag = false;
   private contentSelectionAnchor: TextCaretPosition | null = null;
   private contentSelectionEndListener: (() => void) | null = null;
+
+  // --- domain: render-scheduler — per-frame walk flags ---
   // Animation/interactive flags collected during the render walk (tree-walk
   // fusion): the loop reads last frame's answers instead of re-walking the
   // tree up to 4× per tick. Start true so the first tick stays conservative.
   private frameHadAnimation = true;
   private frameHadInteractive = true;
+
+  // --- domain: context-and-resize — resize handler, DPR query, canvas observer ---
   private resizeHandler: () => void;
   /** Active `(resolution: Ndppx)` media query watching for a runtime DPR change
    *  (window moved between monitors, browser zoom) so the canvas backing store
@@ -1763,6 +1816,8 @@ export class Scene {
    *  this an embedded canvas stayed at its initial size forever. */
   private canvasResizeObserver: ResizeObserver | null = null;
   private dprChangeHandler: (() => void) | null = null;
+
+  // --- domain: a11y-projection — focus, overlay geometry, DOM ordering, portals ---
   private focusedA11yElement: HTMLElement | null = null;
   /** Last geometry `syncOverlayGeometry` wrote, so an unchanged frame can skip the
    *  style writes entirely. Reset to `null` to force the next sync (a new overlay
@@ -1826,6 +1881,7 @@ export class Scene {
   private portalEntities: Map<string, DOMPortalEntity> = new Map();
   private renderOrderCounter: number = 0;
 
+  // --- domain: render-scheduler — authoritative frame counter ---
   /**
    * Monotonic render-frame counter, bumped once per authoritative `render()`
    * pass. Entities stamp their per-frame world-matrix cache with this value and
@@ -1836,6 +1892,7 @@ export class Scene {
    */
   public currentFrame = 0;
 
+  // --- domain: wasm-backend-facade — EXTRACTION 1 STARTS HERE ---
   // ── WASM transform backend (invisible accelerator) ──────────────────────────
   // When `_transformBackend === 'wasm'`, the main render walk sources each
   // entity's world matrix from an SoA store composed by `_wasm` (see
@@ -2124,6 +2181,7 @@ export class Scene {
     return true;
   }
 
+  // --- domain: hit-test — WASM broad-phase. Sits inside the WASM region but belongs to HitTester (extraction 4), NOT to WasmBackendFacade ---
   /**
    * Refresh the hit-test grid for the CURRENT tree state if it is stale (a
    * structural or transform change may have happened since the last build —
@@ -2458,6 +2516,7 @@ export class Scene {
     }
   }
 
+  // --- domain: render-scheduler — batched driver tick (extraction 6), reads the anim backend ---
   /**
    * Advance every registered entity's active drivers for this frame, batching
    * whichever are batchable (`SpringDriver`; `TweenDriver` with a named
@@ -2628,6 +2687,7 @@ export class Scene {
     for (let i = 0; i < tweenCount; i++) tE[i]._applyDriverTick(tP[i], tD[i]);
   }
 
+  // --- domain: wasm-backend-facade (resumes) ---
   /**
    * Compose the whole main tree's world matrices through the resident WASM store
    * and return the world-matrix views for the render walk to read. Rebuilds the
@@ -2776,6 +2836,7 @@ export class Scene {
     return true;
   }
 
+  // --- domain: a11y-projection — render-order map ---
   /**
    * Authoritative paint order for semantic nodes discovered during the main
    * render. A node may not have a DOM projection until the following a11y
@@ -2784,6 +2845,7 @@ export class Scene {
    */
   private a11yRenderOrders: Map<string, number> = new Map();
 
+  // --- domain: context-and-resize — GL/GPU canvases, device state, pointer, size warnings ---
   // Optional WebGL point-cloud layer (see SceneOptions.pointBackend).
   private pointRenderer: PointRenderer | null = null;
   private glCanvas: HTMLCanvasElement | null = null;
@@ -2858,6 +2920,7 @@ export class Scene {
   private hasWarnedInvalidResize: boolean = false;
   private fontLoadHandler: (() => void) | null = null;
 
+  // --- domain: scene-facade — dev-mode diagnostics ---
   // ── Dev-mode warning infrastructure ──────────────────────────────
   //
   // Enable with `Scene.devMode = true` or by setting `globalThis.__DEV__`.
@@ -3001,6 +3064,7 @@ export class Scene {
     walkProjections(this.root);
   }
 
+  // --- domain: scene-facade — construction (wires every collaborator) ---
   constructor(canvas: HTMLCanvasElement, options: SceneOptions = {}) {
     this.canvas = canvas;
     this.debugA11y = options.debugA11y ?? false;
@@ -3301,6 +3365,7 @@ export class Scene {
     this.setupEvents();
   }
 
+  // --- domain: context-and-resize — DPR watch, GL context recovery ---
   /**
    * Arm a `(resolution: Ndppx)` media query for the current devicePixelRatio and
    * re-apply the canvas scale when it changes. Such a query only fires when the
@@ -3361,6 +3426,7 @@ export class Scene {
     gl.addEventListener('webglcontextrestored', this.glContextRestoredHandler);
   }
 
+  // --- domain: content-projection — selection preservation across rebuilds ---
   private endContentSelectionDrag(): void {
     this.blankRegionSelectionDrag = false;
     this.contentSelectionAnchor = null;
@@ -3516,6 +3582,7 @@ export class Scene {
     }
   }
 
+  // --- domain: scene-facade — renderer accessor ---
   /**
    * Expose the underlying {@link IRenderer} for advanced direct-draw operations.
    *
@@ -3525,6 +3592,7 @@ export class Scene {
     return this.renderer;
   }
 
+  // --- domain: hit-test — client-to-scene mapping ---
   /** Convert browser viewport coordinates into this Scene's logical coordinates. */
   public clientToScene(clientX: number, clientY: number): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect?.();
@@ -3537,6 +3605,7 @@ export class Scene {
     };
   }
 
+  // --- domain: scene-facade — tree mutation ---
   /**
    * Add a top-level entity to the scene graph.
    *
@@ -3550,6 +3619,7 @@ export class Scene {
     return this;
   }
 
+  // --- domain: content-projection — grid state teardown ---
   /**
    * Reset per-grid calibration and bookkeeping before a (re)materialization.
    *
@@ -3580,6 +3650,7 @@ export class Scene {
     if (releaseSelection) this.releaseContentSelectionForRebuild(el);
   }
 
+  // --- domain: a11y-projection — subtree pruning, focus preservation on removal ---
   /**
    * Drop any projected elements under `node` without touching the entity tree.
    *
@@ -3661,6 +3732,7 @@ export class Scene {
     this.focusSentinel.focus({ preventScroll: true });
   }
 
+  // --- domain: scene-facade — removal, overlays, destroy ---
   /**
    * Remove a top-level entity from the scene graph and clean up its
    * accessibility shadow elements recursively.
@@ -3827,6 +3899,7 @@ export class Scene {
     }
   }
 
+  // --- domain: hit-test — pointer/keyboard event wiring ---
   private setupEvents(): void {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
@@ -3886,6 +3959,7 @@ export class Scene {
     }
   }
 
+  // --- domain: render-scheduler — start/stop, frame scheduling, visibility gating ---
   /**
    * Begin the `requestAnimationFrame` render loop.
    *
@@ -3995,6 +4069,7 @@ export class Scene {
     this._canvasOnScreen = true;
   }
 
+  // --- domain: scene-facade — tree accessors ---
   /**
    * Manually advance the scene clock by `dt` milliseconds and render synchronously.
    * Essential for deterministic rendering (e.g. video export).
@@ -4014,6 +4089,7 @@ export class Scene {
     return this.overlayRoot;
   }
 
+  // --- domain: render-scheduler — manual step, dirty marking, frame stats ---
   /**
    * Advance and render exactly one frame, synchronously.
    *
@@ -4182,6 +4258,7 @@ export class Scene {
     };
   }
 
+  // --- domain: a11y-projection — projection gating and the syncA11y walk ---
   /** True when any node in the subtree has a pending animation. */
   /** True when any node in the subtree is interactive (drives a11y sync). */
   private syncOptionalAttribute(
@@ -4933,6 +5010,7 @@ export class Scene {
     }
   }
 
+  // --- domain: content-projection — visibility bands and the projection sync ---
   /**
    * Mirror one entity's static text ({@link Entity.getContentProjection}) as a
    * transparent DOM node positioned over the drawn glyphs. Runs on the a11y
@@ -6246,6 +6324,7 @@ export class Scene {
     this.contentGridCalibrationFrames.set(entityId, readFrame);
   }
 
+  // --- domain: a11y-projection — DOM order, visual sort, overlay geometry, a11y tree ---
   private enforceA11yDomOrder(): void {
     if (!this.a11yRoot) return;
 
@@ -6692,6 +6771,7 @@ export class Scene {
     return roots;
   }
 
+  // --- domain: portal-coordination — NOT one of the six; stays on the facade ---
   private renderPortalDOM(
     portal: DOMPortalEntity,
     te: number,
@@ -6778,6 +6858,7 @@ export class Scene {
     this.activePortalsThisFrame.clear();
   }
 
+  // --- domain: render-scheduler — the loop and the render walk ---
   /**
    * The frame-rate cap actually in effect: the explicit {@link maxFPS}, further
    * lowered to {@link REDUCED_MOTION_FPS} when the OS requests reduced motion
@@ -7542,6 +7623,7 @@ export class Scene {
     }
   }
 
+  // --- domain: scene-facade — SVG export ---
   /**
    * Export the current scene state to a lightweight, flat SVG XML string.
    */
@@ -7551,6 +7633,7 @@ export class Scene {
     return renderer.toXMLString();
   }
 
+  // --- domain: context-and-resize — resize, effective DPR, GPU canvas sizing ---
   /**
    * Manually resize the Scene's viewport.
    *
@@ -7630,6 +7713,7 @@ export class Scene {
     gpuCanvas.style.height = `${height}px`;
   }
 
+  // --- domain: scene-facade — projection and tree accessors ---
   /**
    * Gets the accessibility DOM element projected for the given entity ID.
    */
@@ -7649,6 +7733,7 @@ export class Scene {
     return this.root;
   }
 
+  // --- domain: hit-test — public query entry point ---
   /**
    * Finds the topmost interactive entity at the given coordinates.
    */
@@ -7670,6 +7755,7 @@ export class Scene {
     return this.findHitRecursively(this.root, x, y);
   }
 
+  // --- domain: context-and-resize — WebGPU context init, device loss, recovery ---
   /** Submit one transparent clear pass when particle content lingers on the GPU canvas. */
   private clearGPUCanvasIfStale(): void {
     if (!this.gpuHasContent || !this.device || !this.gpuContext || this.deviceLost) return;
@@ -7809,6 +7895,7 @@ export class Scene {
     }, backoff);
   }
 
+  // --- domain: render-scheduler — CPU particle fallback pass ---
   private renderCPUParticles(
     renderer: IRenderer,
     entity: ComputeParticleEntity,
@@ -7854,6 +7941,7 @@ export class Scene {
     }
   }
 
+  // --- domain: hit-test — JS depth-first walk and eligibility ---
   private findHitRecursively(
     node: Entity,
     x: number,
@@ -7933,6 +8021,7 @@ export class Scene {
   }
 }
 
+// --- domain: hit-test — bounds predicates (extraction 4) ---
 /** Axis-aligned intersection of two world-space boxes (empty if disjoint). */
 function intersectBounds(a: Bounds, b: Bounds): Bounds {
   const x = Math.max(a.x, b.x);
@@ -7952,6 +8041,7 @@ function pointInBounds(b: Bounds, x: number, y: number): boolean {
   return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
 }
 
+// --- domain: content-projection — grid line signature ---
 /**
  * A digest of everything about one grid line that determines its projected DOM.
  *
