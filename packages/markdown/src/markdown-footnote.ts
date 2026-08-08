@@ -1,4 +1,4 @@
-import type { TokenizerAndRendererExtension } from 'marked';
+import type { Token, TokenizerAndRendererExtension } from 'marked';
 
 /**
  * GFM footnotes: the two `marked` tokenizer extensions, their token types, and
@@ -35,14 +35,26 @@ export interface FootnoteRefToken {
   label: string;
 }
 
-/** A footnote definition line — `[^1]: The note.` — as its own block. */
+/**
+ * A footnote definition — `[^1]: The note.` — as its own block, optionally
+ * followed by indented continuation lines that extend the body across
+ * multiple paragraphs (`markdown-it`'s and GFM's own shape for this).
+ */
 export interface FootnoteDefToken {
   type: 'footnoteDef';
   raw: string;
   /** The label exactly as written, matching a {@link FootnoteRefToken}'s. */
   label: string;
-  /** The note body, source text with inline markup left unparsed. */
+  /** The header line's body text, source text with inline markup unparsed. */
   body: string;
+  /**
+   * Block tokens for any indented continuation content after the header line
+   * (further paragraphs, lists, code, …), block-lexed exactly like a
+   * blockquote's `tokens`. Empty when the definition is single-line, which is
+   * the overwhelming majority — a definition is only ever multi-paragraph when
+   * the source actually indents a second block under it.
+   */
+  tokens: Token[];
 }
 
 /**
@@ -62,19 +74,96 @@ const LABEL = '([^\\]\\s]+)';
 const REF_RE = new RegExp(`^\\[\\^${LABEL}\\]`);
 
 /**
- * `[^label]: body` on one line, with up to three spaces of indent.
- *
- * **Single-line only, and the trailing continuation lines GFM allows are
- * deliberately not consumed.** A tokenizer that could span a blank line reaches
- * arbitrarily far ahead of its own token, which is precisely the property that
- * forces `incrementalLex.ts` to degrade an instance outright when it sees a
- * line-start `$$` (see the `hasBlockMathOpener` note there). Footnotes are
- * common in streamed prose, so permanently disabling incremental lexing for any
- * document containing one would be a far worse trade than dropping indented
- * continuation lines — which are rare, and which still render, as the ordinary
- * indented-code or paragraph blocks `marked` already makes of them.
+ * `[^label]:` header line, with up to three spaces of indent. Captures the
+ * header's own body text (group 2) and swallows one trailing newline if
+ * present — {@link consumeContinuation} takes over from there.
  */
-const DEF_RE = new RegExp(`^ {0,3}\\[\\^${LABEL}\\]:[ \\t]*([^\\n]*)(?:\\n|$)`);
+const HEADER_RE = new RegExp(`^ {0,3}\\[\\^${LABEL}\\]:[ \\t]*([^\\n]*)\\n?`);
+
+/** A line containing only whitespace. */
+function isBlankLine(line: string): boolean {
+  return /^[ \t]*$/.test(line);
+}
+
+/** An indented continuation line: four spaces, or a tab, of leading indent. */
+const CONT_LINE_RE = /^(?: {4}| {0,3}\t)/;
+
+/**
+ * Consume indented continuation lines after a definition's header, per
+ * `markdown-it`'s and GFM's own shape for a multi-paragraph footnote body: any
+ * run of blank lines followed by at least one four-space-or-tab-indented line
+ * extends the definition; the first non-blank, non-indented line ends it.
+ *
+ * **Never commits an unconfirmed trailing blank line.** A naive scan that
+ * swallows blank lines eagerly and only THEN checks the next line would, at
+ * the header-alone case `'[^1]: Note.\n\n'`, greedily consume the blank line
+ * even though nothing indented follows — corrupting `raw` to include a blank
+ * line that belongs to whatever comes next, not to this definition. Instead
+ * this looks ahead through a whole run of blank lines before deciding whether
+ * to commit them, and rolls back to `offset` (the last confirmed commit point)
+ * the moment the run turns out not to lead to a continuation line. This is
+ * exactly the shape `findBodyEnd` in `markdown-container.ts` uses to resolve
+ * the analogous ambiguity for `:::` fences, applied to a different grammar.
+ *
+ * Also returns whether the continuation is still `open` (ran off the end of
+ * `rest` while still indented, or while still inside a blank-line run) — this
+ * mirrors `findBodyEnd`'s `-1` sentinel and is what {@link hasFootnoteDefOpener}
+ * uses for the incremental-lex degrade check below.
+ */
+function consumeContinuation(rest: string): { raw: string; body: string; open: boolean } {
+  let offset = 0;
+  for (;;) {
+    // Look ahead through a run of blank lines without committing them yet.
+    let probe = offset;
+    for (;;) {
+      const lineEnd = rest.indexOf('\n', probe);
+      if (lineEnd === -1) return finalize(offset, true); // ran off the end mid-blank-run
+      const line = rest.slice(probe, lineEnd);
+      if (!isBlankLine(line)) break;
+      probe = lineEnd + 1;
+    }
+    // `probe` now sits at the first non-blank line after the run. Commit the
+    // blank run (and this line) only if it actually continues the body.
+    const lineEnd = rest.indexOf('\n', probe);
+    const lineWithNl = lineEnd === -1 ? rest.slice(probe) : rest.slice(probe, lineEnd + 1);
+    const line = lineEnd === -1 ? rest.slice(probe) : rest.slice(probe, lineEnd);
+    if (!CONT_LINE_RE.test(line)) return finalize(offset, false); // not a continuation: stop before the blank run
+    offset = probe + lineWithNl.length;
+    if (lineEnd === -1) return finalize(offset, true); // continuation line ran off the end
+  }
+
+  function finalize(end: number, open: boolean): { raw: string; body: string; open: boolean } {
+    const committedRaw = rest.slice(0, end);
+    // De-indent each continuation line by its four-space/tab prefix; blank
+    // lines stay blank rather than losing their (nonexistent) indent.
+    const body = committedRaw
+      .split('\n')
+      .map((line) => (isBlankLine(line) ? '' : line.replace(CONT_LINE_RE, '')))
+      .join('\n');
+    return { raw: committedRaw, body, open };
+  }
+}
+
+/**
+ * Whether `text` contains a `[^label]:` header that {@link HEADER_RE} would
+ * match, ANYWHERE in the document — the exact condition under which
+ * {@link consumeContinuation} can still be scanning forward (an open
+ * continuation) when more text arrives.
+ *
+ * Used by `incrementalLex.ts`'s degrade check, mirroring `hasBlockMathOpener`
+ * and `hasContainerOpener`: a footnote definition's continuation-consuming
+ * tokenizer has the exact same forward-reach hazard those two document, now
+ * that it can span a blank line. Deliberately does not try to determine
+ * whether a SPECIFIC header's continuation is still open — that would need to
+ * replicate the tokenizer's own scan — and instead degrades on the mere
+ * presence of any header, which is safe (if conservative) the same way
+ * `hasBlockMathOpener` accepts matching inside a fenced code block it would
+ * never actually reach.
+ */
+export function hasFootnoteDefOpener(text: string): boolean {
+  if (text.includes('[^') === false) return false;
+  return new RegExp(HEADER_RE.source, 'm').test(text);
+}
 
 /**
  * The two extensions, in the order they are registered.
@@ -164,16 +253,24 @@ export const FOOTNOTE_EXTENSIONS: TokenizerAndRendererExtension[] = [
     name: 'footnoteDef',
     level: 'block',
     tokenizer(src) {
-      const match = DEF_RE.exec(src);
-      if (match) {
-        return {
-          type: 'footnoteDef',
-          raw: match[0],
-          label: match[1],
-          body: match[2],
-        } satisfies FootnoteDefToken;
-      }
-      return undefined;
+      const header = HEADER_RE.exec(src);
+      if (!header) return undefined;
+      const rest = src.slice(header[0].length);
+      const cont = consumeContinuation(rest);
+      // `this.lexer.blockTokens` is the same recursion `container`'s tokenizer
+      // uses to reach nested block content through the SAME extension set,
+      // rather than a hand-rolled sub-lex — see that module's doc comment for
+      // why reaching through `this` rather than the module-level `marked`
+      // import matters. Only called when there is real continuation content:
+      // an all-blank tail (see `consumeContinuation`) has nothing to lex.
+      const tokens: Token[] = cont.body.trim() ? this.lexer.blockTokens(cont.body, []) : [];
+      return {
+        type: 'footnoteDef',
+        raw: header[0] + cont.raw,
+        label: header[1],
+        body: header[2],
+        tokens,
+      } satisfies FootnoteDefToken;
     },
     renderer(token) {
       return token.raw;

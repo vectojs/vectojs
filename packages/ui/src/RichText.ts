@@ -691,12 +691,31 @@ export class RichText extends UIComponent {
       let runColor = '';
       let runWidth = 0;
       let runStruck = false;
+      // Distinct from `runStruck`: `underline` and `lineThrough` are independent
+      // semantic states of the content (`++ins++` vs `~~del~~`), so a run can
+      // carry either, both, or neither — see `TextStyle.underline`'s doc.
+      let runUnderline = false;
+      // The `==mark==` background fill for this run, or `undefined` for none.
+      // A color rather than a boolean (matching `TextStyle.highlightColor`), so
+      // it joins the coalescing key by value, not by presence.
+      let runHighlight: string | undefined;
+      // Whether this run is a recognised abbreviation (`TextStyle.abbrTitle`
+      // set). A boolean, not the title string itself, in the coalescing key:
+      // two adjacent abbreviation runs with different titles never occur (an
+      // abbreviation is exactly one whole-word/phrase match), so presence is
+      // all the dotted underline needs to decide whether to draw.
+      let runAbbr = false;
       let runSize = 0;
       // The canvas baseline this run draws at. Nodes on one visual line share a
       // baseline only while unshifted; a baseline-shifted run carries its own
       // (`y + 0.8h`), and that value joins the coalescing key so a shifted run
       // never merges into an unshifted one.
       let runBaseline = 0;
+      // The run's own glyph-box top/height, for `highlightRun` — the first
+      // node's `y`/`height`, not the shared line box, so a highlight on a
+      // baseline-shifted or differently-sized run paints only its own box.
+      let runTop = 0;
+      let runHeight = 0;
 
       /**
        * Emit the pending run as ONE `fillText`, or fall back to per-character
@@ -741,9 +760,83 @@ export class RichText extends UIComponent {
         r.stroke(color, Math.max(1, size / 14));
       };
 
+      /**
+       * Underline one line under the whole flushed run (`++inserted++`).
+       *
+       * Same segment-per-run shape as {@link strikeRun}, offset BELOW the
+       * baseline instead of through the glyph middle — 2px, matching the link
+       * underline's own offset (`nodeBaseline + 2`) so an inserted run and a
+       * link read at the same visual weight.
+       */
+      const underlineRun = (
+        x: number,
+        width: number,
+        color: string,
+        size: number,
+        atBaseline: number,
+      ): void => {
+        const y = atBaseline + 2;
+        r.beginPath();
+        r.moveTo(x, y);
+        r.lineTo(x + width, y);
+        r.stroke(color, Math.max(1, size / 14));
+      };
+
+      /**
+       * Fill a background rectangle behind the whole flushed run
+       * (`==marked==`), spanning the run's own glyph box — not the shared line
+       * box — so a highlighted run inside a taller line (or a raised/lowered
+       * baseline-shifted run) paints only its own height, matching CSS
+       * `mark`'s inline background.
+       *
+       * Drawn before `fillText` in {@link flushRun}, or the fill would paint
+       * over the glyph ink instead of behind it.
+       */
+      const highlightRun = (
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+        color: string,
+      ): void => {
+        r.beginPath();
+        r.roundRect(x, y, width, height, 0);
+        r.fill(color);
+      };
+
+      /**
+       * Dotted underline under the whole flushed run (`markdown-it-abbr`'s
+       * convention for a recognised abbreviation).
+       *
+       * `IRenderer` has no line-dash primitive, so the dots are drawn as small
+       * filled circles via {@link IRenderer.fillCircle} rather than a dashed
+       * `stroke()` — that call already batches consecutive same-color/alpha
+       * circles into one path, which is exactly the shape a run of evenly
+       * spaced dots needs. Spacing is fixed in px rather than scaled with
+       * `size`, matching {@link strikeRun}'s own choice to scale stroke WIDTH
+       * with size but not the geometry pattern itself.
+       */
+      const abbrRun = (
+        x: number,
+        width: number,
+        color: string,
+        size: number,
+        atBaseline: number,
+      ): void => {
+        const y = atBaseline + 3;
+        const spacing = 4;
+        const radius = Math.max(0.75, size / 28);
+        for (let dotX = x; dotX <= x + width; dotX += spacing) {
+          r.fillCircle(dotX, y, radius, color);
+        }
+      };
+
       const flushRun = (): void => {
         if (runStart < 0) return;
+        if (runHighlight) highlightRun(runStart, runTop, runWidth, runHeight, runHighlight);
         if (runStruck) strikeRun(runStart, runWidth, runColor, runSize, runBaseline);
+        if (runUnderline) underlineRun(runStart, runWidth, runColor, runSize, runBaseline);
+        if (runAbbr) abbrRun(runStart, runWidth, runColor, runSize, runBaseline);
         if (runText.length === 1) {
           r.fillText(runText, runStart, runBaseline, runFont, runColor);
         } else {
@@ -801,6 +894,17 @@ export class RichText extends UIComponent {
         // so there is nothing to coalesce.
         if (isLink) {
           flushRun();
+          // `==[text](url)==` lexes to a `mark` wrapping a `link`, so a
+          // highlighted link is reachable too. Unlike the strike-through
+          // below, this has no existing per-glyph analogue to piggyback on —
+          // a link never paints a background of its own — so it is drawn here
+          // directly rather than through `highlightRun`, which assumes a run
+          // start/width this per-glyph path does not accumulate.
+          if (node.style?.highlightColor) {
+            r.beginPath();
+            r.roundRect(node.x, node.y, node.width, node.height, 0);
+            r.fill(node.style.highlightColor);
+          }
           r.fillText(node.char, node.x, nodeBaseline, font, color);
           const uy = nodeBaseline + 2;
           r.beginPath();
@@ -821,6 +925,9 @@ export class RichText extends UIComponent {
         // (justification, a tab, a bidi reorder), and concatenating would close
         // the gap.
         const struck = !!node.style?.lineThrough;
+        const underlined = !!node.style?.underline;
+        const highlight = node.style?.highlightColor;
+        const isAbbr = !!node.style?.abbrTitle;
         const contiguous =
           runStart >= 0 &&
           font === runFont &&
@@ -830,6 +937,15 @@ export class RichText extends UIComponent {
           // draws at its own y, and merging it into an unshifted run would drop
           // the shift and move its glyphs back onto the shared baseline.
           struck === runStruck &&
+          // Same reasoning for `underline` and `highlightColor`: an inserted or
+          // marked run is an independent semantic state of the content, and
+          // merging a styled glyph into an unstyled run would silently drop it.
+          underlined === runUnderline &&
+          highlight === runHighlight &&
+          // Same reasoning again: an abbreviation's dotted underline must not
+          // extend across a glyph that is not itself part of the recognised
+          // term (`The HTMLx` must not lend HTML's dots to the trailing `x`).
+          isAbbr === runAbbr &&
           nodeBaseline === runBaseline &&
           Math.abs(node.x - (runStart + runWidth)) <= COALESCE_TOLERANCE_PX;
 
@@ -839,8 +955,13 @@ export class RichText extends UIComponent {
           runFont = font;
           runColor = color;
           runStruck = struck;
+          runUnderline = underlined;
+          runHighlight = highlight;
+          runAbbr = isAbbr;
           runSize = size;
           runBaseline = nodeBaseline;
+          runTop = node.y;
+          runHeight = node.height;
         }
         runText += node.char;
         runWidth = node.x + node.width - runStart;

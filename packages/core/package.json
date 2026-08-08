@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/core",
-  "version": "1.32.4",
+  "version": "1.32.5",
   "publishConfig": {
     "access": "public"
   },
@@ -65,7 +65,7 @@
   },
   "dependencies": {
     "@vectojs/animation": "^0.1.1",
-    "@vectojs/layout": "^0.8.0",
+    "@vectojs/layout": "^0.9.0",
     "@vectojs/math": "^0.1.1",
     "@vectojs/text": "^0.3.0"
   },

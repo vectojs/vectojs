@@ -137,6 +137,19 @@ const CORPUS: Record<string, string> = {
   partialBlockMath: 'Intro.\n\n$$\nx = \\frac{1}{2}\n',
   inlineMath: 'Intro with $x + 1$ inline.\n\nAnd $y^2$ here.\n',
 
+  // `:::` containers are a VectoJS extension with the same forward-reach
+  // hazard as `blockMath`: an unterminated fence must degrade the instance.
+  container: 'Intro.\n\n:::warning\nBe careful.\n:::\n\nAfter container.\n',
+  partialContainer: 'Intro.\n\n:::warning\nBe careful.\n',
+  nestedContainer: 'Intro.\n\n:::outer\n:::inner\ntext\n:::\n:::\n\nAfter.\n',
+
+  // A footnote definition's continuation-consuming tokenizer has the same
+  // forward-reach hazard as `blockMath`/`container` now that it can span a
+  // blank line to absorb an indented second paragraph.
+  footnoteDefMultiPara: 'Intro.\n\n[^1]: First line.\n\n    Second para.\n\nAfter.\n',
+  partialFootnoteDefMultiPara: 'Intro.\n\n[^1]: First line.\n\n    Second para.\n',
+  footnoteDefSingleLine: 'Intro.\n\n[^1]: note one\n\nAfter.\n',
+
   // Link reference definitions are the one construct that defeats prefix reuse
   // outright — the module must fall back, and the RESULT must still be right.
   linkDef: '[ref]: https://example.com\n\nUse [ref] in text.\n\nMore.\n',
@@ -413,6 +426,27 @@ describe('incrementalLex — degradation is correct, permanent, and observable',
     const { finalCache } = streamAndCompare(doc, 1);
     expect(finalCache.degraded).toBe(true);
     expect(finalCache.degradedReason).toBe('carriage-return');
+  });
+
+  it('degrades on an open ::: fence and still returns the right tokens', () => {
+    // The forward-reach hazard `markdown-container.ts` documents: an
+    // unterminated `:::` can absorb arbitrarily much of the document once its
+    // closing fence eventually arrives, exactly like `blockMath`'s `$$`.
+    const doc = 'Intro.\n\n:::note\nHello\n\nWorld\n:::\n\nAfter.\n';
+    const { finalCache } = streamAndCompare(doc, 1);
+    expect(finalCache.degraded).toBe(true);
+    expect(finalCache.degradedReason).toBe('container');
+  });
+
+  it('degrades on a footnote definition header and still returns the right tokens', () => {
+    // The same forward-reach hazard, now that `footnoteDef`'s tokenizer can
+    // consume indented continuation lines across a blank line: an unterminated
+    // continuation can absorb arbitrarily much of the document once a
+    // non-continuing line eventually arrives.
+    const doc = 'Intro.\n\n[^1]: First.\n\n    Second.\n\nAfter.\n';
+    const { finalCache } = streamAndCompare(doc, 1);
+    expect(finalCache.degraded).toBe(true);
+    expect(finalCache.degradedReason).toBe('footnote-def');
   });
 
   it('stays degraded for every later chunk once it has degraded', () => {

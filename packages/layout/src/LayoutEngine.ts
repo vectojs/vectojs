@@ -141,6 +141,39 @@ export interface TextStyle {
    * CSS, whose values are already sign-flipped relative to the visual sense.
    */
   baselineShift?: number;
+  /**
+   * Underline this run (rendering only; advances are unchanged).
+   *
+   * Distinct from the underline a link gets, which is implied by {@link href}
+   * rather than requested — same reasoning as {@link lineThrough}: GFM has no
+   * `~~ins~~`-shaped strikethrough syntax for underline, but `markdown-it-ins`'s
+   * `++inserted++` is exactly that shape, and a struck run and an inserted run
+   * are independent semantic states of the content, not a destination.
+   */
+  underline?: boolean;
+  /**
+   * Paint a background behind this run's glyph box, e.g. `'#fef08a'`.
+   *
+   * A **fill color**, not a boolean, because `==marked==` text (`markdown-it-mark`)
+   * carries no inherent color the way `lineThrough`/`underline` do — CSS `mark`'s
+   * UA-stylesheet default is `background-color: Mark` (a yellow highlight), and a
+   * consumer needs to be able to pick a different one without a second field.
+   * Undefined paints nothing, matching every other optional style field here.
+   */
+  highlightColor?: string;
+  /**
+   * This run is a recognised abbreviation; the value is its expansion, e.g.
+   * `'HyperText Markup Language'` for a run of `'HTML'`.
+   *
+   * Rendering-only, like {@link lineThrough}/{@link underline} — carried
+   * through to the positioned nodes so a consumer can paint the
+   * `markdown-it-abbr` dotted-underline convention and surface the expansion
+   * as a tooltip/native `title`, without the layout engine itself knowing
+   * anything about abbreviations. A string rather than a boolean because the
+   * expansion IS the payload a consumer needs, the same reasoning as
+   * {@link highlightColor} over a bare flag.
+   */
+  abbrTitle?: string;
   /** Hyperlink destination; carried through to the positioned nodes for hit-testing / a11y. */
   href?: string;
 }
@@ -1161,7 +1194,7 @@ export class LayoutEngine {
     const fingerprint = (idx: number): string => {
       const s = styleAt[idx];
       const base = s
-        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}/${s.baselineShift ?? ''}`
+        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}/${s.baselineShift ?? ''}/${s.underline ? 1 : 0}/${s.highlightColor ?? ''}/${s.abbrTitle ?? ''}`
         : '';
       const o = objectAt[idx];
       // `alt` is in the key even though it changes no advance: it reaches the

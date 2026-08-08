@@ -3,27 +3,33 @@ import { RichText } from '@vectojs/ui';
 import { Markdown } from '../src/Markdown';
 
 /**
- * Does the strike line actually reach the canvas?
+ * Does the strike line actually reach the canvas — and does subscript actually
+ * NOT draw one?
  *
- * `test/singleTilde.test.ts` asserts the SPAN STYLE — that `~2~` carries no
- * `lineThrough` and `~~x~~` does. That stops one step short of the defect, which
- * was visual: a reader saw H2̶O. Between the span style and the reader sits
- * `RichText`'s strike-line drawing, which no unit test exercises because jsdom has
- * no 2D context.
+ * `test/singleTilde.test.ts` asserts the SPAN STYLE — that `~2~` carries a
+ * negative `baselineShift` and no `lineThrough`, and `~~x~~` the reverse. That
+ * stops one step short of the defect this originally caught, which was visual: a
+ * reader saw H2̶O. Between the span style and the reader sits `RichText`'s
+ * strike-line drawing, which no unit test exercises because jsdom has no 2D
+ * context.
  *
  * ## What is measured, and why not ink in a band
  *
  * The first attempt counted ink in a horizontal band across the middle of the run
  * and compared the two cases. Measured in Chromium: band ink was 411 for `H~2~O`
- * and 413 for `H~~2~~O` — a 2px difference that proves nothing. The reason is that
- * `~` is itself a mid-height glyph, so the single-tilde case's two literal tildes
- * land in exactly the band where a strike line would be and mask it.
+ * and 413 for `H~~2~~O` — a 2px difference that proves nothing. At the time, the
+ * reason was that `~` is itself a mid-height glyph and the single-tilde case's two
+ * literal tildes landed in exactly the band where a strike line would be and
+ * masked it. Single-tilde no longer prints its delimiters at all (it is real
+ * subscript now, `DEC-0001`), but the shape metric below is kept: it is the
+ * discriminator that does not depend on what a non-struck run happens to draw.
  *
  * What distinguishes a strike line from glyphs is not how much ink there is but its
  * SHAPE: a rule is one long contiguous horizontal run of pixels, while text is
  * short runs separated by gaps. So this reports the longest contiguous inked run in
  * any single row, as a fraction of the paragraph width. A struck run approaches
- * 1.0; prose stays far below it regardless of which font the engine substituted.
+ * 1.0; prose (and a shrunk, lowered subscript run) stays far below it regardless
+ * of which font the engine substituted.
  *
  * The struck span is the WHOLE run in every case, so the rule spans the full width
  * — a `~~2~~` inside `H~~2~~O` would only strike the `2` and give a short rule that
@@ -134,7 +140,7 @@ function renderCase(source: string): TildeInkCase {
 
 // Identical letters in all three cases, so the only difference between `double`
 // and `plain` is the strike line itself, and the only difference between `single`
-// and `plain` is the two literal tildes.
+// and `plain` is the subscript shrink + baseline drop (no delimiters print now).
 const single = renderCase('~Hello world~');
 const double = renderCase('~~Hello world~~');
 const plain = renderCase('Hello world');

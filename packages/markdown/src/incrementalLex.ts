@@ -80,6 +80,15 @@
  *
  *    Any future block-level extension that supplies `start()` or whose tokenizer
  *    can span a blank line needs the same treatment.
+ *
+ *    **`footnoteDef`'s continuation-consuming tokenizer has the identical
+ *    forward-reach shape**, added when it grew from single-line-only to
+ *    supporting indented multi-paragraph bodies: `consumeContinuation` in
+ *    `markdown-footnote.ts` scans forward through blank-line runs looking for
+ *    an indented line, exactly as `blockMath`'s regex crosses them. It supplies
+ *    no `start()` (so the backward-reach half of `blockMath`'s hazard does not
+ *    apply), but the forward half does, so `hasFootnoteDefOpener` degrades the
+ *    instance the same way `hasBlockMathOpener`/`hasContainerOpener` do.
  * 3. **Link reference definitions break prefix reuse entirely.** `marked`
  *    collects every `def` while block-lexing and only then resolves reflinks
  *    across the *whole* document, so a definition arriving late retroactively
@@ -106,6 +115,8 @@
  * growth, where degrading would have cost the whole rest of the stream.
  */
 import { marked, type Token, type TokensList } from 'marked';
+import { hasContainerOpener } from './markdown-container';
+import { hasFootnoteDefOpener } from './markdown-footnote';
 
 /**
  * Everything needed to extend a lex without redoing it.
@@ -142,7 +153,15 @@ export type DegradeReason =
   /** A carriage return desyncs `raw`-length offsets from source offsets. */
   | 'carriage-return'
   /** A line-start `$$` lets `blockMath` reach outside its own token. */
-  | 'block-math';
+  | 'block-math'
+  /** An open `:::` fence lets `container` reach outside its own token. */
+  | 'container'
+  /**
+   * A `[^label]:` header lets `footnoteDef`'s continuation scan reach outside
+   * its own token, now that it consumes indented continuation lines. See
+   * `markdown-footnote.ts`'s `hasFootnoteDefOpener` doc comment.
+   */
+  | 'footnote-def';
 
 export interface IncrementalLexResult {
   /** Deeply identical to `marked.lexer(source)`. */
@@ -311,6 +330,8 @@ function cacheFromFullLex(source: string, tokens: TokensList): IncrementalLexCac
   if (hasLinkDefinitions(tokens)) return degradedCache(source, tokens, 'link-definition');
   if (source.includes('\r')) return degradedCache(source, tokens, 'carriage-return');
   if (hasBlockMathOpener(source)) return degradedCache(source, tokens, 'block-math');
+  if (hasContainerOpener(source)) return degradedCache(source, tokens, 'container');
+  if (hasFootnoteDefOpener(source)) return degradedCache(source, tokens, 'footnote-def');
 
   const cut = findStableCut(tokens, 1);
   if (cut < 0) return unboundedCache(source, tokens);
@@ -387,6 +408,8 @@ export function lexAppend(prev: IncrementalLexCache, append: string): Incrementa
   // start (a `space` token ends with a newline), so `^` in the tail means `^` in
   // the document: no false positives, no false negatives.
   if (hasBlockMathOpener(tail)) return degradeTo(source, 'block-math');
+  if (hasContainerOpener(tail)) return degradeTo(source, 'container');
+  if (hasFootnoteDefOpener(tail)) return degradeTo(source, 'footnote-def');
 
   const suffix = marked.lexer(tail);
 

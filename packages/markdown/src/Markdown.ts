@@ -19,9 +19,19 @@ import {
   type StreamController,
   type StreamControllerOptions,
 } from './StreamController';
-import { HorizontalRule, MarkdownContainer, QuoteBorder } from './markdown-entities';
+import {
+  ContainerBackground,
+  HorizontalRule,
+  MarkdownContainer,
+  QuoteBorder,
+} from './markdown-entities';
+import { ABBR_EXTENSIONS, collectAbbreviations } from './markdown-abbr';
 import { CodeBlock } from './markdown-code';
+import { CONTAINER_EXTENSIONS, type ContainerToken } from './markdown-container';
+import { EMOJI_EXTENSIONS } from './markdown-emoji';
 import { FOOTNOTE_EXTENSIONS, type FootnoteDefToken, footnoteMarker } from './markdown-footnote';
+import { INS_MARK_EXTENSIONS } from './markdown-ins-mark';
+import { SUPERSCRIPT_EXTENSIONS } from './markdown-superscript';
 import {
   containsInlineMath,
   exToPx,
@@ -64,11 +74,14 @@ import {
   subscribeInlineImageRaster,
   unsubscribeInlineImageRaster,
 } from './markdown-image';
-import { headingSize, resolveTheme, type MarkdownTheme } from './theme';
+import { type MarkdownThemePresetName, resolvePresetTheme } from './markdown-presets';
+import { containerColor, headingSize, type MarkdownTheme } from './theme';
 
 // `MarkdownTheme` was exported from this module before the theme tokens moved to
 // `theme.ts`. Re-exported so the public API and every deep import stay valid.
 export type { MarkdownTheme } from './theme';
+export type { MarkdownThemePresetName } from './markdown-presets';
+export { isPresetName, PRESET_THEMES, resolvePresetTheme } from './markdown-presets';
 
 /**
  * Monotonic clock, falling back to `Date.now` where `performance` is absent.
@@ -82,6 +95,22 @@ const now = (): number =>
     ? performance.now()
     : Date.now();
 
+/**
+ * Whether two abbreviation dictionaries hold the same term → definition pairs.
+ *
+ * Used by {@link Markdown.updateTokens} to decide whether a changed `*[TERM]:
+ * …` set invalidates the raw-equal token prefix — see that call site's
+ * comment. Size first as a cheap reject, then every entry, since a `Map`
+ * has no structural equality of its own.
+ */
+function mapsEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) return false;
+  }
+  return true;
+}
+
 function lexMarkdown(text: string, userTiming: boolean): TokensList {
   if (!userTiming) return marked.lexer(text);
   const timing = beginVectoUserTiming(VECTO_USER_TIMING.markdown.parse);
@@ -93,11 +122,18 @@ function lexMarkdown(text: string, userTiming: boolean): TokensList {
 }
 
 marked.use({
-  // `FOOTNOTE_EXTENSIONS` is shared with `MarkdownWorker.ts` rather than spelled
-  // out twice: the two registration sites must agree exactly, or the worker
-  // returns tokens this renderer has no arm for.
+  // `FOOTNOTE_EXTENSIONS`, `SUPERSCRIPT_EXTENSIONS`, `INS_MARK_EXTENSIONS`,
+  // `EMOJI_EXTENSIONS`, `CONTAINER_EXTENSIONS`, and `ABBR_EXTENSIONS` are
+  // shared with `MarkdownWorker.ts` rather than spelled out twice: the two
+  // registration sites must agree exactly, or the worker returns tokens this
+  // renderer has no arm for.
   extensions: [
     ...FOOTNOTE_EXTENSIONS,
+    ...SUPERSCRIPT_EXTENSIONS,
+    ...INS_MARK_EXTENSIONS,
+    ...EMOJI_EXTENSIONS,
+    ...CONTAINER_EXTENSIONS,
+    ...ABBR_EXTENSIONS,
     {
       name: 'blockMath',
       level: 'block',
@@ -295,7 +331,14 @@ if (typeof Worker !== 'undefined') {
 
 export interface MarkdownOptions {
   maxWidth?: number;
-  theme?: MarkdownTheme;
+  /**
+   * A full/partial {@link MarkdownTheme}, or the name of a built-in preset
+   * (`'githubDark'` | `'githubLight'` | `'dracula'` | `'solarizedDark'` |
+   * `'solarizedLight'`). Resolved through {@link resolvePresetTheme}, which
+   * still applies {@link resolveTheme}'s derivations (`tableFontSize`,
+   * `quoteTextColor`, `footnoteColor`) on top of a preset.
+   */
+  theme?: MarkdownThemePresetName | MarkdownTheme;
   onLinkClick?: (url: string) => void;
   /** Allow browser-native drag selection and copy for rendered text. Default `true`. */
   selectable?: boolean;
@@ -475,6 +518,19 @@ export class Markdown extends UIComponent {
   private mathLoadPending = false;
   private _userTiming: boolean;
   private tokens: Token[] = [];
+  /**
+   * The document's `*[TERM]: definition` dictionary, collected from
+   * {@link tokens}'s top-level `abbrDef` entries.
+   *
+   * Recomputed whenever {@link setTokens} runs. Its own identity — not its
+   * CONTENTS — is what {@link updateTokens} compares against the previous
+   * render to decide whether prose rendered before this definition existed
+   * needs a full rebuild rather than the usual prefix-reuse: see
+   * `markdown-abbr.ts`'s module doc for why a late-arriving definition can
+   * retroactively change already-rendered inline tokens, the same hazard
+   * `hasLinkDefinitions` names for reference definitions.
+   */
+  private abbreviations: ReadonlyMap<string, string> = new Map();
   // At most one worker lex request in flight at a time. Required for the
   // delta-transfer protocol below to be safe: the request captures a
   // snapshot of `this.tokens` to reconstruct the full array from the
@@ -613,7 +669,7 @@ export class Markdown extends UIComponent {
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
     this.maxWidth = opts.maxWidth ?? 800;
-    this.theme = resolveTheme(opts.theme);
+    this.theme = resolvePresetTheme(opts.theme);
     this.onLinkClick = opts.onLinkClick;
     this.selectable = opts.selectable ?? true;
     this._userTiming = opts.userTiming ?? false;
@@ -755,6 +811,12 @@ export class Markdown extends UIComponent {
   private renderMarkdown(text: string): void {
     const tokens = lexMarkdown(text, this._userTiming);
     this.setTokens(tokens);
+    // Collected over the WHOLE token list before any block renders, not
+    // per-token as the loop below reaches each one: a definition can appear
+    // anywhere in the document, including after its first use (the same
+    // shape footnotes allow), so a term used in an early paragraph must still
+    // resolve against a definition written later in the same document.
+    this.abbreviations = collectAbbreviations(tokens);
     for (const token of tokens) {
       const el = this.renderToken(token);
       if (el) {
@@ -955,6 +1017,42 @@ export class Markdown extends UIComponent {
         return;
       }
 
+      case 'container': {
+        const ctToken = token as ContainerToken;
+        // Shape built by the `container` render arm: MarkdownContainer[
+        // ContainerBackground, QuoteBorder, Stack[MarkdownContainer[block], …]].
+        // One layer deeper than `blockquote`'s only for the extra background fill.
+        const innerStack = entity.children.find((c) => c instanceof Stack);
+        const border = entity.children.find((c) => c instanceof QuoteBorder);
+        const background = entity.children.find((c) => c instanceof ContainerBackground);
+        const indentStart = Math.min(this.theme.containerIndent, availableWidth);
+        const childWidth = Math.max(0, availableWidth - indentStart);
+        if (innerStack instanceof Stack) {
+          let index = 0;
+          for (const inner of ctToken.tokens) {
+            if (!this.producesEntity(inner)) continue;
+            const wrapper = innerStack.children[index++];
+            if (!wrapper) break;
+            const block = wrapper.children[0];
+            if (!block) continue;
+            this.reflowToken(inner, block, childWidth);
+            block.x = indentStart;
+            wrapper.width = block.width + indentStart;
+            wrapper.height = block.height;
+          }
+          innerStack.layout();
+        }
+        const contentHeight = innerStack?.height || 20;
+        if (border instanceof QuoteBorder) border.height = contentHeight;
+        if (background instanceof ContainerBackground) {
+          background.width = availableWidth;
+          background.height = contentHeight;
+        }
+        entity.width = availableWidth;
+        entity.height = Math.max(background?.height ?? 0, border?.height ?? 0, contentHeight);
+        return;
+      }
+
       case 'list': {
         if (!(entity instanceof Stack)) return;
         for (const item of entity.children) {
@@ -979,10 +1077,39 @@ export class Markdown extends UIComponent {
       case 'footnoteDef': {
         // Its own arm rather than joining `heading`/`paragraph` above: those
         // dispatch on `RichText` vs `Stack` because an image can split them, which
-        // a definition never is. Reaching the `default:` arm instead would be a
-        // silent no-op — that arm only handles `Text`, and this builds a
-        // `RichText`, so a resized definition would keep its old width forever.
-        if (entity instanceof RichText) entity.setMaxWidth(availableWidth);
+        // a single-line definition never is. Reaching the `default:` arm instead
+        // would be a silent no-op — that arm only handles `Text`, and this builds
+        // a `RichText`, so a resized definition would keep its old width forever.
+        if (entity instanceof RichText) {
+          entity.setMaxWidth(availableWidth);
+          return;
+        }
+        // A multi-paragraph definition (continuation lines present) renders as
+        // Stack[headerRichText, MarkdownContainer[block], …] — the same shape
+        // `listItemBlockStack` uses for a block-bearing list item, mirrored here
+        // for the same reason: the header's own width and each continuation
+        // child's indent must both be re-derived, not just the Stack's own box.
+        if (entity instanceof Stack) {
+          const fnToken = token as FootnoteDefToken;
+          entity.maxWidth = availableWidth;
+          const header = entity.children[0];
+          if (header instanceof RichText) header.setMaxWidth(availableWidth);
+          const indent = Math.round(this.theme.fontSize);
+          const childWidth = Math.max(1, availableWidth - indent);
+          let index = 1; // children[0] is the header, already handled above.
+          for (const inner of fnToken.tokens) {
+            if (!this.producesEntity(inner)) continue;
+            const wrapper = entity.children[index++];
+            if (!wrapper) break;
+            const block = wrapper.children[0];
+            if (!block) continue;
+            this.reflowToken(inner, block, childWidth);
+            block.x = indent;
+            wrapper.width = block.width + indent;
+            wrapper.height = block.height;
+          }
+          entity.layout();
+        }
         return;
       }
 
@@ -1618,7 +1745,7 @@ export class Markdown extends UIComponent {
   private literalParagraphSpans(token: Tokens.Paragraph): StyledSpan[] {
     const spans: StyledSpan[] = [];
     if (token.tokens && token.tokens.length > 0) {
-      collectSpans(token.tokens, {}, this.theme, spans);
+      collectSpans(token.tokens, {}, this.theme, spans, undefined, this.abbreviations);
     }
     if (spans.length === 0) spans.push({ text: token.text });
     return spans;
@@ -1664,7 +1791,7 @@ export class Markdown extends UIComponent {
    */
   private tableCellSpans(cell: Tokens.TableCell, t: Required<MarkdownTheme>): StyledSpan[] {
     const spans: StyledSpan[] = [];
-    collectSpans(cell.tokens, {}, t, spans);
+    collectSpans(cell.tokens, {}, t, spans, undefined, this.abbreviations);
     if (spans.length === 0) spans.push({ text: decodeEntities(cell.text) });
     return spans;
   }
@@ -1683,7 +1810,7 @@ export class Markdown extends UIComponent {
    */
   private inlineRunSpans(tokens: Token[], t: Required<MarkdownTheme>): StyledSpan[] {
     const spans: StyledSpan[] = [];
-    if (tokens.length > 0) collectSpans(tokens, {}, t, spans);
+    if (tokens.length > 0) collectSpans(tokens, {}, t, spans, undefined, this.abbreviations);
     if (spans.length === 0) spans.push({ text: '' });
     return spans;
   }
@@ -2005,6 +2132,8 @@ export class Markdown extends UIComponent {
             {},
             this.theme as Required<MarkdownTheme>,
             contentSpans,
+            undefined,
+            this.abbreviations,
           );
         } else if ('tokens' in inner && (inner as any).tokens?.length) {
           collectSpans(
@@ -2012,6 +2141,8 @@ export class Markdown extends UIComponent {
             {},
             this.theme as Required<MarkdownTheme>,
             contentSpans,
+            undefined,
+            this.abbreviations,
           );
         } else if ('text' in inner) {
           contentSpans.push({ text: decodeEntities((inner as any).text) });
@@ -2473,7 +2604,7 @@ export class Markdown extends UIComponent {
   private headingSpans(token: Tokens.Heading): StyledSpan[] {
     const spans: StyledSpan[] = [];
     if (token.tokens && token.tokens.length > 0) {
-      collectSpans(token.tokens, {}, this.theme, spans);
+      collectSpans(token.tokens, {}, this.theme, spans, undefined, this.abbreviations);
     }
     if (spans.length === 0) spans.push({ text: decodeEntities(token.text) });
     return spans;
@@ -2534,7 +2665,14 @@ export class Markdown extends UIComponent {
     // it — those tokens are not what changed between chunks.
     const spans: StyledSpan[] = [];
     if (inline.length > runLength) {
-      collectSpans(inline.slice(0, -runLength), {}, this.theme, spans);
+      collectSpans(
+        inline.slice(0, -runLength),
+        {},
+        this.theme,
+        spans,
+        undefined,
+        this.abbreviations,
+      );
     }
     const head = runText.slice(0, found.at);
     if (head) spans.push({ text: decodeEntities(head) });
@@ -2765,6 +2903,19 @@ export class Markdown extends UIComponent {
         }
       }
     }
+
+    // A changed abbreviation dictionary invalidates the ENTIRE raw-equal prefix,
+    // not just the tokens that changed. `*[HTML]: …` arriving now can affect a
+    // `HTML` occurrence in a paragraph whose own `raw` is untouched — exactly
+    // `markdown-abbr.ts`'s documented parallel to `hasLinkDefinitions`'s late
+    // reference-definition problem. Capping `matchLen` to 0 here forces every
+    // entity below to go through the rebuild path (nothing before it can be
+    // reused), which is the only way a definition arriving anywhere in the
+    // document can retroactively re-style prose that already rendered.
+    const newAbbreviations = collectAbbreviations(newTokens);
+    const abbreviationsChanged = !mapsEqual(this.abbreviations, newAbbreviations);
+    if (abbreviationsChanged) matchLen = 0;
+    this.abbreviations = newAbbreviations;
 
     // Old-token-index → child-entity index (tokens that render nothing don't
     // consume a child slot — see producesEntity). This prefix sum is maintained
@@ -3094,6 +3245,10 @@ export class Markdown extends UIComponent {
       // It renders its own block, so it produces an entity — see `renderToken`'s
       // arm for why in place rather than collected into a document footer.
       case 'footnoteDef':
+      // A `ContainerToken` carries `tokens`, not `text`, so it would otherwise
+      // fail the `default:` arm's `'text' in token` fallback check entirely —
+      // the same trap `footnoteDef` above already documents.
+      case 'container':
         return true;
       default:
         return 'text' in token;
@@ -3225,6 +3380,7 @@ export class Markdown extends UIComponent {
           t,
           this.selectable,
           this.onLinkClick,
+          this.abbreviations,
         );
       }
 
@@ -3241,6 +3397,7 @@ export class Markdown extends UIComponent {
             t,
             this.selectable,
             this.onLinkClick,
+            this.abbreviations,
           );
         }
 
@@ -3390,6 +3547,63 @@ export class Markdown extends UIComponent {
         return container;
       }
 
+      // ── `:::` fenced containers ─────────────────────────────────────
+      case 'container': {
+        // Shape mirrors `blockquote`'s exactly — MarkdownContainer[
+        // ContainerBackground, QuoteBorder, Stack[MarkdownContainer[block], …]]
+        // — one layer deeper only for the background fill a blockquote does
+        // not have. `reflowToken`'s `container` arm below assumes this exact
+        // child order.
+        const ctToken = token as ContainerToken;
+        const accent = containerColor(t, ctToken.kind);
+        const innerStack = new Stack({
+          direction: 'vertical',
+          gap: t.containerInnerGap,
+        });
+        const indentStart = Math.min(t.containerIndent, availableWidth);
+        const childMetrics: BlockMetrics = {
+          marginBefore: 0,
+          marginAfter: 0,
+          indentStart,
+          availableWidth: Math.max(0, availableWidth - indentStart),
+        };
+        for (const inner of ctToken.tokens) {
+          const el = this.renderTokenWithMetrics(inner, childMetrics);
+          if (el) {
+            const wrapper = new MarkdownContainer();
+            el.x = childMetrics.indentStart;
+            wrapper.add(el);
+            wrapper.width = el.width + childMetrics.indentStart;
+            wrapper.height = el.height;
+            innerStack.add(wrapper);
+          }
+        }
+
+        const contentHeight = innerStack.height || 20;
+        const background = new ContainerBackground(
+          availableWidth,
+          contentHeight,
+          t.containerBgColor,
+          t.containerRadius,
+        );
+        const border = new QuoteBorder(contentHeight, accent, t.containerBorderWidth);
+
+        const wrapper = new MarkdownContainer();
+        background.x = 0;
+        background.y = 0;
+        wrapper.add(background);
+        border.x = 0;
+        border.y = 0;
+        wrapper.add(border);
+        innerStack.x = 0;
+        innerStack.y = 0;
+        wrapper.add(innerStack);
+        wrapper.width = availableWidth;
+        wrapper.height = Math.max(background.height, border.height, innerStack.height);
+
+        return wrapper;
+      }
+
       // ── Lists ────────────────────────────────────────────────
       case 'list': {
         const listToken = token as Tokens.List;
@@ -3458,25 +3672,51 @@ export class Markdown extends UIComponent {
         // when they are not. Nothing is silently dropped and nothing is
         // synthesized.
         const fnToken = token as FootnoteDefToken;
-        const spans: StyledSpan[] = [
+        const headerSpans: StyledSpan[] = [
           {
             text: footnoteMarker(fnToken.label),
             style: { color: t.footnoteColor },
           },
           { text: ' ' },
         ];
-        // The body's inline markup is deliberately NOT parsed. The tokenizer keeps
-        // `body` as source text, so `**bold**` in a note shows its asterisks. That
-        // is the honest shape of a single-line-only definition and it keeps the
-        // token free of a nested inline tree the incremental differ would have to
-        // reason about; parsing it is a contained follow-up, not a silent gap.
-        if (fnToken.body) spans.push({ text: decodeEntities(fnToken.body) });
-        return new RichText(spans, {
+        if (fnToken.body) headerSpans.push({ text: decodeEntities(fnToken.body) });
+        const headerRichText = new RichText(headerSpans, {
           font: bodyFont,
           color: t.textColor,
           maxWidth: availableWidth,
           selectable: this.selectable,
         });
+
+        // Single-line definition (the overwhelming majority): the old shape.
+        // A continuation body only exists when the source actually had one.
+        if (!fnToken.tokens || fnToken.tokens.length === 0) {
+          return headerRichText;
+        }
+
+        // Multi-paragraph definition: header RichText + continuation blocks
+        // indented under it, wrapped in a Stack. Same shape as `listItemBlockStack`
+        // and blockquote — each continuation child is a MarkdownContainer with
+        // `el.x = indent` so the Stack does not overwrite the offset.
+        const indent = Math.round(t.fontSize);
+        const childMetrics: BlockMetrics = {
+          marginBefore: 0,
+          marginAfter: 0,
+          indentStart: indent,
+          availableWidth: Math.max(1, availableWidth - indent),
+        };
+        const stack = new Stack({ direction: 'vertical', gap: t.listItemGap });
+        stack.add(headerRichText);
+        for (const inner of fnToken.tokens) {
+          const el = this.renderTokenWithMetrics(inner, childMetrics);
+          if (!el) continue;
+          const wrapper = new MarkdownContainer();
+          el.x = indent;
+          wrapper.add(el);
+          wrapper.width = el.width + indent;
+          wrapper.height = el.height;
+          stack.add(wrapper);
+        }
+        return stack;
       }
 
       // ── Horizontal rule ──────────────────────────────────────────────

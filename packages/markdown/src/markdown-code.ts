@@ -10,7 +10,8 @@ import {
 } from '@vectojs/core';
 import { measureText, UIComponent } from '@vectojs/ui';
 
-import { resolveTheme, type MarkdownTheme } from './theme';
+import { resolvePresetTheme, type MarkdownThemePresetName } from './markdown-presets';
+import type { MarkdownTheme } from './theme';
 
 /**
  * Fenced code blocks: the keyword tables, the per-line highlighter, the
@@ -333,22 +334,25 @@ export class CodeBlock extends UIComponent {
   public selectable: boolean;
 
   /**
-   * @param theme Any subset of {@link MarkdownTheme}; missing keys fall back to
-   *   `DEFAULT_THEME` in `./theme`. Accepting a partial theme keeps callers that were
-   *   written against an earlier, smaller `MarkdownTheme` working — this class
-   *   is public API, and a hand-built theme literal would otherwise start
-   *   throwing `lineHeight must be a positive finite number` the moment a new
-   *   size key was added.
+   * @param theme Any subset of {@link MarkdownTheme}, or the name of a built-in
+   *   preset (see {@link MarkdownThemePresetName}). Accepting a partial theme
+   *   keeps callers that were written against an earlier, smaller
+   *   `MarkdownTheme` working — this class is public API, and a hand-built
+   *   theme literal would otherwise start throwing
+   *   `lineHeight must be a positive finite number` the moment a new size key
+   *   was added. Resolved through {@link resolvePresetTheme} so `CodeBlock` can
+   *   be constructed directly with a preset name without going through
+   *   `Markdown`.
    */
   constructor(
     code: string,
     lang: string,
     maxWidth: number,
-    theme: MarkdownTheme,
+    theme: MarkdownThemePresetName | MarkdownTheme,
     selectable = true,
   ) {
     super();
-    const resolved = resolveTheme(theme);
+    const resolved = resolvePresetTheme(theme);
     this.source = code;
     this.lang = lang;
     this.theme = resolved;

@@ -5,7 +5,12 @@ import {
   lexAppend,
   lexFull,
 } from './incrementalLex';
+import { ABBR_EXTENSIONS } from './markdown-abbr';
+import { CONTAINER_EXTENSIONS } from './markdown-container';
+import { EMOJI_EXTENSIONS } from './markdown-emoji';
 import { FOOTNOTE_EXTENSIONS } from './markdown-footnote';
+import { INS_MARK_EXTENSIONS } from './markdown-ins-mark';
+import { SUPERSCRIPT_EXTENSIONS } from './markdown-superscript';
 
 interface WorkerTimingSpan {
   name: string;
@@ -59,6 +64,11 @@ marked.use({
   // `markdown-footnote.ts`. esbuild inlines this import into the worker bundle.
   extensions: [
     ...FOOTNOTE_EXTENSIONS,
+    ...SUPERSCRIPT_EXTENSIONS,
+    ...INS_MARK_EXTENSIONS,
+    ...EMOJI_EXTENSIONS,
+    ...CONTAINER_EXTENSIONS,
+    ...ABBR_EXTENSIONS,
     {
       name: 'blockMath',
       level: 'block',

@@ -1,5 +1,20 @@
 # @vectojs/markdown
 
+## 0.17.0
+
+### Minor Changes
+
+- Add a broad markdown syntax-coverage cluster:
+
+  - Real subscript (`~x~`) / superscript (`^x^`) via `TextStyle.baselineShift` and new `theme.subscript*`/`superscript*` tokens. Footnote markers are now rendered as true superscript.
+  - `++ins++` / `==mark==` via the new `TextStyle.underline`/`highlightColor` fields.
+  - `:emoji:` shortcode support via a curated lookup table.
+  - Typographic replacements (`--`/`---`, `...`, `(c)`/`(r)`/`(tm)`, curly quotes), gated by `theme.typographer` (default `false`, matching markdown-it's default).
+  - `:::` fenced containers (`note`/`tip`/`warning`/`danger`/`caution`).
+  - Abbreviations (`*[TERM]: definition`) via a document-wide dictionary, rendered with a dotted underline through the new `TextStyle.abbrTitle` field. Late-arriving definitions trigger a full token rebuild, matching the existing link-definition behavior.
+  - Multi-paragraph footnote bodies.
+  - Theme presets: `githubDark`, `githubLight`, `dracula`, `solarizedDark`, `solarizedLight`, sourced from each project's canonical palette and resolved through `resolveTheme` so derived tokens still apply.
+
 ## 0.16.1
 
 ### Patch Changes
