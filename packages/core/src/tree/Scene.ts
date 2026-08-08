@@ -745,6 +745,25 @@ function parseInlinePx(value: string | undefined): number | null {
 export const DEFAULT_CONTENT_SEMANTIC_BUDGET = 256;
 
 /**
+ * How many CONSECUTIVE `uploadRuns` rejections disable the WASM transform
+ * backend for a scene's lifetime.
+ *
+ * A rejection leaves the store's structure version stale so the next frame
+ * retries the rebuild, which is right while the cause might be transient — a
+ * concurrent backend growing shared linear memory between `ensure()` and
+ * `set_run_count()`. But a topology genuinely over the crate's hard run cap
+ * re-fails every frame, and each retry costs a full O(n) `buildTreeStore` plus a
+ * run-table upload.
+ *
+ * 3 rather than 1 because the retry is a deliberate, documented design, and
+ * rather than a larger number because the wasted work scales with tree size and
+ * a hard cap will never be cleared by retrying. Counted consecutively and reset
+ * on any success, so an intermittent rejection cannot accumulate into disabling
+ * a scene that is working. (carryctx CTX-0278, DEC-0014)
+ */
+const WASM_UPLOAD_REJECT_LIMIT = 3;
+
+/**
  * Which tier of content projection a block gets.
  *
  * `fine` is the historical behavior: an element plus a carrier per visual line
@@ -1838,6 +1857,14 @@ export class Scene {
   private _wasmWorld: ReturnType<WasmTransformBackend['worldView']> | null = null;
   private _structureVersion = 0;
   private _storeStructureVersion = -1;
+  /**
+   * Consecutive `uploadRuns` rejections. Reset by any success and by
+   * {@link setTransformBackend}; at {@link WASM_UPLOAD_REJECT_LIMIT} the backend
+   * mode flips to `'js'` permanently.
+   */
+  private _wasmUploadRejections = 0;
+  /** Latch for the permanent-fallback warning, which fires from a per-frame path. */
+  private hasWarnedWasmUploadFallback = false;
 
   // Cached list of ComputeParticleEntity instances in the tree, keyed by the
   // structure version it was gathered at. Rebuilt only on a topology change.
@@ -1880,6 +1907,11 @@ export class Scene {
   public setTransformBackend(backend: WasmTransformBackend | null): void {
     this._wasm = backend;
     this._transformBackend = backend ? 'wasm' : 'js';
+    // An explicit install is the documented way back after a permanent
+    // run-table fallback, so the rejection streak must not survive it —
+    // otherwise the very next rejection would trip the limit again. The warning
+    // latch is deliberately NOT reset: one report per scene is the point.
+    this._wasmUploadRejections = 0;
   }
 
   /**
@@ -2621,8 +2653,40 @@ export class Scene {
         // out along last frame's parent links. Leave `_storeStructureVersion`
         // untouched so the next frame retries the rebuild.
         this._transformReason = 'rejected';
+        // Retrying forever is only right while the rejection might be transient
+        // (a concurrent backend growing shared linear memory between `ensure()`
+        // and `set_run_count()`). A topology that genuinely exceeds the crate's
+        // HARD run cap re-fails every frame, and each retry is a full O(n)
+        // `buildTreeStore` plus a run-table upload — so after
+        // `WASM_UPLOAD_REJECT_LIMIT` consecutive rejections, give up on the
+        // accelerator for this scene's lifetime instead of burning that work per
+        // frame. Consecutive, not cumulative: an intermittent rejection across a
+        // long session must never accumulate into disabling a scene that works.
+        // (carryctx CTX-0278, DEC-0014)
+        this._wasmUploadRejections++;
+        if (this._wasmUploadRejections >= WASM_UPLOAD_REJECT_LIMIT) {
+          // Flip the field the render walk already reads (`renderNode`'s
+          // `wasmMain`), rather than adding a parallel disable flag that would be
+          // a second source of truth for the same question. `_wasm` is left
+          // installed so `accelerators.transform` can still describe what
+          // happened; `available` reports false because this reads the backend
+          // mode, which is now 'js'.
+          this._transformBackend = 'js';
+          if (!this.hasWarnedWasmUploadFallback) {
+            console.warn(
+              `[VectoJS] WASM transform backend disabled after ${this._wasmUploadRejections} consecutive ` +
+                `run-table rejections (${built.store.runCount} runs for ${built.store.count} entities); ` +
+                'the crate refused this topology. Falling back to JS transforms for this scene. ' +
+                'Call scene.setTransformBackend(backend) to re-enable after reducing the tree.',
+            );
+            this.hasWarnedWasmUploadFallback = true;
+          }
+        }
         return null;
       }
+      // Any success clears the streak, so only a genuinely persistent rejection
+      // reaches the limit.
+      this._wasmUploadRejections = 0;
       this._treeStore = built.store;
       this._slotEntity = slotEntity;
       this._wasmInputs = backend.inputView(); // valid until the next capacity growth
