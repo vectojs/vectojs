@@ -107,3 +107,7 @@ tmp/
 # path rather than the renderer (see screenshot-page.ts KNOWN LIMITATION), so a
 # committed image would be read as a defect that does not exist.
 benchmarks/*/screenshots/
+# markdown-showcase capture artifacts: diffs/ and evidence/ are per-run temp files,
+# but baselines/ are committed as the regression gate.
+benchmarks/markdown-showcase/diffs/
+benchmarks/markdown-showcase/evidence/
