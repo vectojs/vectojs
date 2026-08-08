@@ -2,34 +2,22 @@
 '@vectojs/markdown': minor
 ---
 
-Stop blockMath tokenizer at blank lines for incremental lexing
+Stop the `blockMath` tokenizer at a blank line
 
-**Breaking change**: Math blocks now terminate at the first blank line, treating the remainder as separate paragraphs. This improves streaming performance for math-heavy documents from 1.0145x (parity) to ~69.8x (like prose).
+**Behaviour change**: a `$$` display-math block now ends at the first blank
+line. Previously its content pattern crossed blank lines, so an unterminated
+`$$` reached arbitrarily far ahead and could absorb the rest of the document
+once a later `$$` arrived.
 
-**Before**:
-```markdown
-$$
-x = 1
+**Before**: `$$\nx = 1\n\ny = 2\n$$\n` was one `blockMath` token whose body
+(`x = 1\n\ny = 2`) is not valid TeX.
 
-y = 2
-$$
-```
-Rendered as one continuous math block (but invalid TeX).
+**After**: the same source is an unclosed fence (rendered as a `CodeBlock`
+showing the TeX source), then a `y = 2` paragraph, then a `$$` paragraph.
 
-**After**:
-```markdown
-$$
-x = 1
+**Migration**: multi-line math without blank lines is unaffected, which covers
+`aligned`, `cases`, `matrix` and every other multi-line environment:
 
-y = 2
-$$
-```
-Renders as:
-1. An unclosed math fence `$$\nx = 1\n` (CodeBlock showing TeX source)
-2. A paragraph `y = 2`
-3. A paragraph `$$`
-
-**Migration**: Multi-line math blocks without blank lines continue to work unchanged:
 ```markdown
 $$
 \begin{aligned}
@@ -39,4 +27,10 @@ c &= d
 $$
 ```
 
-This change enables incremental lexing for math documents, where each closed block is tokenized independently rather than forcing a whole-document scan.
+**Scope, stated precisely**: this removes the tokenizer's unbounded forward
+reach, which is a correctness and blast-radius fix. It does **not** by itself
+make math documents lex incrementally: `incrementalLex` still degrades an
+instance to whole-document lexing whenever a line-start `$$` is present
+(`hasBlockMathOpener`, reason `'block-math'`), because that gate also guards a
+_backward_ reach through marked's `startBlock` paragraph clip. Lifting the gate
+is separate work and is not attempted here, so no streaming speedup is claimed.
