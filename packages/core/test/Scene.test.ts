@@ -171,6 +171,64 @@ describe('Scene', () => {
     expect((globalThis as any).requestAnimationFrame).toHaveBeenCalledTimes(1);
   });
 
+  it('start() after destroy() stays stopped and schedules no frame', () => {
+    // `destroy()` disposes the renderer and removes the a11y/projection roots,
+    // but `CanvasRenderer.dispose` does not null its context — so a restarted
+    // loop draws into a detached canvas instead of throwing. The failure is
+    // silent, which is why this is pinned rather than left to a runtime error.
+    const scene = new Scene(mockCanvas as any);
+    const raf = vi.fn();
+    const saved = (globalThis as any).requestAnimationFrame;
+    (globalThis as any).requestAnimationFrame = raf;
+    try {
+      scene.destroy();
+      raf.mockClear();
+
+      scene.start();
+
+      expect((scene as any).isRunning).toBe(false);
+      expect(raf).not.toHaveBeenCalled();
+    } finally {
+      (globalThis as any).requestAnimationFrame = saved;
+    }
+  });
+
+  it('start() after destroy() arms no caret blink timer', () => {
+    // The other half of the restart: `start()` re-arms the 500ms blink interval
+    // for a focused text element, which would keep calling `markDirty()` on a
+    // torn-down scene forever.
+    const scene = new Scene(mockCanvas as any);
+    const input = document.createElement('input');
+    (scene as any).focusedA11yElement = input;
+    (scene as any).renderMode = 'onDemand';
+
+    scene.destroy();
+    scene.start();
+
+    expect((scene as any).caretBlinkTimer).toBeNull();
+  });
+
+  it('start() still works on a live scene that was merely stopped', () => {
+    // The over-rejection direction: `stop()` is documented as resumable, so the
+    // destroyed guard must not catch it.
+    const scene = new Scene(mockCanvas as any);
+    const raf = vi.fn();
+    const saved = (globalThis as any).requestAnimationFrame;
+    (globalThis as any).requestAnimationFrame = raf;
+    try {
+      scene.start();
+      scene.stop();
+      raf.mockClear();
+
+      scene.start();
+
+      expect((scene as any).isRunning).toBe(true);
+      expect(raf).toHaveBeenCalledTimes(1);
+    } finally {
+      (globalThis as any).requestAnimationFrame = saved;
+    }
+  });
+
   it('stop() halts the loop flag', () => {
     const scene = new Scene(mockCanvas as any);
     scene.start();
