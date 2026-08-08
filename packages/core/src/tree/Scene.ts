@@ -3815,9 +3815,17 @@ export class Scene {
   /**
    * Begin the `requestAnimationFrame` render loop.
    *
-   * Idempotent — calling `start()` on an already-running scene is a no-op.
+   * Idempotent — calling `start()` on an already-running scene is a no-op, and so
+   * is calling it on a destroyed one.
    */
   public start(): void {
+    // A destroyed scene must stay stopped. `destroy()` disposes the renderer and
+    // removes the a11y/projection roots, but `CanvasRenderer.dispose` does not
+    // null its context, so a restarted loop draws into a detached canvas instead
+    // of throwing — silent corruption rather than a crash. Silent no-op to match
+    // `destroy()`'s own guard: `start()` is documented as idempotent, so teardown
+    // paths may legitimately call it defensively and a warning would be noise.
+    if (this.destroyed) return;
     if (this.isRunning) return;
 
     if ((this.width === 0 || this.height === 0) && !this.hasWarnedZeroSize) {
