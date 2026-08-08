@@ -1,5 +1,43 @@
 # @vectojs/ui
 
+## 2.15.1
+
+### Patch Changes
+
+- dd47051: fix(ui): VirtualList.setItems clears stale pooled rows in unkeyed mode
+
+  The unkeyed branch of `setItems` reset scroll and cleared the height cache but never cleared `_pool`. `_reconcile` then reused pooled entities for any index still in the visible range without calling `renderItem` again, so every overlapping index kept rendering the OLD item's content. The docstring explicitly promises a clean replace; only the height cache was actually cleared. The keyed path was already correct (rekey maintains key↔entity identity).
+
+  The fix removes all pooled entities and clears `_pool` before `_reconcile` in the unkeyed branch, forcing fresh remounts for the new items.
+
+- 475e050: fix(ui): restore the markDirty() the VirtualList wheel handler lost
+
+  The deltaMode conversion in #401 rewrote `VirtualList`'s wheel handler and
+  dropped its trailing `this.scene?.markDirty()`. That call is not redundant with
+  `hasPendingAnimations()`: `Scene.loop()` decides idleness from
+  `frameHadAnimation`, which is only refreshed during a **rendered** frame's tree
+  walk. Once a scene has gone idle it skips that walk entirely in
+  `renderMode: 'onDemand'`, or drops to 2 FPS in `'always'` with `autoThrottle` —
+  so nothing observes the new `_targetY` and the wheel scroll either never starts
+  or starts a half-second late. `markDirty()` is what wakes the first frame, and
+  every other path that moves `_targetY` (`pointermove`, `scrollToBottom`,
+  `setItems`) already calls it.
+
+  `WheelDeltaMode.test.ts` is rewritten in the same change. It had defined a local
+  copy of the conversion arithmetic and asserted against that copy, so it passed
+  regardless of what `ScrollView`, `Table`, `Tree`, `VirtualList`, or `Tabs`
+  actually did — including with this `markDirty()` missing. It now emits real
+  wheel events at the real components and asserts on their observable scroll
+  state, covering pixel/line/page mode for all five widgets plus the `markDirty()`
+  regression (verified failing before the fix).
+
+- ac6a2f2: fix(ui): convert WheelEvent deltaMode in all scroll widgets
+
+  ScrollView, Table, Tree, VirtualList, and Tabs now scale wheel deltas by 16px (line mode, deltaMode=1) or viewport dimension (page mode, deltaMode=2) before applying. Previously, line-mode and page-mode wheels scrolled at ~1-3px per notch instead of the expected ~48px or one viewport height.
+
+  Unit test: `packages/ui/test/WheelDeltaMode.test.ts`
+  Finding: `vectojs-docs/forge/findings/ui-components.md` (2026-08-08 entry)
+
 ## 2.15.0
 
 ### Minor Changes

@@ -1,5 +1,240 @@
 # @vectojs/core
 
+## 1.32.7
+
+### Patch Changes
+
+- f3e557e: fix(core): strip the inherited coarse text node when promoting a content-grid block
+
+  A block promoted from the coarse (resident) semantic tier to the fine tier
+  arrives holding one text node: the coarse branch projects the whole block as
+  `el.textContent = projection.text`. `syncContentGridProjection` then addresses
+  carriers through `el.children` and trims the tail with `lastElementChild` —
+  both element-only views — so the inherited text node was invisible to the entire
+  function and simply stayed put alongside the new per-cell carriers.
+
+  `el.textContent` consequently read the block twice (probed: 78 characters for a
+  39-character source, exactly 2x). Find-in-page matched the orphaned copy at the
+  wrong geometry, a screen reader announced the block twice, and the dev-mode
+  projection equality check compared against a doubled string.
+
+  The grid path cannot open with `el.replaceChildren()` the way the non-grid
+  carrier branch does — reuse of unchanged carrier lines is what keeps streaming
+  affordable — so it now removes direct text-node children specifically, leaving
+  element children (and therefore carrier reuse) untouched. A selection anchored in
+  the removed text node is released rather than left pointing at a detached node;
+  `contentGridSelectionLine` could not cover that case because it only recognizes
+  carrier lines via `data-vecto-grid-line`.
+
+  Guarded on `el.firstChild !== null`, so the steady state (streaming append,
+  scroll) pays one property read and no DOM writes.
+
+  Unit test: `packages/core/test/ContentGridPromotion.test.ts` (verified fail-old:
+  2 of 5 assertions fail without the strip, reporting the doubled text).
+
+- 0112260: fix(core): release a content-grid selection when the window start passes it
+
+  `syncContentGridProjection` windows its carrier lines to the interaction band, so
+  scrolling changes which lines have DOM. It released a live selection only when
+  `selectionLine >= gridWindow.end`, and that check sat inside the
+  `while (el.children.length > windowLength)` trim loop — a loop that runs only when
+  the window SHRANK.
+
+  Scrolling so the window's START moves past the selected line takes a different
+  path entirely: the window keeps its length, nothing is trimmed, and the
+  materialize loop instead overwrites `children[0..]` with the new window's lines
+  (a line's DOM slot is its offset from the window start, not its document index).
+  `rebuiltSelectionLine` was therefore never set, leaving the live `Selection`
+  pointing at a replaced, detached carrier while `contentGridSelectionLine`
+  reported a stale index — so a subsequent copy read the wrong text.
+
+  The bounds test is now a single combined check on both edges, hoisted above the
+  materialize loop so it is evaluated on every rebuild regardless of whether the
+  window shrank, and the now-redundant in-loop check is gone rather than left
+  firing on a different condition.
+
+  The release itself stays deferred to after the loops (`if (rebuiltSelectionLine)`)
+  so a selection in a REUSED line still survives: carrier-line reuse is what makes
+  streaming affordable, and releasing on any rebuild would wipe the selection on
+  every appended chunk. That over-release direction is covered too.
+
+  Unit test: `packages/core/test/ContentGridSelectionWindow.test.ts` (5 tests,
+  verified fail-old — the start-passes-selection case fails without the fix while
+  the end case still passes, confirming the two conditions cover different paths).
+
+- bc76505: fix(core): keep an unstroked Circle/Rect bounds origin at +0, not -0
+
+  The stroke inflation added in #403 computed the bounds origin as `-inflation`,
+  and negating a zero yields `-0`. `-0 === 0` holds, so arithmetic consumers were
+  unaffected, but `Object.is(-0, 0)` is false — an unstroked rect's bounds failed
+  a `toEqual({ x: 0, … })` assertion and would fail any consumer that
+  identity-compares origins or uses `-0` as a Map key. `JSON.stringify` also
+  serialises it as `0`, so the value read back differently than it compared.
+
+  Both `Circle.getBounds()` and `Rect.getBounds()` now negate only when the
+  inflation is actually positive, making the no-stroke result byte-identical to
+  the pre-inflation behaviour.
+
+  `Primitives.test.ts` asserted this exactly before #403; that assertion was
+  loosened to `toBeCloseTo` to accommodate the `-0` instead of fixing the source,
+  and is restored to an exact `toEqual` here. `ShapeStrokeBounds.test.ts` had
+  encoded the defect as expected behaviour (`expect(bounds.x).toBe(-0)` with a
+  comment describing the negation) — corrected to assert `+0` via `Object.is`.
+
+  Unit test: `packages/core/test/ShapeStrokeBounds.test.ts`
+
+- 770e2f4: fix(core): ignore a `Scene.resize()` with negative or non-finite dimensions
+
+  `resize(width, height)` stored its arguments verbatim (`this.width = width`) and
+  then passed them to the renderers. A canvas element's `width`/`height` setters
+  clamp or no-op on a bad value, so `Scene.width` could read `-10` (or `NaN`) while
+  the backing store sat at `0` — the logical viewport and the backing store
+  disagreeing, with culling and a11y geometry computed from the bogus value. The
+  failure is silent: nothing throws, the scene simply reasons about a viewport that
+  does not exist.
+
+  `resize()` now rejects a negative or non-finite dimension, keeping the last
+  known-good size and leaving the canvas untouched, and warns once.
+
+  Rejecting rather than clamping is deliberate: clamping invents a viewport the
+  caller never asked for and hides the bug at the call site, whereas returning
+  leaves the previous size intact, which is the safer state for a formula-driven
+  resize that briefly produces garbage. The warning is latched because `resize()`
+  is commonly driven from a `ResizeObserver` and would otherwise warn on every
+  frame of a drag.
+
+  `0` remains a valid argument. `start()` already treats a zero-size scene as
+  warn-worthy but tolerated, so rejecting `0` here would contradict that policy;
+  the DPR-change handler also re-invokes `resize(this.width, this.height)`, which
+  on a legitimately zero-size scene must still rescale the backing store. The
+  internal `ResizeObserver` path already filters `w > 0 && h > 0` before calling
+  `resize()`. Recorded as carryctx `DEC-0013`.
+
+  Unit tests: 10 cases in `packages/core/test/Scene.test.ts` covering negative
+  width/height, `NaN`, `±Infinity`, warn-once latching, and the over-rejection
+  directions (a valid resize, a zero resize, and a valid resize following a
+  rejected one). Verified fail-old: 7 fail without the guard.
+
+- 48b6148: fix(core): ignore `Scene.start()` on a destroyed scene
+
+  `start()` checked only `isRunning`, so calling it after `destroy()` flipped
+  `isRunning` back to `true`, re-armed `scheduleFrame()` and the caret blink timer,
+  and ran the render loop against a disposed renderer and removed a11y/projection
+  DOM.
+
+  That does not throw. `CanvasRenderer.dispose` releases its resources but leaves
+  the 2D context in place, so the resurrected loop keeps drawing — into a canvas
+  that is no longer in the document. The result is a scene that looks stopped,
+  holds a 500ms `setInterval` calling `markDirty()` forever, and burns a frame
+  budget on output nobody can see.
+
+  `start()` now returns early when `destroyed` is set, matching the guard
+  `destroy()` itself uses and the one in `recreateWebGPUDeviceWithRetry`. It stays
+  a silent no-op rather than warning: `start()` is documented as idempotent, so
+  defensive calls from teardown paths are legitimate and a warning would be noise.
+  A merely stopped scene still restarts, which `stop()`'s documented resumability
+  requires.
+
+  Unit tests in `packages/core/test/Scene.test.ts` cover both halves of the restart
+  (no scheduled frame, no caret timer) plus the over-rejection direction, and were
+  verified fail-old.
+
+- 4243327: fix(core): inflate Circle/Rect getBounds() to include stroke width
+
+  When `stroke` is present, `getBounds()` now inflates the returned bounds by `strokeWidth / 2` to include the full stroke in culling calculations. Previously, strokes at viewport edges were clipped because the bounds only covered the fill geometry.
+
+  Unit test: `packages/core/test/ShapeStrokeBounds.test.ts`
+
+- d85e8aa: fix(core): SplineEntity cache invalidation on doc/lineWidth changes
+
+  Converted `doc` and `lineWidth` from plain public fields to getter/setter pairs that invalidate cached state (baked canvas, flattened polylines) on mutation. Previously, assigning `lineWidth = 10` post-construction changed hit geometry but not the drawn stroke — visual and hit geometry silently diverged.
+
+  Unit test: `packages/core/test/SplineEntityCacheInvalidation.test.ts`
+
+- 7400cd1: fix(core): recompute SplineEntity.containsGradient when the document changes
+
+  `containsGradient` selects the render path — `render()` takes the bake path only
+  when it is false — but it was `private readonly`, computed once in the
+  constructor. The `doc` setter added in #402 invalidated the baked canvas, the
+  polylines and the bounds, yet left this flag stale.
+
+  Assigning a gradient-stroked document to an entity constructed from a
+  solid-color one therefore kept the flag at `false` and sent the gradient through
+  `bake()`, which has no gradient support and substitutes `defaultColor`: the
+  gradient rendered as a single flat color, and the per-frame `resolveColor()`
+  path that builds the actual `createLinearGradient` was never reached. No warning
+  was emitted. The reverse direction (gradient → solid) left the flag stale at
+  `true`, permanently disabling baking for an entity that had become bakeable.
+
+  The detection is extracted into `computeContainsGradient()` and called from both
+  the constructor and the `doc` setter, so the two cannot drift.
+
+  Unit test: `packages/core/test/SplineEntityCacheInvalidation.test.ts`
+
+- 061cadf: fix(core): fall back to JS transforms permanently after repeated WASM run-table rejections
+
+  When `backend.uploadRuns()` rejected the run count, `_syncWasmStore` left
+  `_storeStructureVersion` stale so the next frame retried the rebuild. That is
+  correct while the cause might be transient — the published run table still
+  describes the PREVIOUS topology, so composing against it would lay this frame's
+  entities out along last frame's parent links.
+
+  But when the rejection is persistent (a topology that genuinely exceeds the
+  crate's hard run cap) the retry never succeeds, so the scene rebuilt the whole
+  O(n) transform store and re-failed the upload **every frame, forever**, with no
+  escape to the JS path. The scene stayed visually correct throughout — JS
+  composition is the permanent fallback — while paying a full `buildTreeStore` plus
+  a run-table upload per frame for an accelerator that could never engage.
+
+  Consecutive rejections are now counted and reset by any success, so an
+  intermittent rejection never accumulates. On the third consecutive rejection the
+  transform backend mode flips to `'js'` for the scene's lifetime and the rebuild
+  stops, with one latched warning reporting the run and entity counts so the
+  topology is diagnosable. `_transformBackend` is the field the render walk already
+  reads, so no parallel disable flag was added; an explicit
+  `scene.setTransformBackend(backend)` re-enables WASM and clears the streak.
+
+  The threshold and the re-enable policy are recorded as carryctx `DEC-0014`: 3
+  rather than 1 because the retry is a deliberate documented design, and rather
+  than a larger number because each retry's cost scales with tree size and a hard
+  cap will never be cleared by retrying.
+
+  `_ensureWasmAabbs`'s rejection path is deliberately unchanged — it already
+  returns `false` and falls back to the JS gather, which is a per-query fallback
+  rather than a per-frame rebuild.
+
+  Unit test: `packages/core/test/wasm/scene-wasm-upload-fallback.test.ts`, driven
+  through a stub backend so it runs without the (gitignored) `.wasm`. Verified
+  fail-old: 6 of its 7 tests fail without the change, and the one that passes is the
+  over-rejection guard (a healthy backend is never disabled).
+
+- ed81edb: fix(core): release the WebGPU device when a scene is destroyed mid-initialization
+
+  The first-frame WebGPU init handler assigned `this.device`, cleared
+  `initializingWebGPU`, constructed the particle manager and called
+  `initPipelines` — all without checking `destroyed`. A `destroy()` landing while
+  `initWebGPUContext`'s promise was still pending therefore created the device
+  _after_ teardown and never released it: one leaked GPU device per occurrence,
+  plus a manager and its pipelines built against a scene that no longer exists.
+
+  The handler now mirrors the guard the context-recovery path has always had, and
+  calls `newDevice.destroy()` before returning — a bare early return would leak the
+  same device in a less visible shape, since the device is created by the time the
+  handler runs either way. `initializingWebGPU` is also cleared so the field does
+  not advertise an init that is no longer in flight.
+
+  Only the first-frame init site was affected; the recovery retry already had the
+  check and is unchanged.
+
+  Unit tests: `packages/core/test/SceneWebGPU.test.ts` drives a `requestDevice()`
+  that stays pending until the test resolves it, so `destroy()` runs strictly
+  inside the race window. Verified fail-old — without the guard the device is
+  adopted and its pipelines are built on the destroyed scene.
+
+- ac6a2f2: feat(core): add WheelEvent.deltaMode getter to VectoJSEvent
+
+  Exposes the native `deltaMode` property (0=pixels, 1=lines, 2=pages) so scroll widgets can convert wheel deltas correctly. Previously, widgets treated all `deltaY` values as pixels, causing line-mode and page-mode wheels to scroll at ~1-3px per notch instead of the expected ~48px or one viewport height.
+
 ## 1.32.6
 
 ### Patch Changes
