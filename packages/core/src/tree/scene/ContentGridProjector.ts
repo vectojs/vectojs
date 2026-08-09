@@ -137,6 +137,14 @@ export class ContentGridProjector {
       const projectionLines = projection.lines ?? [];
       const selectionLine = this.contentProjection.gridSelectionLine(el);
       let rebuiltSelectionLine = false;
+      // Where the selection sits in `grid.source`, captured before any carrier is
+      // touched. Restoring from this is what keeps a selection alive across a
+      // reflow or a browser/DPR zoom, which rebuild EVERY line — the breaks moved —
+      // while the selected characters stay on screen. `selectionLine` cannot help
+      // there: it only says which carrier held the selection, and under a reflow
+      // that line index no longer refers to the same text.
+      const selectionSnapshot =
+        selectionLine !== null ? this.contentProjection.snapshotGridSelection(el) : null;
 
       // A selection outside the new window loses its carrier either way: past the
       // end it is trimmed below, before the start it is overwritten by the
@@ -292,9 +300,18 @@ export class ContentGridProjector {
       while (el.children.length > windowLength) {
         el.lastElementChild?.remove();
       }
-      // Only now drop the selection, and only if the line holding it was actually
+      // Only now touch the selection, and only if the line holding it was actually
       // replaced. A selection in a reused line keeps its DOM nodes and stays live.
-      if (rebuiltSelectionLine) this.contentProjection.releaseSelectionForRebuild(el);
+      //
+      // Re-anchor rather than release. The replaced-line case covers two very
+      // different events: a reflow or zoom, where the same characters are still
+      // projected under new line breaks and the selection should survive; and a
+      // scroll that carried them out of the window, where there is nothing left to
+      // point at. Source offsets tell the two apart, and `restoreGridSelection`
+      // falls back to releasing when the offsets no longer resolve.
+      if (rebuiltSelectionLine) {
+        this.contentProjection.restoreGridSelection(el, selectionSnapshot);
+      }
       el.dataset.vectoProjectionLines = signature;
       el.dataset.vectoContentGrid = signature;
       if (gridWindow.gated) {

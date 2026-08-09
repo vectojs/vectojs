@@ -296,6 +296,133 @@ export class ContentProjectionManager {
   }
 
   /**
+   * A selection inside a projected grid, expressed as offsets into `grid.source`.
+   *
+   * Source offsets rather than the linear DOM offsets
+   * {@link preserveSelectionAcrossRebuild} uses, because the grid path windows its
+   * carriers: the DOM holds only the lines near the viewport, so linear offset 0
+   * means "the first line that happens to be materialized" and moves whenever the
+   * window does. A reflow changes both the line breaks and the window, so a linear
+   * offset would restore the selection onto different characters. Every carrier
+   * cell already records its own `sourceStart`/`sourceEnd`, which are stable
+   * against line breaking, windowing, and per-cell calibration.
+   */
+  private gridSelectionEndpointOffset(el: HTMLElement, node: Node, offset: number): number | null {
+    if (!el.contains(node)) return null;
+    // A block promoted from the coarse tier holds one text node with the WHOLE
+    // source, so its own offsets are already source offsets.
+    if (node.parentNode === el) {
+      return node instanceof Text ? Math.min(offset, node.data.length) : null;
+    }
+    // The endpoint's own offset only means characters when the endpoint IS the
+    // text; an element endpoint addresses child nodes, so it contributes nothing
+    // and the cell's start is the answer.
+    const withinCell = node instanceof Text ? offset : 0;
+    let cursor: Node | null = node;
+    while (cursor && cursor !== el) {
+      const cell = cursor as HTMLElement;
+      const start = cell.dataset?.vectoGridSourceStart;
+      if (start !== undefined) {
+        const sourceStart = Number(start);
+        const sourceLength = Number(cell.dataset.vectoGridSourceLength ?? 0);
+        if (!Number.isFinite(sourceStart)) return null;
+        // Clamp to the cell's own source text: the last cell of a line also
+        // carries the trailing hard break in the same text node, and those
+        // characters belong to no cell's source span.
+        return sourceStart + Math.min(withinCell, sourceLength);
+      }
+      cursor = cursor.parentNode;
+    }
+    return null;
+  }
+
+  /**
+   * Where in `grid.source` the live selection sits, or `null` when this element
+   * does not own one that can be expressed that way.
+   *
+   * Cheap-rejects exactly as {@link releaseSelectionForRebuild} does: the tracked
+   * anchor is a local field, and the memo costs one forced layout per sync walk
+   * rather than one per element.
+   */
+  public snapshotGridSelection(el: HTMLElement): { anchor: number; focus: number } | null {
+    if (!this.anchor && !this.selectionPresent()) return null;
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    // Mid-drag the browser is authoritative, so there is nothing to snapshot and
+    // nothing to put back.
+    if (!selection || this.blankRegionDrag) return null;
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    if (!anchorNode || !focusNode) return null;
+    if (!el.contains(anchorNode) && !el.contains(focusNode)) return null;
+    const anchor = this.gridSelectionEndpointOffset(el, anchorNode, selection.anchorOffset);
+    const focus = this.gridSelectionEndpointOffset(el, focusNode, selection.focusOffset);
+    if (anchor === null || focus === null) return null;
+    return { anchor, focus };
+  }
+
+  /** The carrier caret for a source offset, or `null` when it is not projected. */
+  private gridCaretAtSourceOffset(el: HTMLElement, sourceOffset: number): TextCaretPosition | null {
+    for (const cell of el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')) {
+      const sourceStart = Number(cell.dataset.vectoGridSourceStart ?? Number.NaN);
+      const sourceLength = Number(cell.dataset.vectoGridSourceLength ?? 0);
+      if (!Number.isFinite(sourceStart)) continue;
+      // Cells arrive in logical source order, so the FIRST cell whose span covers
+      // the offset wins. An offset on a shared boundary resolves to the end of the
+      // earlier cell, which is the same caret position as the start of the next.
+      if (sourceOffset >= sourceStart && sourceOffset <= sourceStart + sourceLength) {
+        const node = cell.firstChild;
+        if (node instanceof Text) return { node, offset: sourceOffset - sourceStart };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Put a {@link snapshotGridSelection} result back after a re-materialization,
+   * releasing instead whenever the selected text is no longer projected.
+   *
+   * Restoring is what keeps a selection alive across a reflow or a browser zoom,
+   * where every carrier line is rebuilt (the line breaks moved) but the selected
+   * characters are still on screen. When the window scrolled past them instead,
+   * the offsets resolve to nothing and the selection is dropped — a `Range` left
+   * pointing into detached carriers reports stale geometry and copies the wrong
+   * text.
+   */
+  public restoreGridSelection(
+    el: HTMLElement,
+    snapshot: { anchor: number; focus: number } | null,
+  ): void {
+    if (!snapshot) {
+      this.releaseSelectionForRebuild(el);
+      return;
+    }
+    const anchor = this.gridCaretAtSourceOffset(el, snapshot.anchor);
+    const focus = this.gridCaretAtSourceOffset(el, snapshot.focus);
+    if (!anchor || !focus) {
+      this.releaseSelectionForRebuild(el);
+      return;
+    }
+    const selection =
+      typeof window !== 'undefined' && typeof window.getSelection === 'function'
+        ? window.getSelection()
+        : null;
+    if (!selection) return;
+    this.endDrag();
+    try {
+      selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+    } catch {
+      // Engine rejected the range — leave the selection cleared rather than
+      // stranded on the old nodes.
+      selection.removeAllRanges();
+    }
+    // The memo described the document before this pass; it no longer does.
+    this.presentThisSync = null;
+  }
+
+  /**
    * Reset per-grid calibration and bookkeeping before a (re)materialization.
    *
    * @param entityId - Owning entity, keyed into the calibration maps.
