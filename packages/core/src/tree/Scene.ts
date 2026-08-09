@@ -55,12 +55,19 @@ import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
 import { isNativelyFocusable, rebaseChildBox } from './scene/a11y-dom';
 import { A11yProjectionManager } from './scene/A11yProjectionManager';
+import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
 import {
   type AcceleratorReason,
   type AcceleratorReport,
   type AcceleratorStatus,
   WasmBackendFacade,
 } from './scene/WasmBackendFacade';
+
+// `RenderPhase` and `RenderPhaseEntry` were exported from this module before the
+// phase timer moved out, and `packages/core/src/index.ts` is `export * from
+// './tree/Scene'`, so they are public API and are re-exported to keep it
+// byte-identical (`DEC-0019` rule 3). @vectojs/devtools consumes `renderPhases`.
+export type { RenderPhase, RenderPhaseEntry };
 
 // --- domain: a11y-projection — role tables, focus predicate, box rebase (extraction 2) ---
 /**
@@ -141,70 +148,6 @@ interface A11yContainer {
   transform: AffineTransform;
   originX: number;
   originY: number;
-}
-
-// --- domain: render-scheduler — phase/dirty telemetry types (extraction 6) ---
-/**
- * A timed phase of a frame.
- *
- * `render` is the ENCLOSING phase — it contains `transform`, `drawWalk` and
- * `flush` — so it is reported without a share to avoid double-counting.
- * `a11ySync` and `a11yOrder` run after `render` in the frame loop, so they are
- * siblings of it, not children.
- */
-export type RenderPhase =
-  | 'render'
-  | 'transform'
-  | 'drawWalk'
-  | 'flush'
-  | 'a11ySync'
-  /**
-   * Time inside {@link Scene.syncContentGridProjection} materializing DOM
-   * carriers, nested inside `a11ySync`.
-   *
-   * Split out because `a11ySync` for a streaming code block measured 1661-1875 ms
-   * against a 210-671 ms render, and attributing that to grid materialization was
-   * an assumption. Nothing should be optimised here on the strength of the parent
-   * phase alone.
-   */
-  | 'gridMaterialize'
-  /**
-   * Whole of {@link Scene.syncContentProjection}, nested inside `a11ySync`.
-   *
-   * Measured at 99.8-99.9% of `a11ySync` for a streaming code block, so per-node
-   * a11y attribute and geometry work is not where that phase's cost lives.
-   */
-  | 'contentProjection'
-  /** Per-node a11y attribute/geometry work, excluding content projection and descendants. */
-  | 'a11yNodes'
-  /** Whole of `syncContentGridProjection`, of which `gridMaterialize` is one part. */
-  | 'gridSync'
-  /**
-   * Synchronous part of `scheduleContentGridCalibration` — building the probe DOM.
-   *
-   * The measurement itself is deferred to a rAF, but the probe is constructed
-   * here. Measured at 77-80% of `gridSync` on Chrome (3.7-4.5 ms per frame, i.e.
-   * the entire 240Hz budget) against about 1 ms on Firefox, making it the largest
-   * remaining cost of projecting a streaming code block once carrier reuse landed.
-   */
-  | 'gridCalibrateSchedule'
-  /** The `querySelectorAll` + per-cell scan inside calibration scheduling. */
-  | 'calibScan'
-  /** Probe DOM construction and insertion inside calibration scheduling. */
-  | 'calibProbeBuild'
-  | 'a11yOrder'
-  /** Sum of every entity's own render(), nested inside drawWalk. */
-  | 'entityPaint';
-
-export interface RenderPhaseEntry {
-  phase: RenderPhase;
-  totalMs: number;
-  calls: number;
-  avgMs: number;
-  /** Worst single sample — a spiky phase is a different problem from a slow one. */
-  maxMs: number;
-  /** Percent of the measured total, or `null` for the enclosing `render` phase. */
-  share: number | null;
 }
 
 /**
@@ -1304,9 +1247,16 @@ export class Scene {
 
   /** Cap on distinct recorded dirty reasons (see `recordDirtyReason`). */
   private static readonly MAX_DIRTY_REASONS = 200;
-  private _phaseTiming = false;
-  private _userTiming = false;
-  private _phaseTotals = new Map<RenderPhase, { totalMs: number; calls: number; maxMs: number }>();
+  /**
+   * Per-phase frame timing and the browser User Timing flag.
+   *
+   * Extracted ahead of extraction 3 because the content-grid calibration pass is
+   * instrumented (`calibScan`, `calibProbeBuild`) and could not move while its
+   * only remaining dependency was a `Scene` private. Nine methods across four
+   * domains write phases, so this is a shared leaf rather than any one domain's
+   * property — see `DEC-0021`.
+   */
+  private readonly phases = new PhaseTimer();
 
   /**
    * Start or stop per-phase render timing.
@@ -1322,13 +1272,12 @@ export class Scene {
    * (`CodeBlock` reuse, hit-grid fusion), both of which measured as no change.
    */
   public setPhaseTiming(enabled: boolean): void {
-    this._phaseTiming = enabled;
-    if (!enabled) this.clearRenderPhases();
+    this.phases.setEnabled(enabled);
   }
 
   /** Whether per-phase render timing is being recorded. */
   public get phaseTiming(): boolean {
-    return this._phaseTiming;
+    return this.phases.enabled;
   }
 
   /**
@@ -1338,31 +1287,12 @@ export class Scene {
    * emits no Performance Timeline entries.
    */
   public setUserTiming(enabled: boolean): void {
-    this._userTiming = enabled;
+    this.phases.userTiming = enabled;
   }
 
   /** Whether browser User Timing phase instrumentation is enabled. */
   public get userTiming(): boolean {
-    return this._userTiming;
-  }
-
-  /**
-   * Accumulate one phase sample.
-   *
-   * Totals rather than a per-frame log: the question is always "which phase owns
-   * the frame", and a log of thousands of samples answers it less directly while
-   * costing far more memory. `maxMs` is kept because a phase that is cheap on
-   * average but spikes is a different problem from one that is uniformly slow.
-   */
-  private _recordPhase(phase: RenderPhase, ms: number): void {
-    const existing = this._phaseTotals.get(phase);
-    if (existing) {
-      existing.totalMs += ms;
-      existing.calls++;
-      if (ms > existing.maxMs) existing.maxMs = ms;
-      return;
-    }
-    this._phaseTotals.set(phase, { totalMs: ms, calls: 1, maxMs: ms });
+    return this.phases.userTiming;
   }
 
   /**
@@ -1373,28 +1303,12 @@ export class Scene {
    * however inefficient it looks in isolation.
    */
   public get renderPhases(): RenderPhaseEntry[] {
-    const entries = [...this._phaseTotals.entries()];
-    // `render` is the enclosing phase for transform/drawWalk/flush, so counting
-    // it in the denominator would double-count and halve every share.
-    const denominator = entries
-      .filter(([phase]) => phase !== 'render')
-      .reduce((sum, [, v]) => sum + v.totalMs, 0);
-    return entries
-      .map(([phase, v]) => ({
-        phase,
-        totalMs: +v.totalMs.toFixed(3),
-        calls: v.calls,
-        avgMs: +(v.totalMs / Math.max(1, v.calls)).toFixed(4),
-        maxMs: +v.maxMs.toFixed(3),
-        share:
-          phase === 'render' ? null : +((100 * v.totalMs) / Math.max(1e-9, denominator)).toFixed(1),
-      }))
-      .sort((a, b) => b.totalMs - a.totalMs);
+    return this.phases.entries;
   }
 
   /** Drop recorded phase timings, keeping timing enabled. */
   public clearRenderPhases(): void {
-    this._phaseTotals.clear();
+    this.phases.clear();
   }
 
   private _dirtyTracking = false;
@@ -2705,7 +2619,7 @@ export class Scene {
     this.maxFPS = options.maxFPS ?? (isTest ? 0 : 60);
     this.respectReducedMotion = options.respectReducedMotion ?? true;
     this.autoThrottle = options.autoThrottle ?? true;
-    this._userTiming = options.userTiming ?? false;
+    this.phases.userTiming = options.userTiming ?? false;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.contentProjectionEnabled = options.contentProjection ?? true;
@@ -3730,9 +3644,9 @@ export class Scene {
     // `step()` reported `render` as exactly 0 while its sub-phases were nonzero —
     // internally inconsistent, and the kind of result that makes a reader distrust
     // the whole table.
-    const t0 = this._phaseTiming ? performance.now() : 0;
+    const t0 = this.phases.enabled ? performance.now() : 0;
     this.render(this.renderer, dt, time);
-    if (this._phaseTiming) this._recordPhase('render', performance.now() - t0);
+    if (this.phases.enabled) this.phases.record('render', performance.now() - t0);
     this.dirty = false;
   }
 
@@ -4075,7 +3989,7 @@ export class Scene {
       this.pruneA11ySubtree(node);
       return;
     }
-    const nodeStart = this._phaseTiming ? performance.now() : 0;
+    const nodeStart = this.phases.enabled ? performance.now() : 0;
     // A projected node with a container role becomes the container for the
     // subtree below it; anything else passes the inherited one straight
     // through. Passing it through is what lets a `row` reach its `grid` across
@@ -4604,11 +4518,11 @@ export class Scene {
     // Charge content projection and the per-node work separately, to the calling
     // node only — children recurse below and record their own — so totals are
     // additive across the walk rather than nested.
-    if (this._phaseTiming) {
+    if (this.phases.enabled) {
       const projectionStart = performance.now();
       this.syncContentProjection(node);
-      this._recordPhase('contentProjection', performance.now() - projectionStart);
-      this._recordPhase('a11yNodes', projectionStart - nodeStart);
+      this.phases.record('contentProjection', performance.now() - projectionStart);
+      this.phases.record('a11yNodes', projectionStart - nodeStart);
     } else {
       this.syncContentProjection(node);
     }
@@ -5136,9 +5050,9 @@ export class Scene {
       this.clearContentGridState(node.id, el);
     }
     if (projection.grid && useCarriers) {
-      const gridSyncStart = this._phaseTiming ? performance.now() : 0;
+      const gridSyncStart = this.phases.enabled ? performance.now() : 0;
       this.syncContentGridProjection(node, el, projection, projection.grid, lineBand);
-      if (this._phaseTiming) this._recordPhase('gridSync', performance.now() - gridSyncStart);
+      if (this.phases.enabled) this.phases.record('gridSync', performance.now() - gridSyncStart);
     } else if (useCarriers && lines && lines.length > 0) {
       // Which lines to materialize. A tall entity passes the box gate above and
       // would otherwise emit a carrier for every line in the document; only the
@@ -5667,7 +5581,7 @@ export class Scene {
       if (typeof performance !== 'undefined') {
         const materializeMs = performance.now() - materializeStart;
         el.dataset.vectoGridMaterializeMs = `${materializeMs}`;
-        if (this._phaseTiming) this._recordPhase('gridMaterialize', materializeMs);
+        if (this.phases.enabled) this.phases.record('gridMaterialize', materializeMs);
       }
       delete el.dataset.vectoGridCalibration;
       delete el.dataset.vectoGridReady;
@@ -5676,10 +5590,10 @@ export class Scene {
     const pageScaleX = this.getContentMetricScaleX();
     const calibrationKey = `${signature}:${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
     if (el.dataset.vectoGridCalibration !== calibrationKey) {
-      const calibStart = this._phaseTiming ? performance.now() : 0;
+      const calibStart = this.phases.enabled ? performance.now() : 0;
       this.scheduleContentGridCalibration(node.id, el, calibrationKey, pageScaleX);
-      if (this._phaseTiming) {
-        this._recordPhase('gridCalibrateSchedule', performance.now() - calibStart);
+      if (this.phases.enabled) {
+        this.phases.record('gridCalibrateSchedule', performance.now() - calibStart);
       }
     }
   }
@@ -5795,7 +5709,7 @@ export class Scene {
       source: Text;
     }> = [];
     const measurementsByKey = new Map<string, (typeof measurements)[number]>();
-    const scanStart = this._phaseTiming ? performance.now() : 0;
+    const scanStart = this.phases.enabled ? performance.now() : 0;
     for (const target of pendingCells) {
       const sourceLength = Number(target.dataset.vectoGridSourceLength ?? 0);
       const targetWidth = Number(target.dataset.vectoGridAdvance ?? 0);
@@ -5854,7 +5768,7 @@ export class Scene {
     // substitution match the live carriers. Gecko may still return an
     // unzoomed Range width for a missing-glyph fallback; pageScaleX below
     // compensates that engine behavior without special-casing the font.
-    if (this._phaseTiming) this._recordPhase('calibScan', performance.now() - scanStart);
+    if (this.phases.enabled) this.phases.record('calibScan', performance.now() - scanStart);
 
     // No measurable cell among the pending ones: every one was zero-advance or
     // empty text and has just been stamped, so there is nothing to lay out and no
@@ -5870,9 +5784,9 @@ export class Scene {
       return;
     }
 
-    const appendStart = this._phaseTiming ? performance.now() : 0;
+    const appendStart = this.phases.enabled ? performance.now() : 0;
     (this.a11yRoot ?? document.body ?? document.documentElement).appendChild(probe);
-    if (this._phaseTiming) this._recordPhase('calibProbeBuild', performance.now() - appendStart);
+    if (this.phases.enabled) this.phases.record('calibProbeBuild', performance.now() - appendStart);
     el.dataset.vectoGridCalibrationSamples = `${measurements.length}`;
     this.contentGridCalibrationProbes.set(entityId, probe);
     el.dataset.vectoGridCalibrationPending = calibrationKey;
@@ -6323,9 +6237,9 @@ export class Scene {
     this._lastRenderTick = time;
     this._lastDt = dt;
 
-    const phaseClock = this._phaseTiming ? performance.now() : 0;
+    const phaseClock = this.phases.enabled ? performance.now() : 0;
     this.render(this.renderer, dt, time);
-    if (this._phaseTiming) this._recordPhase('render', performance.now() - phaseClock);
+    if (this.phases.enabled) this.phases.record('render', performance.now() - phaseClock);
 
     this._lastFrameMs = (typeof performance !== 'undefined' ? performance.now() : time) - now;
     this._renderedFrames++;
@@ -6350,17 +6264,17 @@ export class Scene {
     ) {
       this.lastA11ySync = time;
       if (hasInteractive || wantsContentSync) {
-        const userTiming = this._userTiming
+        const userTiming = this.phases.userTiming
           ? beginVectoUserTiming(VECTO_USER_TIMING.scene.a11ySync)
           : null;
-        const t0 = this._phaseTiming ? performance.now() : 0;
+        const t0 = this.phases.enabled ? performance.now() : 0;
         this.syncA11y(this.root);
-        if (this._phaseTiming) this._recordPhase('a11ySync', performance.now() - t0);
+        if (this.phases.enabled) this.phases.record('a11ySync', performance.now() - t0);
         if (userTiming) endVectoUserTiming(userTiming);
       }
-      const t1 = this._phaseTiming ? performance.now() : 0;
+      const t1 = this.phases.enabled ? performance.now() : 0;
       this.enforceA11yDomOrder();
-      if (this._phaseTiming) this._recordPhase('a11yOrder', performance.now() - t1);
+      if (this.phases.enabled) this.phases.record('a11yOrder', performance.now() - t1);
       this.a11yPendingSyncAfterAnimation = hasActiveAnimation;
     } else if (hasActiveAnimation) {
       this.a11yPendingSyncAfterAnimation = true;
@@ -6700,12 +6614,12 @@ export class Scene {
       for (const overlay of this.overlayRoot.children) updateWalk(overlay);
     }
 
-    const transformTiming = this._userTiming
+    const transformTiming = this.phases.userTiming
       ? beginVectoUserTiming(VECTO_USER_TIMING.scene.transform)
       : null;
-    const wasmT0 = this._phaseTiming ? performance.now() : 0;
+    const wasmT0 = this.phases.enabled ? performance.now() : 0;
     const wasmWorld = wasmMain ? this._wasmBackend.syncStore() : null;
-    if (this._phaseTiming) this._recordPhase('transform', performance.now() - wasmT0);
+    if (this.phases.enabled) this.phases.record('transform', performance.now() - wasmT0);
     if (transformTiming) endVectoUserTiming(transformTiming);
     const wasmSlotEntity = this._wasmBackend.slotEntity;
 
@@ -6909,14 +6823,14 @@ export class Scene {
           // measured 100% of render, which makes it the only opaque block left —
           // and "the draw walk is expensive" is not actionable without knowing
           // whether the cost is per-entity painting or the traversal around it.
-          if (this._userTiming || this._phaseTiming) {
+          if (this.phases.userTiming || this.phases.enabled) {
             const t0 = performance.now();
             try {
               node.render(renderer);
             } finally {
               const elapsed = performance.now() - t0;
-              if (this._userTiming) userEntityPaintMs += elapsed;
-              if (this._phaseTiming) this._recordPhase('entityPaint', elapsed);
+              if (this.phases.userTiming) userEntityPaintMs += elapsed;
+              if (this.phases.enabled) this.phases.record('entityPaint', elapsed);
             }
           } else {
             node.render(renderer);
@@ -6936,17 +6850,17 @@ export class Scene {
       renderer.restore();
     };
 
-    const drawTiming = this._userTiming
+    const drawTiming = this.phases.userTiming
       ? beginVectoUserTiming(VECTO_USER_TIMING.scene.drawWalk)
       : null;
-    const drawT0 = this._phaseTiming ? performance.now() : 0;
+    const drawT0 = this.phases.enabled ? performance.now() : 0;
     renderNode(this.root, 1, 0, 0, 1, 0, 0, 1);
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
-    if (this._phaseTiming) this._recordPhase('drawWalk', performance.now() - drawT0);
+    if (this.phases.enabled) this.phases.record('drawWalk', performance.now() - drawT0);
     if (drawTiming) endVectoUserTiming(drawTiming);
-    if (this._userTiming) {
+    if (this.phases.userTiming) {
       measureVectoUserTiming(VECTO_USER_TIMING.scene.entityPaint, userEntityPaintMs);
     }
     if (isMainRenderer) {
@@ -6954,17 +6868,17 @@ export class Scene {
       this.frameHadInteractive = walkHadInteractive;
       this.reconcilePortals();
     }
-    const flushTiming = this._userTiming
+    const flushTiming = this.phases.userTiming
       ? beginVectoUserTiming(VECTO_USER_TIMING.scene.flush)
       : null;
-    const flushT0 = this._phaseTiming ? performance.now() : 0;
+    const flushT0 = this.phases.enabled ? performance.now() : 0;
     renderer.flush();
     if (isMainRenderer) {
       this.pointRenderer?.flush();
     }
     // Retained-scene backends (ThreeRenderer) render exactly once per frame here.
     renderer.present?.();
-    if (this._phaseTiming) this._recordPhase('flush', performance.now() - flushT0);
+    if (this.phases.enabled) this.phases.record('flush', performance.now() - flushT0);
     if (flushTiming) endVectoUserTiming(flushTiming);
     if (this._devActive) {
       this._devFrameCount++;
