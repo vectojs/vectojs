@@ -24,7 +24,6 @@ import {
   Entity,
   VectoJSEvent,
   type AffineTransform,
-  type Bounds,
   type ContentProjection,
   type ContentProjectionLine,
   type AnimatableProp,
@@ -38,8 +37,6 @@ import { DOMPortalEntity } from './DOMPortalEntity';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
-import { gatherHitAABBs } from '../wasm/hit-store';
-import { createHitGatherBuffer, gatherHitAABBsFromStore } from '../wasm/hit-store-fused';
 import type { CoreWasmRuntime } from '../wasm/runtime';
 import {
   beginVectoUserTiming,
@@ -61,6 +58,7 @@ import {
   type TextCaretPosition,
 } from './scene/content-caret';
 import { A11yProjectionManager } from './scene/A11yProjectionManager';
+import { HitTester } from './scene/HitTester';
 import { ContentProjectionManager } from './scene/ContentProjectionManager';
 import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
 import {
@@ -1143,7 +1141,7 @@ function extendSelection(
  *
  * Three things the banners make visible, each of which contradicts the naive cut:
  *
- * - The WASM region is not one domain. `_ensureHitGrid` and `_findEntityAtWasm`
+ * - The WASM region is not one domain. `ensureHitGrid` and `findEntityAtWasm`
  *   live inside it but are hit-test, and `_tickBatchedDrivers` is the scheduler.
  *   Extraction 1 must leave all three behind.
  * - a11y and content projection interleave with the scheduler in the field block
@@ -1602,9 +1600,13 @@ export class Scene {
    * refactor's gate — rewriting it to match the new shape would be marking our
    * own homework. Same reasoning for `_animWasm`, `_wasmUploadRejections`,
    * `_storeStructureVersion` and `_structureVersion` below.
+   *
+   * `protected` rather than `private` since extraction 4: the hit-grid build was
+   * this getter's last in-class reader, and `private` plus no reader fails
+   * `noUnusedLocals` (`DEC-0019` rule 4).
    * @internal
    */
-  private get _wasm(): WasmTransformBackend | null {
+  protected get _wasm(): WasmTransformBackend | null {
     return this._wasmBackend.transform;
   }
 
@@ -1732,13 +1734,15 @@ export class Scene {
     return this._wasmBackend.runtime;
   }
 
-  // Hit-grid contents. The cache KEY (`hitGridFrame`/`hitGridOk`) lives on the
-  // facade because installing a backend has to invalidate it; these arrays are
-  // hit-test data and go to `HitTester` (extraction 4) with the gather.
-  private _hitSlotEntity: Entity[] = [];
-  private _hitBoundless: Array<{ entity: Entity; index: number }> = [];
-  /** Reused buffer for the fused gather, so a pointer query allocates nothing. */
-  private _hitGatherBuffer: ReturnType<typeof createHitGatherBuffer> | null = null;
+  /**
+   * The pointer hit-test: the WASM broad-phase grid, the permanent JS
+   * depth-first walk, and the eligibility gating that keeps the two in lockstep
+   * (extraction 4, `DEC-0023`).
+   *
+   * Definite-assignment because it needs {@link _wasmBackend}, which is built
+   * partway through the constructor.
+   */
+  private _hitTester!: HitTester;
 
   /** Did the last hit-grid build use the fused (WASM-store) gather? */
   public get hitGatherPath(): 'fused' | 'js' {
@@ -1791,117 +1795,6 @@ export class Scene {
     if (!runtime) return false;
     this.setHitTestBackend(runtime.hit());
     return true;
-  }
-
-  // --- domain: hit-test — WASM broad-phase. Sits inside the WASM region but belongs to HitTester (extraction 4), NOT to WasmBackendFacade ---
-  /**
-   * Refresh the hit-test grid for the CURRENT tree state if it is stale (a
-   * structural or transform change may have happened since the last build —
-   * there is no cheap "nothing moved" shortcut for a spatial index the way
-   * there is for the transform store's topology-only run table, since ANY
-   * entity moving invalidates its AABB, not just add/remove/reparent; the
-   * measured build cost is cheap enough to redo per call). Returns `false`
-   * (grid untrustworthy — caller must use the JS walk) when there is no
-   * backend or the build overflowed its item budget.
-   */
-  private _ensureHitGrid(): boolean {
-    const backend = this._wasmBackend.hit;
-    if (!backend) {
-      this._wasmBackend.hitReason = 'not-installed';
-      return false;
-    }
-    if (this._wasmBackend.hitGridFrame === this.currentFrame) {
-      return this._wasmBackend.hitGridOk;
-    }
-
-    // Prefer the fused path: when the transform backend is active it has already
-    // reduced every world matrix to an AABB inside the SAME linear memory (all
-    // backends share one instance), so the gather becomes a copy plus an index
-    // remap instead of re-deriving four transformed corners per entity in JS.
-    //
-    // That JS gather is what made the integrated hit-test path *slower* than the
-    // JS walk for an ordinary hover despite a 65-170x faster kernel: 11.2ms vs
-    // 39us at 100k entities, essentially all of it in front of the kernel.
-    //
-    // It returns null when the store cannot answer (a tree change since the last
-    // rebuild leaves a stale `_storeSlot`), in which case fall through to the JS
-    // gather — a wrong AABB would mean the wrong entity under the cursor, and a
-    // slower correct answer beats a faster wrong one.
-    let gathered: ReturnType<typeof gatherHitAABBs> | null = null;
-    if (this._wasm && this._wasmBackend.ensureAabbs()) {
-      this._hitGatherBuffer ??= createHitGatherBuffer();
-      this._wasm!.revalidateViews();
-      gathered = gatherHitAABBsFromStore(
-        this.root,
-        this._wasm!.aabbView(),
-        this._wasmBackend.slotEntity,
-        this._hitGatherBuffer,
-      );
-      if (gathered) this._wasmBackend.hitFusedGather = true;
-    }
-    if (!gathered) {
-      this._wasmBackend.hitFusedGather = false;
-      gathered = gatherHitAABBs(this.root, this.currentFrame);
-    }
-    // ensure() must run BEFORE writing AABBs: a capacity growth detaches the
-    // previous typed-array views, so sizing after writing would write into a
-    // stale buffer.
-    backend.ensure(gathered.count, this.width, this.height, 64);
-    const view = backend.inputView();
-    view.minx.set(gathered.minx.subarray(0, gathered.count));
-    view.miny.set(gathered.miny.subarray(0, gathered.count));
-    view.maxx.set(gathered.maxx.subarray(0, gathered.count));
-    view.maxy.set(gathered.maxy.subarray(0, gathered.count));
-    const ok = backend.runBuild(gathered.count, this.width, this.height, 64);
-
-    this._hitSlotEntity = gathered.slotEntity;
-    this._hitBoundless = gathered.boundless;
-    this._wasmBackend.hitGridFrame = this.currentFrame;
-    this._wasmBackend.hitGridOk = ok;
-    // `runBuild` returns false when the build overflowed its item budget, which
-    // makes the grid untrustworthy — a real decline, not merely "not asked".
-    this._wasmBackend.hitReason = ok ? 'active' : 'rejected';
-    return ok;
-  }
-
-  /**
-   * `findEntityAt`'s WASM-accelerated path for the main tree. Scans only the
-   * queried cell's candidates (confirming each against its own AABB and precise
-   * `isPointInside`) merged against the (typically empty or tiny) list of
-   * entities with no `getBounds()`, taking whichever confirmed match has the
-   * higher pre-order index — see hit-store.ts for why that is exactly
-   * equivalent to findHitRecursively's topmost-hit priority. Always
-   * conclusive: returns the correct entity or `null`, never "inconclusive".
-   */
-  private _findEntityAtWasm(x: number, y: number): Entity | null {
-    const backend = this._wasmBackend.hit!;
-    const { minx, miny, maxx, maxy } = backend.inputView();
-    let bestIndex = -1;
-    let bestEntity: Entity | null = null;
-
-    const cell = backend.candidatesAt(x, y);
-    if (cell) {
-      // Ascending index order; scan from the end for topmost (highest index)
-      // first, so the first candidate that passes both checks is already the
-      // topmost possible confirmed hit among the grid's candidates.
-      for (let k = cell.length - 1; k >= 0; k--) {
-        const idx = cell[k];
-        if (x < minx[idx] || x > maxx[idx] || y < miny[idx] || y > maxy[idx]) continue;
-        const entity = this._hitSlotEntity[idx];
-        if (entity?.isPointInside(x, y) && this.isHitEligible(entity, x, y)) {
-          bestIndex = idx;
-          bestEntity = entity;
-          break;
-        }
-      }
-    }
-    for (const { entity, index } of this._hitBoundless) {
-      if (index > bestIndex && entity.isPointInside(x, y) && this.isHitEligible(entity, x, y)) {
-        bestIndex = index;
-        bestEntity = entity;
-      }
-    }
-    return bestEntity;
   }
 
   // ── WASM batched-animation backend (invisible accelerator, G2) ──────────────
@@ -2605,6 +2498,9 @@ export class Scene {
       render() {}
     })('overlayRoot');
     (this.overlayRoot as any)._scene = this;
+    // After `overlayRoot`: the hit walk searches overlays before the main tree,
+    // so it captures both roots and neither may be undefined here.
+    this._hitTester = new HitTester(this.root, this.overlayRoot, this._wasmBackend);
 
     if (options.renderer) {
       this.renderer = options.renderer;
@@ -2902,6 +2798,20 @@ export class Scene {
    */
   public getRenderer(): IRenderer {
     return this.renderer;
+  }
+
+  // --- domain: hit-test — public query entry point ---
+  /**
+   * Finds the topmost interactive entity at the given coordinates.
+   *
+   * Delegates to {@link HitTester}. The frame stamp and the logical size are
+   * passed in rather than reached for: `currentFrame` is the scheduler's
+   * (extraction 6) and `width`/`height` are mutated by `resize`
+   * (extraction 5), so neither can be captured at construction
+   * (`DEC-0019` rule 5).
+   */
+  public findEntityAt(x: number, y: number): Entity | null {
+    return this._hitTester.findEntityAt(x, y, this.currentFrame, this.width, this.height);
   }
 
   // --- domain: hit-test — client-to-scene mapping ---
@@ -3611,7 +3521,7 @@ export class Scene {
     // hover-driven materialization awkward in the first place.
     //
     // And deliberately not `findEntityAt`, which was the first implementation and
-    // broke a real test: it calls `_ensureHitGrid()`, so running it from the a11y
+    // broke a real test: it builds the hit grid, so running it from the a11y
     // sync rebuilds the spatial index mid-frame and made Firefox lose an
     // in-progress drag selection over a Table cell (`text: ''` with the correct
     // element under the pointer). `isPointInside` is the entity's own predicate,
@@ -6510,28 +6420,6 @@ export class Scene {
     return this.root;
   }
 
-  // --- domain: hit-test — public query entry point ---
-  /**
-   * Finds the topmost interactive entity at the given coordinates.
-   */
-  public findEntityAt(x: number, y: number): Entity | null {
-    // 1. Search overlay root first (drawn on top). Overlays are never indexed
-    // by the WASM grid (modals/menus are few and rare — not worth
-    // accelerating), so this always uses the JS walk.
-    const overlayHit = this.findHitRecursively(this.overlayRoot, x, y);
-    if (overlayHit) return overlayHit;
-
-    // 2. Search main scene tree. The WASM path is conclusive whenever the
-    // grid is trustworthy (backend present, build didn't overflow) — it
-    // returns the correct entity or null, never "inconclusive" — so no
-    // further JS fallback is needed for that call. Otherwise (no backend, or
-    // an overflowing build) fall back to the permanent JS walk.
-    if (this._wasmBackend.hit && this._ensureHitGrid()) {
-      return this._findEntityAtWasm(x, y);
-    }
-    return this.findHitRecursively(this.root, x, y);
-  }
-
   // --- domain: context-and-resize — WebGPU context init, device loss, recovery ---
   /** Submit one transparent clear pass when particle content lingers on the GPU canvas. */
   private clearGPUCanvasIfStale(): void {
@@ -6717,105 +6605,6 @@ export class Scene {
       }
     }
   }
-
-  // --- domain: hit-test — JS depth-first walk and eligibility ---
-  private findHitRecursively(
-    node: Entity,
-    x: number,
-    y: number,
-    clip: Bounds | null = null,
-  ): Entity | null {
-    // An invisible subtree (opacity 0) is not drawn, so nothing in it should be
-    // hit — skip the node AND its children (opacity accumulates down the tree).
-    if (node.opacity <= 0) return null;
-
-    // A `clipChildren` node clips its descendants to its world box: intersect it
-    // into the clip rect passed down to the children (but the node itself is
-    // still hit-testable against the incoming clip).
-    let childClip = clip;
-    if (node.clipChildren) {
-      const box = node.getWorldBounds();
-      childClip = clip ? intersectBounds(clip, box) : box;
-    }
-
-    // Walk children in reverse order (drawn last/top-most first).
-    for (let i = node.children.length - 1; i >= 0; i--) {
-      const hit = this.findHitRecursively(node.children[i], x, y, childClip);
-      if (hit) return hit;
-    }
-
-    // The node itself is a hit target only if the point is inside it, inside any
-    // clipping ancestor, and it isn't opted out of pointer input (a disabled
-    // control or an explicit `pointerEvents: 'none'`).
-    if (
-      node.isPointInside &&
-      node.isPointInside(x, y) &&
-      (!clip || pointInBounds(clip, x, y)) &&
-      !this.isPointerTransparent(node)
-    ) {
-      return node;
-    }
-
-    return null;
-  }
-
-  /** Whether `node` opts out of being a pointer hit target: a disabled control
-   *  or an explicit `pointerEvents: 'none'` in its a11y attributes. Its children
-   *  are still walked (a transparent container can hold hittable descendants). */
-  private isPointerTransparent(node: Entity): boolean {
-    const attrs = node.getA11yAttributes();
-    return attrs.disabled === true || attrs.pointerEvents === 'none';
-  }
-
-  /**
-   * Whether a confirmed geometric hit on `node` at world `(x, y)` is a REAL hit,
-   * applying the same visibility/input gating as {@link findHitRecursively} but
-   * from a flat candidate (the WASM grid has no recursion clip-stack): the node
-   * and all ancestors are visible (`opacity > 0`), the point lies inside every
-   * `clipChildren` ancestor's world box, and the node isn't pointer-transparent
-   * (disabled / `pointerEvents: 'none'`). Keeps the WASM and JS hit paths in
-   * lockstep so they return the same entity.
-   */
-  private isHitEligible(node: Entity, x: number, y: number): boolean {
-    if (this.isPointerTransparent(node)) return false;
-    if (node.opacity <= 0) return false;
-    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
-      if (ancestor.opacity <= 0) return false;
-      if (ancestor.clipChildren && ancestor.width > 0 && ancestor.height > 0) {
-        const local = ancestor.worldToLocal(x, y);
-        if (
-          !local ||
-          local.x < 0 ||
-          local.y < 0 ||
-          local.x > ancestor.width ||
-          local.y > ancestor.height
-        ) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-}
-
-// --- domain: hit-test — bounds predicates (extraction 4) ---
-/** Axis-aligned intersection of two world-space boxes (empty if disjoint). */
-function intersectBounds(a: Bounds, b: Bounds): Bounds {
-  const x = Math.max(a.x, b.x);
-  const y = Math.max(a.y, b.y);
-  const right = Math.min(a.x + a.width, b.x + b.width);
-  const bottom = Math.min(a.y + a.height, b.y + b.height);
-  return {
-    x,
-    y,
-    width: Math.max(0, right - x),
-    height: Math.max(0, bottom - y),
-  };
-}
-
-/** Whether world point `(x, y)` lies within box `b`. */
-function pointInBounds(b: Bounds, x: number, y: number): boolean {
-  return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
 }
 
 // --- domain: content-projection — grid line signature ---
