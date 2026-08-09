@@ -282,6 +282,24 @@ import { parseFrontMatterFields, scanFrontMatter } from './frontMatter';
 // @ts-ignore
 import { WORKER_SOURCE_STRING } from './MarkdownWorkerSource';
 
+/**
+ * Names a host might assign expecting a layout callback, none of which exist on
+ * this class.
+ *
+ * Checked only when the real `onLayoutUpdated` is unset, and only at the moment
+ * a re-layout would have been published — see `notifyLayoutUpdated`. `onResize`
+ * and `onHeightChange` are here on the same reasoning as `onHeightChanged`,
+ * which is the one actually observed in production: they are the plausible
+ * guesses for the same intent, and the whole failure mode is that a wrong guess
+ * is indistinguishable from no wiring at all.
+ */
+const MISWIRED_LAYOUT_HOOK_NAMES = [
+  'onHeightChanged',
+  'onHeightChange',
+  'onLayoutUpdate',
+  'onResize',
+] as const;
+
 // ── Worker Setup ─────────────────────────────────────────────────────────────
 
 let markdownWorker: Worker | null = null;
@@ -491,14 +509,40 @@ export class Markdown extends UIComponent {
   public saveFile: (filename: string, content: string, mimeType: string) => void;
   private activeBlockMetrics: BlockMetrics | null = null;
   /**
-   * Called after a streamed append has re-laid-out the document.
+   * Called after this entity's own `width`/`height` changed because the document
+   * was re-laid-out. **This is the hook to wire up when a host has to move or
+   * resize anything positioned below the document.**
    *
-   * Not required for a `VirtualList` to track a streaming row's height: the list
-   * re-reads `height` on every mounted row each frame, so it sees this entity grow
-   * without being told. Prefer that over wiring this up — it fires from the append
-   * path only, **not** from `setContent()`, so it is not a complete size signal.
+   * Fires from three paths, all of which republish `width`/`height` from
+   * `content`:
+   *
+   * - a streamed append (`updateTokens`),
+   * - a width change ({@link setMaxWidth}),
+   * - a paragraph image whose decoded bitmap corrected the guessed aspect ratio
+   *   (`reflowAfterImageResize`) — the guess is a flat 16:10, so this one fires
+   *   on essentially every document containing an image, and a host that misses
+   *   it leaves every block below the image overlapping it.
+   *
+   * It does **not** fire from `setContent()`, which replaces the whole document
+   * and is a call the host already made, so this is a re-layout signal rather
+   * than a complete size signal.
+   *
+   * A `VirtualList` needs none of this to track a streaming row: it re-reads
+   * `height` on every mounted row each frame, so it sees this entity grow without
+   * being told. Prefer that where it applies. Reach for this callback when the
+   * host owns absolute positions of its own — a page that stacks navigation, a
+   * footer and a scroll height under the document has to recompute them here.
+   *
+   * There is no `onHeightChanged`. That name has been assigned by real callers
+   * through an `as unknown as` cast, which compiles, silences the type error and
+   * then never fires; if a layout callback appears dead, check the name first.
    */
   public onLayoutUpdated?: () => void;
+  /**
+   * Latch for the miswired-hook warning, so a streaming document warns once
+   * rather than on every chunk.
+   */
+  private hasWarnedLayoutHookName = false;
   /**
    * The document's BODY text — everything after any front matter block.
    *
@@ -1004,7 +1048,7 @@ export class Markdown extends UIComponent {
     this.content.layout();
     this.width = this.content.width;
     this.height = this.content.height;
-    this.onLayoutUpdated?.();
+    this.notifyLayoutUpdated();
     this.scene?.markDirty();
     return this;
   }
@@ -2068,7 +2112,47 @@ export class Markdown extends UIComponent {
     }
     this.width = this.content.width;
     this.height = this.content.height;
-    this.onLayoutUpdated?.();
+    this.notifyLayoutUpdated();
+  }
+
+  /**
+   * Publish a completed re-layout to the host.
+   *
+   * Every path that republishes `width`/`height` from `content` ends here rather
+   * than calling {@link onLayoutUpdated} directly, so the misuse check below is
+   * reached however the re-layout was triggered.
+   *
+   * The check exists because the failure it catches is silent and was found in
+   * production, not in review. A host wired its reflow to `onHeightChanged` — a
+   * name this class has never had — through an `as unknown as` cast. The cast
+   * satisfied the compiler, the callback never fired, and every post containing
+   * an image stayed laid out against the guessed 16:10 aspect ratio with a stale
+   * document scroll height. Nothing in the type system, the tests or the console
+   * said anything. A property that is *only ever assigned* has no read site to
+   * fail, so the one place that can notice is the moment we would have called it.
+   */
+  private notifyLayoutUpdated(): void {
+    if (this.onLayoutUpdated) {
+      this.onLayoutUpdated();
+      return;
+    }
+    // Only when the real hook is unset: a host may legitimately carry its own
+    // unrelated field of the same name alongside a correctly wired callback.
+    if (!this.hasWarnedLayoutHookName) {
+      const wrongName = MISWIRED_LAYOUT_HOOK_NAMES.find(
+        (name) => typeof (this as unknown as Record<string, unknown>)[name] === 'function',
+      );
+      if (wrongName) {
+        this.hasWarnedLayoutHookName = true;
+        console.warn(
+          `[VectoJS] Markdown.${wrongName} is not a VectoJS callback and will never fire. ` +
+            'The document just re-laid-out and nothing was notified. Assign `onLayoutUpdated` ' +
+            'instead — anything positioned below the document needs it, and a paragraph image ' +
+            'corrects its guessed aspect ratio on decode, so a missed signal leaves following ' +
+            'blocks overlapping the image.',
+        );
+      }
+    }
   }
 
   /**
@@ -3350,9 +3434,7 @@ export class Markdown extends UIComponent {
     this.height = this.content.height;
 
     this.scene?.markDirty();
-    if (this.onLayoutUpdated) {
-      this.onLayoutUpdated();
-    }
+    this.notifyLayoutUpdated();
   }
 
   /**

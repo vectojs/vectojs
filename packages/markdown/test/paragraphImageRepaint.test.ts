@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Markdown } from '../src/Markdown';
 
 /**
@@ -356,5 +356,125 @@ describe('paragraph image relayout', () => {
       expect(() => fire()).not.toThrow();
       expect(layoutUpdates).toBe(0);
     });
+  });
+});
+
+/**
+ * The miswired-hook warning.
+ *
+ * `onHeightChanged` does not exist on `Markdown`, but a host can assign it
+ * through an `as unknown as` cast — which compiles, and then never fires. That
+ * is how a real blog shipped every image post laid out against the guessed 16:10
+ * aspect ratio: nothing in the type system, the tests or the console objected,
+ * because a property that is only ever *assigned* has no read site to fail.
+ *
+ * The one place that can notice is the moment a re-layout would have been
+ * published, which is what these tests drive.
+ */
+describe('miswired layout hook detection', () => {
+  const assignWrongHook = (md: Markdown, name: string, fn: () => void) => {
+    (md as unknown as Record<string, unknown>)[name] = fn;
+  };
+
+  it('warns when a re-layout finds a miswired hook name and no real one', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withStubImage(600, 900, (fire) => {
+        const md = new Markdown('![alt](http://example.test/p.jpg)\n\nAfter.', { maxWidth: 600 });
+        attachScene(md);
+        let called = 0;
+        assignWrongHook(md, 'onHeightChanged', () => called++);
+
+        fire();
+
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toContain('onHeightChanged');
+        expect(warn.mock.calls[0][0]).toContain('onLayoutUpdated');
+        // The wrong name is never invoked — the warning replaces silence, it does
+        // not rescue the miswiring.
+        expect(called).toBe(0);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when the real hook is wired, even alongside a same-named field', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withStubImage(600, 900, (fire) => {
+        const md = new Markdown('![alt](http://example.test/p.jpg)\n\nAfter.', { maxWidth: 600 });
+        attachScene(md);
+        let updates = 0;
+        md.onLayoutUpdated = () => updates++;
+        // A host may legitimately carry its own unrelated field of that name.
+        assignWrongHook(md, 'onHeightChanged', () => {});
+
+        fire();
+
+        expect(updates).toBe(1);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when no layout hook is wired at all', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withStubImage(600, 900, (fire) => {
+        const md = new Markdown('![alt](http://example.test/p.jpg)\n\nAfter.', { maxWidth: 600 });
+        attachScene(md);
+
+        fire();
+
+        // Not wiring a callback is a valid choice — a `VirtualList` host reads
+        // `height` each frame instead. Only a *wrong name* is a mistake.
+        expect(warn).not.toHaveBeenCalled();
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns once per instance rather than on every re-layout', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      withStubImage(600, 900, (fire) => {
+        const md = new Markdown('![alt](http://example.test/p.jpg)\n\nAfter.', { maxWidth: 600 });
+        attachScene(md);
+        assignWrongHook(md, 'onHeightChanged', () => {});
+
+        fire();
+        // `setMaxWidth` is a second, independent publish path.
+        md.setMaxWidth(500);
+        md.setMaxWidth(400);
+
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('detects the other plausible guesses for the same intent', () => {
+    for (const name of ['onHeightChange', 'onLayoutUpdate', 'onResize']) {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        withStubImage(600, 900, (fire) => {
+          const md = new Markdown('![alt](http://example.test/p.jpg)\n\nAfter.', { maxWidth: 600 });
+          attachScene(md);
+          assignWrongHook(md, name, () => {});
+
+          fire();
+
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0][0]).toContain(name);
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    }
   });
 });

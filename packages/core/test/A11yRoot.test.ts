@@ -569,5 +569,214 @@ describe('A11y Root and Agent Contract', () => {
         'sidebar-built-on',
       ]);
     });
+
+    it('groups a column into its own region from a11yRegion, with no clipping', () => {
+      // Same geometry as the clipping case above, but the sidebar declares the
+      // grouping instead of buying a per-frame save/clip/restore for an entity
+      // that paints nothing. Before `a11yRegion` existed a real app had to set
+      // `clipChildren` purely to escape the body column's row bands.
+      const sidebar = new TestInteractiveEntity('sidebar');
+      sidebar.x = 20;
+      sidebar.y = 0;
+      sidebar.width = 280;
+      sidebar.height = 600;
+      sidebar.a11yRegion = true;
+      sidebar.interactive = false;
+
+      const body = new TestInteractiveEntity('body');
+      body.x = 312;
+      body.y = 0;
+      body.width = 900;
+      body.height = 600;
+      body.a11yRegion = true;
+      body.interactive = false;
+
+      const creations = new TestInteractiveEntity('sidebar-creations');
+      creations.x = 0;
+      creations.y = 100;
+      const builtOn = new TestInteractiveEntity('sidebar-built-on');
+      builtOn.x = 0;
+      builtOn.y = 300;
+      sidebar.add(creations);
+      sidebar.add(builtOn);
+
+      // Body paragraphs straddling both sidebar headings in y, so a single
+      // global banding would splice the two columns together.
+      const p1 = new TestInteractiveEntity('body-p1');
+      p1.x = 0;
+      p1.y = 50;
+      const p2 = new TestInteractiveEntity('body-p2');
+      p2.x = 0;
+      p2.y = 200;
+      const p3 = new TestInteractiveEntity('body-p3');
+      p3.x = 0;
+      p3.y = 400;
+      body.add(p1);
+      body.add(p2);
+      body.add(p3);
+
+      scene.add(sidebar);
+      scene.add(body);
+
+      tick();
+
+      const ids = idsInOrder();
+      const runOf = (prefix: string) =>
+        ids
+          .map((id, i) => ({ id, i }))
+          .filter((e) => e.id?.startsWith(prefix))
+          .map((e) => e.i);
+      const contiguous = (idx: number[]) => idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
+
+      expect(contiguous(runOf('sidebar-'))).toBe(true);
+      expect(contiguous(runOf('body-'))).toBe(true);
+
+      // Grouping must not disturb reading order inside a region.
+      expect(ids.filter((id) => id?.startsWith('body-'))).toEqual([
+        'body-p1',
+        'body-p2',
+        'body-p3',
+      ]);
+      expect(ids.filter((id) => id?.startsWith('sidebar-'))).toEqual([
+        'sidebar-creations',
+        'sidebar-built-on',
+      ]);
+
+      // The whole point of the flag: no clipping was bought to get the grouping.
+      expect(sidebar.clipChildren).toBe(false);
+      expect(body.clipChildren).toBe(false);
+    });
+
+    it('honours a11yRegion on a zero-area container, unlike clipChildren', () => {
+      // A pure grouping container commonly draws nothing and never sets a box.
+      // `clipChildren` is exempted at zero area because a zero-area clipper
+      // clips nothing; `a11yRegion` is a declaration of intent, so gating it on
+      // geometry would ignore exactly the entity it exists for.
+      const makeColumn = (name: string, x: number, useClip: boolean) => {
+        const col = new TestInteractiveEntity(name);
+        col.x = x;
+        col.y = 0;
+        col.width = 0;
+        col.height = 0;
+        col.interactive = false;
+        if (useClip) col.clipChildren = true;
+        else col.a11yRegion = true;
+        return col;
+      };
+
+      // Zero-area clipper: no region, so the two columns interleave by row.
+      const clipLeft = makeColumn('clip-left', 20, true);
+      const clipRight = makeColumn('clip-right', 400, true);
+      for (const [owner, prefix, ys] of [
+        [clipLeft, 'clipL', [100, 300]],
+        [clipRight, 'clipR', [50, 200]],
+      ] as const) {
+        ys.forEach((y, k) => {
+          const child = new TestInteractiveEntity(`${prefix}-${k}`);
+          child.x = 0;
+          child.y = y;
+          owner.add(child);
+        });
+      }
+      scene.add(clipLeft);
+      scene.add(clipRight);
+
+      tick();
+
+      const clipIds = idsInOrder();
+      const clipLeftRun = clipIds
+        .map((id, i) => ({ id, i }))
+        .filter((e) => e.id?.startsWith('clipL-'))
+        .map((e) => e.i);
+      const contiguous = (idx: number[]) => idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
+      // Documents the existing zero-area clipping exemption rather than
+      // asserting it is desirable: the columns are spliced together.
+      expect(contiguous(clipLeftRun)).toBe(false);
+
+      clipLeft.destroy();
+      clipRight.destroy();
+      scene.remove(clipLeft);
+      scene.remove(clipRight);
+
+      // Same zero-area boxes, grouping declared instead: regions hold.
+      const regionLeft = makeColumn('region-left', 20, false);
+      const regionRight = makeColumn('region-right', 400, false);
+      for (const [owner, prefix, ys] of [
+        [regionLeft, 'regionL', [100, 300]],
+        [regionRight, 'regionR', [50, 200]],
+      ] as const) {
+        ys.forEach((y, k) => {
+          const child = new TestInteractiveEntity(`${prefix}-${k}`);
+          child.x = 0;
+          child.y = y;
+          owner.add(child);
+        });
+      }
+      scene.add(regionLeft);
+      scene.add(regionRight);
+
+      tick();
+
+      const regionIds = idsInOrder();
+      const runOf = (prefix: string) =>
+        regionIds
+          .map((id, i) => ({ id, i }))
+          .filter((e) => e.id?.startsWith(prefix))
+          .map((e) => e.i);
+      expect(contiguous(runOf('regionL-'))).toBe(true);
+      expect(contiguous(runOf('regionR-'))).toBe(true);
+    });
+
+    it('lets the nearest region win when regions nest', () => {
+      const outer = new TestInteractiveEntity('outer');
+      outer.x = 0;
+      outer.y = 0;
+      outer.width = 1200;
+      outer.height = 600;
+      outer.a11yRegion = true;
+      outer.interactive = false;
+
+      // Two nested columns inside one outer region. If the nearest region did
+      // not win, both would band against each other under `outer`.
+      const mkInner = (name: string, x: number) => {
+        const inner = new TestInteractiveEntity(name);
+        inner.x = x;
+        inner.y = 0;
+        inner.width = 400;
+        inner.height = 600;
+        inner.a11yRegion = true;
+        inner.interactive = false;
+        return inner;
+      };
+      const innerA = mkInner('inner-a', 0);
+      const innerB = mkInner('inner-b', 500);
+
+      [
+        [innerA, 'a', [100, 300]],
+        [innerB, 'b', [50, 200]],
+      ].forEach(([owner, prefix, ys]) => {
+        (ys as number[]).forEach((y, k) => {
+          const child = new TestInteractiveEntity(`${prefix as string}-${k}`);
+          child.x = 0;
+          child.y = y;
+          (owner as Entity).add(child);
+        });
+      });
+      outer.add(innerA);
+      outer.add(innerB);
+      scene.add(outer);
+
+      tick();
+
+      const ids = idsInOrder();
+      const runOf = (prefix: string) =>
+        ids
+          .map((id, i) => ({ id, i }))
+          .filter((e) => e.id?.startsWith(prefix))
+          .map((e) => e.i);
+      const contiguous = (idx: number[]) => idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
+      expect(contiguous(runOf('a-'))).toBe(true);
+      expect(contiguous(runOf('b-'))).toBe(true);
+    });
   });
 });
