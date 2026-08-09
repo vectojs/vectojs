@@ -23,6 +23,7 @@
   <a href="https://www.npmjs.com/package/@vectojs/layout"><img alt="layout" src="https://img.shields.io/npm/v/@vectojs/layout?label=layout&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/math"><img alt="math" src="https://img.shields.io/npm/v/@vectojs/math?label=math&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/animation"><img alt="animation" src="https://img.shields.io/npm/v/@vectojs/animation?label=animation&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/tex"><img alt="tex" src="https://img.shields.io/npm/v/@vectojs/tex?label=tex&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/markdown"><img alt="markdown" src="https://img.shields.io/npm/v/@vectojs/markdown?label=markdown&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/three"><img alt="three" src="https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/devtools"><img alt="devtools" src="https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee"></a>
@@ -69,10 +70,11 @@ shape, glyph, point, or row.
 | [`@vectojs/layout`](./packages/layout)                 | Standalone layout engine: line breaking, BiDi-aware inline layout, exclusion flow, off-thread layout worker                    |
 | [`@vectojs/math`](./packages/math)                     | Standalone spatial/physics math: spatial hash grid broad-phase and spring physics                                              |
 | [`@vectojs/animation`](./packages/animation)           | Standalone easing library plus tween and spring value drivers                                                                  |
+| [`@vectojs/tex`](./packages/tex)                       | Zero-DOM TeX math typesetting: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer                       |
 | [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
-| [`@vectojs/markdown`](./packages/markdown)             | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + MathJax                 |
+| [`@vectojs/markdown`](./packages/markdown)             | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + `@vectojs/tex`          |
 | [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
-| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector: entity tree, click-to-pick, live geometry readout and nudging                             |
+| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector plus a headless audit/snapshot layer for tests and CI                                      |
 | [`@vectojs/graph3d`](./packages/graph3d)               | 3D force-directed graph rendering on instanced Three.js, with an in-house dependency-free Barnes-Hut layout                    |
 | [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
 
@@ -188,6 +190,11 @@ const devtools = attachDevtools(scene);
 devtools.detach();
 ```
 
+The same diagnostics are available without the panel through
+`@vectojs/devtools/headless` — scene audits, pointer/keyboard event traces,
+snapshot diffing, dirty-frame attribution, and hit-test explanation — so tests
+and automation can use them without bundling `@vectojs/ui`.
+
 ## Agent skills
 
 The [vectojs-skills](https://github.com/vectojs/vectojs-skills) repository packages Claude/agent
@@ -195,19 +202,26 @@ skills that teach coding agents the VectoJS paradigm — most importantly
 `vectojs-paradigm`, which replaces HTML/CSS instincts with scene-graph thinking and a
 state-space debugging ladder (inspect numbers and `getA11yTree()` before reaching for
 screenshots). Skills also cover the core runtime, responsive layout, UI/animation, performance,
-Three.js embedding, and the video exporter. Install them into `.claude/skills` or
-`.agents/skills` of any project that uses VectoJS.
+Three.js embedding, the devtools inspector, 3D force-directed graphs, and the video exporter.
+Install them into `.claude/skills` or `.agents/skills` of any project that uses VectoJS.
 
 ## Demos
 
-The separate [vectojs-website](https://github.com/vectojs/vectojs-website) repository hosts live,
-source-available stress tests:
+Two separate repositories host live, source-available demos.
+[vectojs-gallery](https://github.com/vectojs/vectojs-gallery) — itself rendered entirely on one
+canvas — is the showcase at [gallery.vectojs.org](https://gallery.vectojs.org):
 
-- large danmaku streams and WebGPU particle fields;
-- streaming Markdown/chat rendering;
-- a knowledge graph;
-- a VectoJS panel embedded in a Three.js scene;
-- game-style pointer and keyboard interaction.
+- **Canvas Studio** — a Fabric.js-style editor: oriented resize handles, band-select, group-move,
+  z-reorder, and JSON round-tripping;
+- **Nexus** — tens of thousands of particles on a WebGPU compute pass, with a CPU fallback;
+- **Stream Reader** — streaming Markdown with off-main-thread lexing, math, tables, and code;
+- **Dimension** — a VectoJS panel raycast into a Three.js scene;
+- **Pretext, Rebuilt** — nine text-layout demos plus a measured head-to-head;
+- **Fruit Catch** — game-style pointer and keyboard interaction.
+
+[vectojs-website](https://github.com/vectojs/vectojs-website) hosts the documentation plus the
+danmaku stress test (thousands of individually interactive, accessible comments) and a
+canvas-rendered Pool CAPTCHA.
 
 Performance depends on renderer, entity shape, text, hardware, and workload. Use the checked-in
 benchmarks instead of treating demo counts as universal guarantees.
@@ -220,8 +234,9 @@ just verify          # = just check + just test (the pre-push habit)
 ```
 
 `just check` is the same gate CI runs: `oxfmt --check` (formatting authority),
-`oxlint --deny-warnings`, `markdownlint-cli2`, and `actionlint`. Individual
-recipes are available too — run `just --list` to see them all:
+`oxlint --deny-warnings`, `markdownlint-cli2`, `shellcheck`/`shfmt`, and
+`actionlint`. Individual recipes are available too — run `just --list` to see
+them all:
 
 ```bash
 just fmt             # format in place (oxfmt)
@@ -233,10 +248,18 @@ just e2e             # real-browser e2e (HiDPI + text projection)
 Additional reproducible workloads:
 
 ```bash
-bun run benchmark     # real browser frame-time workloads
-bun run compare:dom   # CDP layout/style/heap comparison
-bun run compare       # text-layout comparison
+./benchmarks/run-browsers.sh      # headed, real GPU — the only quotable numbers
+./comparisons/run-browsers.sh     # head-to-head against other libraries
+bun run benchmark                 # headless CI tripwire, not quotable
+bun run compare:dom               # CDP layout/style/heap comparison (headless)
+bun run compare                   # text-layout comparison (headless)
 ```
+
+Only the two headed runners produce figures that may be quoted. `bun run
+benchmark` is headless with `--disable-gpu`, so it measures software
+rasterization in a throttled tab: it is a same-environment regression tripwire,
+not a statement about a user's machine. Raw baselines live in the docs
+repository under `forge/baselines/`.
 
 The project is pre-1.0. Read package changelogs before upgrading and pin versions in production.
 
