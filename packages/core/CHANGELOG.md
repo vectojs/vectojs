@@ -1,5 +1,67 @@
 # @vectojs/core
 
+## 1.33.0
+
+### Minor Changes
+
+- 3587fe9: feat(core): add `Entity.a11yRegion` to group projected text into a selection region without clipping
+
+  The a11y projection orders every content-projection mirror into visual reading
+  order per _region_, where a region is the nearest enclosing ancestor that
+  establishes one. Regions keep side-by-side columns as contiguous DOM runs so
+  that a vertical text drag stays inside the column it started in and cannot reach
+  a sibling column.
+
+  Before this change only `clipChildren` established a region, and only when the
+  node's box was non-zero (a zero-area clipper clips nothing). That coupling meant
+  a sidebar, a card deck or any element that exists purely as a column boundary had
+  to set `clipChildren` to escape its neighbours' row bands — buying a per-frame
+  `save`/`clip`/`restore` for an entity that paints nothing. Measured in the
+  xuepoo-blog TOC sidebar before the fix: nine TOC rows were interleaved with body
+  paragraphs in DOM order, so selecting two body paragraphs also selected the whole
+  TOC.
+
+  `Entity.a11yRegion = true` declares the grouping directly, without touching the
+  rendering clip. Unlike `clipChildren`, it is honoured regardless of the node's
+  box size — a grouping container commonly draws nothing and leaves `width`/`height`
+  at zero, and gating on geometry would silently ignore exactly the entity the flag
+  exists for. Three new tests cover the separation: an `a11yRegion` column keeps
+  its DOM run contiguous, a zero-area `a11yRegion` node still forms a region while
+  a same-sized `clipChildren` node does not, and nested regions resolve to the
+  nearest one.
+
+  `clipChildren` continues to establish a region unchanged; the new flag is an
+  additive opt-in for cases where the two concerns come apart.
+
+### Patch Changes
+
+- 9fb3431: Repaint synchronously when the device pixel ratio changes, so a zoom step no
+  longer flashes.
+
+  The `(resolution: Ndppx)` handler re-ran `resize`, which assigns
+  `canvas.width`/`canvas.height` — and per spec that clears the backing store even
+  when the value is unchanged. The repaint was left to the next animation frame, so
+  the canvas was transparent in between and a full-viewport scene showed its page
+  background on every zoom step or monitor move.
+
+  The handler now renders in the same task, matching what the context-restored path
+  already did. Skipped while the drawing context is lost, where every draw call is a
+  no-op and the `contextrestored` handler owns the repaint.
+
+- dfba2df: Keep a text selection alive when a projected grid reflows.
+
+  Resizing the window, changing the device pixel ratio, or zooming re-breaks every
+  line of a grid-projected block, so every carrier line is replaced even though the
+  selected characters are still on screen. The grid path released the selection
+  whenever the line holding it was rebuilt, which wiped a selection the user could
+  still see.
+
+  The selection is now snapshotted as offsets into `grid.source` — stable against
+  line breaking and against the windowed carrier range — and re-anchored after the
+  rebuild. When the selected text really did leave the projection (the window
+  scrolled past it) the offsets no longer resolve and the selection is still
+  released, so a `Range` is never left pointing into detached carriers.
+
 ## 1.32.7
 
 ### Patch Changes
@@ -737,8 +799,8 @@
 
   ```ts
   const atlas = new Image();
-  atlas.src = "/fonts/inter-msdf.png"; // not awaited
-  scene.add(new MSDFTextEntity("Hello", { font, texture: atlas }));
+  atlas.src = '/fonts/inter-msdf.png'; // not awaited
+  scene.add(new MSDFTextEntity('Hello', { font, texture: atlas }));
   ```
 
   Both `setMSDFTexture` and `setTexture` now skip a source that has no pixels yet
@@ -797,11 +859,11 @@
   `@vectojs/text` now owns a font-metrics registry:
 
   ```ts
-  import { registerMSDFFontMetrics } from "@vectojs/text";
+  import { registerMSDFFontMetrics } from '@vectojs/text';
 
   // Only the JSON's advances, kerning, and metrics are read — the atlas image is
   // irrelevant, so a metrics-only file works and nothing needs to decode.
-  registerMSDFFontMetrics("sans-serif", await Bun.file("inter.json").json());
+  registerMSDFFontMetrics('sans-serif', await Bun.file('inter.json').json());
   ```
 
   Any `msdf-atlas-gen` font works via `registerMSDFFontMetrics`, or supply a
@@ -1221,8 +1283,8 @@
   ```ts
   scene.markDirty({
     entity: this.id,
-    reason: "text-changed",
-    property: "spans",
+    reason: 'text-changed',
+    property: 'spans',
   });
   ```
 
@@ -1583,7 +1645,7 @@
 - 9e7f5bd: Ship the prebuilt WebAssembly accelerator in the published package and add a `@vectojs/core/wasm` entry point to load it. Previously the `.wasm` was gitignored and never copied into `dist/` or published, so npm consumers had no binary to pass to `enableWasmTransforms`/`enableWasmAnimBatching`/`enableWasmHitTest` and were silently stuck on the JS path.
 
   ```ts
-  import { coreWasmUrl } from "@vectojs/core/wasm";
+  import { coreWasmUrl } from '@vectojs/core/wasm';
   await scene.enableWasmTransforms(coreWasmUrl);
   ```
 
