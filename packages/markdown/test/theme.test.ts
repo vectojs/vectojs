@@ -283,6 +283,11 @@ describe('Markdown theme tokens', () => {
           radii.push(r);
         },
         fill() {},
+        // The glyph pass is wrapped in save/clip/restore so a long line cannot
+        // paint outside the background.
+        save() {},
+        clip() {},
+        restore() {},
         fillText() {},
       } as never);
       expect(radii).toContain(3);

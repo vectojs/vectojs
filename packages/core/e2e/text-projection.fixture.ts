@@ -66,6 +66,15 @@ const largeCodeSource = Array.from({ length: 100 }, () =>
   'const value = office_affinity_123; '.repeat(3).slice(0, 80),
 ).join('\n');
 const largeCode = new CodeBlock(largeCodeSource, 'ts', 800, theme).setPosition(2000, 1100);
+// A line far wider than the block box, which is the shape that made a code
+// block's tail unreachable: the grid places cells at `col × cellWidth` and does
+// not wrap, so without a scroll region the tail is reachable by no means at all.
+// The source is the real shell command from the defect report rather than a
+// synthetic filler string, so the measured overflow is a figure about a case a
+// reader actually hit.
+const overflowCodeSource =
+  'curl -o actions-runner-linux-x64-2.317.0.tar.gz -L https://github.com/actions/runner/releases/download/v2.317.0/actions-runner-linux-x64-2.317.0.tar.gz\nshort line\n';
+const overflowCode = new CodeBlock(overflowCodeSource, 'bash', 360, theme).setPosition(2000, 1700);
 const rich = new RichText(
   [
     { text: 'small ', style: { fontSize: 12 } },
@@ -164,6 +173,7 @@ scene.add(text);
 scene.add(code);
 scene.add(transformedCode);
 scene.add(largeCode);
+scene.add(overflowCode);
 scene.add(rich);
 scene.add(rotatedText);
 scene.add(mirroredRich);
@@ -213,6 +223,7 @@ function lineBaseline(root: HTMLElement, lineIndex: number): number {
   code,
   transformedCode,
   largeCode,
+  overflowCode,
   rich,
   rotatedText,
   mirroredRich,

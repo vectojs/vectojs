@@ -253,6 +253,11 @@ describe('Markdown', () => {
       beginPath() {},
       roundRect() {},
       fill() {},
+      // `render()` clips its glyphs to the block box, so the stub needs the
+      // save/clip/restore trio it calls (see codeBlockScroll.test.ts).
+      save() {},
+      clip() {},
+      restore() {},
       fillText(text: string, x: number) {
         rendered.push({ text, x });
       },
@@ -287,6 +292,11 @@ describe('Markdown', () => {
       beginPath() {},
       roundRect() {},
       fill() {},
+      // `render()` clips its glyphs to the block box, so the stub needs the
+      // save/clip/restore trio it calls (see codeBlockScroll.test.ts).
+      save() {},
+      clip() {},
+      restore() {},
       fillText(text: string, x: number) {
         rendered.push({ text, x });
       },
@@ -314,6 +324,11 @@ describe('Markdown', () => {
       beginPath() {},
       roundRect() {},
       fill() {},
+      // `render()` clips its glyphs to the block box, so the stub needs the
+      // save/clip/restore trio it calls (see codeBlockScroll.test.ts).
+      save() {},
+      clip() {},
+      restore() {},
       fillText(text: string, x: number) {
         rendered.push({ text, x });
       },

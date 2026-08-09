@@ -85,9 +85,21 @@ export class ContentGridProjector {
     // The window is part of the signature: scrolling changes which lines belong
     // without changing `grid.revision`, and without this the carriers would stay
     // frozen at whatever band was first built.
+    //
+    // The line ORIGIN is part of it too, for the same reason one level in. An
+    // entity that scrolls its content horizontally (`CodeBlock`) moves every line
+    // box without changing the grid, the revision, or the window — the source text
+    // and the cell geometry within each line are identical, only the origin moved.
+    // Gating on revision alone left the carriers frozen while the canvas glyphs
+    // slid underneath, which detaches a native selection from the text it covers:
+    // measured 1017px of divergence at full scroll before this was included.
+    // Reading line 0 is enough because a projection applies one offset to every
+    // row; a per-row offset would shear the grid and is not a thing any entity
+    // does.
+    const originSignature = projection.lines?.find((line) => line !== undefined)?.x ?? 0;
     const signature = gridWindow.gated
-      ? `${grid.revision}:${gridWindow.start}-${gridWindow.end}`
-      : `${grid.revision}`;
+      ? `${grid.revision}:${gridWindow.start}-${gridWindow.end}:${originSignature}`
+      : `${grid.revision}:${originSignature}`;
     if (el.dataset.vectoContentGrid !== signature) {
       const materializeStart = typeof performance !== 'undefined' ? performance.now() : 0;
       // Defer the selection decision until it is known which lines are rebuilt: a

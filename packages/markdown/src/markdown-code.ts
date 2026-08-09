@@ -547,6 +547,19 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
 // ── Single CodeBlock entity ─────────────────────────────────────────────────
 
 /**
+ * The wheel payload {@link CodeBlock} consumes to scroll horizontally.
+ *
+ * Structural rather than `WheelEvent`, because the entity is driven by a
+ * `VectoJSEvent` wrapper whose `nativeEvent` is the DOM event.
+ */
+interface CodeWheelEvent {
+  deltaX?: number;
+  deltaY?: number;
+  deltaMode?: number;
+  nativeEvent?: { preventDefault?: () => void };
+}
+
+/**
  * A single self-rendering entity for fenced code blocks.
  *
  * Replaces the old N×M child-entity explosion (Container → Stack → Text per
@@ -561,6 +574,20 @@ export class CodeBlock extends UIComponent {
   private source: string;
   /** Bumped by {@link buildLines} and {@link setSelectable}; read by `Scene`. */
   private contentEpoch = 0;
+
+  /**
+   * Horizontal scroll offset in local px, always in `[0, maxScrollX]`.
+   *
+   * Code does not wrap, so a line wider than the box would otherwise have an
+   * unreachable tail. This offset is subtracted from BOTH the painted cell x and
+   * the projected line x in the same frame — never one without the other, or the
+   * DOM selection carriers detach from the glyphs they are supposed to cover
+   * (the defect class `5cf7119` and `ee1de6f` fixed on the vertical axis).
+   */
+  private scrollXValue = 0;
+  /** Memoized widest prepared line, keyed by the grid identity it came from. */
+  private contentWidthGrid: PreparedContentGrid | null = null;
+  private contentWidthValue = 0;
 
   private lang: string;
   private theme: Required<MarkdownTheme>;
@@ -605,6 +632,101 @@ export class CodeBlock extends UIComponent {
     this.lines = [];
     this.width = maxWidth;
     this.buildLines(code);
+
+    // Wheel arrives through the content-projection div, which `Scene` gives an
+    // unconditional wheel listener when it creates it (`Scene.ts:4401`). So this
+    // works WITHOUT `interactive`, and that matters: an interactive entity gets
+    // an a11y shadow node with `pointer-events: auto` that stacks above the
+    // transparent text mirror and swallows the mousedown, so native
+    // drag-selection would never start (measured, `Scene.ts:3260-3269`).
+    this.on('wheel', (e: CodeWheelEvent) => {
+      const max = this.maxScrollX;
+      if (max <= 0) return;
+      const deltaMode = e.deltaMode ?? 0;
+      let deltaX = e.deltaX ?? 0;
+      let deltaY = e.deltaY ?? 0;
+      if (deltaMode === 1) {
+        // Lines.
+        deltaX *= 16;
+        deltaY *= 16;
+      } else if (deltaMode === 2) {
+        // Pages.
+        deltaX *= this.width;
+        deltaY *= this.height;
+      }
+      // Whichever axis the user actually moved: a horizontal trackpad swipe and
+      // a plain vertical wheel both scroll the code, matching `Tabs`.
+      const delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
+      const before = this.scrollX;
+      // Through `setScrollX`, so the clamp and the content-epoch bump have exactly
+      // one implementation.
+      this.setScrollX(before + delta);
+      // Only when the offset actually moved, so a wheel at either end of travel
+      // still scrolls the page instead of trapping it inside the code block.
+      if (this.scrollX !== before) e.nativeEvent?.preventDefault?.();
+    });
+  }
+
+  /**
+   * Current horizontal scroll offset in local px, clamped to what the content
+   * currently allows.
+   *
+   * Clamped on READ, not only on write, because `setWidth()` may shrink the box
+   * after a scroll and is contractually forbidden from rebuilding anything. Both
+   * the painter and the projection read through here, which is what keeps the
+   * glyphs and the selection carriers on the same offset within a frame.
+   */
+  public get scrollX(): number {
+    return Math.min(this.scrollXValue, this.maxScrollX);
+  }
+
+  /**
+   * Widest line's overflow past the padded box, i.e. the maximum useful
+   * {@link scrollX}. `0` when every line already fits.
+   */
+  public get maxScrollX(): number {
+    return Math.max(0, this.contentWidth() - (this.width - this.pad * 2));
+  }
+
+  /**
+   * Widest prepared line, memoized against the grid that produced it.
+   *
+   * Read by {@link scrollX}, which both `render()` and `getContentProjection()`
+   * call every synced frame, so an O(lines) scan here would be an O(document) cost
+   * per frame on a long block — the exact shape the per-line projection window
+   * exists to avoid. The grid is rebuilt only when the content changes, so the
+   * cache key is identity of the grid object.
+   */
+  private contentWidth(): number {
+    const grid = this.ensureGrid();
+    if (this.contentWidthGrid === grid) return this.contentWidthValue;
+    let widest = 0;
+    for (const line of grid.lines) {
+      if (line.width > widest) widest = line.width;
+    }
+    this.contentWidthGrid = grid;
+    this.contentWidthValue = widest;
+    return widest;
+  }
+
+  /**
+   * Scroll horizontally to `x`, clamped to `[0, maxScrollX]`.
+   *
+   * @returns `this` for chaining.
+   */
+  public setScrollX(x: number): this {
+    const next = Math.max(0, Math.min(this.maxScrollX, x));
+    if (next === this.scrollXValue) return this;
+    this.scrollXValue = next;
+    // The epoch bump is REQUIRED, not bookkeeping: `Scene.syncContentProjection`
+    // early-returns when the content epoch and the world transform are both
+    // unchanged (`Scene.ts:4288-4312`), and a scroll changes neither — the entity
+    // does not move and its text does not change. Without this the painted glyphs
+    // would slide while the selection carriers stayed put, which is exactly the
+    // detached-selection defect this design must avoid.
+    this.contentEpoch++;
+    this.scene?.markDirty();
+    return this;
   }
 
   /** Re-parse code content (e.g. for live editing). */
@@ -612,6 +734,11 @@ export class CodeBlock extends UIComponent {
     if (lang !== undefined) this.lang = lang;
     this.source = code;
     this.buildLines(code);
+    // New content means a new content width, so an offset valid a moment ago can
+    // now point past the end — a streamed block that replaces a long line with a
+    // short one would otherwise paint blank. Clamped rather than reset, so
+    // scroll position survives an append.
+    this.scrollXValue = Math.min(this.scrollXValue, this.maxScrollX);
     this.scene?.markDirty();
     return this;
   }
@@ -635,9 +762,13 @@ export class CodeBlock extends UIComponent {
    * Deliberately does **not** rebuild the grid or the highlight, because code does
    * not reflow: lines are placed on a fixed monospace grid at `col × cellWidth` and
    * a long line overflows rather than wrapping, so `height` is a function of line
-   * *count* alone. The width only sizes the rounded background. Anything that would
-   * change the glyph geometry — the source, the language, the font — goes through
-   * {@link setCode} and invalidates the grid there.
+   * *count* alone. The width sizes the rounded background and the clip. Anything
+   * that would change the glyph geometry — the source, the language, the font —
+   * goes through {@link setCode} and invalidates the grid there.
+   *
+   * A narrower box can leave {@link scrollX} past the new end of travel. That is
+   * resolved by clamping on read rather than by adjusting anything here, so this
+   * method keeps costing nothing.
    *
    * @returns `this` for chaining.
    */
@@ -652,6 +783,9 @@ export class CodeBlock extends UIComponent {
   public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     if (!this.source) return null;
     const grid = this.ensureGrid();
+    // Read once so every row of this projection shares one offset even if the
+    // clamp basis were to change mid-walk.
+    const scrollX = this.scrollX;
     // Slicing the source per row is O(document) per synced frame, and the grid
     // path is also where the DOM cost concentrates (one carrier per glyph
     // CLUSTER). Building only the rows in the band is what makes a long code
@@ -671,7 +805,11 @@ export class CodeBlock extends UIComponent {
       rows[row] = {
         text: this.source.slice(line.sourceStart, line.sourceEnd),
         separatorAfter: this.source.slice(line.sourceEnd, line.nextSourceStart) || undefined,
-        x: this.pad,
+        // The SAME offset `render()` subtracts, read through the same clamping
+        // accessor. Cell carriers are `position: relative` inside this `absolute`
+        // line box, so shifting the line's x translates every cell of the line
+        // rigidly and selection stays over the glyphs.
+        x: this.pad - scrollX,
         y,
         baseline: this.lineH * 0.75,
         font: this.codeFont,
@@ -753,7 +891,15 @@ export class CodeBlock extends UIComponent {
     return this.grid;
   }
 
-  /** Code blocks are decorative — not interactive. */
+  /**
+   * Not hit-testable, and deliberately still not `interactive`, even though the
+   * block now consumes wheel events to scroll.
+   *
+   * The wheel arrives from the content-projection div rather than from canvas
+   * hit-testing, so no a11y shadow node is needed. Creating one would place a
+   * `pointer-events: auto` element above the transparent text mirror and swallow
+   * the mousedown that starts a native drag-selection.
+   */
   isPointInside(): boolean {
     return false;
   }
@@ -786,6 +932,21 @@ export class CodeBlock extends UIComponent {
     const atlasSource = atlas?.source ?? null;
     const blit = atlas ? r.drawImageRect : undefined;
 
+    // Clip the glyphs to the block box. A long line does not wrap, so without
+    // this it paints through the rounded background and off the viewport edge.
+    // `clipChildren` cannot do this job: it clips a node's CHILDREN, and this is
+    // a leaf drawing its own glyphs, so the explicit idiom is required.
+    //
+    // `IRenderer.clip` is rect-only — there is no rounded-corner clip in the
+    // interface — so the clip is a hard rect inside a `codeRadius` background and
+    // the corner arcs are a few px wider than the clip. Accepted; see
+    // `forge/decisions/code-block-overflow-2026-08.md`.
+    r.save();
+    r.clip(0, 0, this.width, this.height);
+    // Same clamping accessor the projection reads, so the painted glyphs and the
+    // selection carriers cannot disagree about the offset.
+    const scrollX = this.scrollX;
+
     for (let row = 0; row < grid.lines.length; row++) {
       const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
       const segments = this.lines[row];
@@ -801,7 +962,11 @@ export class CodeBlock extends UIComponent {
         const sourceText = this.source.slice(cell.sourceStart, cell.sourceEnd);
         if (cell.advance <= 0 || sourceText === ' ' || sourceText === '\t') continue;
         const color = segments[segmentIndex]?.color ?? this.theme.codeColor;
-        const x = this.pad + cell.x;
+        const x = this.pad + cell.x - scrollX;
+        // Skip cells scrolled fully out of the box on either side. The clip
+        // already makes them invisible; this keeps a wide line's cost
+        // proportional to what is on screen rather than to the line.
+        if (x + cell.advance < 0 || x > this.width) continue;
 
         if (blit && atlas) {
           const slot = atlas.get(this.codeFont, color, cell.glyph);
@@ -832,6 +997,8 @@ export class CodeBlock extends UIComponent {
         r.fillText(cell.glyph, x, yBaseline, this.codeFont, color);
       }
     }
+
+    r.restore();
   }
 }
 
