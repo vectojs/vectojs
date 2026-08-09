@@ -47,6 +47,7 @@
 import type { ContentProjection, ContentProjectionLine } from '../Entity';
 import { cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
+import { appendContentBreak } from './content-break-carrier';
 import { projectionGridLineWindow } from './content-line-window';
 import type { ContentProjectionManager } from './ContentProjectionManager';
 import type { PhaseTimer } from './PhaseTimer';
@@ -222,20 +223,20 @@ export class ContentGridProjector {
         lineElement.style.font = lineFont;
         lineElement.style.lineHeight = `${lineHeight}px`;
 
+        const breakText = grid.source.slice(gridLine.sourceEnd, gridLine.nextSourceStart);
         if (gridLine.cells.length === 0) {
-          lineElement.textContent = grid.source.slice(gridLine.sourceEnd, gridLine.nextSourceStart);
+          // An empty line is nothing BUT its break, so this is the row where the
+          // painted bar was most visible: one zero-width, full-height selection
+          // rect and no glyph anywhere near it.
+          appendContentBreak(lineElement, breakText);
         } else {
           let logicalX = 0;
           for (let cellIndex = 0; cellIndex < gridLine.cells.length; cellIndex++) {
             const cell = gridLine.cells[cellIndex];
             const cellElement = document.createElement('span');
             cellElement.dir = 'ltr';
-            const separator =
-              cellIndex === gridLine.cells.length - 1
-                ? grid.source.slice(gridLine.sourceEnd, gridLine.nextSourceStart)
-                : '';
             const sourceText = grid.source.slice(cell.sourceStart, cell.sourceEnd);
-            cellElement.textContent = sourceText + separator;
+            cellElement.textContent = sourceText;
             cellElement.dataset.vectoGridCell = `${cellIndex}`;
             cellElement.dataset.vectoGridSourceLength = `${sourceText.length}`;
             cellElement.dataset.vectoGridSourceStart = `${cell.sourceStart}`;
@@ -267,6 +268,11 @@ export class ContentGridProjector {
             lineElement.appendChild(cellElement);
             logicalX += cell.advance;
           }
+          // After the last cell, not inside it. Appending the break to a cell's
+          // own text would put it inside a box the calibration pass measures and
+          // `vectoGridSourceLength` slices, so the break has to be its own
+          // carrier for the cell geometry to stay exactly one cluster wide.
+          appendContentBreak(lineElement, breakText);
         }
         if (lineIndex === 0) {
           for (const [basis, left, top] of [

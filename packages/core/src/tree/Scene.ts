@@ -42,6 +42,7 @@ import { type ParticleModuleSource, type ParticleBackend } from '../wasm/particl
 import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import { isNativelyFocusable, rebaseChildBox } from './scene/a11y-dom';
+import { appendContentBreak } from './scene/content-break-carrier';
 import { projectionLineWindow } from './scene/content-line-window';
 import { ContentGridProjector } from './scene/ContentGridProjector';
 import {
@@ -4501,11 +4502,7 @@ export class Scene {
               for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
                 const run = line.runs[runIndex];
                 const runElement = document.createElement('span');
-                // Keep the separator in the final logical Text node. Firefox
-                // emits a duplicate Range rectangle when the same positioned
-                // line contains a second, separator-only Text node.
-                runElement.textContent =
-                  run.text + (runIndex === line.runs.length - 1 ? separator : '');
+                runElement.textContent = run.text;
                 if (run.font) runElement.style.font = run.font;
                 // A run-level font shorthand also resets line-height. Preserve
                 // the visual line's shared baseline for every mixed-size run.
@@ -4526,8 +4523,23 @@ export class Scene {
                 lineElement.appendChild(runElement);
               }
             } else {
-              lineElement.textContent = line.text + separator;
+              lineElement.textContent = line.text;
             }
+            // The break goes in its own non-painting carrier rather than into a
+            // run's text. Inline in a `white-space: pre` carrier it is a real
+            // preserved character and the browser gives it a zero-width,
+            // full-line-height selection rectangle, which Chrome paints as a
+            // caret-like bar just past the last glyph. See
+            // `content-break-carrier` for the measurements and for why the
+            // character cannot simply be dropped.
+            //
+            // Appended to the LINE, not to the last run. The previous inline
+            // spelling was placed in the final run's Text node to avoid a
+            // duplicate Firefox Range rectangle from a second separator-only
+            // TEXT node in a positioned line; an element carrier is a different
+            // case, and the e2e RTL/positioned-run rectangle assertions cover
+            // it on both engines.
+            appendContentBreak(lineElement, separator);
             el.appendChild(lineElement);
           }
         });

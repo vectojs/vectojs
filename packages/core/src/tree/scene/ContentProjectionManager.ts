@@ -54,6 +54,36 @@ import {
   type TextCaretPosition,
 } from './content-caret';
 
+/**
+ * Length of the page-scale basis the calibration probe measures, in CSS px.
+ *
+ * The probe reads the client distance between a span at `left: 0` and one at
+ * `left: <this>px` to recover the page's own layout scale, then divides by this
+ * length. It **must not be 1**, which is what it was: a browser rounds a
+ * `getBoundingClientRect().left` to 1/64 device px, so a 1 px basis quantizes to
+ * a multiple of 1/64 and the recovered scale carries the whole rounding error.
+ *
+ * Measured in real headed Chrome at `devicePixelRatio` 1.1000000685 on
+ * xuepoo-blog: the 1 px basis returned **0.9921875** (= 63.5/64) where the page
+ * scale was **1.0** — a 0.78% error. Every per-cell `scaleX` is
+ * `advance * scale / natural`, so that error shrank every carrier's painted
+ * advance below its grid pitch and the browser's selection rects, sized from the
+ * painted advance, fell short of tiling it: 18.0001 px of pitch selected as
+ * 17.8624 px, leaving a **0.133 px** gap at every CJK seam and 0.061 px at every
+ * Latin one. At DPR 1.1 those land on a device-pixel boundary and paint as a
+ * vertical white line between adjacent Han glyphs — the `使|用|sudo` artifact.
+ *
+ * A longer basis divides the same fixed 1/64 rounding by its own length, so the
+ * recovered scale converges. Measured over bases 1/2/4/10/100/1000 px on the same
+ * page: `0.9921875, 1.0, 0.998046875, 1.0, 1.0, 1.0` — every basis of 10 px or
+ * more agreed exactly while the 1 px read was the outlier. 256 px keeps the worst
+ * case at 1/64 / 256 = 6.1e-5 (a 0.0011 px residue on an 18 px cell, ~100x below
+ * the 1/64 device pixel a browser can even represent) while staying far inside
+ * the probe's own 100000 px width, so it cannot introduce a scrollbar or a
+ * layout of its own.
+ */
+const PAGE_SCALE_BASIS_PX = 256;
+
 export class ContentProjectionManager {
   /**
    * `a11yRoot` doubles as the projection root: carriers are appended to it, and
@@ -566,7 +596,7 @@ export class ContentProjectionManager {
     probeOrigin.style.top = '0';
     const probeX = document.createElement('span');
     probeX.style.position = 'absolute';
-    probeX.style.left = '1px';
+    probeX.style.left = `${PAGE_SCALE_BASIS_PX}px`;
     probeX.style.top = '0';
     probe.append(probeOrigin, probeX);
     const measurements: Array<{
@@ -668,7 +698,7 @@ export class ContentProjectionManager {
       const updates: Array<{ element: HTMLElement; scale: number }> = [];
       const probeOriginRect = probeOrigin.getBoundingClientRect();
       const probeXRect = probeX.getBoundingClientRect();
-      const basisScale = Math.abs(probeXRect.left - probeOriginRect.left);
+      const basisScale = Math.abs(probeXRect.left - probeOriginRect.left) / PAGE_SCALE_BASIS_PX;
       const projectionPageScaleX =
         Number.isFinite(basisScale) && basisScale > 0 ? basisScale : pageScaleX;
       let valid = true;

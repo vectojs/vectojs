@@ -878,6 +878,66 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
 
     const result = await page.evaluate(() => {
       const app = (window as any).__vecto;
+      /**
+       * Selection rectangles a projected hard break contributes, across every
+       * content projection on the page.
+       *
+       * A line carrier is `white-space: pre`, so a trailing `\n` written as
+       * ordinary inline text is a real preserved character and the browser hands
+       * it a selection rectangle of ZERO WIDTH and FULL LINE HEIGHT. Chrome
+       * paints it, so selecting a line drew a caret-like vertical bar just past
+       * the last glyph — ink the canvas never produced. Measured on a live page
+       * before the fix, one paragraph line yielded four rects, the last
+       * `x 495.18, w 0, h 31.82`; a `CodeBlock` fixture reported one on every
+       * row that owned a break, including the empty row whose whole content is
+       * the break.
+       *
+       * `brokenCopy` is the other half of the contract: the paint must be
+       * suppressed WITHOUT dropping the character, or copy silently joins lines.
+       */
+      const breakSliverReport = () => {
+        const roots = [...document.querySelectorAll<HTMLElement>('[data-vecto-content]')];
+        let sliverCount = 0;
+        let breakCarriers = 0;
+        const worst: Array<{ text: string; x: number; height: number }> = [];
+
+        for (const root of roots) {
+          for (const line of [...root.children] as HTMLElement[]) {
+            // Carrier lines only. A coarse-tier root holds one text node and has
+            // no per-line break of its own.
+            const isCarrier =
+              line.dataset?.vectoGridLine !== undefined ||
+              root.dataset.vectoProjectionLines !== undefined;
+            if (!isCarrier) continue;
+            const text = line.textContent ?? '';
+            if (!/[\r\n]/.test(text)) continue;
+            // A break that survived as its own collapsed carrier, which is what
+            // keeps it selectable and copyable while contributing no line box.
+            for (const child of [...line.querySelectorAll<HTMLElement>('span')]) {
+              if (/^[\r\n]+$/.test(child.textContent ?? '')) breakCarriers++;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(line);
+            const seen = new Set<string>();
+            for (const rect of range.getClientRects()) {
+              const key = `${rect.left.toFixed(2)}/${rect.top.toFixed(2)}/${rect.width.toFixed(2)}/${rect.height.toFixed(2)}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              if (rect.width === 0 && rect.height > 1) {
+                sliverCount++;
+                if (worst.length < 6) {
+                  worst.push({
+                    text: text.replace(/\n/g, '\\n').slice(0, 24),
+                    x: Number(rect.left.toFixed(2)),
+                    height: Number(rect.height.toFixed(2)),
+                  });
+                }
+              }
+            }
+          }
+        }
+        return { rootCount: roots.length, sliverCount, breakCarriers, worst };
+      };
       const rectangle = (value: DOMRect) => ({
         x: value.x,
         y: value.y,
@@ -1092,6 +1152,58 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
             };
           },
         );
+        // Selection SEAM residue: does the browser's own selection rect for one
+        // cell reach the rect of the next?
+        //
+        // Distinct from `widthError` above, which compares a rect against the
+        // grid's expected width. This compares consecutive rects against EACH
+        // OTHER, which is what a reader sees: a residue here is literally the
+        // width of the unhighlighted column between two adjacent glyphs. The
+        // page-scale calibration basis used to be measured over 1 px, where a
+        // browser's 1/64-device-px rect rounding is the whole reading, and the
+        // resulting 0.78% scale error left 0.133 px at every CJK seam on a real
+        // page — which paints as a vertical white line at DPR 1.1.
+        const seamResidues: Array<{ left: string; right: string; residue: number }> = [];
+        const cellElements = [
+          ...lineElement.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]'),
+        ];
+        for (let cellIndex = 1; cellIndex < cellElements.length; cellIndex++) {
+          const previous = cellElements[cellIndex - 1];
+          const current = cellElements[cellIndex];
+          const previousLength = Number(previous.dataset.vectoGridSourceLength);
+          const currentLength = Number(current.dataset.vectoGridSourceLength);
+          if (previousLength <= 0 || currentLength <= 0) continue;
+          // Zero-advance cells (bidi controls) share an x with their neighbour and
+          // have no seam of their own.
+          if (
+            Number(previous.dataset.vectoGridAdvance) <= 0 ||
+            Number(current.dataset.vectoGridAdvance) <= 0
+          ) {
+            continue;
+          }
+          // Only same-direction neighbours: across a bidi boundary the visually
+          // adjacent pair is not the logically adjacent one, so a "gap" there is
+          // reordering rather than residue.
+          if (previous.dataset.vectoGridLevel !== current.dataset.vectoGridLevel) continue;
+          const previousRange = document.createRange();
+          previousRange.setStart(previous.firstChild!, 0);
+          previousRange.setEnd(previous.firstChild!, previousLength);
+          const currentRange = document.createRange();
+          currentRange.setStart(current.firstChild!, 0);
+          currentRange.setEnd(current.firstChild!, currentLength);
+          const previousRect = previousRange.getBoundingClientRect();
+          const currentRect = currentRange.getBoundingClientRect();
+          if (previousRect.width <= 0 || currentRect.width <= 0) continue;
+          const rtl = (Number(previous.dataset.vectoGridLevel) & 1) !== 0;
+          const residue = rtl
+            ? previousRect.left - currentRect.right
+            : currentRect.left - previousRect.right;
+          seamResidues.push({
+            left: previous.textContent?.slice(0, previousLength) ?? '',
+            right: current.textContent?.slice(0, currentLength) ?? '',
+            residue,
+          });
+        }
         return {
           domWidth: lineRect.width,
           localWidth,
@@ -1099,6 +1211,22 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
           details: cells,
           maxStartError: Math.max(0, ...cells.map((cell) => cell.startError)),
           maxWidthError: Math.max(0, ...cells.map((cell) => cell.widthError)),
+          scale,
+          seamResidues,
+          maxSeamResidue: Math.max(0, ...seamResidues.map((seam) => Math.abs(seam.residue))),
+          // A COPY, not the array element itself. Returning the same object
+          // reference twice in one `page.evaluate` result made the duplicate
+          // deserialize as `undefined`, so the failure message read
+          // `... residue 0.2666px undefined` — the number was right and the
+          // evidence for it was missing.
+          worstSeam:
+            seamResidues.length > 0
+              ? {
+                  ...seamResidues.reduce((worst, seam) =>
+                    Math.abs(seam.residue) > Math.abs(worst.residue) ? seam : worst,
+                  ),
+                }
+              : null,
         };
       });
 
@@ -1188,6 +1316,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
           projText: shiftedProjection?.text ?? '',
           domText: shiftedDom?.textContent ?? '',
         },
+        breakSlivers: breakSliverReport(),
       };
     });
 
@@ -1369,11 +1498,17 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         forward: {
           anchor: 'o',
           anchorOffset: 0,
-          focus: '好\n',
+          // The endpoint cell carries its cluster and NOTHING else. The row's
+          // trailing hard break used to be appended to this same Text node
+          // (making it `'好\n'`), which gave it a zero-width, full-height
+          // selection rect that Chrome painted as a bar past the last glyph. The
+          // break now lives in its own collapsed carrier — the offsets and the
+          // dragged text above are unchanged.
+          focus: '好',
           focusOffset: 1,
         },
         reverse: {
-          anchor: '好\n',
+          anchor: '好',
           anchorOffset: 1,
           focus: 'o',
           focusOffset: 0,
@@ -1578,7 +1713,41 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         line.maxWidthError <= 1,
         `${browserCase.name} CodeBlock row ${index} projected cell width drift ${line.maxWidthError}px ${JSON.stringify(line)}`,
       );
+      // Consecutive selection rects must tile the grid pitch, or the untiled
+      // remainder paints as a vertical unhighlighted line between glyphs. The
+      // bound is a quarter of a CSS pixel: a browser rounds rects to 1/64 device
+      // px, so some residue is unavoidable, but the defect this guards was
+      // 0.133 px on a real page and any regression of the calibration basis
+      // reappears at that scale or larger.
+      assert.ok(
+        line.maxSeamResidue <= 0.25,
+        `${browserCase.name} CodeBlock row ${index} selection seam residue ${line.maxSeamResidue}px ${JSON.stringify(line.worstSeam)}`,
+      );
     }
+    // A projected hard break must not paint. Written as ordinary inline text in a
+    // `white-space: pre` carrier, a `\n` gets a zero-width, full-line-height
+    // selection rect that Chrome draws as a caret-like bar past the last glyph —
+    // ink with no glyph under it. Measured on a live page before the fix: one
+    // paragraph line produced such a rect at `x 495.18, w 0, h 31.82`, and a
+    // CodeBlock fixture produced one on every row owning a break.
+    assert.equal(
+      result.breakSlivers.sliverCount,
+      0,
+      `${browserCase.name} projected hard breaks painted ${result.breakSlivers.sliverCount} zero-width selection rect(s) ${JSON.stringify(result.breakSlivers.worst)}`,
+    );
+    // The other half of the contract: the break is suppressed visually, never
+    // deleted. Counting carriers rather than inspecting text, because a
+    // SOFT-wrapped paragraph is legitimately many carrier lines with no `\n`
+    // anywhere — an earlier spelling of this check flagged exactly that. The
+    // clipboard assertion above is what proves the breaks still serialise.
+    assert.ok(
+      result.breakSlivers.breakCarriers > 0,
+      `${browserCase.name} found no hard-break carriers, so the breaks were dropped rather than collapsed`,
+    );
+    assert.ok(
+      result.breakSlivers.rootCount > 0,
+      `${browserCase.name} break-sliver check found no content projections`,
+    );
     assert.ok(
       result.ligature.disabledWidth - result.ligature.normalWidth >= 0.25,
       `${browserCase.name} ligature precondition was not met`,
@@ -1767,8 +1936,12 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     );
     assert.deepEqual(pageErrors, [], `${browserCase.name} emitted browser errors during rebuild`);
 
+    const worstSeamResidue = Math.max(
+      0,
+      ...result.codeGrid.lines.map((line) => line.maxSeamResidue),
+    );
     console.log(
-      `✓ ${browserCase.name}: selection and cold grid (${hiddenGridBefore.materializeMs.toFixed(1)}ms materialize, ${hiddenGridBefore.calibrationMs.toFixed(1)}ms calibrate, ${hiddenGridBefore.samples} samples)`,
+      `✓ ${browserCase.name}: selection and cold grid (${hiddenGridBefore.materializeMs.toFixed(1)}ms materialize, ${hiddenGridBefore.calibrationMs.toFixed(1)}ms calibrate, ${hiddenGridBefore.samples} samples, ${worstSeamResidue.toFixed(4)}px worst seam)`,
     );
   } finally {
     await browser.close();
