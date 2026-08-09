@@ -2507,6 +2507,19 @@ export class Scene {
       // Re-scale the backing store for the new DPR, then re-arm for the next
       // change (the fired query is now stale for the new ratio).
       this.resize(this.width, this.height);
+      // Repaint in the same task, before the browser can composite.
+      //
+      // `resize` assigns `canvas.width`/`canvas.height`, and per the HTML spec
+      // setting either dimension CLEARS the backing store even when the value is
+      // unchanged. `markDirty()` only requests a frame, so between this handler
+      // and the next rAF the canvas is transparent — a full-viewport scene flashes
+      // its page background on every zoom step. Painting synchronously here closes
+      // that window, which is exactly why `onContextRestored` above renders
+      // directly rather than only marking dirty.
+      //
+      // Guarded on the context: a lost 2D context makes every draw call a no-op,
+      // and its own `contextrestored` handler owns the repaint.
+      if (this.renderer.isContextLost?.() !== true) this.render(this.renderer);
       this.watchDevicePixelRatio();
     };
     query.addEventListener?.('change', handler);

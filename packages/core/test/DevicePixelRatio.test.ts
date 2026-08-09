@@ -72,6 +72,42 @@ describe('runtime devicePixelRatio change', () => {
     expect(resizeSpy).toHaveBeenCalledWith(scene.width, scene.height);
   });
 
+  it('repaints synchronously on a DPR change, before the browser can composite', () => {
+    // `resize` assigns `canvas.width`/`canvas.height`, which per spec CLEARS the
+    // backing store. Only marking dirty leaves the canvas transparent until the
+    // next rAF, so a full-viewport scene flashes its page background on every
+    // zoom step. The repaint has to happen in this same task.
+    const mm = installMatchMedia();
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas);
+
+    const renderSpy = vi.spyOn(scene, 'render');
+    (window as any).devicePixelRatio = 2;
+    mm.fireChange();
+
+    // Synchronously, not on a later frame.
+    expect(renderSpy).toHaveBeenCalled();
+  });
+
+  it('skips the repaint while the drawing context is lost', () => {
+    // Every draw call is a no-op against a lost context, and its own
+    // `contextrestored` handler owns the repaint.
+    const mm = installMatchMedia();
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas);
+
+    const renderer = scene.getRenderer() as { isContextLost?: () => boolean };
+    renderer.isContextLost = () => true;
+    const renderSpy = vi.spyOn(scene, 'render');
+
+    (window as any).devicePixelRatio = 2;
+    mm.fireChange();
+
+    expect(renderSpy).not.toHaveBeenCalled();
+  });
+
   it('re-arms a fresh query for the new DPR after a change', () => {
     const mm = installMatchMedia();
     const canvas = document.createElement('canvas');
