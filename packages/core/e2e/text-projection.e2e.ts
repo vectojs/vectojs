@@ -878,6 +878,66 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
 
     const result = await page.evaluate(() => {
       const app = (window as any).__vecto;
+      /**
+       * Selection rectangles a projected hard break contributes, across every
+       * content projection on the page.
+       *
+       * A line carrier is `white-space: pre`, so a trailing `\n` written as
+       * ordinary inline text is a real preserved character and the browser hands
+       * it a selection rectangle of ZERO WIDTH and FULL LINE HEIGHT. Chrome
+       * paints it, so selecting a line drew a caret-like vertical bar just past
+       * the last glyph — ink the canvas never produced. Measured on a live page
+       * before the fix, one paragraph line yielded four rects, the last
+       * `x 495.18, w 0, h 31.82`; a `CodeBlock` fixture reported one on every
+       * row that owned a break, including the empty row whose whole content is
+       * the break.
+       *
+       * `brokenCopy` is the other half of the contract: the paint must be
+       * suppressed WITHOUT dropping the character, or copy silently joins lines.
+       */
+      const breakSliverReport = () => {
+        const roots = [...document.querySelectorAll<HTMLElement>('[data-vecto-content]')];
+        let sliverCount = 0;
+        let breakCarriers = 0;
+        const worst: Array<{ text: string; x: number; height: number }> = [];
+
+        for (const root of roots) {
+          for (const line of [...root.children] as HTMLElement[]) {
+            // Carrier lines only. A coarse-tier root holds one text node and has
+            // no per-line break of its own.
+            const isCarrier =
+              line.dataset?.vectoGridLine !== undefined ||
+              root.dataset.vectoProjectionLines !== undefined;
+            if (!isCarrier) continue;
+            const text = line.textContent ?? '';
+            if (!/[\r\n]/.test(text)) continue;
+            // A break that survived as its own collapsed carrier, which is what
+            // keeps it selectable and copyable while contributing no line box.
+            for (const child of [...line.querySelectorAll<HTMLElement>('span')]) {
+              if (/^[\r\n]+$/.test(child.textContent ?? '')) breakCarriers++;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(line);
+            const seen = new Set<string>();
+            for (const rect of range.getClientRects()) {
+              const key = `${rect.left.toFixed(2)}/${rect.top.toFixed(2)}/${rect.width.toFixed(2)}/${rect.height.toFixed(2)}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              if (rect.width === 0 && rect.height > 1) {
+                sliverCount++;
+                if (worst.length < 6) {
+                  worst.push({
+                    text: text.replace(/\n/g, '\\n').slice(0, 24),
+                    x: Number(rect.left.toFixed(2)),
+                    height: Number(rect.height.toFixed(2)),
+                  });
+                }
+              }
+            }
+          }
+        }
+        return { rootCount: roots.length, sliverCount, breakCarriers, worst };
+      };
       const rectangle = (value: DOMRect) => ({
         x: value.x,
         y: value.y,
@@ -1256,6 +1316,7 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
           projText: shiftedProjection?.text ?? '',
           domText: shiftedDom?.textContent ?? '',
         },
+        breakSlivers: breakSliverReport(),
       };
     });
 
@@ -1437,11 +1498,17 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         forward: {
           anchor: 'o',
           anchorOffset: 0,
-          focus: '好\n',
+          // The endpoint cell carries its cluster and NOTHING else. The row's
+          // trailing hard break used to be appended to this same Text node
+          // (making it `'好\n'`), which gave it a zero-width, full-height
+          // selection rect that Chrome painted as a bar past the last glyph. The
+          // break now lives in its own collapsed carrier — the offsets and the
+          // dragged text above are unchanged.
+          focus: '好',
           focusOffset: 1,
         },
         reverse: {
-          anchor: '好\n',
+          anchor: '好',
           anchorOffset: 1,
           focus: 'o',
           focusOffset: 0,
@@ -1657,6 +1724,30 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         `${browserCase.name} CodeBlock row ${index} selection seam residue ${line.maxSeamResidue}px ${JSON.stringify(line.worstSeam)}`,
       );
     }
+    // A projected hard break must not paint. Written as ordinary inline text in a
+    // `white-space: pre` carrier, a `\n` gets a zero-width, full-line-height
+    // selection rect that Chrome draws as a caret-like bar past the last glyph —
+    // ink with no glyph under it. Measured on a live page before the fix: one
+    // paragraph line produced such a rect at `x 495.18, w 0, h 31.82`, and a
+    // CodeBlock fixture produced one on every row owning a break.
+    assert.equal(
+      result.breakSlivers.sliverCount,
+      0,
+      `${browserCase.name} projected hard breaks painted ${result.breakSlivers.sliverCount} zero-width selection rect(s) ${JSON.stringify(result.breakSlivers.worst)}`,
+    );
+    // The other half of the contract: the break is suppressed visually, never
+    // deleted. Counting carriers rather than inspecting text, because a
+    // SOFT-wrapped paragraph is legitimately many carrier lines with no `\n`
+    // anywhere — an earlier spelling of this check flagged exactly that. The
+    // clipboard assertion above is what proves the breaks still serialise.
+    assert.ok(
+      result.breakSlivers.breakCarriers > 0,
+      `${browserCase.name} found no hard-break carriers, so the breaks were dropped rather than collapsed`,
+    );
+    assert.ok(
+      result.breakSlivers.rootCount > 0,
+      `${browserCase.name} break-sliver check found no content projections`,
+    );
     assert.ok(
       result.ligature.disabledWidth - result.ligature.normalWidth >= 0.25,
       `${browserCase.name} ligature precondition was not met`,

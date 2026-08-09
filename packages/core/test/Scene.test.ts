@@ -1612,7 +1612,54 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
-    it('merges a run-based separator into the final run text node', () => {
+    it('never leaves a hard break as inline text in a projected line', () => {
+      // The defect this guards is visual: a `\n` inline in a `white-space: pre`
+      // carrier gets a zero-width, full-line-height selection rectangle, which
+      // Chrome paints as a caret-like vertical bar just past the last glyph
+      // (measured on a live page: `x 495.18, w 0, h 31.82`). jsdom has no
+      // selection geometry, so the invariant is asserted structurally instead:
+      // no break character may sit in a text node that also holds glyphs, and
+      // the carrier holding it must have a collapsed line box.
+      class BreakShapeEntity extends ContentEntity {
+        override getContentProjection() {
+          return {
+            text: 'alpha\nbeta\n\ngamma',
+            font: '16px sans-serif',
+            lines: [
+              { text: 'alpha', x: 0, y: 0, baseline: 14, lineHeight: 20 },
+              { text: 'beta', x: 0, y: 20, baseline: 14, lineHeight: 20 },
+              { text: '', x: 0, y: 40, baseline: 14, lineHeight: 20 },
+              { text: 'gamma', x: 0, y: 60, baseline: 14, lineHeight: 20 },
+            ],
+          };
+        }
+      }
+
+      const scene = makeDomScene();
+      scene.add(new BreakShapeEntity('break-shape'));
+      tick(scene);
+
+      const root = contentEl(scene, 'break-shape')!;
+      for (const line of Array.from(root.children)) {
+        const walker = document.createTreeWalker(line, 0x4 /* SHOW_TEXT */);
+        while (walker.nextNode()) {
+          const node = walker.currentNode as Text;
+          if (!node.data.includes('\n')) continue;
+          // A break-bearing text node must hold NOTHING but breaks...
+          expect(node.data.replace(/[\r\n]/g, '')).toBe('');
+          // ...and must live in a carrier whose line box is collapsed.
+          const carrier = node.parentElement as HTMLElement;
+          expect(Number.parseFloat(carrier.style.fontSize)).toBe(0);
+          expect(Number.parseFloat(carrier.style.lineHeight)).toBe(0);
+        }
+      }
+      // Copy fidelity is the other half of the contract: suppressing the paint
+      // must not cost the newline.
+      expect(root.textContent).toBe('alpha\nbeta\n\ngamma');
+      scene.destroy();
+    });
+
+    it('carries a run-based separator in its own non-painting span', () => {
       class RunContentEntity extends ContentEntity {
         override getContentProjection() {
           return {
@@ -1642,9 +1689,22 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       tick(scene);
 
       const firstLine = contentEl(scene, 'run-multiline')!.children[0] as HTMLElement;
-      expect(firstLine.childNodes).toHaveLength(2);
-      expect(firstLine.children[1].childNodes).toHaveLength(1);
-      expect(firstLine.children[1].textContent).toBe('large\n');
+      // Two runs plus a dedicated break carrier. The separator used to be
+      // appended to the last run's own Text node; inline in a `white-space: pre`
+      // carrier a `\n` gets a zero-width, full-line-height selection rectangle
+      // that Chrome paints as a caret-like bar past the last glyph.
+      expect(firstLine.childNodes).toHaveLength(3);
+      expect(firstLine.children[1].textContent).toBe('large');
+      const breakCarrier = firstLine.children[2] as HTMLElement;
+      expect(breakCarrier.textContent).toBe('\n');
+      // Zero font size is what keeps the break selectable and copyable while
+      // collapsing the line box it would otherwise contribute. Compared as a
+      // parsed length: jsdom serialises `0` back as `0px`.
+      expect(Number.parseFloat(breakCarrier.style.fontSize)).toBe(0);
+      expect(Number.parseFloat(breakCarrier.style.lineHeight)).toBe(0);
+      // The break still reads back as part of the line, so copy stays broken
+      // across lines.
+      expect(firstLine.textContent).toBe('small large\n');
       scene.destroy();
     });
 
