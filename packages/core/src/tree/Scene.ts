@@ -4733,9 +4733,9 @@ export class Scene {
     // Zero-GC cleanups
     this.a11yOrder.beginCollect();
 
-    // `region` is the nearest `clipChildren` ancestor, threaded down the walk so
-    // establishing it costs one comparison per node instead of an ancestor walk
-    // per element.
+    // `region` is the nearest region-establishing ancestor, threaded down the
+    // walk so establishing it costs one comparison per node instead of an
+    // ancestor walk per element.
     const collect = (node: Entity, region: Entity | null) => {
       if (node.isDOMPortal) return;
 
@@ -4751,8 +4751,17 @@ export class Scene {
           this.a11yOrder.collect(el, node.a11yFullViewport, region);
         }
       }
-      // A zero-area clipper clips nothing, matching `isWithinClippedViewport`.
-      const childRegion = node.clipChildren && node.width > 0 && node.height > 0 ? node : region;
+      // Two ways to establish a region, and the geometry rule differs because
+      // the two mean different things. `clipChildren` is a *rendering* property
+      // that happens to be the column boundary most of the time, so it only
+      // counts when it actually clips — a zero-area clipper clips nothing,
+      // matching `isWithinClippedViewport`. `a11yRegion` is a direct declaration
+      // of grouping intent, so it never consults geometry: a pure grouping
+      // container commonly draws nothing and leaves its box at 0, and making it
+      // depend on `width`/`height` would silently ignore exactly the entity the
+      // flag exists for.
+      const childRegion =
+        node.a11yRegion || (node.clipChildren && node.width > 0 && node.height > 0) ? node : region;
       for (const child of node.children) collect(child, childRegion);
       if (node === this.root) {
         for (const overlay of this.overlayRoot.children) collect(overlay, null);
