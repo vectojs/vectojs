@@ -2,7 +2,7 @@
  * Grid carrier materialization: turning a prepared content grid into positioned
  * DOM carriers, with per-line reuse so streaming stays affordable.
  *
- * The deferred **projection walk** extraction (`DEC-0026` measurement,
+ * The deferred **projection walk** extraction (`DEC-0028` measurement,
  * `DEC-0019` pattern). The walk was deferred by `DEC-0020` and `DEC-0022` on the
  * grounds that `syncA11y` and `syncContentProjection` are one shared depth-first
  * walk and would have to move as a pair. Re-measured on `58c77ac` that premise
