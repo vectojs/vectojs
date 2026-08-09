@@ -54,6 +54,7 @@ import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
 import { isNativelyFocusable, rebaseChildBox } from './scene/a11y-dom';
+import { A11yProjectionManager } from './scene/A11yProjectionManager';
 import {
   type AcceleratorReason,
   type AcceleratorReport,
@@ -1436,7 +1437,7 @@ export class Scene {
   public set readingDirection(dir: 'ltr' | 'rtl') {
     if (dir !== this._readingDirection) {
       this._readingDirection = dir;
-      this.a11yNeedsReorder = true;
+      this.a11yOrder.markNeedsReorder();
     }
   }
   private _readingDirection: 'ltr' | 'rtl' = 'ltr';
@@ -1683,33 +1684,32 @@ export class Scene {
    *  screen-reader virtual cursor inside the scene's a11y region. */
   private focusSentinel: HTMLElement | null = null;
   private caretBlinkTimer: any = null;
-  public a11yNeedsReorder: boolean = true;
+  /**
+   * The projected DOM's ordering engine — the reorder flag, the per-pass scratch
+   * collections, the visual reading-order sort and the cursor-based
+   * `insertBefore` pass (extraction 2, `DEC-0020`).
+   *
+   * `a11yNeedsReorder` and `enforceA11yDomOrder` keep their names on `Scene` and
+   * delegate here; the collect-and-prune walk stays behind because it needs
+   * {@link shouldProjectA11y} and the focus/caret state.
+   */
+  private readonly a11yOrder = new A11yProjectionManager();
+  /**
+   * Whether the projected a11y DOM needs reordering on the next pass.
+   *
+   * Delegates to {@link A11yProjectionManager}. Kept on `Scene` under its
+   * original name — and with a setter — because `Entity` assigns to
+   * `scene.a11yNeedsReorder` as a public cross-class contract (`Entity.ts` sets
+   * it when `interactive` flips and when a child is added or removed), and the
+   * unedited suite writes it directly too.
+   */
+  public get a11yNeedsReorder(): boolean {
+    return this.a11yOrder.needsReorder;
+  }
+  public set a11yNeedsReorder(value: boolean) {
+    this.a11yOrder.needsReorder = value;
+  }
   private portalRoot: HTMLDivElement | null = null;
-  private fullViewportElements: HTMLElement[] = [];
-  private normalElements: HTMLElement[] = [];
-  private activeIds: Set<string> = new Set<string>();
-  /** Per-parent insertion cursor, reused by `enforceA11yDomOrder`. */
-  private a11yOrderCursors: Map<Node, number> = new Map<Node, number>();
-  /** Membership set for the elements being ordered, reused per reorder pass. */
-  private a11yOrderMembers: Set<HTMLElement> = new Set<HTMLElement>();
-  /**
-   * Elements that are an *ancestor* of another ordered element, reused per pass.
-   *
-   * A composite widget's container (a `grid` around its rows, a `tree` around its
-   * items) spans every descendant row, so it must not extend a visual row band —
-   * see {@link sortNormalElementsVisually}.
-   */
-  private a11yOrderContainers: Set<HTMLElement> = new Set<HTMLElement>();
-  /**
-   * Nearest `clipChildren` ancestor per ordered element — its *region* — reused
-   * per pass. Written by `enforceA11yDomOrder`'s collect walk, which already has
-   * the entity in hand, so a region costs one comparison per node rather than an
-   * ancestor walk per element.
-   *
-   * Absent means the element sits under no clipping ancestor and belongs to the
-   * implicit root region. See {@link sortNormalElementsVisually}.
-   */
-  private a11yOrderRegions: Map<HTMLElement, Entity> = new Map<HTMLElement, Entity>();
 
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
@@ -3299,7 +3299,7 @@ export class Scene {
       contentEl.remove();
       this.contentElements.delete(node.id);
       this.contentSyncState.delete(node.id);
-      this.a11yNeedsReorder = true;
+      this.a11yOrder.markNeedsReorder();
     }
     const el = this.a11yElements.get(node.id);
     if (el) {
@@ -3322,7 +3322,7 @@ export class Scene {
       this.preserveFocusOnRemoval(el);
       el.remove();
       this.a11yElements.delete(node.id);
-      this.a11yNeedsReorder = true;
+      this.a11yOrder.markNeedsReorder();
     }
     for (const child of node.children) {
       this.removeA11yRecursively(child);
@@ -4011,7 +4011,7 @@ export class Scene {
     const id = typeof entity === 'string' ? entity : entity.id;
     if (this.a11yProjectionRequests.has(id)) return;
     this.a11yProjectionRequests.add(id);
-    this.a11yNeedsReorder = true;
+    this.a11yOrder.markNeedsReorder();
     this.markDirty({ entity: id, reason: 'a11y-reorder' });
   }
 
@@ -4025,7 +4025,7 @@ export class Scene {
   public releaseA11yProjection(entity: Entity | string): void {
     const id = typeof entity === 'string' ? entity : entity.id;
     if (!this.a11yProjectionRequests.delete(id)) return;
-    this.a11yNeedsReorder = true;
+    this.a11yOrder.markNeedsReorder();
     this.markDirty({ entity: id, reason: 'a11y-reorder' });
   }
 
@@ -4106,7 +4106,7 @@ export class Scene {
         }
         this.a11yElements.delete(node.id);
         el = undefined;
-        this.a11yNeedsReorder = true; // Mark reorder as DOM structure has mutated
+        this.a11yOrder.markNeedsReorder(); // Mark reorder as DOM structure has mutated
       }
 
       if (!el) {
@@ -4330,7 +4330,7 @@ export class Scene {
           this.a11yRoot.appendChild(el);
         }
         this.a11yElements.set(node.id, el);
-        this.a11yNeedsReorder = true;
+        this.a11yOrder.markNeedsReorder();
       }
 
       // Refresh dynamic attributes (with Dirty Checking to minimize DOM API calls)
@@ -4555,7 +4555,7 @@ export class Scene {
           nestedIn && nestedIn.el !== el && nestedIn.el.isConnected ? nestedIn.el : this.a11yRoot;
         if (el.parentNode !== parentEl) {
           parentEl.appendChild(el);
-          this.a11yNeedsReorder = true;
+          this.a11yOrder.markNeedsReorder();
         }
 
         if (parentEl === this.a11yRoot) {
@@ -4894,7 +4894,7 @@ export class Scene {
         this.clearContentGridState(node.id, el);
         el.remove();
         this.contentElements.delete(node.id);
-        this.a11yNeedsReorder = true;
+        this.a11yOrder.markNeedsReorder();
       }
       // Also when there was no element: an entity whose projection has gone
       // null keeps no state, so a later re-materialization starts clean rather
@@ -5111,7 +5111,7 @@ export class Scene {
       );
       this.a11yRoot.appendChild(el);
       this.contentElements.set(node.id, el);
-      this.a11yNeedsReorder = true;
+      this.a11yOrder.markNeedsReorder();
     }
 
     const lines = projection.lines;
@@ -5941,10 +5941,7 @@ export class Scene {
     if (!this.a11yRoot) return;
 
     // Zero-GC cleanups
-    this.fullViewportElements.length = 0;
-    this.normalElements.length = 0;
-    this.activeIds.clear();
-    this.a11yOrderRegions.clear();
+    this.a11yOrder.beginCollect();
 
     // `region` is the nearest `clipChildren` ancestor, threaded down the walk so
     // establishing it costs one comparison per node instead of an ancestor walk
@@ -5954,18 +5951,14 @@ export class Scene {
 
       const contentEl = this.contentElements.get(node.id);
       if (contentEl) {
-        if (node.a11yFullViewport) this.fullViewportElements.push(contentEl);
-        else this.normalElements.push(contentEl);
-        if (region) this.a11yOrderRegions.set(contentEl, region);
+        this.a11yOrder.collect(contentEl, node.a11yFullViewport, region);
       }
 
       if (this.shouldProjectA11y(node)) {
         const el = this.a11yElements.get(node.id);
         if (el) {
-          this.activeIds.add(node.id);
-          if (node.a11yFullViewport) this.fullViewportElements.push(el);
-          else this.normalElements.push(el);
-          if (region) this.a11yOrderRegions.set(el, region);
+          this.a11yOrder.markActive(node.id);
+          this.a11yOrder.collect(el, node.a11yFullViewport, region);
         }
       }
       // A zero-area clipper clips nothing, matching `isWithinClippedViewport`.
@@ -5981,7 +5974,7 @@ export class Scene {
     // Prune removed/inactive elements and guard focus leaks
     let elementsPruned = false;
     for (const [id, el] of this.a11yElements.entries()) {
-      if (!this.activeIds.has(id)) {
+      if (!this.a11yOrder.isActive(id)) {
         elementsPruned = true;
         if (el === this.focusedA11yElement) {
           this.focusedA11yElement = null;
@@ -6002,269 +5995,13 @@ export class Scene {
     }
 
     if (elementsPruned) {
-      this.a11yNeedsReorder = true;
+      this.a11yOrder.markNeedsReorder();
     }
 
-    // Only reorder if the hierarchy flag is set
-    if (!this.a11yNeedsReorder) return;
-
-    // Tab / screen-reader order must follow the *visual* reading order, not the
-    // scene-graph insertion order in which we just collected the elements. Two
-    // buttons added in any order but drawn side by side should Tab left→right
-    // (or right→left under RTL). Sort the non-overlay elements by their synced
-    // world position (top → row, then inline). Full-viewport overlays keep
-    // insertion order (they cover everything, so their relative order is what
-    // the author declared).
-    this.sortNormalElementsVisually();
-
-    const fullLen = this.fullViewportElements.length;
-    const normalLen = this.normalElements.length;
-    const totalLen = fullLen + normalLen;
-
-    // Reorder nodes with zero allocations (no expectedOrder array or concats).
-    //
-    // Position is tracked per DOM parent rather than as one index into
-    // `a11yRoot.childNodes`: composite widgets nest (a `gridcell` is a child of
-    // its `row`, not of the root), so a single running index would compare a
-    // nested element against whatever happened to sit at that offset under the
-    // root and shuffle unrelated siblings on every frame. Walking the globally
-    // sorted sequence and advancing each parent's own cursor gives every
-    // container its children in global reading order, which is what document
-    // order — and therefore Tab order — is read from.
-    //
-    // Filling each parent's indices from 0 upwards is also what keeps the focus
-    // sentinel last: it is the one child of `a11yRoot` never collected here, so
-    // every positioned element is placed before it.
-    //
-    // Moving a node also destroys any `Selection` anchored inside its subtree —
-    // the same class of collateral damage as the focus loss handled below.
-    // Measured in CTX-0207 with the document parked and the write head ~300
-    // sections away: a selection held 176 chars across three sync passes and
-    // collapsed in the exact pass that MOVED its carrier (`removedNodes` and
-    // `addedNodes` both recorded the same node, `isConnected` stayed true, so no
-    // eviction path was involved).
-    //
-    // The endpoints are snapshotted at most ONCE per pass, and only once a move
-    // is actually about to happen. Reading any `Selection` property forces a
-    // synchronous layout (CTX-0203 measured ~0.5ms per read in real Chrome, with
-    // no cheap property to probe with), so the read is deliberately NOT hoisted
-    // above the loop: a pass that reorders nothing — the steady state — pays
-    // nothing at all. It must still precede the first `insertBefore`, because
-    // after that the live endpoints are already gone.
-    //
-    // `contentSelectionPresentThisSync` is deliberately NOT used as the gate
-    // here. That memo is invalidated by `syncA11y`, and this pass also runs in
-    // frames where `syncA11y` is skipped (`a11yElements.size > 0` alone reaches
-    // it), so it can hold a value describing an earlier frame.
-    let selection: Selection | null = null;
-    let selAnchorNode: Node | null = null;
-    let selFocusNode: Node | null = null;
-    let selAnchorOffset = 0;
-    let selFocusOffset = 0;
-    let selectionSnapshotTaken = false;
-    let selectionMoved = false;
-
-    this.a11yOrderCursors.clear();
-    for (let i = 0; i < totalLen; i++) {
-      const expected =
-        i < fullLen ? this.fullViewportElements[i] : this.normalElements[i - fullLen];
-      const parent = expected.parentNode;
-      if (!parent) continue;
-      const at = this.a11yOrderCursors.get(parent) ?? 0;
-      this.a11yOrderCursors.set(parent, at + 1);
-      const current = parent.childNodes[at];
-      if (current !== expected) {
-        // Moving a focused element blanks `document.activeElement`, and a
-        // component whose keyboard contract rides an entity `keydown` listener
-        // then stops receiving keys entirely — measured on `Dropdown`, whose
-        // Escape-to-close (Dropdown.ts:95,123) silently died because opening the
-        // popup reordered the mirror that held focus. Restore it after the move.
-        const refocus = document.activeElement === expected;
-        // Resolved on the first move of the pass and reused for the rest, so the
-        // forced layout is paid once per REORDERING pass rather than once per
-        // moved element. Inlined rather than factored into a helper closure: an
-        // assignment made inside a closure is invisible to TypeScript's
-        // control-flow analysis, which then narrows `selection` to `null` for the
-        // whole function and rejects the restore below as a property access on
-        // `never`.
-        if (!selectionSnapshotTaken) {
-          selectionSnapshotTaken = true;
-          const live =
-            typeof window !== 'undefined' && typeof window.getSelection === 'function'
-              ? window.getSelection()
-              : null;
-          if (live?.anchorNode && live.focusNode) {
-            selection = live;
-            selAnchorNode = live.anchorNode;
-            selFocusNode = live.focusNode;
-            selAnchorOffset = live.anchorOffset;
-            selFocusOffset = live.focusOffset;
-          }
-        }
-        // A move only breaks the selection when an endpoint lives inside the
-        // moved subtree, so each subsequent moved element costs one `contains`
-        // against the snapshot — no further `Selection` access.
-        if (
-          !selectionMoved &&
-          ((selAnchorNode !== null && expected.contains(selAnchorNode)) ||
-            (selFocusNode !== null && expected.contains(selFocusNode)))
-        ) {
-          selectionMoved = true;
-        }
-        parent.insertBefore(expected, current || null);
-        if (refocus) expected.focus({ preventScroll: true });
-      }
-    }
-
-    // Restore after the whole pass rather than per move: a selection spanning
-    // two carriers can have both of them moved, and re-applying between the two
-    // would only be undone by the second move.
-    //
-    // A move preserves the text nodes themselves, so the snapshotted nodes and
-    // offsets are still valid as-is. That is why this needs no offset remapping,
-    // unlike `preserveContentSelectionAcrossRebuild`, which reasons in linear
-    // character offsets because a rebuild replaces the nodes.
-    if (selectionMoved && selection && selAnchorNode && selFocusNode) {
-      try {
-        selection.setBaseAndExtent(selAnchorNode, selAnchorOffset, selFocusNode, selFocusOffset);
-      } catch {
-        // Engine rejected the range — an endpoint detached by the prune pass, or
-        // a shape it will not accept. Leaving the selection as the move left it
-        // is the honest outcome; there is nothing valid to restore onto.
-      }
-    }
-
-    this.a11yNeedsReorder = false;
-  }
-
-  /**
-   * Reorder `normalElements` (in place) into visual reading order using the
-   * positions `syncA11y` already wrote to each element's inline style
-   * (`top`/`left`/`height`). Elements are grouped into rows top-to-bottom (an
-   * element belongs to the current row while its top is above the row's
-   * running bottom edge), then sorted within a row by `left` — ascending for
-   * `'ltr'`, descending for `'rtl'`. The sort is stable, so entities at the
-   * same position keep their scene-graph (collection) order as a tiebreak.
-   *
-   * Those inline values are world coordinates for a top-level mirror but
-   * PARENT-RELATIVE for a nested one, so this list mixes coordinate spaces.
-   * That is sound because the result is only ever applied per DOM parent
-   * ({@link enforceA11yDomOrder} advances a cursor per parent), and all of one
-   * parent's children share one space: a `grid`'s rows are all grid-relative, a
-   * `row`'s cells all row-relative. Comparisons ACROSS spaces do happen while
-   * banding, but they only affect the relative order of elements in different
-   * parents, which no `insertBefore` ever acts on. Normalizing everything back
-   * to world coordinates here would cost a transform per element per frame to
-   * change nothing observable.
-   *
-   * Banding runs **per region** — per nearest `clipChildren` ancestor, recorded
-   * by {@link enforceA11yDomOrder}'s collect walk — rather than once over the
-   * whole scene. Purely visual banding is right for a screen reader but wrong
-   * for selection: a DOM `Selection` covers everything between anchor and focus
-   * in DOM order, so under one global banding a vertical drag through a
-   * transcript also swallowed a sidebar whose headings happened to fall in the
-   * same rows. Regions are laid out side by side, so ordering region-major keeps
-   * each one a contiguous DOM run and a drag stays inside it, while reading
-   * order *within* a region is unchanged. Regions are emitted in the order their
-   * clipper is first reached by the depth-first walk, so a screen reader still
-   * meets them in the author's declared order.
-   */
-  private sortNormalElementsVisually(): void {
-    const els = this.normalElements;
-    if (els.length < 2) return;
-
-    const rtl = this._readingDirection === 'rtl';
-    // A zero-height mirror (rare) still needs a row band so same-top siblings
-    // group together; clamp to a small minimum.
-    const heightOf = (el: HTMLElement) => Math.max(Number.parseFloat(el.style.height) || 0, 4);
-
-    // Identify which of these elements contain another one. Composite widgets
-    // nest (`grid` > `row` > `gridcell`), and a container necessarily spans every
-    // row it owns, so letting it extend a row band merges all of its rows into a
-    // single band — after which the inline sort orders every cell by `left`
-    // alone and yields column-major order. Walking ancestors is O(n · depth)
-    // against the O(n log n) sort below, and the projection nests at most three
-    // levels deep.
-    const members = this.a11yOrderMembers;
-    const containers = this.a11yOrderContainers;
-    members.clear();
-    containers.clear();
-    for (const el of els) members.add(el);
-    for (const el of els) {
-      for (let p = el.parentElement; p; p = p.parentElement) {
-        if (members.has(p)) containers.add(p);
-      }
-    }
-
-    // `top`/`left` are written **parent-relative** for a nested mirror (see
-    // `rebaseChildBox`) and world-relative for a flat one, so the raw values are
-    // not comparable across nesting levels: every `gridcell` inside a `row`
-    // reports `top: 0`, which sorts all of them as if they sat at the top of the
-    // document. Accumulate ancestor offsets to put every element back into one
-    // space. The walk stops at the first ancestor that is not itself being
-    // ordered, which is `a11yRoot`.
-    const absolute = (el: HTMLElement): { top: number; left: number } => {
-      let top = 0;
-      let left = 0;
-      for (let node: HTMLElement | null = el; node; node = node.parentElement) {
-        top += Number.parseFloat(node.style.top) || 0;
-        left += Number.parseFloat(node.style.left) || 0;
-        const parent = node.parentElement;
-        if (!parent || !members.has(parent)) break;
-      }
-      return { top, left };
-    };
-
-    // Decorate with the original index so the sort is stable across engines.
-    const decorated = els.map((el, i) => {
-      const { top, left } = absolute(el);
-      return { el, i, top, left, container: containers.has(el) };
-    });
-
-    // Partition into regions, keeping first-encounter order. `normalElements` is
-    // filled by a depth-first walk, so first encounter is the author's declared
-    // order and a region's own members are already adjacent here.
-    const regions = this.a11yOrderRegions;
-    const buckets = new Map<Entity | null, (typeof decorated)[number][]>();
-    for (const d of decorated) {
-      const key = regions.get(d.el) ?? null;
-      const bucket = buckets.get(key);
-      if (bucket) bucket.push(d);
-      else buckets.set(key, [d]);
-    }
-
-    const bandBottom = (r: (typeof decorated)[number]) =>
-      r.top + (r.container ? 4 : heightOf(r.el));
-    const sorted: HTMLElement[] = [];
-
-    // Band within a region only, so a row never spans two regions.
-    for (const order of buckets.values()) {
-      order.sort((p, q) => p.top - q.top || p.i - q.i);
-
-      // Bucket into visual rows by vertical overlap, then sort each row inline. A
-      // container contributes its position — so it still sorts ahead of its own
-      // descendants — but not its height, which is what keeps its rows separate.
-      let rowStart = 0;
-      let rowBottom = order.length ? bandBottom(order[0]) : 0;
-      const flushRow = (end: number) => {
-        const row = order.slice(rowStart, end);
-        row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
-        for (const r of row) sorted.push(r.el);
-      };
-      for (let k = 1; k < order.length; k++) {
-        if (order[k].top < rowBottom) {
-          // Same row — extend the band to the tallest element seen so far.
-          rowBottom = Math.max(rowBottom, bandBottom(order[k]));
-        } else {
-          flushRow(k);
-          rowStart = k;
-          rowBottom = bandBottom(order[k]);
-        }
-      }
-      flushRow(order.length);
-    }
-
-    for (let i = 0; i < sorted.length; i++) els[i] = sorted[i];
+    // Reading direction is passed in rather than reached for: it belongs to the
+    // text/layout side of this class, and the ordering engine holds no `Scene`
+    // reference (`DEC-0019` rule 5).
+    this.a11yOrder.reorder(this._readingDirection === 'rtl');
   }
 
   /** Keep DOM/WebGL overlay layers aligned with the canvas's CSS box. */
