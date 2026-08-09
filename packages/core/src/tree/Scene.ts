@@ -58,6 +58,7 @@ import {
   type TextCaretPosition,
 } from './scene/content-caret';
 import { A11yProjectionManager } from './scene/A11yProjectionManager';
+import { CanvasGeometry, type OverlayGeometry } from './scene/CanvasGeometry';
 import { HitTester } from './scene/HitTester';
 import { ContentProjectionManager } from './scene/ContentProjectionManager';
 import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
@@ -1469,17 +1470,29 @@ export class Scene {
 
   // --- domain: a11y-projection — focus, overlay geometry, DOM ordering, portals ---
   private focusedA11yElement: HTMLElement | null = null;
-  /** Last geometry `syncOverlayGeometry` wrote, so an unchanged frame can skip the
-   *  style writes entirely. Reset to `null` to force the next sync (a new overlay
-   *  layer was created and has never been positioned). */
-  private _overlayGeometry: {
-    left: number;
-    top: number;
-    cssWidth: number;
-    cssHeight: number;
-    width: number;
-    height: number;
-  } | null = null;
+  /**
+   * Canvas box geometry: the CSS↔logical mapping, overlay layer alignment, and
+   * the DPR math (extraction 5, `DEC-0024`).
+   *
+   * Definite-assignment because it holds `a11yRoot` and `portalRoot`, which the
+   * constructor only decides partway through — the same shape as
+   * {@link _contentProjection}.
+   */
+  private _geometry!: CanvasGeometry;
+  /**
+   * The overlay memo, for the unedited suite.
+   *
+   * `OverlayGeometrySkip.test.ts:75,143` assigns `null` to force the next sync,
+   * so the setter delegates to `invalidateOverlay()`. `protected` rather than
+   * `private` because it has no in-class reader and `noUnusedLocals` fails the
+   * build on a private with none (`DEC-0019` rule 4).
+   */
+  protected get _overlayGeometry(): OverlayGeometry | null {
+    return this._geometry.overlay;
+  }
+  protected set _overlayGeometry(value: OverlayGeometry | null) {
+    if (value === null) this._geometry.invalidateOverlay();
+  }
   /** Shadow elements the pointer is currently inside. Lets a removal that happens
    *  mid-hover synthesize the `pointerleave` the browser never sends for a
    *  detached element, so the entity doesn't keep its hover state. */
@@ -2687,6 +2700,10 @@ export class Scene {
     // Constructed here rather than as a field initializer: it holds `a11yRoot`,
     // which is only decided by the branch above.
     this._contentProjection = new ContentProjectionManager(this.a11yRoot, this.phases);
+    // Same reason, and it must precede the WebGL block below: that block
+    // invalidates the overlay memo, which now lives here (trap 9 — construct
+    // after every injected input is assigned, and before the first use).
+    this._geometry = new CanvasGeometry(this.canvas, this.a11yRoot, this.portalRoot);
 
     // Optional WebGL2 point-cloud layer, stacked above the 2D canvas (below a11y).
     if (options.pointBackend === 'webgl' && typeof document !== 'undefined') {
@@ -2705,7 +2722,7 @@ export class Scene {
         this.pointRenderer = pr;
         // A brand-new layer has never been positioned; force the next geometry
         // sync to write instead of short-circuiting on an unchanged box.
-        this._overlayGeometry = null;
+        this._geometry.invalidateOverlay();
         this.setupGLContextRecovery(gl);
       } else {
         gl.remove(); // WebGL2 unavailable → fall back to the Canvas2D batch
@@ -2817,14 +2834,7 @@ export class Scene {
   // --- domain: hit-test — client-to-scene mapping ---
   /** Convert browser viewport coordinates into this Scene's logical coordinates. */
   public clientToScene(clientX: number, clientY: number): { x: number; y: number } {
-    const rect = this.canvas.getBoundingClientRect?.();
-    if (!rect) return { x: clientX, y: clientY };
-    const cssWidth = rect.width || this.canvas.clientWidth || this.width;
-    const cssHeight = rect.height || this.canvas.clientHeight || this.height;
-    return {
-      x: (clientX - rect.left) * (cssWidth > 0 ? this.width / cssWidth : 1),
-      y: (clientY - rect.top) * (cssHeight > 0 ? this.height / cssHeight : 1),
-    };
+    return this._geometry.clientToScene(clientX, clientY, this.width, this.height);
   }
 
   // --- domain: scene-facade — tree mutation ---
@@ -5342,68 +5352,15 @@ export class Scene {
     this.a11yOrder.reorder(this._readingDirection === 'rtl');
   }
 
-  /** Keep DOM/WebGL overlay layers aligned with the canvas's CSS box. */
+  /**
+   * Keep DOM/WebGL overlay layers aligned with the canvas's CSS box.
+   *
+   * The logical size and the lazily-created layers are threaded through rather
+   * than held: `resize` mutates `width`/`height`, and `gpuCanvas` does not exist
+   * until the WebGPU particle path first runs (`DEC-0019` rule 5).
+   */
   private syncOverlayGeometry(): void {
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-
-    const canvasRect = this.canvas.getBoundingClientRect?.();
-    const parentRect = parent.getBoundingClientRect?.();
-    const cssWidth = canvasRect?.width || this.canvas.clientWidth || this.width;
-    const cssHeight = canvasRect?.height || this.canvas.clientHeight || this.height;
-    const left =
-      (canvasRect?.left ?? 0) -
-      (parentRect?.left ?? 0) -
-      (parent.clientLeft || 0) +
-      parent.scrollLeft;
-    const top =
-      (canvasRect?.top ?? 0) - (parentRect?.top ?? 0) - (parent.clientTop || 0) + parent.scrollTop;
-    const scaleX = this.width > 0 ? cssWidth / this.width : 1;
-    const scaleY = this.height > 0 ? cssHeight / this.height : 1;
-
-    // The overlay layers only move when the canvas box, the logical size, or the
-    // CSS↔logical scale actually changes — which is rare (resize, zoom, a
-    // scrolled ancestor), not every frame. Bail out when nothing moved instead of
-    // re-writing ten style properties per layer per frame: identical assignments
-    // still touch the CSSOM, and the write set grows with every overlay layer.
-    const prev = this._overlayGeometry;
-    if (
-      prev !== null &&
-      prev.left === left &&
-      prev.top === top &&
-      prev.cssWidth === cssWidth &&
-      prev.cssHeight === cssHeight &&
-      prev.width === this.width &&
-      prev.height === this.height
-    ) {
-      return;
-    }
-    this._overlayGeometry = {
-      left,
-      top,
-      cssWidth,
-      cssHeight,
-      width: this.width,
-      height: this.height,
-    };
-
-    for (const root of [this.a11yRoot, this.portalRoot]) {
-      if (!root) continue;
-      root.style.left = `${left}px`;
-      root.style.top = `${top}px`;
-      root.style.width = `${this.width}px`;
-      root.style.height = `${this.height}px`;
-      root.style.transformOrigin = '0 0';
-      root.style.transform = `scale(${scaleX}, ${scaleY})`;
-    }
-
-    for (const canvas of [this.glCanvas, this.gpuCanvas]) {
-      if (!canvas) continue;
-      canvas.style.left = `${left}px`;
-      canvas.style.top = `${top}px`;
-      canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${cssHeight}px`;
-    }
+    this._geometry.syncOverlay(this.width, this.height, this.glCanvas, this.gpuCanvas);
   }
 
   public getA11yTree(): A11yTreeNode[] {
@@ -6382,22 +6339,11 @@ export class Scene {
     this.markDirty();
   }
 
-  /** Effective device pixel ratio, matching CanvasRenderer: real DPR clamped to
-   *  `maxDPR` when set. */
-  private effectiveDPR(): number {
-    const real = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
-  }
-
   /** Size the WebGPU particle canvas: backing store at logical × DPR, CSS box at
    *  the logical size. Sizing the backing store in logical px (the old
    *  behavior) left it rasterized at 1× and CSS-stretched — blurry on HiDPI. */
   private sizeGpuCanvas(gpuCanvas: HTMLCanvasElement, width: number, height: number): void {
-    const dpr = this.effectiveDPR();
-    gpuCanvas.width = Math.max(1, Math.round(width * dpr));
-    gpuCanvas.height = Math.max(1, Math.round(height * dpr));
-    gpuCanvas.style.width = `${width}px`;
-    gpuCanvas.style.height = `${height}px`;
+    this._geometry.sizeGpuCanvas(gpuCanvas, width, height, this.maxDPR);
   }
 
   // --- domain: scene-facade — projection and tree accessors ---
