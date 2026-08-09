@@ -67,7 +67,7 @@ export { isMathJaxReady, MathBlock, preloadMathJax } from './markdown-math';
 // `CodeBlock`, `codeAtlasStats` and `codeAtlas` were exported from this module
 // before the code block moved to `markdown-code.ts`. Re-exported so the public
 // API and every deep import — including `packages/core/e2e` — stay valid.
-export { CodeBlock, codeAtlas, codeAtlasStats } from './markdown-code';
+export { CodeBlock, codeAtlas, codeAtlasStats, highlightedLanguages } from './markdown-code';
 import {
   containsImage,
   ensureInlineImageRaster,

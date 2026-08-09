@@ -22,7 +22,8 @@ import type { MarkdownTheme } from './theme';
  * loading the component. See `forge/decisions/file-decomposition-2026-08.md`.
  */
 
-/** Keyword sets for basic syntax highlighting. */
+/** Keyword sets for basic syntax highlighting. A language may have none and still
+ *  be highlighted — see {@link LANGUAGE_SYNTAX}. */
 const KEYWORD_SETS: Record<string, Set<string>> = {
   js: new Set([
     'const',
@@ -188,11 +189,231 @@ const KEYWORD_SETS: Record<string, Set<string>> = {
   ]),
 };
 
+KEYWORD_SETS['bash'] = new Set([
+  // Shell builtins and control words. Deliberately not the whole of coreutils:
+  // a keyword table that includes every command name colors an entire script
+  // uniformly, which reads worse than coloring only the control flow.
+  'if',
+  'then',
+  'else',
+  'elif',
+  'fi',
+  'for',
+  'while',
+  'until',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'in',
+  'function',
+  'return',
+  'exit',
+  'break',
+  'continue',
+  'local',
+  'export',
+  'readonly',
+  'declare',
+  'unset',
+  'shift',
+  'source',
+  'alias',
+  'set',
+  'trap',
+  'echo',
+  'cd',
+  'sudo',
+  'true',
+  'false',
+]);
+
+KEYWORD_SETS['json'] = new Set(['true', 'false', 'null']);
+
+KEYWORD_SETS['css'] = new Set([
+  'important',
+  'inherit',
+  'initial',
+  'unset',
+  'revert',
+  'auto',
+  'none',
+  'var',
+  'calc',
+]);
+
+KEYWORD_SETS['html'] = new Set([
+  // Tag names are the meaningful tokens a reader scans for. The tokenizer is
+  // word-based, so `<div>` yields the word `div`.
+  'html',
+  'head',
+  'body',
+  'title',
+  'meta',
+  'link',
+  'script',
+  'style',
+  'div',
+  'span',
+  'p',
+  'a',
+  'img',
+  'ul',
+  'ol',
+  'li',
+  'table',
+  'tr',
+  'td',
+  'th',
+  'form',
+  'input',
+  'button',
+  'label',
+  'select',
+  'option',
+  'textarea',
+  'header',
+  'footer',
+  'nav',
+  'main',
+  'section',
+  'article',
+  'aside',
+  'canvas',
+  'svg',
+  'template',
+  'slot',
+]);
+
 // Aliases
 KEYWORD_SETS['javascript'] = KEYWORD_SETS['js'];
 KEYWORD_SETS['typescript'] = KEYWORD_SETS['ts'];
 KEYWORD_SETS['python'] = KEYWORD_SETS['py'];
 KEYWORD_SETS['rs'] = KEYWORD_SETS['rust'];
+// Dialects onto their base. The lookup is exact-match after lowercasing, so
+// without these a superset of a covered language got nothing at all — `jsx` was
+// the telling case.
+KEYWORD_SETS['jsx'] = KEYWORD_SETS['js'];
+KEYWORD_SETS['mjs'] = KEYWORD_SETS['js'];
+KEYWORD_SETS['cjs'] = KEYWORD_SETS['js'];
+KEYWORD_SETS['tsx'] = KEYWORD_SETS['ts'];
+KEYWORD_SETS['mts'] = KEYWORD_SETS['ts'];
+KEYWORD_SETS['cts'] = KEYWORD_SETS['ts'];
+KEYWORD_SETS['sh'] = KEYWORD_SETS['bash'];
+KEYWORD_SETS['zsh'] = KEYWORD_SETS['bash'];
+KEYWORD_SETS['shell'] = KEYWORD_SETS['bash'];
+KEYWORD_SETS['console'] = KEYWORD_SETS['bash'];
+KEYWORD_SETS['jsonc'] = KEYWORD_SETS['json'];
+KEYWORD_SETS['json5'] = KEYWORD_SETS['json'];
+KEYWORD_SETS['scss'] = KEYWORD_SETS['css'];
+KEYWORD_SETS['sass'] = KEYWORD_SETS['css'];
+KEYWORD_SETS['less'] = KEYWORD_SETS['css'];
+KEYWORD_SETS['vue'] = KEYWORD_SETS['html'];
+KEYWORD_SETS['svelte'] = KEYWORD_SETS['html'];
+KEYWORD_SETS['xml'] = KEYWORD_SETS['html'];
+KEYWORD_SETS['svg'] = KEYWORD_SETS['html'];
+
+/**
+ * Per-language lexical syntax, separate from the keyword table.
+ *
+ * The comment prefix used to be hardcoded in the tokenizer — `//` for every
+ * language and `#` only for Python and Rust — so a shell script's `#` comments
+ * were never colored even where the keyword lookup succeeded. Describing the
+ * syntax per language instead means adding a language is a table entry rather
+ * than a new branch in the tokenizer.
+ *
+ * `quotes` exists because the quote characters are not universal: a `'` in shell
+ * is a string delimiter, but in Rust it also opens a lifetime (`&'a str`), and a
+ * backtick is a template literal in JS while it is command substitution in
+ * shell. JSON has no single-quoted strings at all.
+ */
+interface LanguageSyntax {
+  /** Line-comment prefixes, longest first so `//` is tried before `/`. */
+  lineComments: readonly string[];
+  /** Quote characters that open a string on this line. */
+  quotes: readonly string[];
+  /** Whether numeric literals are meaningful enough to color. */
+  numbers: boolean;
+}
+
+const C_LIKE: LanguageSyntax = {
+  lineComments: ['//'],
+  quotes: ['"', "'", '`'],
+  numbers: true,
+};
+
+const HASH_COMMENT: LanguageSyntax = {
+  lineComments: ['#'],
+  quotes: ['"', "'"],
+  numbers: true,
+};
+
+const LANGUAGE_SYNTAX: Record<string, LanguageSyntax> = {
+  js: C_LIKE,
+  ts: C_LIKE,
+  py: HASH_COMMENT,
+  // Rust has `//` line comments AND `'` lifetimes. The unterminated-quote
+  // fallback already keeps a lifetime from swallowing the line, so `'` stays
+  // listed: `'a'` is a valid char literal and should color as a string.
+  rust: C_LIKE,
+  bash: HASH_COMMENT,
+  // JSON has no comments and no single-quoted strings. JSONC does have `//`,
+  // and is aliased separately below rather than sharing this entry.
+  json: { lineComments: [], quotes: ['"'], numbers: true },
+  // CSS has only block comments, which this line-based tokenizer cannot span,
+  // so no line-comment prefix is claimed. Numbers are everywhere in CSS and
+  // coloring them is most of the visible benefit.
+  css: { lineComments: [], quotes: ['"', "'"], numbers: true },
+  // Markup: no line comments, and numbers inside attribute values are noise
+  // rather than signal.
+  html: { lineComments: [], quotes: ['"', "'"], numbers: false },
+};
+
+LANGUAGE_SYNTAX['javascript'] = LANGUAGE_SYNTAX['js'];
+LANGUAGE_SYNTAX['typescript'] = LANGUAGE_SYNTAX['ts'];
+LANGUAGE_SYNTAX['python'] = LANGUAGE_SYNTAX['py'];
+LANGUAGE_SYNTAX['rs'] = LANGUAGE_SYNTAX['rust'];
+LANGUAGE_SYNTAX['jsx'] = LANGUAGE_SYNTAX['js'];
+LANGUAGE_SYNTAX['mjs'] = LANGUAGE_SYNTAX['js'];
+LANGUAGE_SYNTAX['cjs'] = LANGUAGE_SYNTAX['js'];
+LANGUAGE_SYNTAX['tsx'] = LANGUAGE_SYNTAX['ts'];
+LANGUAGE_SYNTAX['mts'] = LANGUAGE_SYNTAX['ts'];
+LANGUAGE_SYNTAX['cts'] = LANGUAGE_SYNTAX['ts'];
+LANGUAGE_SYNTAX['sh'] = LANGUAGE_SYNTAX['bash'];
+LANGUAGE_SYNTAX['zsh'] = LANGUAGE_SYNTAX['bash'];
+LANGUAGE_SYNTAX['shell'] = LANGUAGE_SYNTAX['bash'];
+LANGUAGE_SYNTAX['console'] = LANGUAGE_SYNTAX['bash'];
+LANGUAGE_SYNTAX['yaml'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['yml'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['toml'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['ini'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['dockerfile'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['makefile'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['make'] = HASH_COMMENT;
+LANGUAGE_SYNTAX['jsonc'] = { lineComments: ['//'], quotes: ['"'], numbers: true };
+LANGUAGE_SYNTAX['json5'] = { lineComments: ['//'], quotes: ['"', "'"], numbers: true };
+LANGUAGE_SYNTAX['scss'] = C_LIKE;
+LANGUAGE_SYNTAX['sass'] = C_LIKE;
+LANGUAGE_SYNTAX['less'] = C_LIKE;
+LANGUAGE_SYNTAX['glsl'] = C_LIKE;
+LANGUAGE_SYNTAX['c'] = C_LIKE;
+LANGUAGE_SYNTAX['cpp'] = C_LIKE;
+LANGUAGE_SYNTAX['go'] = C_LIKE;
+LANGUAGE_SYNTAX['java'] = C_LIKE;
+LANGUAGE_SYNTAX['kotlin'] = C_LIKE;
+LANGUAGE_SYNTAX['swift'] = C_LIKE;
+LANGUAGE_SYNTAX['vue'] = LANGUAGE_SYNTAX['html'];
+LANGUAGE_SYNTAX['svelte'] = LANGUAGE_SYNTAX['html'];
+LANGUAGE_SYNTAX['xml'] = LANGUAGE_SYNTAX['html'];
+LANGUAGE_SYNTAX['svg'] = LANGUAGE_SYNTAX['html'];
+
+/**
+ * Languages this build can highlight, for an app that wants to check before
+ * rendering. A language appears here when it has syntax, keywords, or both.
+ */
+export function highlightedLanguages(): string[] {
+  return [...new Set([...Object.keys(LANGUAGE_SYNTAX), ...Object.keys(KEYWORD_SETS)])].sort();
+}
 
 /** Segment of highlighted code text. */
 interface CodeSegment {
@@ -202,8 +423,22 @@ interface CodeSegment {
 
 /** Tokenize a line of code into colored segments (keyword / string / comment / default). */
 function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme>): CodeSegment[] {
-  const keywords = KEYWORD_SETS[lang];
-  if (!keywords) {
+  // Normalize here rather than at construction: `lang` is public and settable
+  // through `setCode()`, and a fence writes it verbatim, so ```Bash / ```BASH /
+  // ```bash all had to resolve to one entry. A fence info string can also carry
+  // attributes (```ts title="x"), so only the first token is the language.
+  const key =
+    lang
+      .trim()
+      .toLowerCase()
+      .split(/[\s:,{]/)[0] ?? '';
+  const keywords = KEYWORD_SETS[key];
+  const syntax = LANGUAGE_SYNTAX[key];
+  // Bail out only when the language is unknown on BOTH tables. Gating the whole
+  // tokenizer on the keyword lookup meant an unknown language lost its comments,
+  // strings and numbers too — and those, not the keywords, are most of the
+  // visible benefit for a shell-heavy document.
+  if (!keywords && !syntax) {
     return [{ text: line, color: theme.codeColor }];
   }
 
@@ -223,17 +458,17 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
     }
   };
 
+  // A language present only in the keyword table keeps the previous C-like
+  // lexical rules, so an app that registered keywords by hand is unaffected.
+  const lexical = syntax ?? C_LIKE;
+
   while (i < line.length) {
     const ch = line[i];
 
-    // Single-line comment
-    if (ch === '/' && line[i + 1] === '/') {
-      flush(theme.codeColor);
-      segments.push({ text: line.slice(i), color: COMMENT_COLOR });
-      return segments;
-    }
-    // Python / Rust comment
-    if (ch === '#' && (lang === 'py' || lang === 'python' || lang === 'rust' || lang === 'rs')) {
+    // Line comments, from the language's own table rather than hardcoded. Tried
+    // longest-first so `//` wins over a hypothetical `/`.
+    const comment = lexical.lineComments.find((prefix) => line.startsWith(prefix, i));
+    if (comment !== undefined) {
       flush(theme.codeColor);
       segments.push({ text: line.slice(i), color: COMMENT_COLOR });
       return segments;
@@ -244,7 +479,7 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
     // identifier or trailing prose, a generic `'` in shell) would swallow the
     // whole rest of the line as a green "string". An unterminated quote falls
     // through and is treated as ordinary punctuation.
-    if (ch === '"' || ch === "'" || ch === '`') {
+    if (lexical.quotes.includes(ch)) {
       const quote = ch;
       let j = i + 1;
       let closed = false;
@@ -272,7 +507,11 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
     }
 
     // Numbers
-    if (/\d/.test(ch) && (i === 0 || /[\s(,=+\-*/<>[\]{}:;]/.test(line[i - 1]))) {
+    if (
+      lexical.numbers &&
+      /\d/.test(ch) &&
+      (i === 0 || /[\s(,=+\-*/<>[\]{}:;]/.test(line[i - 1]))
+    ) {
       flush(theme.codeColor);
       let j = i;
       while (j < line.length && /[\d._xXa-fA-F]/.test(line[j])) j++;
@@ -289,7 +528,9 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
       const word = line.slice(i, j);
       segments.push({
         text: word,
-        color: keywords.has(word) ? KEYWORD_COLOR : theme.codeColor,
+        // A language may have lexical syntax but no keywords (plain YAML, TOML,
+        // a Dockerfile). Those still get comments, strings and numbers.
+        color: keywords?.has(word) ? KEYWORD_COLOR : theme.codeColor,
       });
       i = j;
       continue;
