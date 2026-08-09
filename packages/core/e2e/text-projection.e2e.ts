@@ -1092,6 +1092,58 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
             };
           },
         );
+        // Selection SEAM residue: does the browser's own selection rect for one
+        // cell reach the rect of the next?
+        //
+        // Distinct from `widthError` above, which compares a rect against the
+        // grid's expected width. This compares consecutive rects against EACH
+        // OTHER, which is what a reader sees: a residue here is literally the
+        // width of the unhighlighted column between two adjacent glyphs. The
+        // page-scale calibration basis used to be measured over 1 px, where a
+        // browser's 1/64-device-px rect rounding is the whole reading, and the
+        // resulting 0.78% scale error left 0.133 px at every CJK seam on a real
+        // page — which paints as a vertical white line at DPR 1.1.
+        const seamResidues: Array<{ left: string; right: string; residue: number }> = [];
+        const cellElements = [
+          ...lineElement.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]'),
+        ];
+        for (let cellIndex = 1; cellIndex < cellElements.length; cellIndex++) {
+          const previous = cellElements[cellIndex - 1];
+          const current = cellElements[cellIndex];
+          const previousLength = Number(previous.dataset.vectoGridSourceLength);
+          const currentLength = Number(current.dataset.vectoGridSourceLength);
+          if (previousLength <= 0 || currentLength <= 0) continue;
+          // Zero-advance cells (bidi controls) share an x with their neighbour and
+          // have no seam of their own.
+          if (
+            Number(previous.dataset.vectoGridAdvance) <= 0 ||
+            Number(current.dataset.vectoGridAdvance) <= 0
+          ) {
+            continue;
+          }
+          // Only same-direction neighbours: across a bidi boundary the visually
+          // adjacent pair is not the logically adjacent one, so a "gap" there is
+          // reordering rather than residue.
+          if (previous.dataset.vectoGridLevel !== current.dataset.vectoGridLevel) continue;
+          const previousRange = document.createRange();
+          previousRange.setStart(previous.firstChild!, 0);
+          previousRange.setEnd(previous.firstChild!, previousLength);
+          const currentRange = document.createRange();
+          currentRange.setStart(current.firstChild!, 0);
+          currentRange.setEnd(current.firstChild!, currentLength);
+          const previousRect = previousRange.getBoundingClientRect();
+          const currentRect = currentRange.getBoundingClientRect();
+          if (previousRect.width <= 0 || currentRect.width <= 0) continue;
+          const rtl = (Number(previous.dataset.vectoGridLevel) & 1) !== 0;
+          const residue = rtl
+            ? previousRect.left - currentRect.right
+            : currentRect.left - previousRect.right;
+          seamResidues.push({
+            left: previous.textContent?.slice(0, previousLength) ?? '',
+            right: current.textContent?.slice(0, currentLength) ?? '',
+            residue,
+          });
+        }
         return {
           domWidth: lineRect.width,
           localWidth,
@@ -1099,6 +1151,22 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
           details: cells,
           maxStartError: Math.max(0, ...cells.map((cell) => cell.startError)),
           maxWidthError: Math.max(0, ...cells.map((cell) => cell.widthError)),
+          scale,
+          seamResidues,
+          maxSeamResidue: Math.max(0, ...seamResidues.map((seam) => Math.abs(seam.residue))),
+          // A COPY, not the array element itself. Returning the same object
+          // reference twice in one `page.evaluate` result made the duplicate
+          // deserialize as `undefined`, so the failure message read
+          // `... residue 0.2666px undefined` — the number was right and the
+          // evidence for it was missing.
+          worstSeam:
+            seamResidues.length > 0
+              ? {
+                  ...seamResidues.reduce((worst, seam) =>
+                    Math.abs(seam.residue) > Math.abs(worst.residue) ? seam : worst,
+                  ),
+                }
+              : null,
         };
       });
 
@@ -1578,6 +1646,16 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         line.maxWidthError <= 1,
         `${browserCase.name} CodeBlock row ${index} projected cell width drift ${line.maxWidthError}px ${JSON.stringify(line)}`,
       );
+      // Consecutive selection rects must tile the grid pitch, or the untiled
+      // remainder paints as a vertical unhighlighted line between glyphs. The
+      // bound is a quarter of a CSS pixel: a browser rounds rects to 1/64 device
+      // px, so some residue is unavoidable, but the defect this guards was
+      // 0.133 px on a real page and any regression of the calibration basis
+      // reappears at that scale or larger.
+      assert.ok(
+        line.maxSeamResidue <= 0.25,
+        `${browserCase.name} CodeBlock row ${index} selection seam residue ${line.maxSeamResidue}px ${JSON.stringify(line.worstSeam)}`,
+      );
     }
     assert.ok(
       result.ligature.disabledWidth - result.ligature.normalWidth >= 0.25,
@@ -1767,8 +1845,12 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
     );
     assert.deepEqual(pageErrors, [], `${browserCase.name} emitted browser errors during rebuild`);
 
+    const worstSeamResidue = Math.max(
+      0,
+      ...result.codeGrid.lines.map((line) => line.maxSeamResidue),
+    );
     console.log(
-      `✓ ${browserCase.name}: selection and cold grid (${hiddenGridBefore.materializeMs.toFixed(1)}ms materialize, ${hiddenGridBefore.calibrationMs.toFixed(1)}ms calibrate, ${hiddenGridBefore.samples} samples)`,
+      `✓ ${browserCase.name}: selection and cold grid (${hiddenGridBefore.materializeMs.toFixed(1)}ms materialize, ${hiddenGridBefore.calibrationMs.toFixed(1)}ms calibrate, ${hiddenGridBefore.samples} samples, ${worstSeamResidue.toFixed(4)}px worst seam)`,
     );
   } finally {
     await browser.close();
