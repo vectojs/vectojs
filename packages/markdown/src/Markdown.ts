@@ -2008,15 +2008,96 @@ export class Markdown extends UIComponent {
       radius: this.theme.imageRadius,
       onLoad: () => {
         const bmp = (img as any).bitmap;
+        const previousWidth = img.width;
+        const previousHeight = img.height;
         if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
           const aspect = bmp.naturalHeight / bmp.naturalWidth;
           img.width = Math.min(bmp.naturalWidth, availableWidth);
           img.height = Math.round(img.width * aspect);
         }
+        // Only reflow when the guess was actually wrong. An unchanged box needs
+        // no relayout, and neither does the zero-dimension case, which
+        // deliberately keeps the guessed box — see `paragraphImageRepaint.test.ts`.
+        if (img.width !== previousWidth || img.height !== previousHeight) {
+          this.reflowAfterImageResize(img);
+        }
         this.scene?.markDirty();
       },
     });
     return img;
+  }
+
+  /**
+   * Re-position every block after an image whose decode corrected its box.
+   *
+   * The 16:10 guess above is rarely the real aspect ratio, so without this every
+   * sibling below the image keeps the position computed from the guess, and an
+   * image taller than the guess renders *under* the paragraph that follows it.
+   *
+   * A bare `this.content.layout()` is not enough, and that is the part worth
+   * knowing: `Stack.layout()` is **not recursive**. It positions its children
+   * from the size each child reports at the moment it runs and never asks a
+   * child to recompute its own box first. Every image sits behind at least one
+   * intermediate container that caches a height — an image-bearing paragraph is
+   * a `Stack`, a list item's or blockquote's image is wrapped in a
+   * `MarkdownContainer` — so laying out `content` alone re-reads the very boxes
+   * the decode just invalidated. Measured on `94d6da3`: a 600x900 portrait in
+   * `![alt](…)\n\nAfter.` corrects `Image.height` 480 to 900 while its parent
+   * `Stack` stays 480 and the following paragraph stays at `y=496`.
+   *
+   * So resync bottom-up, from the image's own parent up to `content`, and each
+   * level sees a freshly-sized child before it positions anything.
+   */
+  private reflowAfterImageResize(img: Image): void {
+    // Walk to `content` first. An image detached by a concurrent rebuild has no
+    // path to it, and re-deriving this component's box from a tree the image is
+    // no longer part of would publish a size for content that is not on screen.
+    let reachesContent = false;
+    for (let node: Entity | null = img.parent; node; node = node.parent) {
+      if (node === this.content) {
+        reachesContent = true;
+        break;
+      }
+    }
+    if (!reachesContent) return;
+
+    for (let node: Entity | null = img.parent; node; node = node.parent) {
+      if (node instanceof Stack) node.layout();
+      else if (node instanceof MarkdownContainer) this.resyncWrapperBox(node);
+      if (node === this.content) break;
+    }
+    this.width = this.content.width;
+    this.height = this.content.height;
+    this.onLayoutUpdated?.();
+  }
+
+  /**
+   * Re-derive one `MarkdownContainer`'s cached box from its children.
+   *
+   * Mirrors how {@link reflowToken}'s `blockquote` / `container` arms and every
+   * construction site derive it, so an image resize and a width change converge
+   * on the same geometry rather than each having its own arithmetic.
+   */
+  private resyncWrapperBox(wrapper: Entity): void {
+    const innerStack = wrapper.children.find((c) => c instanceof Stack);
+    const border = wrapper.children.find((c) => c instanceof QuoteBorder);
+    const background = wrapper.children.find((c) => c instanceof ContainerBackground);
+    // A blockquote or `:::` container: the accent bar and the background fill
+    // both span the content height, and the wrapper's own width is the available
+    // width rather than anything derived from a child, so it is left alone.
+    if (border || background) {
+      const contentHeight = innerStack?.height || 20;
+      if (border instanceof QuoteBorder) border.height = contentHeight;
+      if (background instanceof ContainerBackground) background.height = contentHeight;
+      wrapper.height = Math.max(background?.height ?? 0, border?.height ?? 0, contentHeight);
+      return;
+    }
+    // A plain indent wrapper (list-item block, footnote continuation): one child,
+    // offset by its own indent, which `child.x` already carries.
+    const child = wrapper.children[0];
+    if (!child) return;
+    wrapper.width = child.x + child.width;
+    wrapper.height = child.height;
   }
 
   /** One table cell entity, shared by the render arm and the streamed-table path. */
@@ -2171,6 +2252,11 @@ export class Markdown extends UIComponent {
       const wrapper = new MarkdownContainer();
       el.x = indent;
       wrapper.add(el);
+      // Every other wrapper-image site in this file derives the wrapper box the
+      // same way; this one used to omit it entirely, so the outer `Stack` treated
+      // a lead image as a zero-height block even before any decode.
+      wrapper.width = el.width + indent;
+      wrapper.height = el.height;
       stack.add(wrapper);
     }
 
