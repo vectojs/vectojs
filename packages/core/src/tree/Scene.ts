@@ -54,7 +54,14 @@ import { sanitizeUrl } from '../renderer/url';
 import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
 import type { PreparedContentGrid, PreparedContentGridLine } from '@vectojs/text';
 import { isNativelyFocusable, rebaseChildBox } from './scene/a11y-dom';
+import {
+  collectTextNodes,
+  projectionAbsoluteOffset,
+  projectionCaretAt,
+  type TextCaretPosition,
+} from './scene/content-caret';
 import { A11yProjectionManager } from './scene/A11yProjectionManager';
+import { ContentProjectionManager } from './scene/ContentProjectionManager';
 import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
 import {
   type AcceleratorReason,
@@ -760,19 +767,6 @@ function projectionLineWindow(
   return { start, end, gated: true };
 }
 
-/** A concrete text caret position, usable as a Selection anchor or focus. */
-interface TextCaretPosition {
-  node: Text;
-  offset: number;
-}
-
-function collectTextNodes(root: HTMLElement): Text[] {
-  const out: Text[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n as Text);
-  return out;
-}
-
 /** Bounding rect of a text node's full contents (null when it has no boxes). */
 const caretGraphemeSegmenter =
   typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
@@ -1036,40 +1030,6 @@ function nearestTextPositionInProjection(
   if (bestLine) return nearestTextPositionInLine(bestLine, x, y);
   // Projection with a single flowed text node (no per-line children).
   return nearestTextPositionInLine(contentEl, x, y);
-}
-
-function projectionAbsoluteOffset(root: HTMLElement, caret: TextCaretPosition): number | null {
-  let offset = 0;
-  for (const node of collectTextNodes(root)) {
-    if (node === caret.node) return offset + Math.min(caret.offset, node.data.length);
-    offset += node.data.length;
-  }
-  return null;
-}
-
-function projectionCaretAt(
-  root: HTMLElement,
-  absoluteOffset: number,
-  affinity: 'forward' | 'backward',
-): TextCaretPosition | null {
-  const nodes = collectTextNodes(root);
-  if (nodes.length === 0) return null;
-  let remaining = Math.max(0, absoluteOffset);
-  for (let index = 0; index < nodes.length; index++) {
-    const node = nodes[index];
-    if (
-      remaining < node.data.length ||
-      (remaining === node.data.length && affinity === 'backward')
-    ) {
-      return { node, offset: remaining };
-    }
-    if (remaining === node.data.length && index === nodes.length - 1) {
-      return { node, offset: remaining };
-    }
-    remaining -= node.data.length;
-  }
-  const last = nodes[nodes.length - 1];
-  return { node: last, offset: last.data.length };
 }
 
 function selectProjectionUnit(
@@ -1410,33 +1370,6 @@ export class Scene {
    * {@link Entity.getContentEpoch}. (carryctx CTX-0199)
    */
   private contentSyncState: Map<string, ContentSyncState> = new Map();
-  /** Pending cold font-calibration frame per projected grid entity. */
-  private contentGridCalibrationFrames: Map<string, number> = new Map();
-  /** Detached, untransformed font probes used by the cold calibration pass. */
-  private contentGridCalibrationProbes: Map<string, HTMLElement> = new Map();
-  /**
-   * Monotonic stamp identifying the conditions grid cells were calibrated under.
-   *
-   * Calibration measures the difference between the advance the canvas grid assigns
-   * a cluster and the width the browser lays it out at, then writes a per-cell
-   * `scaleX`. That result stays valid until the font or the page scale changes, and
-   * it lives on the cell element — so a cell carrying this stamp needs no further
-   * work.
-   *
-   * The scan that feeds calibration was O(cells) on every revision bump: for a
-   * streaming code block it re-derived a measurement key for every cell in the
-   * block each frame in order to produce only ~20 distinct keys, costing about
-   * 2.5 ms/frame after the `style.font` fix and still over half of `a11ySync`. Since
-   * carrier reuse (#244) leaves untouched lines — and therefore their calibrated
-   * transforms — in place, cells stamped with the current generation can simply be
-   * skipped, making the scan O(new cells) instead.
-   *
-   * A plain incrementing integer rather than the descriptive calibration key,
-   * because it goes into an attribute selector and must not need escaping.
-   */
-  private contentGridCalibrationGeneration = 0;
-  /** The `(fontEpoch, pageScale)` pair the current generation corresponds to. */
-  private contentGridCalibrationStamp = '';
   /** Invalidates grid font calibration after browser font availability changes. */
   private contentFontEpoch = 0;
   /**
@@ -1512,37 +1445,6 @@ export class Scene {
   // scene in `onDemand` mode would stop rendering with the document half
   // materialized and never finish.
   private contentSemanticDeferred = false;
-  /**
-   * Per-sync memo of "does the document hold a selection at all".
-   *
-   * Reading ANY property of a `Selection` (`anchorNode`, `rangeCount`, `type`,
-   * `isCollapsed`) forces a synchronous layout, because Blink validates the
-   * selection against current box geometry before answering. Measured in real
-   * Chrome against a 1000-carrier subtree with layout dirtied between reads:
-   * `anchorNode` 0.5ms, `rangeCount` 0.4ms, `type` 0.5ms, `isCollapsed` 0.5ms —
-   * all indistinguishable from `offsetHeight` (0.5ms), against a 0ms floor for
-   * mutating without reading. So there is no cheap property to probe with; the
-   * only way to avoid the layout is to not touch the object at all.
-   *
-   * Materializing a block rebuilds its carriers, which asks whether the rebuild
-   * would destroy a selection. Once per block, that read cost a forced layout
-   * over the whole (and growing) projection subtree, which is what made
-   * per-block cost rise with resident count: profiled at 1973 forced layouts
-   * totalling 633ms of an 847ms 1000-block drain (75%).
-   *
-   * A selection is a single document-wide object and a sync walk cannot yield to
-   * the user, so its presence cannot change mid-walk. Resolving it once per walk
-   * turns O(blocks) forced layouts into O(1). `null` = not yet resolved.
-   */
-  private contentSelectionPresentThisSync: boolean | null = null;
-  /**
-   * True while a text-selection drag that started on a projection's blank
-   * region (no text node under the press) is being driven manually — the
-   * browser has no native anchor for it, so mousemove extends the Selection
-   * from the position we resolved ourselves.
-   */
-  private blankRegionSelectionDrag = false;
-  private contentSelectionAnchor: TextCaretPosition | null = null;
   private contentSelectionEndListener: (() => void) | null = null;
 
   // --- domain: render-scheduler — per-frame walk flags ---
@@ -1608,6 +1510,43 @@ export class Scene {
    * {@link shouldProjectA11y} and the focus/caret state.
    */
   private readonly a11yOrder = new A11yProjectionManager();
+
+  /**
+   * The content projection's selection preservation and grid calibration
+   * (extraction 3, `DEC-0022`).
+   *
+   * Definite-assignment because it needs `a11yRoot`, which the constructor
+   * creates partway through — the same shape as {@link _wasmBackend}. Every
+   * constructor use is inside a deferred event listener, so it is always
+   * assigned before anything can reach it.
+   */
+  private _contentProjection!: ContentProjectionManager;
+
+  /**
+   * Pending grid-calibration frames, keyed by entity id.
+   *
+   * Delegates to {@link ContentProjectionManager}. Kept on `Scene` under its
+   * original name because the text-projection e2e reads
+   * `scene.contentGridCalibrationFrames.size` to assert calibration is not left
+   * in flight after a rebuild. `protected` rather than `private`: there is no
+   * in-class reader, and `private` plus no reader fails `noUnusedLocals`
+   * (`DEC-0019` rule 4).
+   */
+  protected get contentGridCalibrationFrames(): ReadonlyMap<string, number> {
+    return this._contentProjection.calibrationFrames;
+  }
+
+  /**
+   * Index of the carrier line holding a selection inside `el`, or `null`.
+   *
+   * Delegates to {@link ContentProjectionManager}. Kept under its original name
+   * because `ContentGridSelectionWindow.test.ts` calls it through a cast to
+   * assert the selection-window behaviour. `protected` per `DEC-0019` rule 4 —
+   * the in-class callers now go through the manager directly.
+   */
+  protected contentGridSelectionLine(el: HTMLElement): number | null {
+    return this._contentProjection.gridSelectionLine(el);
+  }
   /**
    * Whether the projected a11y DOM needs reordering on the next pass.
    *
@@ -2747,7 +2686,7 @@ export class Scene {
           if (e.detail >= 2) {
             selection.removeAllRanges();
             selectProjectionUnit(selection, contentEl, resolved, e.detail >= 3 ? 'line' : 'word');
-            this.endContentSelectionDrag();
+            this._contentProjection.endDrag();
             e.preventDefault();
             return;
           }
@@ -2761,8 +2700,7 @@ export class Scene {
               : resolved;
           if (e.shiftKey && existingAnchor) extendSelection(selection, anchor, resolved);
           else selection.collapse(resolved.node, resolved.offset);
-          this.contentSelectionAnchor = anchor;
-          this.blankRegionSelectionDrag = true;
+          this._contentProjection.beginBlankRegionDrag(anchor);
           e.preventDefault();
         }
       });
@@ -2781,11 +2719,11 @@ export class Scene {
         if (!selection || !caret) return;
         selection.removeAllRanges();
         selectProjectionUnit(selection, contentEl, caret, 'word');
-        this.endContentSelectionDrag();
+        this._contentProjection.endDrag();
         e.preventDefault();
       });
       this.a11yRoot.addEventListener('mousemove', (e) => {
-        if (!this.blankRegionSelectionDrag) return;
+        if (!this._contentProjection.blankRegionDragActive) return;
         const selection = window.getSelection();
         if (!selection || selection.rangeCount === 0) return;
         const target = e.target as HTMLElement;
@@ -2817,12 +2755,12 @@ export class Scene {
         const focus = contentEl
           ? nearestTextPositionInProjection(contentEl, this.canvas, e.clientX, e.clientY, target)
           : null;
-        const anchor = this.contentSelectionAnchor;
+        const anchor = this._contentProjection.selectionAnchor;
         if (focus && anchor) {
           extendSelection(selection, anchor, focus);
         }
       });
-      const endDrag = () => this.endContentSelectionDrag();
+      const endDrag = () => this._contentProjection.endDrag();
       this.a11yRoot.addEventListener('mouseup', endDrag);
       // Pointer may leave the overlay entirely (e.g. moving above the viewport).
       this.a11yRoot.addEventListener('mouseleave', endDrag);
@@ -2849,6 +2787,10 @@ export class Scene {
       this.a11yRoot = null;
       this.portalRoot = null;
     }
+
+    // Constructed here rather than as a field initializer: it holds `a11yRoot`,
+    // which is only decided by the branch above.
+    this._contentProjection = new ContentProjectionManager(this.a11yRoot, this.phases);
 
     // Optional WebGL2 point-cloud layer, stacked above the 2D canvas (below a11y).
     if (options.pointBackend === 'webgl' && typeof document !== 'undefined') {
@@ -2952,162 +2894,6 @@ export class Scene {
     gl.addEventListener('webglcontextrestored', this.glContextRestoredHandler);
   }
 
-  // --- domain: content-projection — selection preservation across rebuilds ---
-  private endContentSelectionDrag(): void {
-    this.blankRegionSelectionDrag = false;
-    this.contentSelectionAnchor = null;
-    if (this.a11yRoot) this.a11yRoot.style.pointerEvents = 'none';
-  }
-
-  /**
-   * Index of the carrier line currently holding a selection inside `el`, or
-   * `null`.
-   *
-   * Lets a partial re-materialization decide whether the user's selection is even
-   * affected. Checks the tracked anchor first (it survives a drag) and falls back
-   * to the live DOM selection.
-   */
-  private contentGridSelectionLine(el: HTMLElement): number | null {
-    const candidates: Array<Node | null | undefined> = [this.contentSelectionAnchor?.node];
-    if (typeof window !== 'undefined' && typeof window.getSelection === 'function') {
-      const selection = window.getSelection();
-      candidates.push(selection?.anchorNode, selection?.focusNode);
-    }
-    for (const candidate of candidates) {
-      if (!candidate || !el.contains(candidate)) continue;
-      // Walk up to the direct child of `el`, which is the carrier line.
-      let cursor: Node | null = candidate;
-      while (cursor && cursor.parentNode !== el) cursor = cursor.parentNode;
-      const lineIndex = (cursor as HTMLElement | null)?.dataset?.vectoGridLine;
-      if (lineIndex !== undefined) return Number(lineIndex);
-    }
-    return null;
-  }
-
-  /**
-   * Does the document hold a selection right now, memoized for this sync walk?
-   *
-   * Pays one forced layout per walk instead of one per rebuilt element — see
-   * {@link Scene.contentSelectionPresentThisSync} for the measurements. When the
-   * answer is `false` no element can own a selection, so every per-element
-   * ownership test can be skipped without touching the object.
-   */
-  private contentSelectionPresent(): boolean {
-    if (this.contentSelectionPresentThisSync !== null) {
-      return this.contentSelectionPresentThisSync;
-    }
-    const selection =
-      typeof window !== 'undefined' && typeof window.getSelection === 'function'
-        ? window.getSelection()
-        : null;
-    // `anchorNode`/`focusNode` rather than `rangeCount`: a collapsed caret still
-    // has an anchor and still belongs to whoever contains it, and every property
-    // costs the same single forced layout anyway.
-    const present = !!selection && (!!selection.anchorNode || !!selection.focusNode);
-    this.contentSelectionPresentThisSync = present;
-    return present;
-  }
-
-  private releaseContentSelectionForRebuild(el: HTMLElement): void {
-    // Cheap rejection first. `contentSelectionAnchor` is the scene's own field so
-    // it costs nothing, and the memo costs one forced layout per sync walk rather
-    // than one per element. With neither an anchor nor a document selection there
-    // is nothing to release — the case for every block of a bulk materialization.
-    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) return;
-    const selection =
-      typeof window !== 'undefined' && typeof window.getSelection === 'function'
-        ? window.getSelection()
-        : null;
-    const ownsSelection =
-      (this.contentSelectionAnchor && el.contains(this.contentSelectionAnchor.node)) ||
-      (selection?.anchorNode ? el.contains(selection.anchorNode) : false) ||
-      (selection?.focusNode ? el.contains(selection.focusNode) : false);
-    if (!ownsSelection) return;
-    this.endContentSelectionDrag();
-    selection?.removeAllRanges();
-    // The memo described the document before this release; it no longer does.
-    this.contentSelectionPresentThisSync = null;
-  }
-
-  /**
-   * Rebuild a content-projection element's DOM (`rebuild`) while preserving a
-   * text selection the user made inside it. A streaming message replaces its
-   * projection children on every appended chunk; without this, a selection in
-   * the UNCHANGED prefix is wiped on each frame ("can't select text in a
-   * message still receiving tokens"). We snapshot the selection's anchor/focus
-   * as linear character offsets within `el` before the rebuild and re-resolve
-   * them against the new DOM after, clamped to the new text length.
-   *
-   * Only fires when `el` owns the current selection and there is no active drag
-   * (mid-drag the browser is authoritative). The virtualization case — where
-   * `el` itself is removed from the DOM — is out of scope here (the node is
-   * genuinely freed; the browser clears the selection and there is nothing to
-   * restore against).
-   */
-  private preserveContentSelectionAcrossRebuild(el: HTMLElement, rebuild: () => void): void {
-    // Nothing selected anywhere in the document means nothing to preserve and
-    // nothing to release, so rebuild without touching the Selection object. This
-    // is the bulk-materialization path, where reading a selection property would
-    // force a layout over the whole projection subtree once per block — see
-    // {@link Scene.contentSelectionPresentThisSync}.
-    if (!this.contentSelectionAnchor && !this.contentSelectionPresent()) {
-      rebuild();
-      return;
-    }
-    const selection =
-      typeof window !== 'undefined' && typeof window.getSelection === 'function'
-        ? window.getSelection()
-        : null;
-    const owns =
-      !!selection &&
-      !this.blankRegionSelectionDrag &&
-      ((selection.anchorNode ? el.contains(selection.anchorNode) : false) ||
-        (selection.focusNode ? el.contains(selection.focusNode) : false));
-
-    if (!owns || !selection.anchorNode || !selection.focusNode) {
-      // Nothing to preserve — fall back to the plain release + rebuild.
-      this.releaseContentSelectionForRebuild(el);
-      rebuild();
-      return;
-    }
-
-    // Snapshot as linear offsets within this element's text. Selection
-    // endpoints are only meaningful to the offset walk when they are text
-    // nodes; a non-Text endpoint yields null and we skip restore.
-    const anchorNode = selection.anchorNode;
-    const focusNode = selection.focusNode;
-    const anchorOffset =
-      anchorNode instanceof Text
-        ? projectionAbsoluteOffset(el, {
-            node: anchorNode,
-            offset: selection.anchorOffset,
-          })
-        : null;
-    const focusOffset =
-      focusNode instanceof Text
-        ? projectionAbsoluteOffset(el, {
-            node: focusNode,
-            offset: selection.focusOffset,
-          })
-        : null;
-
-    this.endContentSelectionDrag();
-    selection.removeAllRanges();
-    rebuild();
-
-    if (anchorOffset === null || focusOffset === null) return;
-    const textLen = (el.textContent ?? '').length;
-    if (anchorOffset > textLen || focusOffset > textLen) return; // selection ran into removed tail
-    const anchor = projectionCaretAt(el, anchorOffset, 'forward');
-    const focus = projectionCaretAt(el, focusOffset, 'backward');
-    if (!anchor || !focus) return;
-    try {
-      selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
-    } catch {
-      // Engine rejected a reverse/cross-node range — leave selection cleared.
-    }
-  }
-
   // --- domain: scene-facade — renderer accessor ---
   /**
    * Expose the underlying {@link IRenderer} for advanced direct-draw operations.
@@ -3145,37 +2931,6 @@ export class Scene {
     return this;
   }
 
-  // --- domain: content-projection — grid state teardown ---
-  /**
-   * Reset per-grid calibration and bookkeeping before a (re)materialization.
-   *
-   * @param entityId - Owning entity, keyed into the calibration maps.
-   * @param el - The projection element.
-   * @param releaseSelection - Whether to drop a selection this element owns.
-   *   Pass `false` when carrier lines are being reused: the selection's DOM nodes
-   *   survive the pass, so tearing it down would wipe a user's selection on every
-   *   streamed chunk — the exact bug `preserveContentSelectionAcrossRebuild`
-   *   exists to prevent on the non-grid path.
-   */
-  private clearContentGridState(entityId: string, el: HTMLElement, releaseSelection = true): void {
-    const calibrationFrame = this.contentGridCalibrationFrames.get(entityId);
-    if (calibrationFrame !== undefined && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(calibrationFrame);
-    }
-    this.contentGridCalibrationFrames.delete(entityId);
-    this.contentGridCalibrationProbes.get(entityId)?.remove();
-    this.contentGridCalibrationProbes.delete(entityId);
-    delete el.dataset.vectoGridCalibrationPending;
-    delete el.dataset.vectoGridCalibration;
-    delete el.dataset.vectoGridReady;
-    delete el.dataset.vectoContentGrid;
-    delete el.dataset.vectoGridCarriers;
-    delete el.dataset.vectoGridMaterializeMs;
-    delete el.dataset.vectoGridCalibrationSamples;
-    delete el.dataset.vectoGridCalibrationMs;
-    if (releaseSelection) this.releaseContentSelectionForRebuild(el);
-  }
-
   // --- domain: a11y-projection — subtree pruning, focus preservation on removal ---
   /**
    * Drop any projected elements under `node` without touching the entity tree.
@@ -3209,7 +2964,7 @@ export class Scene {
     // stale position, and leaks — the same orphan class as a11y elements.
     const contentEl = this.contentElements.get(node.id);
     if (contentEl) {
-      this.clearContentGridState(node.id, contentEl);
+      this._contentProjection.clearGridState(node.id, contentEl);
       contentEl.remove();
       this.contentElements.delete(node.id);
       this.contentSyncState.delete(node.id);
@@ -3382,15 +3137,7 @@ export class Scene {
     for (const el of this.contentElements.values()) el.remove();
     this.contentElements.clear();
     this.contentSyncState.clear();
-    if (typeof cancelAnimationFrame === 'function') {
-      for (const frame of this.contentGridCalibrationFrames.values()) {
-        cancelAnimationFrame(frame);
-      }
-    }
-    this.contentGridCalibrationFrames.clear();
-    for (const probe of this.contentGridCalibrationProbes.values()) probe.remove();
-    this.contentGridCalibrationProbes.clear();
-    this.endContentSelectionDrag();
+    this._contentProjection.dispose();
     if (this.glCanvas) {
       if (this.glContextLostHandler) {
         this.glCanvas.removeEventListener('webglcontextlost', this.glContextLostHandler);
@@ -3961,7 +3708,7 @@ export class Scene {
       this._syncSerial++;
       // Invalidate the selection memo: a new walk may see a selection the
       // previous one did not.
-      this.contentSelectionPresentThisSync = null;
+      this._contentProjection.invalidateSelectionMemo();
     }
     if (node.isDOMPortal) {
       return;
@@ -4805,7 +4552,7 @@ export class Scene {
 
     const releaseProjectionEl = (): void => {
       if (el) {
-        this.clearContentGridState(node.id, el);
+        this._contentProjection.clearGridState(node.id, el);
         el.remove();
         this.contentElements.delete(node.id);
         this.a11yOrder.markNeedsReorder();
@@ -5047,7 +4794,7 @@ export class Scene {
     // voluntarily returning a coarse-only projection.
     const useCarriers = tier === 'fine';
     if ((!projection.grid || !useCarriers) && el.dataset.vectoContentGrid !== undefined) {
-      this.clearContentGridState(node.id, el);
+      this._contentProjection.clearGridState(node.id, el);
     }
     if (projection.grid && useCarriers) {
       const gridSyncStart = this.phases.enabled ? performance.now() : 0;
@@ -5069,7 +4816,7 @@ export class Scene {
         window: lineWindow.gated ? `${lineWindow.start}-${lineWindow.end}` : 'all',
       });
       if (el.dataset.vectoProjectionLines !== signature) {
-        this.preserveContentSelectionAcrossRebuild(el, () => {
+        this._contentProjection.preserveSelectionAcrossRebuild(el, () => {
           el.replaceChildren();
           for (let index = lineWindow.start; index < lineWindow.end; index++) {
             const line = lines[index];
@@ -5169,7 +4916,7 @@ export class Scene {
       // is what `tier === 'coarse'` means.
       const demoted = tier === 'coarse' && el.children.length > 0;
       if (el.textContent !== projection.text || demoted) {
-        this.releaseContentSelectionForRebuild(el);
+        this._contentProjection.releaseSelectionForRebuild(el);
         el.textContent = projection.text;
       }
       delete el.dataset.vectoProjectionLines;
@@ -5367,7 +5114,7 @@ export class Scene {
       // Defer the selection decision until it is known which lines are rebuilt: a
       // selection sitting in an untouched line must survive, or streaming would
       // wipe it every frame.
-      this.clearContentGridState(node.id, el, false);
+      this._contentProjection.clearGridState(node.id, el, false);
 
       // Strip any direct TEXT-node children before building carriers.
       //
@@ -5401,7 +5148,7 @@ export class Scene {
             // (it looks for `data-vecto-grid-line`), so it cannot cover this.
             if (!strippedSelection) {
               strippedSelection = true;
-              this.releaseContentSelectionForRebuild(el);
+              this._contentProjection.releaseSelectionForRebuild(el);
             }
             scan.remove();
           }
@@ -5410,7 +5157,7 @@ export class Scene {
       }
 
       const projectionLines = projection.lines ?? [];
-      const selectionLine = this.contentGridSelectionLine(el);
+      const selectionLine = this._contentProjection.gridSelectionLine(el);
       let rebuiltSelectionLine = false;
 
       // A selection outside the new window loses its carrier either way: past the
@@ -5569,7 +5316,7 @@ export class Scene {
       }
       // Only now drop the selection, and only if the line holding it was actually
       // replaced. A selection in a reused line keeps its DOM nodes and stays live.
-      if (rebuiltSelectionLine) this.releaseContentSelectionForRebuild(el);
+      if (rebuiltSelectionLine) this._contentProjection.releaseSelectionForRebuild(el);
       el.dataset.vectoProjectionLines = signature;
       el.dataset.vectoContentGrid = signature;
       if (gridWindow.gated) {
@@ -5591,7 +5338,13 @@ export class Scene {
     const calibrationKey = `${signature}:${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
     if (el.dataset.vectoGridCalibration !== calibrationKey) {
       const calibStart = this.phases.enabled ? performance.now() : 0;
-      this.scheduleContentGridCalibration(node.id, el, calibrationKey, pageScaleX);
+      this._contentProjection.scheduleGridCalibration(
+        node.id,
+        el,
+        calibrationKey,
+        pageScaleX,
+        this.contentFontEpoch,
+      );
       if (this.phases.enabled) {
         this.phases.record('gridCalibrateSchedule', performance.now() - calibStart);
       }
@@ -5609,245 +5362,6 @@ export class Scene {
     this.contentMetricScaleX = Number.isFinite(scale) && scale > 0 ? scale : 1;
     this.contentMetricScaleEpoch = this.contentFontEpoch;
     return this.contentMetricScaleX;
-  }
-
-  private scheduleContentGridCalibration(
-    entityId: string,
-    el: HTMLElement,
-    calibrationKey: string,
-    pageScaleX: number,
-  ): void {
-    if (typeof requestAnimationFrame !== 'function') return;
-    if (el.dataset.vectoGridCalibrationPending === calibrationKey) return;
-
-    // Advance the calibration generation when the conditions a measurement depends
-    // on change. The font epoch covers font availability; page scale covers browser
-    // zoom. Both alter the laid-out width of the same text, so every existing
-    // per-cell scaleX becomes wrong and must be re-measured rather than trusted.
-    const stamp = `${this.contentFontEpoch}:${pageScaleX.toFixed(4)}`;
-    if (this.contentGridCalibrationStamp !== stamp) {
-      this.contentGridCalibrationStamp = stamp;
-      this.contentGridCalibrationGeneration++;
-    }
-    const generation = `${this.contentGridCalibrationGeneration}`;
-
-    // Cells not yet calibrated for this generation. Carrier reuse (#244) leaves an
-    // untouched line's cells — and the transforms already written on them — in
-    // place, so a streamed append leaves this matching only the rebuilt tail.
-    // Queried before any probe DOM is built so the common no-op case costs one
-    // selector match.
-    const pendingCells = el.querySelectorAll<HTMLElement>(
-      `[data-vecto-grid-cell]:not([data-vecto-grid-calib="${generation}"])`,
-    );
-
-    // Complete without a probe when nothing is pending: no probe construction, no
-    // forced layout, and no two-frame round trip. This is the steady state while
-    // streaming.
-    //
-    // The condition is `pendingCells.length` and NOT the number of measurable
-    // cells. Those differ on a FIRST projection, where every cell is pending yet all
-    // may be legitimately skipped as unmeasurable (zero advance, empty text). Using
-    // the measurable count marked such a grid ready without ever measuring it: a
-    // standalone Table's cell selection then returned '' instead of its text,
-    // because the e2e waits on `vectoGridReady` and proceeded before the browser had
-    // laid the new carriers out.
-    if (pendingCells.length === 0) {
-      el.dataset.vectoGridCalibrationSamples = '0';
-      delete el.dataset.vectoGridCalibrationPending;
-      // `vectoGridReady` must be published from a frame callback, not synchronously.
-      //
-      // Its contract is "this projection's geometry is settled and safe to measure",
-      // which is stronger than "calibration has no work to do". Consumers act on it
-      // by immediately calling `getBoundingClientRect` — the e2e locates a drag that
-      // way — and carriers materialized earlier in this same task have not been laid
-      // out yet, so a synchronous flag hands out a zero-width rect and a drag lands
-      // outside the text. The probe path implicitly satisfied the contract by
-      // spending two frames before setting it; this path has no probe, so it waits
-      // one frame explicitly. Still far cheaper than building and measuring a probe.
-      const readyFrame = requestAnimationFrame(() => {
-        this.contentGridCalibrationFrames.delete(entityId);
-        if (!el.isConnected) return;
-        el.dataset.vectoGridCalibration = calibrationKey;
-        el.dataset.vectoGridReady = 'true';
-      });
-      this.contentGridCalibrationFrames.set(entityId, readyFrame);
-      return;
-    }
-    const previous = this.contentGridCalibrationFrames.get(entityId);
-    if (previous !== undefined && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(previous);
-    }
-    this.contentGridCalibrationProbes.get(entityId)?.remove();
-    this.contentGridCalibrationProbes.delete(entityId);
-    const calibrationStart = typeof performance !== 'undefined' ? performance.now() : 0;
-
-    const probe = document.createElement('div');
-    probe.setAttribute('aria-hidden', 'true');
-    probe.dataset.vectoGridProbe = entityId;
-    probe.style.position = 'absolute';
-    probe.style.left = '-100000px';
-    probe.style.top = '0';
-    probe.style.width = '100000px';
-    probe.style.height = '1px';
-    probe.style.visibility = 'hidden';
-    probe.style.pointerEvents = 'none';
-    probe.style.whiteSpace = 'pre';
-    probe.style.contain = 'layout style paint';
-    const probeOrigin = document.createElement('span');
-    probeOrigin.style.position = 'absolute';
-    probeOrigin.style.left = '0';
-    probeOrigin.style.top = '0';
-    const probeX = document.createElement('span');
-    probeX.style.position = 'absolute';
-    probeX.style.left = '1px';
-    probeX.style.top = '0';
-    probe.append(probeOrigin, probeX);
-    const measurements: Array<{
-      targets: HTMLElement[];
-      targetWidth: number;
-      sourceLength: number;
-      source: Text;
-    }> = [];
-    const measurementsByKey = new Map<string, (typeof measurements)[number]>();
-    const scanStart = this.phases.enabled ? performance.now() : 0;
-    for (const target of pendingCells) {
-      const sourceLength = Number(target.dataset.vectoGridSourceLength ?? 0);
-      const targetWidth = Number(target.dataset.vectoGridAdvance ?? 0);
-      // Cells with nothing to measure are stamped immediately: leaving them
-      // unstamped would keep them in the selector and re-scan them every frame,
-      // which is the cost this whole change exists to remove.
-      if (sourceLength <= 0 || targetWidth <= 0) {
-        target.dataset.vectoGridCalib = generation;
-        continue;
-      }
-      const sourceText = target.textContent?.slice(0, sourceLength) ?? '';
-      if (!sourceText) {
-        target.dataset.vectoGridCalib = generation;
-        continue;
-      }
-      // Read the font from a data attribute, not `target.style.font`.
-      //
-      // `style.font` is a shorthand getter: Chrome re-serializes it from every font
-      // longhand on each read. Done once per cell per frame that made the scan
-      // 288 ms of a 290 ms calibration pass — 99.3% — while Firefox, whose getter
-      // is cheap, spent 0.6 ms on the identical loop. A 480x cross-engine gap on
-      // the same code is the signal that the cost is the property access itself,
-      // not the work around it. The carrier already knows its font (the projection
-      // just assigned it), so it records it as a plain string for reading back.
-      const cellFont = target.dataset.vectoGridFont ?? '';
-      const cellLineHeight = target.dataset.vectoGridLineHeight ?? '';
-      const measurementKey = JSON.stringify([cellFont, cellLineHeight, targetWidth, sourceText]);
-      const shared = measurementsByKey.get(measurementKey);
-      if (shared) {
-        shared.targets.push(target);
-        continue;
-      }
-      const carrier = document.createElement('span');
-      carrier.dir = 'ltr';
-      carrier.style.position = 'absolute';
-      carrier.style.left = '0';
-      carrier.style.top = '0';
-      carrier.style.whiteSpace = 'pre';
-      carrier.style.font = cellFont;
-      carrier.style.lineHeight = cellLineHeight;
-      carrier.style.fontVariantLigatures = 'none';
-      carrier.style.fontKerning = 'none';
-      const source = document.createTextNode(sourceText);
-      carrier.appendChild(source);
-      probe.appendChild(carrier);
-      const measurement = {
-        targets: [target],
-        targetWidth,
-        sourceLength,
-        source,
-      };
-      measurements.push(measurement);
-      measurementsByKey.set(measurementKey, measurement);
-    }
-    // Keep the probe under the projection root so CSS zoom and font
-    // substitution match the live carriers. Gecko may still return an
-    // unzoomed Range width for a missing-glyph fallback; pageScaleX below
-    // compensates that engine behavior without special-casing the font.
-    if (this.phases.enabled) this.phases.record('calibScan', performance.now() - scanStart);
-
-    // No measurable cell among the pending ones: every one was zero-advance or
-    // empty text and has just been stamped, so there is nothing to lay out and no
-    // reason to spend two animation frames. Distinct from the `pendingCells` early
-    // exit above, which covers the already-calibrated steady state.
-    if (measurements.length === 0) {
-      // The probe is not in the document yet (it is appended below), so it needs no
-      // removal here — it simply goes unreferenced.
-      el.dataset.vectoGridCalibration = calibrationKey;
-      el.dataset.vectoGridReady = 'true';
-      el.dataset.vectoGridCalibrationSamples = '0';
-      delete el.dataset.vectoGridCalibrationPending;
-      return;
-    }
-
-    const appendStart = this.phases.enabled ? performance.now() : 0;
-    (this.a11yRoot ?? document.body ?? document.documentElement).appendChild(probe);
-    if (this.phases.enabled) this.phases.record('calibProbeBuild', performance.now() - appendStart);
-    el.dataset.vectoGridCalibrationSamples = `${measurements.length}`;
-    this.contentGridCalibrationProbes.set(entityId, probe);
-    el.dataset.vectoGridCalibrationPending = calibrationKey;
-    delete el.dataset.vectoGridReady;
-    const readFrame = requestAnimationFrame(() => {
-      if (!el.isConnected || el.dataset.vectoGridCalibrationPending !== calibrationKey) {
-        probe.remove();
-        this.contentGridCalibrationProbes.delete(entityId);
-        this.contentGridCalibrationFrames.delete(entityId);
-        return;
-      }
-      const updates: Array<{ element: HTMLElement; scale: number }> = [];
-      const probeOriginRect = probeOrigin.getBoundingClientRect();
-      const probeXRect = probeX.getBoundingClientRect();
-      const basisScale = Math.abs(probeXRect.left - probeOriginRect.left);
-      const projectionPageScaleX =
-        Number.isFinite(basisScale) && basisScale > 0 ? basisScale : pageScaleX;
-      let valid = true;
-      for (const measurement of measurements) {
-        const range = document.createRange();
-        range.setStart(measurement.source, 0);
-        range.setEnd(measurement.source, measurement.sourceLength);
-        const natural = range.getBoundingClientRect().width;
-        if (!Number.isFinite(natural) || natural <= 0) {
-          valid = false;
-          break;
-        }
-        const scale = (measurement.targetWidth * projectionPageScaleX) / natural;
-        for (const element of measurement.targets) updates.push({ element, scale });
-      }
-      probe.remove();
-      this.contentGridCalibrationProbes.delete(entityId);
-      if (!valid) {
-        delete el.dataset.vectoGridCalibrationPending;
-        this.contentGridCalibrationFrames.delete(entityId);
-        return;
-      }
-      const writeFrame = requestAnimationFrame(() => {
-        if (!el.isConnected || el.dataset.vectoGridCalibrationPending !== calibrationKey) {
-          this.contentGridCalibrationFrames.delete(entityId);
-          return;
-        }
-        for (const { element, scale } of updates) {
-          element.style.transform = Math.abs(scale - 1) <= 0.001 ? '' : `scaleX(${scale})`;
-          // Stamp only after the transform is actually applied. If the pass bails
-          // out as invalid, these stay unstamped and are retried next revision,
-          // which is the behaviour that keeps a failed measurement from being
-          // silently treated as done.
-          element.dataset.vectoGridCalib = generation;
-        }
-        el.dataset.vectoGridCalibration = calibrationKey;
-        el.dataset.vectoGridReady = 'true';
-        if (typeof performance !== 'undefined') {
-          el.dataset.vectoGridCalibrationMs = `${performance.now() - calibrationStart}`;
-        }
-        delete el.dataset.vectoGridCalibrationPending;
-        this.contentGridCalibrationFrames.delete(entityId);
-      });
-      this.contentGridCalibrationFrames.set(entityId, writeFrame);
-    });
-    this.contentGridCalibrationFrames.set(entityId, readFrame);
   }
 
   // --- domain: a11y-projection — DOM order, visual sort, overlay geometry, a11y tree ---
