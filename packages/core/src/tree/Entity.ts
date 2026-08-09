@@ -913,6 +913,34 @@ export abstract class Entity {
    */
   public clipChildren: boolean = false;
 
+  /**
+   * Group this subtree's projected text into its own accessibility **region**,
+   * without clipping anything.
+   *
+   * The projection sorts every mirror into visual reading order, and it bands
+   * them into rows per region so that side-by-side columns stay contiguous runs
+   * in the DOM. That matters beyond reading order: a native `Selection` covers
+   * everything between its anchor and focus in DOM order, so two columns banded
+   * together let a vertical drag through one of them swallow the other.
+   *
+   * {@link clipChildren} also establishes a region, because a clipper is
+   * usually the column boundary you want. Reach for this flag when the two
+   * needs come apart — a sidebar, a card deck or any column that must not be
+   * absorbed by its neighbour's drag, but that draws nothing and has no reason
+   * to clip. Measured in a real app before this existed: a table-of-contents
+   * sidebar had to switch `clipChildren` on purely to escape the body column's
+   * bands, buying a per-frame `save`/`clip`/`restore` for an entity that paints
+   * nothing.
+   *
+   * Unlike `clipChildren`, this is honoured regardless of the node's box. The
+   * zero-area exemption on the clipping path exists because a zero-area clipper
+   * clips nothing; grouping is a declaration of intent that never consults
+   * geometry, and a pure grouping container often leaves `width`/`height` at 0.
+   *
+   * Off by default. Regions nest: the nearest enclosing region wins.
+   */
+  public a11yRegion: boolean = false;
+
   // Lazily allocated (see _drivers above). Most entities never register a
   // listener or an imperative animate() tween.
   protected listeners: Map<VectoEvent, Array<(e: any) => void>> | null = null;

@@ -81,12 +81,14 @@ export class A11yProjectionManager {
    */
   private readonly orderContainers: Set<HTMLElement> = new Set<HTMLElement>();
   /**
-   * Nearest `clipChildren` ancestor per ordered element — its *region*. Written
-   * by `Scene.enforceA11yDomOrder`'s collect walk through {@link collect}, which
-   * already has the entity in hand, so a region costs one comparison per node
-   * rather than an ancestor walk per element.
+   * Nearest region-establishing ancestor per ordered element — its *region*.
+   * Written by `Scene.enforceA11yDomOrder`'s collect walk through
+   * {@link collect}, which already has the entity in hand, so a region costs one
+   * comparison per node rather than an ancestor walk per element.
    *
-   * Absent means the element sits under no clipping ancestor and belongs to the
+   * An ancestor establishes a region by setting `a11yRegion` (grouping declared
+   * directly) or `clipChildren` (a clipper is usually the column boundary you
+   * want anyway). Absent means the element sits under neither and belongs to the
    * implicit root region. See {@link sortNormalElementsVisually}.
    */
   private readonly orderRegions: Map<HTMLElement, Entity> = new Map<HTMLElement, Entity>();
@@ -107,8 +109,8 @@ export class A11yProjectionManager {
   /**
    * Add one projected element to this pass.
    *
-   * `region` is the nearest `clipChildren` ancestor, or `null` for the implicit
-   * root region.
+   * `region` is the nearest ancestor that sets `a11yRegion` or `clipChildren`,
+   * or `null` for the implicit root region.
    */
   public collect(el: HTMLElement, fullViewport: boolean, region: Entity | null): void {
     if (fullViewport) this.fullViewportElements.push(el);
@@ -284,17 +286,18 @@ export class A11yProjectionManager {
    * coordinates here would cost a transform per element per frame to change
    * nothing observable.
    *
-   * Banding runs **per region** — per nearest `clipChildren` ancestor, recorded
-   * by `Scene.enforceA11yDomOrder`'s collect walk — rather than once over the
-   * whole scene. Purely visual banding is right for a screen reader but wrong
-   * for selection: a DOM `Selection` covers everything between anchor and focus
-   * in DOM order, so under one global banding a vertical drag through a
-   * transcript also swallowed a sidebar whose headings happened to fall in the
-   * same rows. Regions are laid out side by side, so ordering region-major keeps
-   * each one a contiguous DOM run and a drag stays inside it, while reading
-   * order *within* a region is unchanged. Regions are emitted in the order their
-   * clipper is first reached by the depth-first walk, so a screen reader still
-   * meets them in the author's declared order.
+   * Banding runs **per region** — per nearest ancestor setting `a11yRegion` or
+   * `clipChildren`, recorded by `Scene.enforceA11yDomOrder`'s collect walk —
+   * rather than once over the whole scene. Purely visual banding is right for a
+   * screen reader but wrong for selection: a DOM `Selection` covers everything
+   * between anchor and focus in DOM order, so under one global banding a
+   * vertical drag through a transcript also swallowed a sidebar whose headings
+   * happened to fall in the same rows. Regions are laid out side by side, so
+   * ordering region-major keeps each one a contiguous DOM run and a drag stays
+   * inside it, while reading order *within* a region is unchanged. Regions are
+   * emitted in the order their establishing ancestor is first reached by the
+   * depth-first walk, so a screen reader still meets them in the author's
+   * declared order.
    */
   private sortNormalElementsVisually(rtl: boolean): void {
     const els = this.normalElements;
