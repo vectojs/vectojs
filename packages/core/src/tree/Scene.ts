@@ -26,9 +26,7 @@ import {
   type AffineTransform,
   type ContentProjection,
   type ContentProjectionLine,
-  type AnimatableProp,
 } from './Entity';
-import { SpringDriver, TweenDriver } from '@vectojs/animation';
 import { CanvasRenderer } from '../renderer/CanvasRenderer';
 import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer, setRendererDevMode } from '../renderer/IRenderer';
@@ -59,6 +57,8 @@ import {
 } from './scene/content-caret';
 import { A11yProjectionManager } from './scene/A11yProjectionManager';
 import { CanvasGeometry, type OverlayGeometry } from './scene/CanvasGeometry';
+import { DirtyTracker, type DirtyReasonEntry, type DirtySource } from './scene/DirtyTracker';
+import { DriverTicker } from './scene/DriverTicker';
 import { HitTester } from './scene/HitTester';
 import { ContentProjectionManager } from './scene/ContentProjectionManager';
 import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
@@ -156,32 +156,11 @@ interface A11yContainer {
   originY: number;
 }
 
-/**
- * Who marked the scene dirty, and why.
- *
- * Every field is optional except `reason` so a call site can be as specific as it
- * cheaply can — an entity id costs nothing to pass, a property name is often
- * already in scope.
- */
-export interface DirtySource {
-  /** Entity id responsible, when one is. Omitted for scene-level invalidation. */
-  entity?: string;
-  /** Short, stable category — e.g. `'text-changed'`, `'animation'`, `'resize'`. */
-  reason: string;
-  /** Property that changed, when the reason alone is ambiguous. */
-  property?: string;
-}
-
-/** An aggregated dirty attribution. */
-export interface DirtyReasonEntry {
-  entity?: string;
-  reason: string;
-  property?: string;
-  /** How many times this exact attribution was recorded. */
-  count: number;
-  firstFrame: number;
-  lastFrame: number;
-}
+// `DirtySource` and `DirtyReasonEntry` were declared and exported here before the
+// dirty tracker moved out, and `packages/core/src/index.ts` re-exports everything
+// from this module, so both are public API and are re-exported from their new home
+// to keep that surface byte-identical (`DEC-0019` rule 3).
+export type { DirtyReasonEntry, DirtySource };
 
 // --- domain: scene-facade — construction options (stays on Scene) ---
 /**
@@ -1204,8 +1183,6 @@ export class Scene {
    */
   public renderMode: 'always' | 'onDemand' = 'always';
 
-  /** Cap on distinct recorded dirty reasons (see `recordDirtyReason`). */
-  private static readonly MAX_DIRTY_REASONS = 200;
   /**
    * Per-phase frame timing and the browser User Timing flag.
    *
@@ -1270,9 +1247,29 @@ export class Scene {
     this.phases.clear();
   }
 
-  private _dirtyTracking = false;
-  private _dirtyReasons = new Map<string, DirtyReasonEntry>();
-  private dirty: boolean = true;
+  /**
+   * The dirty flag and its opt-in attribution (extraction 6, `DEC-0025`).
+   *
+   * A field initializer rather than a constructor assignment: it needs no
+   * injected input, so it follows {@link phases} and {@link a11yOrder} rather
+   * than the definite-assignment collaborators.
+   */
+  private readonly _dirty = new DirtyTracker();
+  /**
+   * The redraw-pending flag, under its original name.
+   *
+   * `Scene.test.ts:2153` assigns `false` and `:2158` reads it, and the suite is
+   * unedited (`DEC-0019` rule 4). `private` is correct here rather than
+   * `protected` — unlike the extraction 1/3/4 accessors, this one still has
+   * in-class readers (`loop`, `step`, `frameStats`).
+   */
+  private get dirty(): boolean {
+    return this._dirty.dirty;
+  }
+  private set dirty(value: boolean) {
+    if (value) this._dirty.mark(undefined, this.currentFrame);
+    else this._dirty.clear();
+  }
   /** Whether to throttle rendering to 2 FPS when the scene is static to save power. */
   public autoThrottle: boolean = true;
 
@@ -1818,24 +1815,26 @@ export class Scene {
   // EasingFn (which cannot cross into WASM) all fall through to it — WASM can
   // only ever change *how* a driver is advanced, never *what* value it lands
   // on.
-  // Entities with at least one active driver, added by Entity._spawnDriver.
-  // Self-pruning: _tickBatchedDrivers drops an entry the first time it visits
-  // an entity whose drivers have since all completed or been removed. This is
-  // what lets the batch pass find its candidates in O(active drivers), not
-  // O(tree size) — the exact mistake G3's first integrated benchmark made.
-  private _activeDriverEntities = new Set<Entity>();
-  // Reused across frames instead of allocating a fresh array + N {entity,prop,
-  // driver} objects every call — the integrated benchmark
-  // (benchmarks/anim-wasm-scene) found that allocation churn was the
-  // dominant integrated cost, not the wasm kernel itself. Parallel arrays,
-  // truncated to the live count after each use so a stale tail slot never
-  // pins a no-longer-active entity/driver in memory.
-  private _springEntities: Entity[] = [];
-  private _springProps: AnimatableProp[] = [];
-  private _springDrivers: SpringDriver[] = [];
-  private _tweenEntities: Entity[] = [];
-  private _tweenProps: AnimatableProp[] = [];
-  private _tweenDrivers: TweenDriver[] = [];
+  /**
+   * The batched driver tick and its candidate registry (extraction 6,
+   * `DEC-0025`).
+   *
+   * Definite-assignment because it holds {@link _wasmBackend}, which is built
+   * partway through the constructor — the same shape as {@link _hitTester}.
+   */
+  private _driverTicker!: DriverTicker;
+  /**
+   * The candidate set, for the unedited suite.
+   *
+   * `test/wasm/scene-anim-batch.test.ts` reads it through a cast at four sites to
+   * assert the registry self-prunes, unregisters a removed subtree, and
+   * re-registers a re-added one. `protected` rather than `private` because it has
+   * no in-class reader and `noUnusedLocals` fails the build on a private with
+   * none (`DEC-0019` rule 4).
+   */
+  protected get _activeDriverEntities(): Set<Entity> {
+    return this._driverTicker.active;
+  }
   /**
    * Minimum number of batchable (spring, or named-easing tween) active drivers
    * before a frame engages the WASM batch path at all; below it, every driver
@@ -1994,7 +1993,7 @@ export class Scene {
   /** Internal: called by `Entity._spawnDriver` when a new property driver
    *  starts. See {@link _activeDriverEntities}. */
   public _registerActiveDriverEntity(entity: Entity): void {
-    this._activeDriverEntities.add(entity);
+    this._driverTicker.register(entity);
   }
 
   /**
@@ -2006,13 +2005,7 @@ export class Scene {
    * still has live drivers, so the motion resumes.
    */
   private unregisterActiveDriverSubtree(entity: Entity): void {
-    if (this._activeDriverEntities.size === 0) return;
-    const stack: Entity[] = [entity];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      this._activeDriverEntities.delete(node);
-      for (const child of node.children) stack.push(child);
-    }
+    this._driverTicker.unregisterSubtree(entity);
   }
 
   /**
@@ -2023,13 +2016,7 @@ export class Scene {
    * on each entity).
    */
   private registerActiveDriverSubtree(entity: Entity): void {
-    const stack: Entity[] = [entity];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      const entries = node._driverEntries();
-      if (entries && entries.size > 0) this._activeDriverEntities.add(node);
-      for (const child of node.children) stack.push(child);
-    }
+    this._driverTicker.registerSubtree(entity);
   }
 
   // --- domain: render-scheduler — batched driver tick (extraction 6), reads the anim backend ---
@@ -2050,157 +2037,7 @@ export class Scene {
    * pre-pass.
    */
   private _tickBatchedDrivers(dt: number): void {
-    if (this._activeDriverEntities.size === 0) {
-      // No drivers in flight, so no accelerator declined anything.
-      this._wasmBackend.animReason = 'not-applicable';
-      return;
-    }
-
-    // Pass 1 (always, cheap): prune completed entities, count batchable
-    // drivers to decide the gate. O(active drivers), never O(tree size).
-    // _driverEntries() returns the entity's Map directly (no callback, no
-    // per-entity closure allocation).
-    let springBatchable = 0;
-    let tweenBatchable = 0;
-    for (const entity of this._activeDriverEntities) {
-      const entries = entity._driverEntries();
-      if (!entries || entries.size === 0) {
-        this._activeDriverEntities.delete(entity);
-        continue;
-      }
-      for (const driver of entries.values()) {
-        if (driver instanceof SpringDriver) springBatchable++;
-        else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) tweenBatchable++;
-      }
-    }
-    const batchable = springBatchable + tweenBatchable;
-
-    const backend = this._animWasm;
-    // Kind-aware gate. Spring and tween have measurably different break-even
-    // points — spring/mixed win from ~128 drivers while pure tween is a 0.71x
-    // LOSS there and only turns positive near 256 — so a single scalar gate had
-    // to be set for the worse case, giving up the 128-255 spring win to avoid a
-    // tween regression. The counts were already separated here; only the
-    // threshold was shared.
-    //
-    // A mixed frame uses the mixed gate: the batch is one call per kind, so its
-    // economics track the combined driver count rather than either kind alone.
-    this._wasmBackend.animBatchedLastFrame = false;
-    if (!backend) {
-      this._wasmBackend.animReason = 'not-installed';
-      return; // stay on the JS tick path
-    }
-    const gate =
-      springBatchable > 0 && tweenBatchable > 0
-        ? this.animGate.mixed
-        : tweenBatchable > 0
-          ? this.animGate.tween
-          : this.animGate.spring;
-    if (batchable < gate) {
-      // Working as designed, not a fault: below the measured break-even the JS
-      // tick loop is genuinely faster.
-      this._wasmBackend.animReason = 'below-gate';
-      return;
-    }
-    // Record that the gate actually opened this frame. `animBackend === 'wasm'`
-    // only means the backend is INSTALLED, which has misled readers into
-    // assuming every frame runs through WASM.
-    this._wasmBackend.animBatchedLastFrame = true;
-    this._wasmBackend.animReason = 'active';
-
-    // Pass 2: claim every registered entity. Gather batchable drivers into the
-    // reused scratch arrays; tick+finalize non-batchable ones directly in JS;
-    // stamp the entity so tickDrivers() skips it later this same frame.
-    const sE = this._springEntities;
-    const sP = this._springProps;
-    const sD = this._springDrivers;
-    const tE = this._tweenEntities;
-    const tP = this._tweenProps;
-    const tD = this._tweenDrivers;
-    let springCount = 0;
-    let tweenCount = 0;
-    for (const entity of this._activeDriverEntities) {
-      const entries = entity._driverEntries()!;
-      for (const [prop, driver] of entries) {
-        if (driver instanceof SpringDriver) {
-          sE[springCount] = entity;
-          sP[springCount] = prop;
-          sD[springCount] = driver;
-          springCount++;
-        } else if (driver instanceof TweenDriver && driver.wasmEasingId !== null) {
-          tE[tweenCount] = entity;
-          tP[tweenCount] = prop;
-          tD[tweenCount] = driver;
-          tweenCount++;
-        } else {
-          // Custom-easing tween: cannot cross into WASM. Tick it here (same
-          // dt, same math as tickDrivers() would use) so the entity as a
-          // whole can still be claimed this frame.
-          driver.tick(dt);
-          entity._applyDriverTick(prop, driver);
-        }
-      }
-      entity._driversTickedFrame = this.currentFrame;
-    }
-    // Drop stale tail slots beyond this frame's count so a no-longer-active
-    // entity/driver from a busier past frame isn't pinned in memory.
-    sE.length = springCount;
-    sP.length = springCount;
-    sD.length = springCount;
-    tE.length = tweenCount;
-    tP.length = tweenCount;
-    tD.length = tweenCount;
-
-    backend.ensure(springCount, tweenCount);
-    if (springCount > 0) {
-      const sv = backend.springView();
-      for (let i = 0; i < springCount; i++) {
-        const phys = sD[i].physics;
-        sv.val[i] = phys.value;
-        sv.target[i] = phys.target;
-        sv.vel[i] = phys.velocity;
-        sv.stiff[i] = phys.stiffness;
-        sv.damp[i] = phys.damping;
-        sv.mass[i] = phys.mass;
-      }
-      if (backend.stepSprings(dt, springCount)) {
-        for (let i = 0; i < springCount; i++) sD[i].syncExternal(sv.val[i], sv.vel[i]);
-      } else {
-        // The kernel declined and wrote nothing, so the views still hold the
-        // pre-step state — syncing them back would freeze every spring. Every
-        // entity here was already stamped `_driversTickedFrame` above, so
-        // tickDrivers() will skip them for the rest of the frame; tick them in
-        // JS now (same dt, same math) or they lose the frame entirely.
-        for (let i = 0; i < springCount; i++) sD[i].tick(dt);
-        this._wasmBackend.animReason = 'rejected';
-        this._wasmBackend.animBatchedLastFrame = false;
-      }
-    }
-    if (tweenCount > 0) {
-      const tv = backend.tweenView();
-      for (let i = 0; i < tweenCount; i++) {
-        const d = tD[i];
-        tv.from[i] = d.fromValue;
-        tv.to[i] = d.target;
-        tv.elapsed[i] = d.elapsedMs;
-        tv.dur[i] = d.durationMs;
-        tv.delay[i] = d.delayMs;
-        tv.ease[i] = d.wasmEasingId!;
-      }
-      if (backend.stepTweens(dt, tweenCount)) {
-        for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
-      } else {
-        for (let i = 0; i < tweenCount; i++) tD[i].tick(dt);
-        this._wasmBackend.animReason = 'rejected';
-        this._wasmBackend.animBatchedLastFrame = false;
-      }
-    }
-
-    // Finalize every batchable driver this pass touched (completion check +
-    // apply + settle + delete), exactly mirroring tickDrivers()'s own
-    // per-driver body — the non-batchable ones were already finalized above.
-    for (let i = 0; i < springCount; i++) sE[i]._applyDriverTick(sP[i], sD[i]);
-    for (let i = 0; i < tweenCount; i++) tE[i]._applyDriverTick(tP[i], tD[i]);
+    this._driverTicker.tick(dt, this.animGate, this.currentFrame);
   }
 
   // --- domain: a11y-projection — render-order map ---
@@ -2514,6 +2351,9 @@ export class Scene {
     // After `overlayRoot`: the hit walk searches overlays before the main tree,
     // so it captures both roots and neither may be undefined here.
     this._hitTester = new HitTester(this.root, this.overlayRoot, this._wasmBackend);
+    // Holds the facade and nothing else, so it is constructed as soon as the
+    // facade exists (trap 9: after every injected input is assigned).
+    this._driverTicker = new DriverTicker(this._wasmBackend);
 
     if (options.renderer) {
       this.renderer = options.renderer;
@@ -3324,11 +3164,7 @@ export class Scene {
    * entity state outside of {@link Entity.animate} so the change is rendered.
    */
   public markDirty(source?: DirtySource): void {
-    this.dirty = true;
-    // Attribution is opt-in and costs nothing when off: `markDirty` is called
-    // from dozens of sites, several of them per-frame, so the common path must
-    // stay a single field write.
-    if (this._dirtyTracking && source) this.recordDirtyReason(source);
+    this._dirty.mark(source, this.currentFrame);
   }
 
   /**
@@ -3351,40 +3187,6 @@ export class Scene {
   }
 
   /**
-   * Record who marked the scene dirty and why.
-   *
-   * Kept separate from {@link markDirty} so the hot path is not a function call
-   * with a branch — V8 inlines the one-field version reliably.
-   */
-  private recordDirtyReason(source: DirtySource): void {
-    const key = `${source.entity ?? 'scene'}:${source.reason}${
-      source.property ? `.${source.property}` : ''
-    }`;
-    const existing = this._dirtyReasons.get(key);
-    if (existing) {
-      existing.count++;
-      existing.lastFrame = this.currentFrame;
-      return;
-    }
-    // Bounded: a scene that mints a unique reason per frame (an id in the key,
-    // say) must not grow this map forever. FIFO eviction — the same rationale as
-    // the color cache, and for the same reason true LRU is not worth the
-    // bookkeeping here.
-    if (this._dirtyReasons.size >= Scene.MAX_DIRTY_REASONS) {
-      const oldest = this._dirtyReasons.keys().next().value;
-      if (oldest !== undefined) this._dirtyReasons.delete(oldest);
-    }
-    this._dirtyReasons.set(key, {
-      entity: source.entity,
-      reason: source.reason,
-      property: source.property,
-      count: 1,
-      firstFrame: this.currentFrame,
-      lastFrame: this.currentFrame,
-    });
-  }
-
-  /**
    * Start or stop recording dirty attributions.
    *
    * Off by default. `renderMode: 'onDemand'` silently degrades to always-on when
@@ -3393,13 +3195,12 @@ export class Scene {
    * this, run the scene, then read {@link dirtyReasons}.
    */
   public setDirtyTracking(enabled: boolean): void {
-    this._dirtyTracking = enabled;
-    if (!enabled) this._dirtyReasons.clear();
+    this._dirty.setTracking(enabled);
   }
 
   /** Whether dirty attribution is currently being recorded. */
   public get dirtyTracking(): boolean {
-    return this._dirtyTracking;
+    return this._dirty.trackingEnabled;
   }
 
   /**
@@ -3409,12 +3210,12 @@ export class Scene {
    * per frame over hundreds of frames is the thing keeping the scene awake.
    */
   public get dirtyReasons(): DirtyReasonEntry[] {
-    return [...this._dirtyReasons.values()].sort((a, b) => b.count - a.count);
+    return this._dirty.sortedReasons;
   }
 
   /** Drop recorded attributions, keeping tracking enabled. */
   public clearDirtyReasons(): void {
-    this._dirtyReasons.clear();
+    this._dirty.clearReasons();
   }
 
   /**
