@@ -120,4 +120,5 @@ benchmarks/markdown-showcase/evidence/
 # workspace root instead: `skills add <pkg> --skill '*' --agent agents --copy`.
 .agents/
 .claude/
+agent/
 skills-lock.json
