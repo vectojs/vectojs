@@ -1,5 +1,108 @@
 # @vectojs/core
 
+## 1.34.0
+
+### Minor Changes
+
+- 9661e56: Add `ContentProjection.clipToBounds` so a clipping entity's DOM copy clips too
+
+  The content-projection element is deliberately unclipped, which is load-bearing:
+  it lets a drag-selection start in an entity's padding and extend past its bounds.
+  But an entity whose own `render()` clips then disagrees with its own DOM copy —
+  the canvas stops at the box while the transparent selection carriers keep going,
+  so selecting content wider than the box paints browser highlight across whatever
+  is drawn beside it. Measured in real Chromium at `innerWidth` 1566: a carrier of a
+  horizontally scrollable code block extended to x=1580, and the selection band painted
+  over the prose and table-of-contents to its right.
+
+  Setting `clipToBounds: true` on a projection now confines the mirror's paint to
+  the entity box. Implemented with `clip-path: inset(...)` rather than `overflow`,
+  so the element does not become a scroll container and where a selection may
+  _begin_ is unchanged — only where it _paints_. The inset is expressed in the
+  element's own coordinates, which are offset from the entity box by the
+  projection's `contentX`/`contentY`, so a padded or baseline-shifted projection
+  still clips exactly to the entity's edges.
+
+  Off by default: an entity that does not clip its own drawing keeps the previous
+  unclipped element, byte-for-byte.
+
+### Patch Changes
+
+- 6051afa: Stop a projected hard break from painting a selection bar
+
+  A projected line carries its own trailing newline so copy, find-in-page and
+  screen readers stay line-broken. Written as ordinary inline text in a
+  `white-space: pre` carrier, that `\n` is a real preserved character and the
+  browser gives it a selection rectangle of zero width and full line height, which
+  Chrome paints as a caret-like vertical bar just past the last glyph — ink the
+  canvas never drew. Measured on a live page at DPR 1.76, one paragraph line
+  produced such a rect at `x 495.18, w 0, h 31.82`; a code block produced one on
+  every row owning a break, including the empty row whose whole content is the
+  break.
+
+  Hard breaks now go into their own `font-size: 0` carrier, which keeps the
+  character selectable, copyable and announced while collapsing the line box it
+  would otherwise contribute. Soft-wrap separators are left as plain text: their
+  width is part of the line the canvas measured, and collapsing them shortened the
+  selection box by a whole space.
+
+- 7bdef8e: Re-project a content grid when its line origin moves
+
+  `ContentGridProjector` gated its whole carrier rebuild on the grid revision and
+  the line window, so an entity that scrolls its projected content horizontally
+  moved every line box without invalidating anything: the source text and each
+  cell's position _within_ a line are unchanged, only the line origin moves. The
+  carriers stayed frozen while the canvas glyphs slid underneath, which detaches a
+  native selection from the text it covers — measured 1017px of divergence at full
+  scroll.
+
+  The projected line origin is now part of the grid signature, so a scroll
+  re-materializes the carriers in the same frame the glyphs move. Unchanged for
+  every entity that does not move its content: the origin is constant, so the
+  signature is too, and the streaming carrier-reuse path is untouched.
+
+- 6051afa: Measure the grid calibration's page scale over 256px instead of 1px.
+
+  Selecting a code block whose comments are Chinese drew a thin vertical white line
+  between every pair of adjacent Han glyphs, so the highlight read as `使|用|sudo`.
+  ASCII lines in the same block highlighted as one continuous band.
+
+  Grid calibration recovers the page's own layout scale by reading the client
+  distance between two absolutely positioned spans, then writes every carrier a
+  `scaleX` derived from it. The two spans were 1px apart, and a browser rounds
+  `getBoundingClientRect().left` to 1/64 of a device pixel — a fixed absolute
+  quantum, so over a 1px basis the whole rounding error lands in the recovered
+  scale. Measured in real headed Chrome at `devicePixelRatio` 1.1000000685: the 1px
+  basis read 0.9921875 (63.5/64) on a page whose scale was 1.0, a 0.78% shortfall.
+
+  That shrank every carrier's painted advance below its grid pitch, and the browser
+  sizes selection rects from the painted advance, so consecutive rects stopped
+  tiling: 18.0001px of pitch selected as 17.8624px, leaving 0.133px unhighlighted
+  at every CJK seam and 0.061px at every Latin one. At DPR 1.1 those land on a
+  device-pixel boundary and paint as a full column.
+
+  The basis is now 256px, which divides the same fixed rounding by its own length.
+  Measured over bases of 1/2/10/256/1000px on the same page, every basis of 10px or
+  more agreed while the 1px read was the outlier. The grid pitch itself was always
+  correct and is unchanged; only the recovered page scale moves.
+
+- 6051afa: Stop the a11y and portal overlays drifting from a `position: fixed` canvas during
+  scroll.
+
+  A pinned full-viewport canvas is composited against the viewport by the browser,
+  instantly and off the main thread, but the overlay layers were always
+  `position: absolute` — laid out against the scrolling document. Keeping them
+  together meant re-deriving `top` from the parent's rect and writing it once per
+  rendered frame, so any frame where scroll advanced before the render loop ran
+  left the overlay stale by that frame's whole scroll delta and a selection
+  highlight visibly detached from its glyphs.
+
+  The overlay layers now share the canvas's positioning scheme, which removes the
+  per-frame dependency instead of syncing more often. Measured on a live
+  full-viewport scene under real smooth scroll over 630px: one frame misaligned by
+  64.8px before, worst misalignment 0.000px after. An in-flow canvas keeps the
+  existing parent-relative behaviour.
+
 ## 1.33.0
 
 ### Minor Changes

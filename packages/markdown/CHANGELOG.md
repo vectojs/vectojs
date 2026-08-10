@@ -1,5 +1,190 @@
 # @vectojs/markdown
 
+## 0.19.0
+
+### Minor Changes
+
+- 7bdef8e: Make the tail of a long code line reachable
+
+  A fenced code block painted a long line straight through its own rounded
+  background and off the viewport edge, where it was hard-clipped. There was no
+  wrap and no horizontal scroll, so the tail of the line could not be reached by
+  any means — not by selection, not by scrolling, not by resizing. Measured in real
+  Chromium: **1016.984px** of a 161-cell line past a 360px box, roughly 3.8x the
+  box width.
+
+  `CodeBlock` now owns a horizontal scroll region:
+
+  - `render()` clips its glyphs to the block box, so nothing paints outside the
+    background.
+  - A new `scrollX` / `maxScrollX` / `setScrollX()` API, clamped to the content.
+  - A wheel over the block scrolls it horizontally on **horizontal intent only** —
+    a `deltaX` swipe, or `shift`+wheel for a mouse with no horizontal wheel. A plain
+    vertical wheel belongs to the page, because a code block is an inline element in
+    a scrolling document rather than a scroll container that owns its viewport.
+    `ctrl`+wheel is left to browser zoom. `preventDefault` fires only when the
+    offset actually changed, so a wheel at either end of travel still scrolls the
+    page.
+
+  Overflow-not-wrap is unchanged, and so is the invariant `setWidth()` documents:
+  **`height` remains a function of line count alone**, and a width change still
+  rebuilds neither the grid nor the highlight. Code that is soft-wrapped instead was
+  considered and rejected — it would break that invariant and would re-wrap and
+  re-highlight a streamed block on every resize. See
+  `forge/decisions/code-block-overflow-2026-08.md`.
+
+  The scroll offset is consumed by the canvas painter and the DOM selection
+  carriers through one accessor in the same frame, so a scrolled block's native
+  selection stays over the glyphs it covers.
+
+  `CodeBlock` deliberately remains non-interactive: the wheel arrives through the
+  content-projection element it already has, so no accessibility node is created
+  that would stack above the transparent text mirror and swallow the mousedown that
+  starts a drag-selection.
+
+- 9661e56: Add an optional code-block header band showing the fence language, and stop the
+  affordance controls overlapping the first line of code
+
+  This fixes a real collision, not only a missing feature. Measured on a 900px
+  default-theme `CodeBlock` with `blockAffordances: true`: the first code line
+  occupied y 18–42 while both controls sat at y 8–32, so the copy and download
+  buttons painted over 14px of the first line of every code block that had them.
+
+  `new CodeBlock(...)` takes a new trailing `CodeBlockOptions` argument, and
+  `Markdown` exposes it as `showCodeLanguage`. When enabled, the block reserves a
+  band above the code and draws the language at its top-left, which is the space
+  the controls were previously drawing into.
+
+  Off by default, for two reasons: the band changes block height, and a document
+  in a single language would repeat the same word down its whole length. A fence
+  with no info string reserves nothing even when the option is on, since an empty
+  band is just wasted space.
+
+  The label is normalized through the same rule the highlighter uses for its
+  lookup key, so the two cannot disagree — a block that renders `ts` is a block
+  that was highlighted as TypeScript, and ` ```Bash ` or ` ```ts title="a.ts" `
+  resolve identically in both.
+
+  Every row-origin site — the painter baseline, the content projection's `y`, and
+  the height computation — now reads one `contentTop()` accessor. Applying the
+  offset to the painter but not the projection is what detaches a selection
+  carrier from the glyphs it is meant to mirror, and a single accessor makes that
+  mismatch unrepresentable. Height remains a pure function of line count; the band
+  only changes the constant term.
+
+  Two derived theme keys come with it: `codeLangColor`, which follows
+  `syntaxCommentColor` when unset because the label has the same "present but
+  subordinate" role a comment does, and `codeLangFontSize`, which follows
+  `codeFontSize` so raising the code size scales the label with it.
+
+- 9661e56: Carry syntax state across lines, so block comments and multi-line strings
+  highlight
+
+  The tokenizer ran independently per line, which is correct only for languages
+  whose every construct closes on the line it opens. A JSDoc block was colored on
+  its `/**` line and then reverted to plain code for every continuation line, and
+  the keywords inside it (`return`, `class`, `function` in prose) were colored as
+  live code. CSS was worse: its only comment form is `/* … */`, so the language
+  declared no line comment at all and CSS comments were never highlighted.
+
+  `highlightLine()` now takes and returns a carry state, and `CodeBlock` records
+  the state entering each line. Block comments (`/* … */`, `<!-- … -->`),
+  JS/TS template literals, and Python triple-quoted strings now span lines.
+
+  The carry is deliberately a single open construct rather than a stack, because
+  none of these forms nest — a `/*` inside a block comment does not open a second
+  one, and treating it as a stack would leave the comment unterminated at the
+  first `*/`.
+
+  Single-line quote rules still refuse to carry. That is what keeps a Rust
+  lifetime (`&'a str`) from opening a string that would otherwise color the rest
+  of the file, and it is why the multi-line string forms are listed separately per
+  language instead of being inferred from the quote set.
+
+  The incremental streaming path keeps its prefix reuse: the recorded state is the
+  state _entering_ each line, so an appended chunk resumes from the reuse boundary
+  by reading one entry rather than rescanning from the top of the block. A
+  streamed build and a one-shot build of the same source produce identical
+  segments.
+
+- 9661e56: Make the code and table affordance controls selectable and their labels
+  translatable
+
+  `blockAffordances: true` was all-or-nothing: it always produced both a copy and
+  a download control, always labelled in English. Neither is a reasonable fixed
+  choice. Every control is a focus stop in every code block, so a document with
+  many fences doubles its tab count for a download nobody asked for, and a
+  non-English document had no way to relabel a button a screen reader announces
+  verbatim.
+
+  The new `affordances` option takes `copy`, `download`, and a `labels` map.
+  Defaults reproduce the previous behaviour exactly, so existing pages are
+  unchanged.
+
+  Which controls appear and what they are called are kept as separate axes because
+  they are separate decisions — one is interaction and accessibility surface, the
+  other is localization, and they are rarely made by the same person. Success
+  labels (`copied`, `saved`) are their own strings rather than derived from the
+  action labels, since no derivation of "copied" from "copy" survives
+  translation.
+
+  `resolveBlockAffordanceConfig()` is exported so a consumer assembling controls
+  by hand resolves defaults through the same function rather than restating them
+  and drifting.
+
+  Controls are pushed in visual order, which is also DOM and tab order, so the
+  keyboard and screen-reader sequence matches what is drawn.
+
+- Raise the `@vectojs/core` peer floor to `>=1.34.0`
+
+  `CodeBlock` now sets `clipToBounds: true` on its content projection, and that
+  field only exists in `@vectojs/core@1.34.0`. On an older core the property is
+  ignored rather than rejected, so the combination installs cleanly, renders
+  without error, and silently loses the fix it was added for — a long code line's
+  selection carriers keep painting over whatever sits beside the block. A peer
+  range that permits a combination which cannot honour the feature is worse than
+  one that refuses it, because the failure surfaces as a rendering complaint
+  rather than an install error.
+
+  The horizontal scroll region shipped in `0.18.x` has the same dependency from
+  the other direction: without core's content-grid line-origin signature the
+  carriers stay frozen while the glyphs move, which was measured at 1017 px of
+  divergence. That fix is also in 1.34.0.
+
+  Consistent with how this floor has moved before — `>=1.8.0` to `>=1.24.0` when
+  markdown began consuming core's User Timing instrumentation, then to `>=1.25.0`
+  — the floor tracks the oldest core that can actually satisfy the package.
+
+- 83a693e: Highlight far more code fences, and stop gating the whole tokenizer on the
+  keyword table.
+
+  `highlightLine()` used to return the line as one plain segment whenever the
+  language had no keyword set, so an unknown language lost its comments, strings
+  and numbers as well — the whole tokenizer sat behind that lookup. The comment
+  prefix was hardcoded too (`//` for every language, `#` only for Python and Rust),
+  so a shell script's `#` comments were never colored even where the keyword lookup
+  succeeded. A shell-heavy document rendered entirely in one color.
+
+  Lexical syntax is now described per language and consulted independently of the
+  keyword table, so a language can have keywords, syntax, or only one of the two
+  and still be highlighted. Added keyword sets for `bash`, `json`, `css` and
+  `html`; lexical syntax for `yaml`, `toml`, `ini`, `dockerfile`, `makefile`,
+  `jsonc`, `json5`, `scss`, `sass`, `less`, `glsl`, `c`, `cpp`, `go`, `java`,
+  `kotlin` and `swift`; and dialect mapping so `jsx`/`tsx`/`mjs`/`cjs`/`mts`/`cts`
+  resolve onto their base language, `sh`/`zsh`/`shell`/`console` onto `bash`, and
+  `vue`/`svelte`/`xml`/`svg` onto `html`.
+
+  The fence info string is also normalized now: it was written verbatim, so
+  ` ```Bash ` resolved to nothing, and fence attributes (` ```ts title="a.ts" `)
+  prevented a match.
+
+  New `highlightedLanguages()` reports what this build can highlight.
+
+  Per-language lexical differences are respected rather than flattened: `//` is not
+  a comment in shell or strict JSON, `'` does not open a string in JSON, CSS claims
+  no line comment because a line-based tokenizer cannot span its block comments,
+  and numbers are left uncolored in markup where they are attribute noise.
+
 ## 0.18.2
 
 ### Patch Changes
