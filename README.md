@@ -42,7 +42,7 @@ runtime for interfaces whose visual or interactive complexity is a poor fit for 
 shape, glyph, point, or row.
 
 [Documentation](https://vectojs.org/learn/introduction/) ·
-[Live demos](https://vectojs.org/demos/) ·
+[Gallery](https://gallery.vectojs.org/) ·
 [Component reference](https://vectojs.org/reference/ui-components/) ·
 [Issues](https://github.com/vectojs/vectojs/issues)
 
