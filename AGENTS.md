@@ -174,111 +174,37 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.
 6. **Task management via CarryCtx**: `.carryctx/` holds the project config plus `rules/`, `workflows/`, and `personas/` presets. Check `.carryctx/rules/formatting-and-linting.md` and `.carryctx/rules/wasm-crate-build.md` for domain-specific constraints before starting matching work, `.carryctx/workflows/publish-package.md` before cutting a release, and `.carryctx/personas/code-reviewer.md` when asked to review a PR. Use `carryctx progress todo/done/block/risk/note` and `carryctx checkpoint` to track multi-step work.
 
-   CarryCtx identity must match the harness that is actually running; `opencode`
-   is not a shared default. Before writing state, run `carryctx agent current`.
-   Register and pass the correct repository-local identity explicitly:
+   Always pass `--agent <name>` — identity is never a shared default. The registered names for this repo are `omp`, `opencode`, `claude-code`, `kiro`, `codex`; register the same identity in every repo a task touches.
 
-   - Oh My Pi: `--agent omp` (`--name omp --provider oh-my-pi`)
-   - OpenCode: `--agent opencode` (provider `opencode-cli`)
-   - Claude Code: `--agent claude-code` (provider `claude-code`)
-   - Kiro: `--agent kiro` (provider `kiro`)
-   - Codex: `--agent codex` (provider `openai-codex`)
-
-   Register the same real identity in every repository a task touches. Never
-   reuse a previous agent merely because it is active in the registry.
-
-   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.4 on 2026-08-11). Since 0.5.2, text output is compact one-line summaries by design. **To see anything the one-liner omits, use `--json | jq` and note the payload is nested under `.data`** — `--json` returns the complete record (15 fields including `depends_on`/`blocks`). **Fixed in 0.5.4, verified:** `--fields` now works in compact text mode ([carryctx#68](https://github.com/Xuepoo/carryctx/issues/68)) — under an explicit projection the line renders exactly the projected fields and appends projected-but-unrendered ones as `label: value`, so `--fields display_id` prints a clean `CTX-0323` and `--fields display_id,status,depends_on` prints `CTX-0320 [blocked] — needs: CTX-0321`. Default unprojected output is unchanged. `--verbose` (or `[output] verbose = true`) still pretty-prints the full record. Since 0.5.3, piping to an early-closing consumer (`| head`) exits 141 silently instead of panicking. The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
-
-   **Still broken in 0.5.4: `decision list --task <ref>` does not filter.**
-   Measured 2026-08-11 it returned all **213** decisions for `--task CTX-0321`,
-   identical to the unfiltered total, while only **2** carry that `task_id`
-   ([carryctx#71](https://github.com/Xuepoo/carryctx/issues/71)). Filter client
-   side against the task's ULID, not the display id:
+   Run `carryctx` from the global install (plain `carryctx …`). Text output is compact one-line summaries; use `--json | jq '.data'` to see any field not shown by default, or `--verbose` for the full record. Use `--fields` to project specific columns in text mode — e.g. `--fields display_id,status,depends_on`. To find decisions for a specific task, filter client-side by ULID:
 
    ```bash
    carryctx decision list --json \
-     | jq --arg t "$(carryctx task show CTX-0321 --json | jq -r '.data.id')" \
+     | jq --arg t "$(carryctx task show CTX-NNNN --json | jq -r '.data.id')" \
        '[.data[] | select(.task_id==$t)]'
    ```
 
-7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
+7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then route it and snapshot state:
 
    ```bash
    carryctx handoff create \
-     --agent <you> \
-     --target <agent-name-ULID-or-role> \
-     --task CTX-NNNN \
+     --agent <you> --target <agent> --task CTX-NNNN \
      --summary "handoff doc: vectojs-docs/handoff-prompt/<timestamp>-<slug>.md"
    carryctx checkpoint --agent <you> --task CTX-NNNN --done "..." --remaining "..."
    ```
 
-   **`--task` is effectively mandatory** despite reading as optional — omitting it
-   fails `VALIDATION_FAILED: No task specified` — so create the task before routing.
-   `--dry-run` parses the flags but does **not** validate the target.
+   `--task` is required. At session start, `carryctx handoff list` shows pending requests (use `--all` for full history, `--for-agent <name>` to filter by target); read the referenced document before touching code, then `handoff accept HO-XXXX` when the work lands. The document is the payload — substance lives in the doc and in progress notes, not in the handoff request itself. Follow the `carryctx-handoff` skill for the full workflow.
 
-   **Verified fixed in carryctx 0.5.0** (2026-08-10), so the older warnings here are
-   gone: `--target` now resolves a bare agent **name** or role, and an unknown one
-   gives `Target agent '…' not found` instead of a raw
-   `SQLite error: FOREIGN KEY constraint failed`; `task start` after `task claim` is
-   an idempotent no-op rather than an error; `stats` attributes checkpoints per agent
-   and no longer bills every session to now (it reported 4784h before).
-
-   **Fixed in 0.5.1**: `handoff list` now defaults to **pending only** — it used to
-   return every record ever created, which is why a session-start check here surfaced
-   7 handoffs when 1 was actionable. `--all` restores the unfiltered view, `--status
-<pending|accepted|declined|closed>` picks one state (the domain spellings `open`/
-   `rejected` also parse), and `--for-agent <name-ULID-or-role>` filters by target.
-   `handoff create` also stopped deriving `display_id` from a ULID prefix, which
-   collided for two handoffs created in the same millisecond; ids are now sequential
-   `HO-0001`-style.
-
-   **Fixed in 0.5.3, verified:** `handoff accept --claim-task` now claims the task
-   for the accepting agent (status `in_progress`, `owner_agent_id` set). The record's `completed_work`/`remaining_work`/`blockers`/
-   `risks`/`next_steps` stay `[]` — `create` has no flags for them and does not
-   inherit them from a checkpoint — so substance lives in the document and in
-   progress notes, never in the request. `--format markdown` returns JSON for
-   `handoff show` and `context`, and `context --task` omits decisions (`decisions: []`
-   while `DEC-0037` carried that exact `task_id`), so use `decision list`/`search`.
-
-   The document is the payload (measurements, `file:line` sites, traps,
-   verification standard); the `carryctx handoff` request is the registry the
-   next agent queries. At session start, check `carryctx handoff list` for
-   pending requests, read the referenced document **before touching code**, then
-   `carryctx resume` and `carryctx task claim CTX-NNNN`; close the request
-   (`carryctx handoff accept/close HO-XXXX`) when the work lands. Follow the
-   `carryctx-handoff` skill (installable from `Xuepoo/carryctx-skills`) for the
-   full workflow; the generic `handoff-prompt` skill
-   (`Xuepoo/handoff-prompt`) holds the template and the serial/parallel and
-   reconciliation rules.
-
-8. **Order dependent work with `task depend`, not prose.** When one task must
-   land before another, record the edge instead of only saying so in a handoff
-   summary — the ordering then survives into `task show`/`context` and cannot be
-   lost when the document is skimmed:
+8. **Order dependent work with `task depend`, not prose.**
 
    ```bash
    carryctx task depend CTX-0320 --on CTX-0321 --agent opencode
    ```
 
-   Read as "CTX-0320 depends on CTX-0321"; the **first** ref is the blocked task
-   and `--on` is the prerequisite. The reciprocal `blocks` edge is derived, so do
-   not add it. Kinds are `strong` (default) and `informational`/`info` — **not**
-   the `blocks`/`relates_to` the `--help` text suggests. **Fixed in 0.5.4,
-   verified** ([carryctx#69](https://github.com/Xuepoo/carryctx/issues/69)): an
-   invalid `--kind` now renders a proper error instead of exiting 2 with no
-   output. Omit `--kind` unless you want `informational`. A `strong` edge is
-   enforced:
-   `task claim`/`task start` refuse a task whose strong prerequisites are not
-   complete (`domain/task.rs:135-162`), which is the point — it makes a wrong
-   ordering fail loudly instead of silently.
-
-   Verify the edge with `--json`, since compact text cannot show it:
+   Read as "CTX-0320 depends on CTX-0321" — the first ref is the blocked task. The reciprocal `blocks` edge is derived automatically. Kinds: `strong` (default, enforced — `task claim`/`start` refuse a task with incomplete prerequisites) or `informational`. Use `--json` to verify edges:
 
    ```bash
    carryctx task show CTX-0320 --json | jq -c '.data | {depends_on, blocks}'
    ```
 
-   `task create --depends-on <ULID>` sets the edge at creation, and
-   `task undepend <ref> --on <ref>` removes one.
-
-   **Fixed in 0.5.4, verified** ([carryctx#70](https://github.com/Xuepoo/carryctx/issues/70)): `task create --description` now persists the value, and `task edit --description` can fill or revise it on existing tasks. Description is a useful one-liner but **still not a substitute for `progress note`/`decision add`** — it is one sentence visible in `task show`, not a searchable record.
+   `task create --depends-on <ULID>` sets the edge at creation; `task undepend <ref> --on <ref>` removes one. Use `task edit --description` for a one-line summary, but keep substance in `progress note` / `decision add --rationale` / the handoff document.
