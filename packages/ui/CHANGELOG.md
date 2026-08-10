@@ -1,5 +1,125 @@
 # @vectojs/ui
 
+## 2.15.2
+
+### Patch Changes
+
+- d4d569d: fix: attach measuring canvas to document so Firefox resolves generic font families correctly
+
+  A detached `document.createElement('canvas')` used for `measureText` in
+  `@vectojs/text`, `@vectojs/layout`, and `@vectojs/ui` caused Firefox to
+  resolve generic CSS families (`monospace`, `serif`, `sans-serif`) to a
+  different font than the one actually painted on the scene canvas. The
+  discrepancy reached 17–47% on `monospace` and `serif` with a CJK document
+  language (`<html lang="zh">`), producing misaligned text selection highlights
+  and wrong line breaks.
+
+  Root cause: Gecko looks up the generic-to-real font mapping through a
+  per-language preference that is only reachable from a live document style
+  context. A canvas outside any document falls back to a hardcoded 0.5 em
+  advance. The same canvas `append → measure → remove` cycle confirmed the
+  resolution is dynamic, not latched at creation.
+
+  Fix: `@vectojs/text` now exports `getSharedMeasuringContext()` from a new
+  `measureContext` module. It creates a 1×1 `position:absolute;opacity:0`
+  canvas appended to `document.body` and memoizes it — the canonical
+  "measure where you paint" helper. `Typography.ts` (baseline computation),
+  `@vectojs/layout`'s `createCanvasMeasurer` (line-breaking advances), and
+  `@vectojs/ui`'s `Text` and `measure` module all converge on this one
+  attached context. The old per-call `createElement` paths are removed.
+
+  Chromium is unaffected (generic families resolve identically attached or
+  detached), so this is a Firefox-only correctness fix.
+
+  Residual: a ~0.3% per-character advance mismatch between the attached canvas
+  and DOM layout remains in Gecko (device-pixel grid-fitting). This is a
+  separate platform-level issue tracked as Bug B.
+
+- 5c288d1: fix: keep plaintext copy faithful for justified and RTL projected text
+
+  Copying selected canvas text out of a justified or RTL paragraph produced
+  mangled plaintext. Measured on real Chrome, a five-line justified block copied
+  as 16 newlines instead of 2 and lost every space (0 of 14 survived), so
+  `The quick brown fox jumps` came back as `The\nquick\nbrown\nfox\njum\nps`.
+
+  Two independent causes, both fixed:
+
+  `@vectojs/core` positioned each projected run carrier with
+  `position: absolute`. An absolutely-positioned box is blockified and taken out
+  of flow, so `innerText` serialization treats every run as its own line. The
+  carriers are now laid out in flow — `position: relative` +
+  `display: inline-block`, with `left` set to the delta between the run's target
+  `x` and the running inline offset accumulated in DOM order. Visual placement is
+  identical, but the runs remain inline so plaintext serialization joins them on
+  one line. This is the same mechanism `ContentGridProjector` already used. A line
+  whose positioned runs do not all carry a `width` falls back to the previous
+  absolute path.
+
+  `@vectojs/ui` `Text.justifiedRuns()` folded each inter-word space into the
+  preceding word's trailing width, so no carrier contained a space character and
+  copy concatenated words with nothing between them. Spaces are now emitted as
+  their own runs, spanning the justify-widened gap. This also fixes a latent
+  ordering bug the old code masked: a justify-collapsed line-trailing space is
+  emitted at the last word's own `x`, so sorting runs by `x` spliced it into the
+  middle of that word (`aa` became `a` + `a`). Runs are now taken in source order,
+  and a collapsed trailing space is emitted at the line end with width 0 — the
+  character survives for copy without contributing a stray selection rect.
+
+  RTL is fixed by the same change rather than scoped out: because carriers stay in
+  flow, DOM order remains logical while `left` supplies the visual offset, so
+  `RichText.positionedRuns()` (which sorts by source index) copies correctly with
+  decreasing `x`.
+
+  Covered by new unit tests in both packages and by three e2e cases — justified,
+  a natural-flow control, and justified RTL — asserted through a layout-aware
+  `innerText` probe across all 8 Chromium and Firefox configurations.
+
+- fcdbb35: fix: pin every grapheme to its canvas prefix so Firefox text selection stops drifting
+
+  Selection highlights and caret positions on natural-order canvas text drifted
+  progressively from the painted glyphs in Firefox. This is the residual left over
+  by the attached-measuring-canvas fix, which named it Bug B: a ~0.3% per-character
+  advance mismatch that accumulates along a line, measured at 1.50–1.70 px by
+  mid-line on real Firefox 153.0.
+
+  Root cause is Gecko grid-fitting DOM advance widths to integer device pixels for
+  layout while canvas keeps them fractional. It is not a font-family property and
+  has no monotonic size threshold — measuring `measureText('MMMMMMMMMM')` against
+  `getBoundingClientRect().width` at dpr 1.5789, the sign flips with size on the
+  same family: `12px monospace` is −0.37 px, `15px monospace` is exactly 0,
+  `22px monospace` is +0.42 px and `24px monospace` is −0.47 px. A family gate or a
+  size gate would therefore both be unsound, so carriers are emitted unconditionally
+  for eligible lines; the cost is DOM nodes, never wrongness.
+
+  `@vectojs/core` gains a `perGraphemeCarriers` flag on `ContentProjectionLine`.
+  When set, `Scene` splits the line with `Intl.Segmenter` at grapheme granularity
+  and emits one flow-relative carrier per cluster instead of a single text node,
+  reusing the `position: relative` + `display: inline-block` pattern the positioned
+  runs already use. Each carrier's `width` is the **canvas prefix difference**
+  (`measureText(text.slice(0, end)) - measureText(text.slice(0, start))`), not the
+  isolated cluster width: summing per-cluster measurements drops kerning and
+  ligatures, while prefix differences are exactly what the canvas painted. Setting
+  `width` forces the DOM to accumulate the same total as the canvas regardless of
+  how the browser resolves ligatures inside each `inline-block`. Without a document
+  the line falls back to a single text node, so SSR is unchanged.
+
+  `@vectojs/ui` `Text` sets the flag only when the line is neither bidi nor
+  justified. Bidi is excluded because DOM order is logical while `x` is visual, so
+  per-glyph carriers break caret hit-mapping — the regression that forced the PR #146
+  revert — and `line.x !== 0` is not a usable discriminant since
+  `bidiLineOriginX()` legitimately returns 0 for a left-aligned RTL line. Justified
+  lines already carry positioned runs and take the existing path. An explicit flag
+  is used rather than inferring eligibility in `Scene` because `RichText` always
+  emits `runs` and never reaches the same branch, so no inferred signal separates
+  the two producers.
+
+  Mid-line drift on the same fixture falls from 1.50–1.70 px to a maximum of
+  0.023 px on Firefox 153.0 at dpr 1.5789. Forcing the flag off restores the drift,
+  confirming the carriers are what corrects it. Covered by four new `Scene` unit
+  tests — flag on, flag off, multi-codepoint clusters, and prefix-accurate
+  positioning — and by the existing e2e matrix, where the ligature width-parity case
+  is what caught the isolated-measurement mistake.
+
 ## 2.15.1
 
 ### Patch Changes
@@ -415,15 +535,15 @@
   A span may now carry an `InlineObject`:
 
   ```ts
-  import { OBJECT_REPLACEMENT, type StyledSpan } from "@vectojs/layout";
+  import { OBJECT_REPLACEMENT, type StyledSpan } from '@vectojs/layout';
 
   const spans: StyledSpan[] = [
-    { text: "the identity " },
+    { text: 'the identity ' },
     {
       text: OBJECT_REPLACEMENT,
-      object: { width: 42, height: 20, depth: 4, alt: "x+1" },
+      object: { width: 42, height: 20, depth: 4, alt: 'x+1' },
     },
-    { text: " holds." },
+    { text: ' holds.' },
   ];
   ```
 
@@ -519,11 +639,11 @@
   `@vectojs/text` now owns a font-metrics registry:
 
   ```ts
-  import { registerMSDFFontMetrics } from "@vectojs/text";
+  import { registerMSDFFontMetrics } from '@vectojs/text';
 
   // Only the JSON's advances, kerning, and metrics are read — the atlas image is
   // irrelevant, so a metrics-only file works and nothing needs to decode.
-  registerMSDFFontMetrics("sans-serif", await Bun.file("inter.json").json());
+  registerMSDFFontMetrics('sans-serif', await Bun.file('inter.json').json());
   ```
 
   Any `msdf-atlas-gen` font works via `registerMSDFFontMetrics`, or supply a
@@ -825,10 +945,10 @@
   stand these in with local entities.
 
   ```ts
-  new Button("Save", { disabled: true });
+  new Button('Save', { disabled: true });
   new Input({
     width: 220,
-    placeholder: "Email",
+    placeholder: 'Email',
     required: true,
     invalid: true,
   });
@@ -860,8 +980,8 @@
   drawn on canvas, so nothing reached the semantic layer.
 
   ```ts
-  new Slider({ min: 0, max: 100, value: 40, label: "Volume" });
-  new Dropdown(["Small", "Large"], { label: "Size" });
+  new Slider({ min: 0, max: 100, value: 40, label: 'Volume' });
+  new Dropdown(['Small', 'Large'], { label: 'Size' });
   ```
 
   Omitting `label` leaves `aria-label` unset rather than fabricating a name from the

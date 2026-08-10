@@ -1,5 +1,98 @@
 # @vectojs/core
 
+## 1.34.1
+
+### Patch Changes
+
+- 5c288d1: fix: keep plaintext copy faithful for justified and RTL projected text
+
+  Copying selected canvas text out of a justified or RTL paragraph produced
+  mangled plaintext. Measured on real Chrome, a five-line justified block copied
+  as 16 newlines instead of 2 and lost every space (0 of 14 survived), so
+  `The quick brown fox jumps` came back as `The\nquick\nbrown\nfox\njum\nps`.
+
+  Two independent causes, both fixed:
+
+  `@vectojs/core` positioned each projected run carrier with
+  `position: absolute`. An absolutely-positioned box is blockified and taken out
+  of flow, so `innerText` serialization treats every run as its own line. The
+  carriers are now laid out in flow — `position: relative` +
+  `display: inline-block`, with `left` set to the delta between the run's target
+  `x` and the running inline offset accumulated in DOM order. Visual placement is
+  identical, but the runs remain inline so plaintext serialization joins them on
+  one line. This is the same mechanism `ContentGridProjector` already used. A line
+  whose positioned runs do not all carry a `width` falls back to the previous
+  absolute path.
+
+  `@vectojs/ui` `Text.justifiedRuns()` folded each inter-word space into the
+  preceding word's trailing width, so no carrier contained a space character and
+  copy concatenated words with nothing between them. Spaces are now emitted as
+  their own runs, spanning the justify-widened gap. This also fixes a latent
+  ordering bug the old code masked: a justify-collapsed line-trailing space is
+  emitted at the last word's own `x`, so sorting runs by `x` spliced it into the
+  middle of that word (`aa` became `a` + `a`). Runs are now taken in source order,
+  and a collapsed trailing space is emitted at the line end with width 0 — the
+  character survives for copy without contributing a stray selection rect.
+
+  RTL is fixed by the same change rather than scoped out: because carriers stay in
+  flow, DOM order remains logical while `left` supplies the visual offset, so
+  `RichText.positionedRuns()` (which sorts by source index) copies correctly with
+  decreasing `x`.
+
+  Covered by new unit tests in both packages and by three e2e cases — justified,
+  a natural-flow control, and justified RTL — asserted through a layout-aware
+  `innerText` probe across all 8 Chromium and Firefox configurations.
+
+- fcdbb35: fix: pin every grapheme to its canvas prefix so Firefox text selection stops drifting
+
+  Selection highlights and caret positions on natural-order canvas text drifted
+  progressively from the painted glyphs in Firefox. This is the residual left over
+  by the attached-measuring-canvas fix, which named it Bug B: a ~0.3% per-character
+  advance mismatch that accumulates along a line, measured at 1.50–1.70 px by
+  mid-line on real Firefox 153.0.
+
+  Root cause is Gecko grid-fitting DOM advance widths to integer device pixels for
+  layout while canvas keeps them fractional. It is not a font-family property and
+  has no monotonic size threshold — measuring `measureText('MMMMMMMMMM')` against
+  `getBoundingClientRect().width` at dpr 1.5789, the sign flips with size on the
+  same family: `12px monospace` is −0.37 px, `15px monospace` is exactly 0,
+  `22px monospace` is +0.42 px and `24px monospace` is −0.47 px. A family gate or a
+  size gate would therefore both be unsound, so carriers are emitted unconditionally
+  for eligible lines; the cost is DOM nodes, never wrongness.
+
+  `@vectojs/core` gains a `perGraphemeCarriers` flag on `ContentProjectionLine`.
+  When set, `Scene` splits the line with `Intl.Segmenter` at grapheme granularity
+  and emits one flow-relative carrier per cluster instead of a single text node,
+  reusing the `position: relative` + `display: inline-block` pattern the positioned
+  runs already use. Each carrier's `width` is the **canvas prefix difference**
+  (`measureText(text.slice(0, end)) - measureText(text.slice(0, start))`), not the
+  isolated cluster width: summing per-cluster measurements drops kerning and
+  ligatures, while prefix differences are exactly what the canvas painted. Setting
+  `width` forces the DOM to accumulate the same total as the canvas regardless of
+  how the browser resolves ligatures inside each `inline-block`. Without a document
+  the line falls back to a single text node, so SSR is unchanged.
+
+  `@vectojs/ui` `Text` sets the flag only when the line is neither bidi nor
+  justified. Bidi is excluded because DOM order is logical while `x` is visual, so
+  per-glyph carriers break caret hit-mapping — the regression that forced the PR #146
+  revert — and `line.x !== 0` is not a usable discriminant since
+  `bidiLineOriginX()` legitimately returns 0 for a left-aligned RTL line. Justified
+  lines already carry positioned runs and take the existing path. An explicit flag
+  is used rather than inferring eligibility in `Scene` because `RichText` always
+  emits `runs` and never reaches the same branch, so no inferred signal separates
+  the two producers.
+
+  Mid-line drift on the same fixture falls from 1.50–1.70 px to a maximum of
+  0.023 px on Firefox 153.0 at dpr 1.5789. Forcing the flag off restores the drift,
+  confirming the carriers are what corrects it. Covered by four new `Scene` unit
+  tests — flag on, flag off, multi-codepoint clusters, and prefix-accurate
+  positioning — and by the existing e2e matrix, where the ligature width-parity case
+  is what caught the isolated-measurement mistake.
+
+- Updated dependencies [d4d569d]
+  - @vectojs/text@0.4.0
+  - @vectojs/layout@0.9.1
+
 ## 1.34.0
 
 ### Minor Changes

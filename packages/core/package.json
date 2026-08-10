@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/core",
-  "version": "1.34.0",
+  "version": "1.34.1",
   "publishConfig": {
     "access": "public"
   },
@@ -65,9 +65,9 @@
   },
   "dependencies": {
     "@vectojs/animation": "^0.1.1",
-    "@vectojs/layout": "^0.9.0",
+    "@vectojs/layout": "^0.9.1",
     "@vectojs/math": "^0.1.1",
-    "@vectojs/text": "^0.3.0"
+    "@vectojs/text": "^0.4.0"
   },
   "devDependencies": {
     "@guidepup/virtual-screen-reader": "0.32.1",
