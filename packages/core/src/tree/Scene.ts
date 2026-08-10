@@ -4635,6 +4635,25 @@ export class Scene {
     if (node.height > 0) el.style.height = `${node.height}px`;
     el.style.transform = `matrix(${a}, ${b}, ${c}, ${d}, 0, 0)`;
 
+    // Opt-in paint clip, for an entity whose own `render()` clips (a
+    // horizontally scrolled code block). The element is deliberately left
+    // unclipped otherwise — see the creation site, which omits `overflow` so
+    // selection can start in blank padding and extend past the entity — so this
+    // uses `clip-path`, which confines PAINT without making the element a
+    // scroll container or changing where a selection may begin.
+    //
+    // Expressed in the element's own box, which is NOT the entity's local box:
+    // `left`/`top` above are shifted by `contentX`/`localY`, so the entity box
+    // sits at `(-contentX, -localY)` in element coordinates. A negative inset
+    // is legal and expands outward, which is the correct direction when text is
+    // drawn above its own origin (`baseline`) or inset from it.
+    const clipToBounds = projection.clipToBounds === true;
+    const clipPath =
+      clipToBounds && node.width > 0 && node.height > 0
+        ? `inset(${-localY}px ${contentX}px ${localY}px ${-contentX}px)`
+        : '';
+    if (el.style.clipPath !== clipPath) el.style.clipPath = clipPath;
+
     // Viewport/clip: a materialized-but-off-viewport mirror (inside the
     // virtualization margin) must not keep intercepting input or announce text.
     // Exact (margin 0) test against viewport + clipChildren ancestors, computed

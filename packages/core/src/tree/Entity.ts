@@ -213,6 +213,20 @@ export interface ContentProjection {
    * shaping, and bidi boundaries cannot drift between the two surfaces.
    */
   grid?: PreparedContentGrid;
+  /**
+   * Confine the projected text's paint to the projection element's own box.
+   *
+   * Opt in when the entity's `render()` clips its own drawing, so the two
+   * surfaces agree on where the content ends. Without it the canvas clips and
+   * the DOM copy does not, and a selection highlight over content wider than
+   * the box paints past the entity onto whatever is drawn beside it — the
+   * defect a horizontally scrollable code block exhibits.
+   *
+   * Off by default, because the projection element is deliberately unclipped:
+   * `Scene` relies on that so selection can start in an entity's blank/padding
+   * regions and extend beyond its bounds.
+   */
+  clipToBounds?: boolean;
 }
 
 /** Typography for a native input projected by the accessibility layer. */
