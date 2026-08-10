@@ -111,3 +111,13 @@ benchmarks/*/screenshots/
 # but baselines/ are committed as the regression gate.
 benchmarks/markdown-showcase/diffs/
 benchmarks/markdown-showcase/evidence/
+# Agent skill installs. Sessions are opened at the WORKSPACE ROOT
+# ($VECTOJS_WORKSPACE), so only $VECTOJS_WORKSPACE/.agents/skills/ is ever
+# loaded — a copy under this repo is dead weight that silently drifts from the
+# one actually in use. Measured 2026-08-10: the two copies of
+# carryctx-handoff/SKILL.md had diverged, 167 lines here against 118 there, and
+# the corrected one was the copy no session could read. Install from the
+# workspace root instead: `skills add <pkg> --skill '*' --agent agents --copy`.
+.agents/
+.claude/
+skills-lock.json
