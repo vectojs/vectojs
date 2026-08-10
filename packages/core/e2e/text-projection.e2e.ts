@@ -56,6 +56,12 @@ async function instrumentCanvas(page: Page): Promise<void> {
         b: transform.b,
         c: transform.c,
         d: transform.d,
+        // Translation, so a draw can be attributed to the entity that made it.
+        // Trace x/y are entity-LOCAL (the draw walk translates by node.x/node.y
+        // before calling render()), so local coordinates alone cannot tell two
+        // blocks apart when their local boxes overlap — which they usually do.
+        e: transform.e,
+        f: transform.f,
       });
       return maxWidth === undefined
         ? original.call(this, text, x, y)
@@ -124,6 +130,8 @@ async function instrumentCanvas(page: Page): Promise<void> {
             b: transform.b,
             c: transform.c,
             d: transform.d,
+            e: transform.e,
+            f: transform.f,
           });
         }
       }
@@ -1890,6 +1898,178 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       `${browserCase.name} hidden grid calibration drifted after reveal`,
     );
     assert.equal(hiddenGridAfter.pendingProbe, 0, `${browserCase.name} hidden grid leaked a probe`);
+
+    // ── Long lines must stay inside the block box ────────────────────────────
+    //
+    // A code line does not wrap: cells are placed at `col × cellWidth`, so a
+    // line longer than the box used to paint straight through the rounded
+    // background and off the viewport edge, where no scroll and no wrap could
+    // bring the tail back. The reading is `cell right edge − block box right
+    // edge` in CLIENT px, taken with the block moved into view.
+    //
+    // Every earlier attempt at this figure reported `boxWidth: 0` /
+    // `cellCount: 0`, which is not a zero-width block — it is a block that had
+    // scrolled out of the carrier window, so nothing was measured at all. Hence
+    // the block is moved on-screen and awaited first, and a missing reading
+    // throws below instead of being reported as `0`.
+    await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      app.overflowCode.setPosition(40, 200);
+      app.scene.markDirty();
+    });
+    await page.waitForFunction(() => {
+      const app = (window as any).__vecto;
+      const root = app.scene.getContentElement(app.overflowCode.id) as HTMLElement | null;
+      return (
+        !!root &&
+        root.style.display !== 'none' &&
+        root.dataset.vectoGridReady === 'true' &&
+        root.querySelectorAll('[data-vecto-grid-cell]').length > 0
+      );
+    });
+    const overflow = await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      const root = app.scene.getContentElement(app.overflowCode.id) as HTMLElement;
+      const rootRect = root.getBoundingClientRect();
+      const cells = [...root.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+      // What the CANVAS drew, in entity-local px. The DOM carriers are
+      // deliberately NOT clipped to the block (the a11yRoot clips at the viewport
+      // so find-in-page can still reach text, and selection must be able to start
+      // in blank regions), so a carrier rect cannot answer "did a glyph paint
+      // outside the background". Only the draw trace can.
+      const block = app.overflowCode;
+      const trace = ((window as any).__vectoFillTrace ?? []) as Array<{
+        text: string;
+        x: number;
+        y: number;
+        width: number;
+        a: number;
+        b: number;
+        c: number;
+        d: number;
+        e: number;
+        f: number;
+      }>;
+      // Trace x/y are entity-LOCAL (the draw walk translates by `node.x/node.y`
+      // before calling `render()`), so local coordinates alone cannot separate two
+      // blocks whose local boxes overlap — which they all do, every block having a
+      // local origin of 0,0. Attribute a draw by its TRANSLATION instead, which is
+      // this block's world position times the canvas scale.
+      const world = block.getWorldTransform();
+      const drawn = trace.filter(
+        (entry) =>
+          // No rotated/skewed entity.
+          Math.abs(entry.b) <= 0.001 &&
+          Math.abs(entry.c) <= 0.001 &&
+          entry.text.trim().length > 0 &&
+          // This block's own draws: the translation carries its world x/y, scaled
+          // by the same device-pixel-ratio scale the canvas is set up with.
+          Math.abs(entry.e - world.e * entry.a) <= 0.5 &&
+          Math.abs(entry.f - world.f * entry.d) <= 0.5,
+      );
+      const rights = drawn.map((entry) => entry.x + entry.width);
+      return {
+        cellCount: cells.length,
+        boxWidth: rootRect.width,
+        blockWidth: block.width,
+        drawnCount: drawn.length,
+        // Widest submitted draw extent past the block's own background box, local
+        // px. A cell whose origin is inside the box but whose advance crosses the
+        // edge is SUBMITTED whole and clipped by the renderer, so a correct
+        // implementation still reads up to one cell width here — see the assertion.
+        overflowPx: rights.length > 0 ? Math.max(...rights) - block.width : Number.NaN,
+        cellWidth: block.getContentProjection()?.grid?.cellWidth ?? Number.NaN,
+        scrollX: block.scrollX ?? 0,
+        maxScrollX: block.maxScrollX ?? 0,
+      };
+    });
+    // Guard, not an assertion about the fix: without a real reading the
+    // overflow assertion below would pass vacuously on a `0`.
+    if (!(overflow.cellCount > 0 && overflow.boxWidth > 0 && overflow.drawnCount > 0)) {
+      throw new Error(
+        `${browserCase.name} overflow probe measured NOTHING (cellCount=${overflow.cellCount}, boxWidth=${overflow.boxWidth}, drawnCount=${overflow.drawnCount}) — the block was outside the carrier window or no draw was attributed to it, so this is not a zero-width reading`,
+      );
+    }
+    assert.ok(
+      Number.isFinite(overflow.overflowPx),
+      `${browserCase.name} overflow probe produced no finite reading ${JSON.stringify(overflow)}`,
+    );
+    // The trace records draws SUBMITTED to the canvas, which the renderer's clip
+    // then bounds — it cannot observe the clip itself. So the budget is one cell
+    // plus a px of rounding: the cell straddling the right edge is submitted whole
+    // and clipped, while a cell entirely outside is skipped before submission.
+    //
+    // What this catches is the defect and any regression of it: unclipped, the same
+    // reading was 1016.984px, i.e. ~68 cells past the edge rather than part of one.
+    // Whether the clipped glyphs actually stop at the background is a question only
+    // pixels can answer, and is verified by screenshot in both engines.
+    const overflowBudget = (Number.isFinite(overflow.cellWidth) ? overflow.cellWidth : 0) + 1;
+    assert.ok(
+      overflow.overflowPx <= overflowBudget,
+      `${browserCase.name} code cells reach ${overflow.overflowPx.toFixed(3)}px past the block box, over a ${overflowBudget.toFixed(3)}px budget (one cell + rounding) — a long line's tail is painting outside the background ${JSON.stringify(overflow)}`,
+    );
+    // Not painting outside the box is only half the fix: a block that clipped the
+    // tail away without offering any scroll would satisfy the assertion above and
+    // still leave the tail unreachable, which is the defect.
+    assert.ok(
+      overflow.maxScrollX > 0,
+      `${browserCase.name} a line ${overflow.blockWidth}px-wide block cannot scroll (maxScrollX ${overflow.maxScrollX}) so the tail is still unreachable`,
+    );
+    // And the tail must actually come into view when scrolled to the end.
+    const scrolledTail = await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      const block = app.overflowCode;
+      block.setScrollX(block.maxScrollX);
+      app.scene.markDirty();
+      return { scrollX: block.scrollX, maxScrollX: block.maxScrollX };
+    });
+    // Wait for the CARRIERS to follow, not for `vectoGridReady` — that flag was
+    // already `true` before the scroll, so waiting on it reads pre-rebuild DOM and
+    // makes this probe a race (it passed at DPR 1 and failed under zoom purely on
+    // timing). The line's own `left` is the thing that must change.
+    await page.waitForFunction(() => {
+      const app = (window as any).__vecto;
+      const root = app.scene.getContentElement(app.overflowCode.id) as HTMLElement | null;
+      const line = root?.querySelector<HTMLElement>('[data-vecto-grid-line="0"]');
+      if (!line || root?.dataset.vectoGridReady !== 'true') return false;
+      const left = Number.parseFloat(line.style.left || '0');
+      // Scrolled to the end, so the first line's origin is far negative.
+      return Number.isFinite(left) && left < 0;
+    });
+    const tailReach = await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      const block = app.overflowCode;
+      const root = app.scene.getContentElement(block.id) as HTMLElement;
+      const rootRect = root.getBoundingClientRect();
+      const cells = [...root.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+      // The LAST cell of the long first line: its carrier must now overlap the
+      // block box, which is what "the tail is reachable" means for selection.
+      const line = root.querySelector<HTMLElement>('[data-vecto-grid-line="0"]')!;
+      const lineCells = [...line.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+      const last = lineCells[lineCells.length - 1]!.getBoundingClientRect();
+      return {
+        cellCount: cells.length,
+        lineCellCount: lineCells.length,
+        // Positive when the final glyph's carrier sits inside the block box.
+        tailInsideBy: rootRect.right - last.left,
+        boxWidth: rootRect.width,
+      };
+    });
+    if (!(tailReach.lineCellCount > 0 && tailReach.boxWidth > 0)) {
+      throw new Error(
+        `${browserCase.name} tail-reach probe measured NOTHING ${JSON.stringify(tailReach)}`,
+      );
+    }
+    assert.ok(
+      tailReach.tailInsideBy > 0,
+      `${browserCase.name} scrolled to the end (${scrolledTail.scrollX.toFixed(1)}/${scrolledTail.maxScrollX.toFixed(1)}px) and the last glyph of the line is still outside the block box ${JSON.stringify(tailReach)}`,
+    );
+    // Restore, so later cases see an unscrolled block.
+    await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      app.overflowCode.setScrollX(0);
+      app.scene.markDirty();
+    });
 
     pageErrors.length = 0;
     const rebuildStart = await page.evaluate(() => {
