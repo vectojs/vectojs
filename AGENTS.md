@@ -115,6 +115,54 @@ The `lefthook` pre-commit hook auto-runs `oxfmt --write`, `oxlint --fix`, and
 `markdownlint-cli2 --fix` on staged files, so formatting is applied for you at
 commit time.
 
+**Write single quotes in TS/JS** (`.oxfmtrc.json` sets `singleQuote: true`), and run
+`oxfmt --write` on a file **immediately after editing it**. Quote normalization is
+global rather than reflow-scoped, so one stray double quote always fails
+`oxfmt --check`; and `oxfmt` re-wraps argument lists and adds trailing commas, which
+is what makes a later exact-match edit fail against source you hand-wrote. `biome`
+warnings in the editor (`assignment-in-expression`, `forEach`-returns-value) are
+**advisory only** — not a gate, so ignore the pre-existing noise.
+
+**commitlint subject rules**: lowercase first word (`"WASM …"` fails, `"add WASM …"`
+passes), **≤100 characters**, and only `feat|fix|docs|refactor|test|chore|perf|build|ci|style|revert`
+(no `bench` — use `test`). A rejected commit leaves HEAD unmoved with files still
+staged, which surfaces later as `gh pr create` reporting "No commits between".
+
+### CI facts, all measured
+
+- **Six checks report but branch protection requires exactly one, `Test & Lint`**
+  (2026-08-06, `strict: true`). A failed WASM job leaves `mergeStateStatus: UNSTABLE`
+  _without_ blocking merge; an earlier claim that all six were required cost a session
+  ~40 minutes of pointless reruns. Merging one PR can push the next to `BEHIND`:
+  `gh api -X PUT repos/vectojs/vectojs/pulls/N/update-branch`, wait green, then merge.
+  Auto-merge is disabled.
+- **`ci.yml` triggers on both `push` and `pull_request`**, so each arm appears
+  separately in the rollup and one blip looks persistent. Check which arm failed.
+- **Diagnose by failed step, not conclusion.** `Failed to resolve action download info`
+  at "Set up job", or `cancelled` with zero steps and a 15-minute gap, is runner
+  provisioning — nothing to fix here. Check `githubstatus.com` first when a run will
+  not start: an `Actions: major_outage` produced "no run registered at all", which
+  reads exactly like a broken workflow.
+- **Wait with `--watch`, never `sleep`**: `gh pr checks <N> --watch --interval 20`, or
+  `gh run watch <id> --interval 15 --exit-status` for a release run. `--watch` exits 1
+  immediately with `no checks reported` when no run has registered yet, which is not a
+  failure. The full matrix takes ~4-5 min.
+- **`gh pr merge` run _from_ a worktree** fails with `fatal: 'main' is already used by
+worktree` **after the remote merge has already succeeded**. Verify with
+  `gh pr view --json state,mergeCommit` instead of retrying; simplest is to merge from
+  the primary checkout.
+
+### Zero-DOM a11y hotspot pattern
+
+Reuse for any composite widget: a transparent, focusable child `UIComponent` with
+`interactive = true`, `getA11yAttributes()` returning `role`/state/roving-`tabIndex`,
+and a no-op `render()`; the parent owns the keyboard handler and roving focus and pools
+one hotspot per visible child. **If the parent or an underlying content projection owns
+the pointer** (selectable text, drag-scroll, canvas hit handling), give the hotspot
+`pointerEvents: 'none'` so a real click or drag passes through — keyboard focus and
+AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160),
+`Tree`/`Table`/`ContextMenu` (#191).
+
 ---
 
 ## 3. Agent Rules & Constraints
@@ -139,17 +187,38 @@ commit time.
    Register the same real identity in every repository a task touches. Never
    reuse a previous agent merely because it is active in the registry.
 
-   `carryctx` is pinned as a `devDependency` so a contributor gets the version this repo expects from a plain `bun install`, with no separate global install step — run it as `bunx carryctx …` (or `./node_modules/.bin/carryctx`). A globally installed `carryctx` works identically; the pin exists so nothing is required beyond `bun install`. It is the one tool in this repo that reads and writes state (`.git/carryctx/state.sqlite`) rather than only inspecting files, which is why the version is pinned rather than floated.
+   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.0 on 2026-08-10). The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
 
 7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
 
    ```bash
-   bunx carryctx handoff create \
-     --target <next-agent-or-role> \
+   carryctx handoff create \
+     --agent <you> \
+     --target <agent-name-ULID-or-role> \
      --task CTX-NNNN \
      --summary "handoff doc: vectojs-docs/handoff-prompt/<timestamp>-<slug>.md"
-   bunx carryctx checkpoint --done "..." --remaining "..."
+   carryctx checkpoint --agent <you> --task CTX-NNNN --done "..." --remaining "..."
    ```
+
+   **`--task` is effectively mandatory** despite reading as optional — omitting it
+   fails `VALIDATION_FAILED: No task specified` — so create the task before routing.
+   `--dry-run` parses the flags but does **not** validate the target.
+
+   **Verified fixed in carryctx 0.5.0** (2026-08-10), so the older warnings here are
+   gone: `--target` now resolves a bare agent **name** or role, and an unknown one
+   gives `Target agent '…' not found` instead of a raw
+   `SQLite error: FOREIGN KEY constraint failed`; `task start` after `task claim` is
+   an idempotent no-op rather than an error; `stats` attributes checkpoints per agent
+   and no longer bills every session to now (it reported 4784h before).
+
+   **Still broken in 0.5.0, measured:** `handoff accept --claim-task` leaves the
+   task's `owner_agent_id` null and its status `ready`, so run `task claim` /
+   `task start` yourself. The record's `completed_work`/`remaining_work`/`blockers`/
+   `risks`/`next_steps` stay `[]` — `create` has no flags for them and does not
+   inherit them from a checkpoint — so substance lives in the document and in
+   progress notes, never in the request. `--format markdown` returns JSON for
+   `handoff show` and `context`, and `context --task` omits decisions (`decisions: []`
+   while `DEC-0037` carried that exact `task_id`), so use `decision list`/`search`.
 
    The document is the payload (measurements, `file:line` sites, traps,
    verification standard); the `carryctx handoff` request is the registry the
