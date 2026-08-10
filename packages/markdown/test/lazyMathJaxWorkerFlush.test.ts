@@ -70,6 +70,12 @@ function workerReply(
   };
 }
 
+/**
+ * A bounded drain for the *negative* assertion below. This is a fixed loop of
+ * already-resolved promises, so it always completes and can never be the source
+ * of a timeout — draining several turns only makes "the waiter was not released
+ * early" a stronger claim than draining one.
+ */
 async function drainMicrotasks(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
@@ -111,9 +117,14 @@ describe('lazy MathJax settlement: a worker reply does not release waiters early
       },
     });
 
-    await drainMicrotasks();
+    // Condition-based rather than a fixed drain count: settlement here depends on
+    // the lazy MathJax load, so the number of microtask turns it takes is not a
+    // property of this test. A fixed count that is one turn short waits forever
+    // and surfaces as vitest's 5 s default timeout.
+    await vi.waitFor(() => expect(resolved).toBe(true), { timeout: 2_000 });
+    // Awaited so a rejection fails this test rather than becoming an unhandled
+    // rejection attributed to a later file.
     await closed;
-    expect(resolved).toBe(true);
 
     // The formula is typeset by the time close() resolved, not still source.
     //
