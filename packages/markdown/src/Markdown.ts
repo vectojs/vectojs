@@ -68,6 +68,7 @@ export { isMathJaxReady, MathBlock, preloadMathJax } from './markdown-math';
 // before the code block moved to `markdown-code.ts`. Re-exported so the public
 // API and every deep import — including `packages/core/e2e` — stay valid.
 export { CodeBlock, codeAtlas, codeAtlasStats, highlightedLanguages } from './markdown-code';
+export type { CodeBlockOptions } from './markdown-code';
 import {
   containsImage,
   ensureInlineImageRaster,
@@ -268,11 +269,14 @@ marked.use({
 import { type ButtonOptions, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
 import {
   BlockAffordanceButton,
+  type BlockAffordanceConfig,
   defaultSaveFile,
   defaultWriteClipboard,
   extensionForLanguage,
   mimeForLanguage,
   BlockWithAffordances,
+  resolveBlockAffordanceConfig,
+  type ResolvedBlockAffordanceConfig,
   tableContentOf,
   tableToCsv,
   tableToMarkdown,
@@ -445,6 +449,33 @@ export interface MarkdownOptions {
    */
   blockAffordances?: boolean;
   /**
+   * Which affordance controls a block gets, and what they are called.
+   *
+   * Defaults to copy + download on both code blocks and tables, i.e. exactly what
+   * `blockAffordances: true` produced before this existed. Set it to narrow the
+   * set (`{ download: false }` for copy-only blocks) or to relabel a control for a
+   * non-English document — the labels are user-visible text and are also what a
+   * screen reader announces, so they cannot stay hardcoded English.
+   *
+   * Separate from {@link blockAffordances} rather than folded into it, because the
+   * two answer different questions: whether a reader is offered controls at all,
+   * and which ones. Keeping the boolean means the common case stays a boolean.
+   */
+  affordances?: BlockAffordanceConfig;
+  /**
+   * Show the fence's language in a header band at the top-left of each code
+   * block. Default `false`.
+   *
+   * Worth turning on for a document that mixes languages, where the label tells a
+   * reader what they are looking at. A single-language page gets the same word
+   * repeated down its length, which is why it is opt-in.
+   *
+   * It also reserves vertical space at the top of the block, which is what stops
+   * {@link blockAffordances} controls from overlapping the first line of code —
+   * so a document using both wants this on.
+   */
+  showCodeLanguage?: boolean;
+  /**
    * Writes text to the clipboard for the copy controls.
    *
    * Injectable because the real path (`navigator.clipboard.writeText`) is absent
@@ -503,6 +534,22 @@ export class Markdown extends UIComponent {
    * affordance.
    */
   public blockAffordances: boolean;
+  /**
+   * Which controls a block carries and what they are called, with defaults
+   * applied.
+   *
+   * Resolved once in the constructor rather than per block: the defaults are
+   * fixed, and re-deriving them for every code fence in a long document would
+   * repeat the same six `??` fallbacks for no benefit.
+   */
+  public affordanceConfig: ResolvedBlockAffordanceConfig;
+  /**
+   * Whether code blocks show their language in a header band.
+   *
+   * Read when a block entity is built, exactly like {@link blockAffordances}, so
+   * it affects blocks rendered from here on rather than retroactively.
+   */
+  public showCodeLanguage: boolean;
   /** Clipboard writer used by the copy controls. */
   public writeClipboard: (text: string) => void;
   /** File saver used by the download controls. */
@@ -789,6 +836,8 @@ export class Markdown extends UIComponent {
     this.selectable = opts.selectable ?? true;
     this._userTiming = opts.userTiming ?? false;
     this.blockAffordances = opts.blockAffordances ?? false;
+    this.affordanceConfig = resolveBlockAffordanceConfig(opts.affordances);
+    this.showCodeLanguage = opts.showCodeLanguage ?? false;
     this.writeClipboard = opts.writeClipboard ?? defaultWriteClipboard;
     this.saveFile = opts.saveFile ?? defaultSaveFile;
 
@@ -1984,41 +2033,67 @@ export class Markdown extends UIComponent {
     return controls.length > 0 ? new BlockWithAffordances(block, controls) : block;
   }
 
-  /** Copy and download controls for one fenced code block. */
+  /** Copy and download controls for one fenced code block, per {@link affordanceConfig}. */
   private codeBlockAffordances(source: string, lang: string): BlockAffordanceButton[] {
     const opts = this.affordanceButtonOptions();
-    return [
-      new BlockAffordanceButton('Copy code', 'Copied', () => this.writeClipboard(source), opts),
-      new BlockAffordanceButton(
-        'Download code',
-        'Saved',
-        () => this.saveFile(`code.${extensionForLanguage(lang)}`, source, mimeForLanguage(lang)),
-        opts,
-      ),
-    ];
+    const { copy, download, labels } = this.affordanceConfig;
+    const controls: BlockAffordanceButton[] = [];
+    // Pushed in visual order — `BlockWithAffordances` lays the list out
+    // right-to-left from the block's right edge specifically so list order is
+    // also DOM order, and therefore tab and screen-reader order.
+    if (copy) {
+      controls.push(
+        new BlockAffordanceButton(
+          labels.copyCode,
+          labels.copied,
+          () => this.writeClipboard(source),
+          opts,
+        ),
+      );
+    }
+    if (download) {
+      controls.push(
+        new BlockAffordanceButton(
+          labels.downloadCode,
+          labels.saved,
+          () => this.saveFile(`code.${extensionForLanguage(lang)}`, source, mimeForLanguage(lang)),
+          opts,
+        ),
+      );
+    }
+    return controls;
   }
 
-  /** Copy (as Markdown) and download (as CSV) controls for one table. */
+  /** Copy (as Markdown) and download (as CSV) controls for one table, per {@link affordanceConfig}. */
   private tableAffordances(tblToken: Tokens.Table): BlockAffordanceButton[] {
+    const { copy, download, labels } = this.affordanceConfig;
     const content = tableContentOf(tblToken);
     const opts = this.affordanceButtonOptions();
-    return [
+    const controls: BlockAffordanceButton[] = [];
+    if (copy) {
       // Markdown rather than CSV for the clipboard: the reader copied it out of a
       // Markdown document and the overwhelmingly likely destination is another
       // one. CSV is what the download is for, where a spreadsheet is the target.
-      new BlockAffordanceButton(
-        'Copy table',
-        'Copied',
-        () => this.writeClipboard(tableToMarkdown(content)),
-        opts,
-      ),
-      new BlockAffordanceButton(
-        'Download table',
-        'Saved',
-        () => this.saveFile('table.csv', tableToCsv(content), 'text/csv;charset=utf-8'),
-        opts,
-      ),
-    ];
+      controls.push(
+        new BlockAffordanceButton(
+          labels.copyTable,
+          labels.copied,
+          () => this.writeClipboard(tableToMarkdown(content)),
+          opts,
+        ),
+      );
+    }
+    if (download) {
+      controls.push(
+        new BlockAffordanceButton(
+          labels.downloadTable,
+          labels.saved,
+          () => this.saveFile('table.csv', tableToCsv(content), 'text/csv;charset=utf-8'),
+          opts,
+        ),
+      );
+    }
+    return controls;
   }
 
   /**
@@ -3743,7 +3818,9 @@ export class Markdown extends UIComponent {
         // Fallback: no plugin renderer, not loaded yet, fence still open, or the
         // renderer returned null. Render as a plain code block.
         return this.withBlockAffordances(
-          new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable),
+          new CodeBlock(codeToken.text, lang, availableWidth, t, this.selectable, {
+            showLanguage: this.showCodeLanguage,
+          }),
           () => this.codeBlockAffordances(codeToken.text, lang),
         );
       }

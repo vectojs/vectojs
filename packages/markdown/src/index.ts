@@ -6,11 +6,17 @@ export {
   escapeMarkdownTableCell,
   extensionForLanguage,
   mimeForLanguage,
+  resolveBlockAffordanceConfig,
   tableContentOf,
   tableToCsv,
   tableToMarkdown,
 } from './blockAffordances';
-export type { TableAlign, TableContent } from './blockAffordances';
+export type {
+  BlockAffordanceConfig,
+  ResolvedBlockAffordanceConfig,
+  TableAlign,
+  TableContent,
+} from './blockAffordances';
 export { footnoteMarker } from './markdown-footnote';
 export type { FootnoteDefToken, FootnoteRefToken } from './markdown-footnote';
 export { parseFrontMatterFields, scanFrontMatter } from './frontMatter';

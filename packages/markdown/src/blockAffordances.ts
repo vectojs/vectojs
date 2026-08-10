@@ -236,6 +236,84 @@ export function defaultSaveFile(filename: string, content: string, mimeType: str
 }
 
 /**
+ * Which take-away controls a block carries, and what they are called.
+ *
+ * Two separate axes, deliberately. WHICH controls appear is an interaction and
+ * accessibility decision — each one is a focus stop in every code block of the
+ * document, so a reader who only ever copies should be able to drop the download
+ * without also having to restate its label. WHAT they are called is a
+ * localization decision, and a consumer rendering a Chinese document needs the
+ * labels in Chinese regardless of which controls they kept.
+ *
+ * Every field is optional and every default matches the labels these controls
+ * shipped with, so an existing `blockAffordances: true` caller is unaffected.
+ */
+export interface BlockAffordanceConfig {
+  /**
+   * Show the copy-to-clipboard control. Default `true`.
+   *
+   * Copy rather than download is the one kept by default when a caller disables
+   * the other: it is the action a reader takes on a code snippet, and it needs no
+   * filesystem.
+   */
+  copy?: boolean;
+  /** Show the download-as-file control. Default `true`. */
+  download?: boolean;
+  /**
+   * Labels, for localization or for a house style that says "Copy" rather than
+   * "Copy code".
+   *
+   * The success labels are separate strings rather than derived, because no
+   * derivation survives translation: "Copied" is not a suffix or a tense rule
+   * that holds across languages.
+   */
+  labels?: {
+    /** Resting label of the code-block copy control. Default `'Copy code'`. */
+    copyCode?: string;
+    /** Resting label of the code-block download control. Default `'Download code'`. */
+    downloadCode?: string;
+    /** Resting label of the table copy control. Default `'Copy table'`. */
+    copyTable?: string;
+    /** Resting label of the table download control. Default `'Download table'`. */
+    downloadTable?: string;
+    /** Confirmation shown after a successful copy. Default `'Copied'`. */
+    copied?: string;
+    /** Confirmation shown after a successful download. Default `'Saved'`. */
+    saved?: string;
+  };
+}
+
+/** Resolved {@link BlockAffordanceConfig}, with every default applied. */
+export interface ResolvedBlockAffordanceConfig {
+  copy: boolean;
+  download: boolean;
+  labels: Required<NonNullable<BlockAffordanceConfig['labels']>>;
+}
+
+/**
+ * Apply {@link BlockAffordanceConfig} defaults.
+ *
+ * Exported so a consumer building controls by hand resolves them the same way the
+ * document does, rather than re-deriving a second set of defaults that can drift.
+ */
+export function resolveBlockAffordanceConfig(
+  config: BlockAffordanceConfig = {},
+): ResolvedBlockAffordanceConfig {
+  return {
+    copy: config.copy ?? true,
+    download: config.download ?? true,
+    labels: {
+      copyCode: config.labels?.copyCode ?? 'Copy code',
+      downloadCode: config.labels?.downloadCode ?? 'Download code',
+      copyTable: config.labels?.copyTable ?? 'Copy table',
+      downloadTable: config.labels?.downloadTable ?? 'Download table',
+      copied: config.labels?.copied ?? 'Copied',
+      saved: config.labels?.saved ?? 'Saved',
+    },
+  };
+}
+
+/**
  * A copy or download control drawn in a block's top-right corner.
  *
  * Extends `@vectojs/ui`'s `Button` rather than hand-rolling an a11y hotspot: that
