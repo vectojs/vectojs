@@ -187,7 +187,19 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    Register the same real identity in every repository a task touches. Never
    reuse a previous agent merely because it is active in the registry.
 
-   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.3 on 2026-08-10). Since 0.5.2, text output is compact one-line summaries by design. **To see anything the one-liner omits, use `--json | jq` and note the payload is nested under `.data`** — `--json` already returns the complete record (15 fields including `depends_on`/`blocks`), so there is nothing to configure. Do **not** reach for `--fields`/`[output.fields]`: measured 2026-08-11 on 0.5.3 they are purely subtractive and text mode ignores them outright, because the compact renderer hardcodes its template (`output.rs:252`) — naming extra fields shows nothing extra, and naming fewer prints malformed output (`--fields display_id` renders `CTX-0320 []` followed by a space, i.e. empty status and title). Filed as [carryctx#68](https://github.com/Xuepoo/carryctx/issues/68). `--verbose` (or `[output] verbose = true`) pretty-prints the full record in text mode. Since 0.5.3, piping to an early-closing consumer (`| head`) exits 141 silently instead of panicking. The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
+   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.4 on 2026-08-11). Since 0.5.2, text output is compact one-line summaries by design. **To see anything the one-liner omits, use `--json | jq` and note the payload is nested under `.data`** — `--json` returns the complete record (15 fields including `depends_on`/`blocks`). **Fixed in 0.5.4, verified:** `--fields` now works in compact text mode ([carryctx#68](https://github.com/Xuepoo/carryctx/issues/68)) — under an explicit projection the line renders exactly the projected fields and appends projected-but-unrendered ones as `label: value`, so `--fields display_id` prints a clean `CTX-0323` and `--fields display_id,status,depends_on` prints `CTX-0320 [blocked] — needs: CTX-0321`. Default unprojected output is unchanged. `--verbose` (or `[output] verbose = true`) still pretty-prints the full record. Since 0.5.3, piping to an early-closing consumer (`| head`) exits 141 silently instead of panicking. The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
+
+   **Still broken in 0.5.4: `decision list --task <ref>` does not filter.**
+   Measured 2026-08-11 it returned all **213** decisions for `--task CTX-0321`,
+   identical to the unfiltered total, while only **2** carry that `task_id`
+   ([carryctx#71](https://github.com/Xuepoo/carryctx/issues/71)). Filter client
+   side against the task's ULID, not the display id:
+
+   ```bash
+   carryctx decision list --json \
+     | jq --arg t "$(carryctx task show CTX-0321 --json | jq -r '.data.id')" \
+       '[.data[] | select(.task_id==$t)]'
+   ```
 
 7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
 
@@ -251,9 +263,11 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    Read as "CTX-0320 depends on CTX-0321"; the **first** ref is the blocked task
    and `--on` is the prerequisite. The reciprocal `blocks` edge is derived, so do
    not add it. Kinds are `strong` (default) and `informational`/`info` — **not**
-   the `blocks`/`relates_to` the `--help` text suggests, and an invalid value
-   exits 2 printing **nothing at all** ([carryctx#69](https://github.com/Xuepoo/carryctx/issues/69)),
-   so omit `--kind` unless you want `informational`. A `strong` edge is enforced:
+   the `blocks`/`relates_to` the `--help` text suggests. **Fixed in 0.5.4,
+   verified** ([carryctx#69](https://github.com/Xuepoo/carryctx/issues/69)): an
+   invalid `--kind` now renders a proper error instead of exiting 2 with no
+   output. Omit `--kind` unless you want `informational`. A `strong` edge is
+   enforced:
    `task claim`/`task start` refuse a task whose strong prerequisites are not
    complete (`domain/task.rs:135-162`), which is the point — it makes a wrong
    ordering fail loudly instead of silently.
@@ -267,9 +281,4 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    `task create --depends-on <ULID>` sets the edge at creation, and
    `task undepend <ref> --on <ref>` removes one.
 
-   **Do not put substance in `--description`**: `task create` parses the flag and
-   discards it (stored `null`), and `task edit` has no such flag, so the field is
-   unreachable by any CLI path ([carryctx#70](https://github.com/Xuepoo/carryctx/issues/70)).
-   Detail belongs in `progress note` / `decision add --rationale` / the handoff
-   document, as it already does. `parent_task_id` exists in the record but no flag
-   sets it either, so dependencies are the only usable structure between tasks.
+   **Fixed in 0.5.4, verified** ([carryctx#70](https://github.com/Xuepoo/carryctx/issues/70)): `task create --description` now persists the value, and `task edit --description` can fill or revise it on existing tasks. Description is a useful one-liner but **still not a substitute for `progress note`/`decision add`** — it is one sentence visible in `task show`, not a searchable record.
