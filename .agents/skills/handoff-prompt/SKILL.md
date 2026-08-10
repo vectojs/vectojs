@@ -1,7 +1,7 @@
 ---
 name: handoff-prompt
 description: Write a structured handoff prompt document so a fresh agent session can pick up unfinished work without re-diagnosis. Use when ending a session mid-work, when the context window is approaching its ceiling, or when the next session must continue the work without the current history.
-argument-hint: "What will the next session be used for?"
+argument-hint: 'What will the next session be used for?'
 disable-model-invocation: true
 ---
 
@@ -54,7 +54,8 @@ When a session starts and a live handoff exists:
 
 ## Common mistakes
 
-- ❌ **Multiple live handoffs** — ambiguity, costs the next agent time. Keep exactly one; archive the rest.
+- ❌ **Ambiguous live handoffs** — a file that says nothing about its relationship to the others costs the next agent a session's worth of guessing. Plurality is fine (independent tasks, sequenced phases); silence about ordering is not. Each live file states whether it is a numbered phase with a prerequisite check or independent and what it must not touch. Archive the ones that are actually done.
+- ❌ **An unrouted document** — invisible to the CLI, so it is found only by someone already looking in the directory. Route every live document with a handoff request, targeting yourself if the next session is you.
 - ❌ **"Run the tests"** — too vague. Give the exact command.
 - ❌ **"It's faster now"** — unmeasured claim. Give before/after numbers.
 - ❌ **No file:line locations** — the next agent re-diagnoses.
