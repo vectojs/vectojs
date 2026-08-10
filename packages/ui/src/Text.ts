@@ -11,7 +11,7 @@ import {
   createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { familyOf, fontSizePx } from './measure';
+import { familyOf, fontSizePx, getSharedMeasuringContext } from './measure';
 import type { ContentProjection, ContentProjectionRun } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
@@ -52,10 +52,16 @@ export interface TextOptions {
  * and only when there are none does the {@link LayoutEngine} keep its portable
  * 0.5em fallback. Canvas is preferred whenever it exists: it is the only source
  * that measures the font actually being drawn.
+ *
+ * Goes through {@link getSharedMeasuringContext} rather than creating a canvas,
+ * for both reasons that helper exists: its canvas is ATTACHED, so Firefox
+ * resolves a generic family (`monospace`, `serif`) the same way the painted
+ * canvas does instead of falling back to a different font, and it is shared, so
+ * a component per text object does not leak a canvas element per text object.
  */
 function fontMeasurer(font: string): GlyphMeasurer | null {
   if (typeof document === 'undefined') return createMetricsMeasurer(familyOf(font));
-  const ctx = document.createElement('canvas').getContext('2d');
+  const ctx = getSharedMeasuringContext();
   if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {

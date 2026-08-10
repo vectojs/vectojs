@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect, vi } from 'vitest';
-import { clearFontMetrics, registerFontMetrics } from '@vectojs/text';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { clearFontMetrics, registerFontMetrics, resetSharedMeasuringContext } from '@vectojs/text';
 import { createCanvasMeasurer, createMetricsMeasurer, resolveGlyphMeasurer } from '../src/measure';
 
 /**
- * Stub `document.createElement('canvas')` so the measurer gets a deterministic
- * 2D context whose `measureText` width is controlled by `widthOf`.
+ * Stub the 2D context of the shared measuring canvas so `measureText` width is
+ * controlled by `widthOf`.
+ *
+ * Stubs `HTMLCanvasElement.prototype.getContext` rather than
+ * `document.createElement`, because the measuring canvas is a REAL element that
+ * gets styled and appended (`measureContext.ts` attaches it — jsdom has no 2D
+ * context, but the attachment is what the production path does and must keep
+ * working). Replacing `createElement` with a bare `{ getContext }` object left
+ * `.style` undefined and threw before any measurement happened.
  */
 function stubCanvas(widthOf: (s: string) => number) {
   const measureText = vi.fn((s: string) => ({ width: widthOf(s) }));
@@ -13,11 +20,18 @@ function stubCanvas(widthOf: (s: string) => number) {
     set font(_v: string) {},
     measureText,
   };
-  const spy = vi.spyOn(document, 'createElement').mockReturnValue({
-    getContext: () => ctx,
-  } as unknown as HTMLCanvasElement);
+  const spy = vi
+    .spyOn(HTMLCanvasElement.prototype, 'getContext')
+    .mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
   return { measureText, restore: () => spy.mockRestore() };
 }
+
+// The measuring context is memoized process-wide, so a stub installed by one
+// test would otherwise be invisible to the next (or, worse, a memoized `null`
+// would make every later test see "no canvas"). Reset around each test.
+beforeEach(() => {
+  resetSharedMeasuringContext();
+});
 
 describe('createCanvasMeasurer', () => {
   it('measures a grapheme advance via canvas and scales linearly with fontSize', () => {
@@ -57,9 +71,7 @@ describe('createCanvasMeasurer', () => {
   });
 
   it('returns null when the canvas has no 2D context', () => {
-    const spy = vi.spyOn(document, 'createElement').mockReturnValue({
-      getContext: () => null,
-    } as unknown as HTMLCanvasElement);
+    const spy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     try {
       expect(createCanvasMeasurer()).toBeNull();
     } finally {

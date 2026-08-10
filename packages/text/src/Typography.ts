@@ -1,6 +1,6 @@
 import { getFontMetrics } from './fontMetrics';
+import { getSharedMeasuringContext } from './measureContext';
 
-let typographyContext: CanvasRenderingContext2D | null | undefined;
 const baselineCache = new Map<string, number>();
 
 /**
@@ -80,13 +80,14 @@ export function cssLineBoxBaseline(font: string, lineHeight: number): number {
   const cached = baselineCache.get(key);
   if (cached !== undefined) return cached;
 
-  if (typographyContext === undefined) {
-    typographyContext = document.createElement('canvas').getContext('2d');
-  }
-  if (!typographyContext) return registeredBaseline(font, lineHeight);
+  // Attached, not detached — see `measureContext` for why. A detached context
+  // reads `fontBoundingBox*` from a different font than the one being painted
+  // on Firefox, so the baseline it derives is a different font's baseline.
+  const ctx = getSharedMeasuringContext();
+  if (!ctx) return registeredBaseline(font, lineHeight);
 
-  typographyContext.font = font;
-  const metrics = typographyContext.measureText('Mg');
+  ctx.font = font;
+  const metrics = ctx.measureText('Mg');
   const ascent = metrics.fontBoundingBoxAscent || metrics.actualBoundingBoxAscent;
   const descent = metrics.fontBoundingBoxDescent || metrics.actualBoundingBoxDescent;
   if (!(ascent > 0) || !(descent >= 0)) return lineHeight * 0.8;

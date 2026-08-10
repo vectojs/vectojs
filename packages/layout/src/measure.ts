@@ -1,15 +1,27 @@
-import { fontMetricsVersion, getFontMetrics, type FontMetricsSource } from '@vectojs/text';
+import {
+  fontMetricsVersion,
+  getFontMetrics,
+  getSharedMeasuringContext,
+  type FontMetricsSource,
+} from '@vectojs/text';
 import type { GlyphMeasurer } from './LayoutEngine';
 
 /**
- * Create a {@link GlyphMeasurer} backed by a single lazily-created offscreen
- * Canvas 2D context.
+ * Create a {@link GlyphMeasurer} backed by the shared attached measuring
+ * context.
  *
  * Each grapheme is measured once at `baseSize` and cached; because canvas
  * `measureText` advance width is linear in font size, later queries at any
  * `fontSize` are derived by pure arithmetic (no re-measure). This gives the
  * {@link LayoutEngine} real per-glyph metrics for text that has no pre-baked
  * vector atlas, fixing the coarse `0.5em` line-breaking fallback.
+ *
+ * Uses `getSharedMeasuringContext()` rather than its own canvas, and the
+ * *attached* part is load-bearing here in a way it is not for a pure geometry
+ * consumer: this measurer decides **where lines break**. A detached context
+ * resolves a generic family to a different font in Gecko — measured 20% short on
+ * `monospace` — so wrapping computed from it puts breaks in the wrong place
+ * before any projection is involved. See `measureContext.ts` for the numbers.
  *
  * Returns `null` in DOM-free environments (SSR, workers without a canvas) so
  * callers stay portable and the engine keeps its `0.5em` fallback.
@@ -24,7 +36,7 @@ export function createCanvasMeasurer(
   baseSize: number = 100,
 ): GlyphMeasurer | null {
   if (typeof document === 'undefined') return null;
-  const ctx = document.createElement('canvas').getContext('2d');
+  const ctx = getSharedMeasuringContext();
   if (!ctx) return null;
 
   const font = `${baseSize}px ${fontFamily}`;
