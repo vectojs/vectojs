@@ -172,39 +172,22 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
 3. **Preserve Documentation**: Retain all docstrings, comments, and typings unless they are directly contradicted by your code changes.
 4. **Changesets**: Any public-facing package modification must be accompanied by a changeset. Run `changeset` to generate the version bump markdown.
 5. **No Pollution**: Do not write temporary files or scratchpads into the package directories. Use the workspace root `tmp/` for scratch files.
-6. **Task management via CarryCtx**: `.carryctx/` holds the project config plus `rules/`, `workflows/`, and `personas/` presets. Check `.carryctx/rules/formatting-and-linting.md` and `.carryctx/rules/wasm-crate-build.md` for domain-specific constraints before starting matching work, `.carryctx/workflows/publish-package.md` before cutting a release, and `.carryctx/personas/code-reviewer.md` when asked to review a PR. Use `carryctx progress todo/done/block/risk/note` and `carryctx checkpoint` to track multi-step work.
+6. **Task management via CarryCtx**: `.carryctx/` holds project config, `rules/`, `workflows/`, and `personas/` presets — check the relevant file before starting domain-specific work. Always pass `--agent <name>` (registered names: `omp`, `opencode`, `claude-code`, `kiro`, `codex`). Run `carryctx` from the global install. Use `progress note/decision add/checkpoint` to record findings; close or block every task at session end.
 
-   Always pass `--agent <name>` — identity is never a shared default. The registered names for this repo are `omp`, `opencode`, `claude-code`, `kiro`, `codex`; register the same identity in every repo a task touches.
-
-   Run `carryctx` from the global install (plain `carryctx …`). Text output is compact one-line summaries; use `--json | jq '.data'` to see any field not shown by default, or `--verbose` for the full record. Use `--fields` to project specific columns in text mode — e.g. `--fields display_id,status,depends_on`. To find decisions for a specific task, filter client-side by ULID:
+7. **Session handoff**: when ending with work remaining, write a handoff document into `vectojs-docs/handoff-prompt/` (follow its `TEMPLATE.md`), then route it:
 
    ```bash
-   carryctx decision list --json \
-     | jq --arg t "$(carryctx task show CTX-NNNN --json | jq -r '.data.id')" \
-       '[.data[] | select(.task_id==$t)]'
-   ```
-
-7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then route it and snapshot state:
-
-   ```bash
-   carryctx handoff create \
-     --agent <you> --target <agent> --task CTX-NNNN \
-     --summary "handoff doc: vectojs-docs/handoff-prompt/<timestamp>-<slug>.md"
+   carryctx handoff create --agent <you> --target <agent> --task CTX-NNNN \
+     --summary "vectojs-docs/handoff-prompt/<timestamp>-<slug>.md"
    carryctx checkpoint --agent <you> --task CTX-NNNN --done "..." --remaining "..."
    ```
 
-   `--task` is required. At session start, `carryctx handoff list` shows pending requests (use `--all` for full history, `--for-agent <name>` to filter by target); read the referenced document before touching code, then `handoff accept HO-XXXX` when the work lands. The document is the payload — substance lives in the doc and in progress notes, not in the handoff request itself. Follow the `carryctx-handoff` skill for the full workflow.
+   At session start, `carryctx handoff list` shows pending requests; read the document before touching code, accept when the work lands. Substance belongs in the document and progress notes, not in the handoff request.
 
-8. **Order dependent work with `task depend`, not prose.**
-
-   ```bash
-   carryctx task depend CTX-0320 --on CTX-0321 --agent opencode
-   ```
-
-   Read as "CTX-0320 depends on CTX-0321" — the first ref is the blocked task. The reciprocal `blocks` edge is derived automatically. Kinds: `strong` (default, enforced — `task claim`/`start` refuse a task with incomplete prerequisites) or `informational`. Use `--json` to verify edges:
+8. **Task dependencies**: record ordering with `task depend`, not only in prose — the edge enforces it and survives into `task show`.
 
    ```bash
-   carryctx task show CTX-0320 --json | jq -c '.data | {depends_on, blocks}'
+   carryctx task depend CTX-0320 --on CTX-0321 --agent opencode  # 0320 is blocked by 0321
    ```
 
-   `task create --depends-on <ULID>` sets the edge at creation; `task undepend <ref> --on <ref>` removes one. Use `task edit --description` for a one-line summary, but keep substance in `progress note` / `decision add --rationale` / the handoff document.
+   Kinds: `strong` (default, enforced at claim/start) or `informational`. Remove with `task undepend`. Keep substance in `progress note` / `decision add`; use `task edit --description` only for a one-line summary.
