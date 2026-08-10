@@ -140,3 +140,24 @@ commit time.
    reuse a previous agent merely because it is active in the registry.
 
    `carryctx` is pinned as a `devDependency` so a contributor gets the version this repo expects from a plain `bun install`, with no separate global install step — run it as `bunx carryctx …` (or `./node_modules/.bin/carryctx`). A globally installed `carryctx` works identically; the pin exists so nothing is required beyond `bun install`. It is the one tool in this repo that reads and writes state (`.git/carryctx/state.sqlite`) rather than only inspecting files, which is why the version is pinned rather than floated.
+
+7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
+
+   ```bash
+   bunx carryctx handoff create \
+     --target <next-agent-or-role> \
+     --task CTX-NNNN \
+     --summary "handoff doc: vectojs-docs/handoff-prompt/<timestamp>-<slug>.md"
+   bunx carryctx checkpoint --done "..." --remaining "..."
+   ```
+
+   The document is the payload (measurements, `file:line` sites, traps,
+   verification standard); the `carryctx handoff` request is the registry the
+   next agent queries. At session start, check `carryctx handoff list` for
+   pending requests, read the referenced document **before touching code**, then
+   `carryctx resume` and `carryctx task claim CTX-NNNN`; close the request
+   (`carryctx handoff accept/close HO-XXXX`) when the work lands. Follow the
+   `carryctx-handoff` skill (installable from `Xuepoo/carryctx-skills`) for the
+   full workflow; the generic `handoff-prompt` skill
+   (`Xuepoo/handoff-prompt`) holds the template and the serial/parallel and
+   reconciliation rules.
