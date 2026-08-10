@@ -11,7 +11,7 @@
         "@chenglou/pretext": "^0.0.8",
         "@commitlint/cli": "^21.2.1",
         "@commitlint/config-conventional": "^21.2.0",
-        "carryctx": "0.4.6",
+        "carryctx": "0.5.0",
         "fabric": "^7.4.0",
         "knip": "^6.31.0",
         "konva": "^10.3.0",
@@ -41,7 +41,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.32.7",
+      "version": "1.34.0",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.9.0",
@@ -110,7 +110,7 @@
     },
     "packages/markdown": {
       "name": "@vectojs/markdown",
-      "version": "0.18.1",
+      "version": "0.19.0",
       "dependencies": {
         "@vectojs/tex": "^0.1.0",
         "marked": "^18.0.7",
@@ -125,7 +125,7 @@
         "vitest": "^4.1.10",
       },
       "peerDependencies": {
-        "@vectojs/core": ">=1.25.0 <2.0.0",
+        "@vectojs/core": ">=1.34.0 <2.0.0",
         "@vectojs/ui": ">=2.6.0 <3.0.0",
       },
     },
@@ -930,17 +930,17 @@
 
     "canvas": ["canvas@3.2.3", "", { "dependencies": { "node-addon-api": "^7.0.0", "prebuild-install": "^7.1.3" } }, "sha512-PzE5nJZPz72YUAfo8oTp0u3fqqY7IzlTubneAihqDYAUcBk7ryeCmBbdJBEdaH0bptSOe2VT2Zwcb3UaFyaSWw=="],
 
-    "carryctx": ["carryctx@0.4.6", "", { "optionalDependencies": { "carryctx-cli-darwin-arm64": "0.4.6", "carryctx-cli-darwin-x64": "0.4.6", "carryctx-cli-linux-arm64-gnu": "0.4.6", "carryctx-cli-linux-x64-gnu": "0.4.6", "carryctx-cli-windows-x64": "0.4.6" }, "bin": { "carryctx": "bin/carryctx.js" } }, "sha512-YRelUPNVIO/p6r2zlcf7sdgivYG0NPQaCUamXBxFdXpU+biKLJv6nK1f/74kN4UejmfjkGdk/2N2QKmP1MYwng=="],
+    "carryctx": ["carryctx@0.5.0", "", { "optionalDependencies": { "carryctx-cli-darwin-arm64": "0.5.0", "carryctx-cli-darwin-x64": "0.5.0", "carryctx-cli-linux-arm64-gnu": "0.5.0", "carryctx-cli-linux-x64-gnu": "0.5.0", "carryctx-cli-windows-x64": "0.5.0" }, "bin": { "carryctx": "bin/carryctx.js" } }, "sha512-STyZBdoaRwwwbWi3b5oWwSEsl8nJUmvz0lGoCw4FXMWO6PwFrDUcoBC795Ye+QcImFPCBg1e//pR54u6pgX7dQ=="],
 
-    "carryctx-cli-darwin-arm64": ["carryctx-cli-darwin-arm64@0.4.6", "", { "os": "darwin", "cpu": "arm64" }, "sha512-iZVXqZOJU7XPZFV5UV0Roi7Mn/jkDwO0mQp6OmEqhaK6ZErBVr+ogBReSdawnB3/2l2837LlOGunmWTMEnCS8Q=="],
+    "carryctx-cli-darwin-arm64": ["carryctx-cli-darwin-arm64@0.5.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-gqlTMKvoOizAIcn8TnyuPiXOxn7VXFjtg9beSZw/DO7E9eoZ46VI7emIekbhSSo35V8YnIuouCy1SPBjNXkuTw=="],
 
-    "carryctx-cli-darwin-x64": ["carryctx-cli-darwin-x64@0.4.6", "", { "os": "darwin", "cpu": "x64" }, "sha512-UK8/ukFgfsdC0FsOCCd75I9W64Htk/GWUrHoNoKEpZ+eSS/Rl+nHTzHi7GnFJTU6tsnbZ3eLoaJboiuTI58qcw=="],
+    "carryctx-cli-darwin-x64": ["carryctx-cli-darwin-x64@0.5.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-z5nxA48WBfQRAOktlT/wiiiefw8fkickaPhBaNr+6PtECQ7lstCWn1Vyo9T9Y9qEu4NCI1oePZ0AdklTeYXEYw=="],
 
-    "carryctx-cli-linux-arm64-gnu": ["carryctx-cli-linux-arm64-gnu@0.4.6", "", { "os": "linux", "cpu": "arm64" }, "sha512-3pdJidriNUkktrtIK3hHkgmgnmX3u71yzgOEcNDvCd3S5ToEyRgHfvvJ5Qp+MKKWneJXRJJHQb7yjWWIkdbekw=="],
+    "carryctx-cli-linux-arm64-gnu": ["carryctx-cli-linux-arm64-gnu@0.5.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-uIVW3Jt1K+4RUx/MRrNMYINMDmvccDtnHqMGFUIMc2Ul4zpqB2zW+2cO/KSKh6cqC0mibiwIqG5IrBctr4xpJA=="],
 
-    "carryctx-cli-linux-x64-gnu": ["carryctx-cli-linux-x64-gnu@0.4.6", "", { "os": "linux", "cpu": "x64" }, "sha512-cqmUBKjr+AFdUM0/hO/U4dGxlGACCJaDCBmUpc1JJwwEFuZwYiKv92Qx6nl1va0owhx0zyVh6KTFatCDY+iJKA=="],
+    "carryctx-cli-linux-x64-gnu": ["carryctx-cli-linux-x64-gnu@0.5.0", "", { "os": "linux", "cpu": "x64" }, "sha512-J7YUeUcwDQCeFwR2ZWP3m6RlBwSkfND2pTbiLND011+hrX+xC/gxaMppo5/hiQ8pOYnDfZfxLR9YJ1jLXzyoFg=="],
 
-    "carryctx-cli-windows-x64": ["carryctx-cli-windows-x64@0.4.6", "", { "os": "win32", "cpu": "x64" }, "sha512-mzGxBzOtpdlRPzCb6p3DBM7NaYIsq7NaGCmMqrHyw1AlgUk6KVOY+Qre6+2czSQA3xEZAimgjifBofGyBYp/xQ=="],
+    "carryctx-cli-windows-x64": ["carryctx-cli-windows-x64@0.5.0", "", { "os": "win32", "cpu": "x64" }, "sha512-CqmBHzlJcOAEvB3YHVZRRbU+9zlcttJaY/hd0Dyg7N0wOPD/ZKlVoT5HDgwKbFBOYbjtkiDqdFPNnT+Vyg2ySA=="],
 
     "ccount": ["ccount@2.0.1", "", {}, "sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg=="],
 
