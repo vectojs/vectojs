@@ -40,7 +40,11 @@ import { type HitModuleSource, type HitTestBackend } from '../wasm/hit-backend';
 import { type AnimModuleSource, type AnimBackend } from '../wasm/anim-backend';
 import { type ParticleModuleSource, type ParticleBackend } from '../wasm/particle-backend';
 import { sanitizeUrl } from '../renderer/url';
-import { clearCssLineBoxMetrics, cssLineBoxBaseline } from '@vectojs/text';
+import {
+  clearCssLineBoxMetrics,
+  cssLineBoxBaseline,
+  getSharedMeasuringContext,
+} from '@vectojs/text';
 import { isNativelyFocusable, rebaseChildBox } from './scene/a11y-dom';
 import { appendContentBreak } from './scene/content-break-carrier';
 import { projectionLineWindow } from './scene/content-line-window';
@@ -4555,6 +4559,64 @@ export class Scene {
                   runElement.dir = 'ltr';
                 }
                 lineElement.appendChild(runElement);
+              }
+            } else if (line.perGraphemeCarriers && line.text.length > 0) {
+              // Per-grapheme flow-relative carriers for natural-order (non-bidi,
+              // non-justified) text. Gecko grid-fits DOM advance widths to integer
+              // device pixels for layout while canvas keeps fractional ones, so a
+              // single text node drifts from the painted glyphs by 1–2 px across
+              // a body-text line (~0.3% per character). Pinning every grapheme
+              // cluster to its canvas-measured prefix eliminates the drift.
+              //
+              // Carrier CSS mirrors the positioned-run pattern from line 4535.
+              //
+              // Width is the CANVAS PREFIX DIFFERENCE, not the isolated grapheme
+              // width: `measureText(prefix_end) - measureText(prefix_start)`.
+              // This preserves kerning and ligature widths for the full string —
+              // summing individual `measureText(char)` widths omits both, but
+              // prefix differences are what the canvas actually painted. Setting
+              // `width` on the carrier forces the DOM to accumulate the same total
+              // as the canvas regardless of how the browser resolves ligatures
+              // within each `inline-block` span.
+              //
+              // `runningX` is the sum of carrier widths assigned so far, which
+              // equals the canvas prefix width at each step. `left = canvasX - runningX`
+              // is always 0 for the very first carrier; later carriers stay 0 too
+              // because `runningX` tracks the same prefix totals as `canvasX`. The
+              // arithmetic still works if a carrier's internal font rendering differs
+              // from the canvas, because `left` compensates for any residual delta.
+              const mctx = getSharedMeasuringContext();
+              if (mctx) {
+                mctx.font = lineFont;
+                const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+                const segments = [...segmenter.segment(line.text)];
+                let runningX = 0;
+                for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+                  const { segment, index } = segments[segIdx];
+                  const nextIndex =
+                    segIdx + 1 < segments.length ? segments[segIdx + 1].index : line.text.length;
+                  // Canvas x of this grapheme's left edge.
+                  const canvasX = mctx.measureText(line.text.slice(0, index)).width;
+                  // Canvas width of this grapheme (prefix difference, preserves ligatures).
+                  const canvasWidth =
+                    mctx.measureText(line.text.slice(0, nextIndex)).width - canvasX;
+                  const carrierEl = document.createElement('span');
+                  carrierEl.textContent = segment;
+                  carrierEl.style.position = 'relative';
+                  carrierEl.style.display = 'inline-block';
+                  carrierEl.style.left = `${canvasX - runningX}px`;
+                  carrierEl.style.width = `${canvasWidth}px`;
+                  carrierEl.style.boxSizing = 'border-box';
+                  carrierEl.style.lineHeight = `${lineHeight}px`;
+                  carrierEl.style.whiteSpace = 'pre';
+                  carrierEl.style.verticalAlign = 'top';
+                  carrierEl.style.unicodeBidi = 'isolate';
+                  lineElement.appendChild(carrierEl);
+                  runningX += canvasWidth;
+                }
+              } else {
+                // DOM-free environment (SSR): fall back to single text node.
+                lineElement.textContent = line.text;
               }
             } else {
               lineElement.textContent = line.text;
