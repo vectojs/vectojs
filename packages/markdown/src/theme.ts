@@ -125,6 +125,17 @@ export interface MarkdownTheme {
   syntaxCommentColor?: string;
   /** Code-block numeric-literal color. */
   syntaxNumberColor?: string;
+  /**
+   * Color of the language name in a code block's header band.
+   *
+   * Derived from {@link syntaxCommentColor} in {@link resolveTheme} when the
+   * caller does not set it. A comment is the one token class already defined as
+   * "present but subordinate to the code", which is exactly the label's role, so
+   * a theme that tuned its comment color for a given background has already
+   * answered this question. A literal default would ignore that and read wrong on
+   * every light preset.
+   */
+  codeLangColor?: string;
 
   // ── Typography ────────────────────────────────────────────────────────────
   /**
@@ -153,6 +164,16 @@ export interface MarkdownTheme {
   headingSizes?: readonly number[];
   /** Code-block font size in px. */
   codeFontSize?: number;
+  /**
+   * Font size in px of the language name in a code block's header band.
+   *
+   * Left `undefined` by default and **derived** as `codeFontSize - 3` (clamped
+   * to at least 1), following {@link tableFontSize}'s precedent: the label is
+   * chrome around the code, so a caller who raises only `codeFontSize` should
+   * get a proportionally larger label rather than one that stays put and
+   * gradually looks detached from the block it belongs to.
+   */
+  codeLangFontSize?: number;
   /**
    * Table cell font size in px.
    *
@@ -313,11 +334,13 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   syntaxStringColor: '#86efac',
   syntaxCommentColor: '#64748b',
   syntaxNumberColor: '#fbbf24',
+  codeLangColor: '#64748b',
   bodyFont: 'Inter, system-ui, sans-serif',
   codeFont: 'ui-monospace, "JetBrains Mono", "Fira Code", monospace',
   fontSize: 16,
   headingSizes: [32, 28, 24, 20, 18, 16],
   codeFontSize: 15,
+  codeLangFontSize: 12,
   tableFontSize: 14,
   footnoteMarkerScale: 0.75,
   subscriptScale: 0.75,
@@ -368,6 +391,17 @@ export function resolveTheme(theme?: MarkdownTheme): Required<MarkdownTheme> {
   // default would pin markers to the stock accent and silently ignore that.
   if (theme?.footnoteColor === undefined) {
     merged.footnoteColor = merged.linkColor;
+  }
+  // The code header's language label follows the comment colour, and its size
+  // follows the code size, for the reasons given on each key: both are chrome
+  // around the code, so a caller who restyled the code has already said what its
+  // chrome should look like. Literal defaults would pin the label to the stock
+  // dark palette and silently ignore a light preset.
+  if (theme?.codeLangColor === undefined) {
+    merged.codeLangColor = merged.syntaxCommentColor;
+  }
+  if (theme?.codeLangFontSize === undefined) {
+    merged.codeLangFontSize = Math.max(1, merged.codeFontSize - 3);
   }
   return merged;
 }

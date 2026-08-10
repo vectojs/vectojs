@@ -124,11 +124,6 @@ describe('CodeBlock horizontal scroll', () => {
     expect(block.scrollX).toBe(40);
     expect(prevented).toBe(1);
 
-    // A vertical wheel scrolls the code too, matching Tabs: the axis with the
-    // larger magnitude wins, so a plain mouse wheel is usable.
-    wheel(0, 25);
-    expect(block.scrollX).toBe(65);
-
     // Past the end: clamps, and does NOT preventDefault, so the page keeps
     // scrolling instead of the wheel being trapped inside the code block.
     const atEnd = prevented;
@@ -141,6 +136,101 @@ describe('CodeBlock horizontal scroll', () => {
     // And back to zero the same way.
     wheel(-1e6);
     expect(block.scrollX).toBe(0);
+  });
+
+  /**
+   * A pure vertical wheel must scroll the PAGE, not the code.
+   *
+   * The handler used to take `Math.abs(deltaX) > Math.abs(deltaY) ? deltaX :
+   * deltaY`, so a plain mouse wheel (deltaX 0) was consumed as horizontal
+   * travel AND `preventDefault`ed — the page froze while the pointer sat over
+   * any code block with overflow, and the block scrolled sideways instead.
+   * Confirmed in real Chrome on a live page before the fix:
+   * `{wheelDefaultPrevented: true, pageMoved: 0}`.
+   *
+   * A mouse with no horizontal axis is the common case, so the axis has to be
+   * chosen by INTENT rather than by magnitude.
+   */
+  it('leaves a pure vertical wheel to the page', () => {
+    const block = codeBlockFrom(LONG);
+    let prevented = 0;
+    block.dispatchEvent({
+      type: 'wheel',
+      target: block,
+      deltaX: 0,
+      deltaY: 120,
+      deltaMode: 0,
+      nativeEvent: { preventDefault: () => prevented++ },
+    } as never);
+    expect(block.scrollX).toBe(0);
+    expect(prevented).toBe(0);
+  });
+
+  /**
+   * Shift+wheel is the platform convention for horizontal scrolling with a
+   * vertical-only wheel, so it stays available — and it is the reason the fix
+   * reads `deltaY` at all rather than only ever using `deltaX`.
+   */
+  it('scrolls horizontally on shift+wheel', () => {
+    const block = codeBlockFrom(LONG);
+    let prevented = 0;
+    block.dispatchEvent({
+      type: 'wheel',
+      target: block,
+      deltaX: 0,
+      deltaY: 30,
+      deltaMode: 0,
+      shiftKey: true,
+      nativeEvent: { preventDefault: () => prevented++ },
+    } as never);
+    expect(block.scrollX).toBe(30);
+    expect(prevented).toBe(1);
+  });
+
+  /**
+   * A trackpad's diagonal swipe is dominated by its horizontal component when
+   * the user means to scroll sideways; that must still work without shift.
+   */
+  it('scrolls on a horizontal-dominant trackpad swipe', () => {
+    const block = codeBlockFrom(LONG);
+    block.dispatchEvent({
+      type: 'wheel',
+      target: block,
+      deltaX: 40,
+      deltaY: 6,
+      deltaMode: 0,
+      nativeEvent: { preventDefault: () => {} },
+    } as never);
+    expect(block.scrollX).toBe(40);
+  });
+
+  /** Ctrl+wheel is browser zoom and must never be consumed (the `ScrollView` rule). */
+  it('never consumes ctrl+wheel', () => {
+    const block = codeBlockFrom(LONG);
+    let prevented = 0;
+    block.dispatchEvent({
+      type: 'wheel',
+      target: block,
+      deltaX: 50,
+      deltaY: 0,
+      deltaMode: 0,
+      ctrlKey: true,
+      nativeEvent: { preventDefault: () => prevented++ },
+    } as never);
+    expect(block.scrollX).toBe(0);
+    expect(prevented).toBe(0);
+  });
+
+  /**
+   * The canvas clips its glyph pass to the block box, so the DOM copy must be
+   * confined too. Without this the selection highlight over an overflowing line
+   * painted past the rounded background and onto the prose beside it — measured
+   * on a live page at a carrier reaching x=1580 in a 1566px viewport.
+   */
+  it('asks Scene to clip the projected text to the block box', () => {
+    const overflowing = codeBlockFrom(LONG);
+    expect(overflowing.maxScrollX).toBeGreaterThan(0);
+    expect(overflowing.getContentProjection()!.clipToBounds).toBe(true);
   });
 
   it('does not consume a wheel when there is nothing to scroll', () => {

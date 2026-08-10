@@ -334,12 +334,40 @@ interface LanguageSyntax {
   quotes: readonly string[];
   /** Whether numeric literals are meaningful enough to color. */
   numbers: boolean;
+  /**
+   * Block-comment delimiters as `[open, close]` pairs, which may span lines.
+   *
+   * Separate from {@link lineComments} because the two need different handling,
+   * not merely different text: a line comment always ends at the end of its line,
+   * so it needs no state, while a block comment carries a "still inside a
+   * comment" flag to the next line. Before this existed the tokenizer was purely
+   * per-line, so a slash-star comment coloured only its first line and every
+   * line after it was painted as live code — the most visible highlighting gap
+   * left, and the reason CSS claimed no comment support at all.
+   */
+  blockComments?: readonly (readonly [string, string])[];
+  /**
+   * String delimiters that may span lines, e.g. a JS template literal or a
+   * Python docstring.
+   *
+   * Distinct from {@link quotes}, whose members must close on their own line to
+   * colour at all (a deliberate guard so a Rust lifetime or an apostrophe cannot
+   * swallow the rest of the line). A delimiter listed here is unambiguous enough
+   * that an unterminated one really does continue, so it is safe to carry.
+   *
+   * Longest-first within the list, so Python's `"""` is tried before `"`.
+   */
+  multilineStrings?: readonly string[];
 }
 
 const C_LIKE: LanguageSyntax = {
   lineComments: ['//'],
   quotes: ['"', "'", '`'],
   numbers: true,
+  blockComments: [['/*', '*/']],
+  // A JS/TS template literal spans lines. Listed here as well as in `quotes`:
+  // `quotes` handles the common single-line case, and this carries the rest.
+  multilineStrings: ['`'],
 };
 
 const HASH_COMMENT: LanguageSyntax = {
@@ -351,7 +379,11 @@ const HASH_COMMENT: LanguageSyntax = {
 const LANGUAGE_SYNTAX: Record<string, LanguageSyntax> = {
   js: C_LIKE,
   ts: C_LIKE,
-  py: HASH_COMMENT,
+  // A Python docstring is the language's block comment in practice, and it is
+  // lexically a string, so it is carried as one rather than invented as a third
+  // kind. Triple delimiters are listed before the single ones so the longest
+  // match wins.
+  py: { ...HASH_COMMENT, multilineStrings: ['"""', "'''"] },
   // Rust has `//` line comments AND `'` lifetimes. The unterminated-quote
   // fallback already keeps a lifetime from swallowing the line, so `'` stays
   // listed: `'a'` is a valid char literal and should color as a string.
@@ -360,13 +392,23 @@ const LANGUAGE_SYNTAX: Record<string, LanguageSyntax> = {
   // JSON has no comments and no single-quoted strings. JSONC does have `//`,
   // and is aliased separately below rather than sharing this entry.
   json: { lineComments: [], quotes: ['"'], numbers: true },
-  // CSS has only block comments, which this line-based tokenizer cannot span,
-  // so no line-comment prefix is claimed. Numbers are everywhere in CSS and
-  // coloring them is most of the visible benefit.
-  css: { lineComments: [], quotes: ['"', "'"], numbers: true },
+  // CSS has only block comments — which now span lines, so this entry claims
+  // them. Numbers are everywhere in CSS and coloring them is most of the visible
+  // benefit.
+  css: {
+    lineComments: [],
+    quotes: ['"', "'"],
+    numbers: true,
+    blockComments: [['/*', '*/']],
+  },
   // Markup: no line comments, and numbers inside attribute values are noise
-  // rather than signal.
-  html: { lineComments: [], quotes: ['"', "'"], numbers: false },
+  // rather than signal. An SGML comment spans lines like any other block form.
+  html: {
+    lineComments: [],
+    quotes: ['"', "'"],
+    numbers: false,
+    blockComments: [['<!--', '-->']],
+  },
 };
 
 LANGUAGE_SYNTAX['javascript'] = LANGUAGE_SYNTAX['js'];
@@ -421,8 +463,44 @@ interface CodeSegment {
   color: string;
 }
 
-/** Tokenize a line of code into colored segments (keyword / string / comment / default). */
-function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme>): CodeSegment[] {
+/**
+ * Lexical state carried across a line boundary, or `null` at the top level.
+ *
+ * This is what makes the highlighter more than per-line. It is deliberately a
+ * single open construct rather than a stack: none of the forms it tracks nest in
+ * the languages described here (C block comments do not nest, and a string
+ * cannot contain an unescaped copy of its own delimiter), so a stack would model
+ * a generality that does not exist and would need a policy for unbalanced input.
+ */
+type CarryState = {
+  /** Which colour the carried run paints in. */
+  kind: 'comment' | 'string';
+  /** The delimiter that ends it. */
+  close: string;
+} | null;
+
+/** One highlighted line plus the state it hands to the next. */
+interface HighlightedLine {
+  segments: CodeSegment[];
+  carry: CarryState;
+}
+
+/**
+ * Tokenize a line of code into colored segments (keyword / string / comment /
+ * default), continuing whatever construct `carry` left open.
+ *
+ * Per-line rather than whole-document because that is what streaming needs: an
+ * append re-highlights only the lines after the last stable one
+ * ({@link CodeBlock.buildLines}), and a whole-document tokenizer would make each
+ * chunk O(document). `carry` is the minimum state that buys correct multi-line
+ * constructs without giving that up.
+ */
+function highlightLine(
+  line: string,
+  lang: string,
+  theme: Required<MarkdownTheme>,
+  carry: CarryState = null,
+): HighlightedLine {
   // Normalize here rather than at construction: `lang` is public and settable
   // through `setCode()`, and a fence writes it verbatim, so ```Bash / ```BASH /
   // ```bash all had to resolve to one entry. A fence info string can also carry
@@ -439,7 +517,7 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
   // strings and numbers too — and those, not the keywords, are most of the
   // visible benefit for a shell-heavy document.
   if (!keywords && !syntax) {
-    return [{ text: line, color: theme.codeColor }];
+    return { segments: [{ text: line, color: theme.codeColor }], carry: null };
   }
 
   const segments: CodeSegment[] = [];
@@ -462,8 +540,62 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
   // lexical rules, so an app that registered keywords by hand is unaffected.
   const lexical = syntax ?? C_LIKE;
 
+  /**
+   * Index just past `close` at or after `from`, or `-1` when it does not close on
+   * this line.
+   *
+   * Escapes are skipped only for a string: a backslash has no meaning inside a C
+   * block comment, so honouring one there would let a line ending in `\` hide the
+   * `*` of a following close delimiter.
+   */
+  const findClose = (from: number, close: string, isString: boolean): number => {
+    let j = from;
+    while (j < line.length) {
+      if (isString && line[j] === '\\') {
+        j += 2;
+        continue;
+      }
+      if (line.startsWith(close, j)) return j + close.length;
+      j++;
+    }
+    return -1;
+  };
+
+  // Finish what the previous line left open, before any token rule runs: inside a
+  // carried comment or string nothing is a keyword, a number, or a new comment.
+  if (carry) {
+    const color = carry.kind === 'comment' ? COMMENT_COLOR : STRING_COLOR;
+    const end = findClose(0, carry.close, carry.kind === 'string');
+    if (end === -1) {
+      // Still open at end of line. An empty line inside a block comment produces
+      // no segment, which is correct — there is nothing to paint — and the state
+      // still propagates.
+      if (line.length > 0) segments.push({ text: line, color });
+      return { segments, carry };
+    }
+    segments.push({ text: line.slice(0, end), color });
+    i = end;
+  }
+
   while (i < line.length) {
     const ch = line[i];
+
+    // Block comments first, and they may run past this line. Checked before line
+    // comments because both can start with the same character (`/*` vs `//`) and
+    // an exact-prefix match is what disambiguates them.
+    const block = lexical.blockComments?.find(([open]) => line.startsWith(open, i));
+    if (block) {
+      const [open, close] = block;
+      flush(theme.codeColor);
+      const end = findClose(i + open.length, close, false);
+      if (end === -1) {
+        segments.push({ text: line.slice(i), color: COMMENT_COLOR });
+        return { segments, carry: { kind: 'comment', close } };
+      }
+      segments.push({ text: line.slice(i, end), color: COMMENT_COLOR });
+      i = end;
+      continue;
+    }
 
     // Line comments, from the language's own table rather than hardcoded. Tried
     // longest-first so `//` wins over a hypothetical `/`.
@@ -471,7 +603,25 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
     if (comment !== undefined) {
       flush(theme.codeColor);
       segments.push({ text: line.slice(i), color: COMMENT_COLOR });
-      return segments;
+      return { segments, carry: null };
+    }
+
+    // Multi-line string delimiters, before the single-line `quotes` rule: the two
+    // overlap (Python's `"""` begins with `"`, a JS backtick is in both lists) and
+    // the longer, unambiguous form has to win. Unlike `quotes` an unterminated one
+    // is CARRIED rather than dropped, which is exactly the difference between the
+    // two lists — see `LanguageSyntax.multilineStrings`.
+    const multi = lexical.multilineStrings?.find((delim) => line.startsWith(delim, i));
+    if (multi !== undefined) {
+      flush(theme.codeColor);
+      const end = findClose(i + multi.length, multi, true);
+      if (end === -1) {
+        segments.push({ text: line.slice(i), color: STRING_COLOR });
+        return { segments, carry: { kind: 'string', close: multi } };
+      }
+      segments.push({ text: line.slice(i, end), color: STRING_COLOR });
+      i = end;
+      continue;
     }
 
     // Strings. Only colored when the quote actually CLOSES on this line —
@@ -541,7 +691,7 @@ function highlightLine(line: string, lang: string, theme: Required<MarkdownTheme
   }
 
   flush(theme.codeColor);
-  return segments;
+  return { segments, carry: null };
 }
 
 // ── Single CodeBlock entity ─────────────────────────────────────────────────
@@ -556,7 +706,33 @@ interface CodeWheelEvent {
   deltaX?: number;
   deltaY?: number;
   deltaMode?: number;
+  /** Shift+wheel is the conventional "scroll the other axis" modifier. */
+  shiftKey?: boolean;
+  /** Ctrl+wheel is browser zoom and must never be consumed. */
+  ctrlKey?: boolean;
   nativeEvent?: { preventDefault?: () => void };
+}
+
+/** Optional behaviour for {@link CodeBlock}. */
+export interface CodeBlockOptions {
+  /**
+   * Draw a header band across the top of the block showing the language name.
+   *
+   * Off by default, and the default is not merely conservative: the band costs
+   * vertical space in every block of a document, and a label is worth that only
+   * where a document actually mixes languages. A single-language page gets the
+   * same word repeated down its length.
+   *
+   * Turning it on also RESERVES that space, which is what makes the block's
+   * own affordance controls stop overlapping the first line of code — measured
+   * before this existed: the controls occupied y 8-32 while line one occupied
+   * y 18-42, a 14px overlap in the default theme.
+   *
+   * The reserved height keeps `height` a pure function of line count (the
+   * invariant {@link CodeBlock.setWidth} documents); it only changes the
+   * constant term.
+   */
+  showLanguage?: boolean;
 }
 
 /**
@@ -567,6 +743,14 @@ interface CodeWheelEvent {
  */
 export class CodeBlock extends UIComponent {
   private lines: CodeSegment[][];
+  /**
+   * Lexical state ENTERING each line, index-aligned with {@link lines}.
+   *
+   * Entering rather than leaving, so a streamed append can resume tokenizing at
+   * the prefix-reuse boundary by reading one entry instead of re-scanning the
+   * document for an unclosed block comment.
+   */
+  private lineCarry: CarryState[] = [];
   private grid: PreparedContentGrid | null = null;
   /** Raw (unhighlighted) lines of the last build, for prefix reuse in buildLines. */
   private rawLines: string[] | null = null;
@@ -600,6 +784,10 @@ export class CodeBlock extends UIComponent {
   private pad: number;
   private codeFont: string;
   public selectable: boolean;
+  /** Whether the language header band is drawn. See {@link CodeBlockOptions.showLanguage}. */
+  private showLanguage: boolean;
+  /** Font of the header label, resolved once from the theme. */
+  private langFont: string;
 
   /**
    * @param theme Any subset of {@link MarkdownTheme}, or the name of a built-in
@@ -618,6 +806,7 @@ export class CodeBlock extends UIComponent {
     maxWidth: number,
     theme: MarkdownThemePresetName | MarkdownTheme,
     selectable = true,
+    options: CodeBlockOptions = {},
   ) {
     super();
     const resolved = resolvePresetTheme(theme);
@@ -628,6 +817,11 @@ export class CodeBlock extends UIComponent {
     this.pad = resolved.codePadding;
     this.codeFont = `${resolved.codeFontSize}px ${resolved.codeFont}`;
     this.selectable = selectable;
+    this.langFont = `${resolved.codeLangFontSize}px ${resolved.codeFont}`;
+    // Only when there is a language to name. A bare ``` fence would otherwise
+    // reserve a band and paint nothing into it, which is worse than no band:
+    // the reader sees unexplained empty space above the code.
+    this.showLanguage = options.showLanguage === true && this.languageLabel() !== '';
 
     this.lines = [];
     this.width = maxWidth;
@@ -642,6 +836,9 @@ export class CodeBlock extends UIComponent {
     this.on('wheel', (e: CodeWheelEvent) => {
       const max = this.maxScrollX;
       if (max <= 0) return;
+      // Ctrl+wheel is browser zoom, never content scroll — same guard as
+      // `ScrollView` (`ScrollView.ts:79-81`).
+      if (e.ctrlKey === true) return;
       const deltaMode = e.deltaMode ?? 0;
       let deltaX = e.deltaX ?? 0;
       let deltaY = e.deltaY ?? 0;
@@ -654,17 +851,83 @@ export class CodeBlock extends UIComponent {
         deltaX *= this.width;
         deltaY *= this.height;
       }
-      // Whichever axis the user actually moved: a horizontal trackpad swipe and
-      // a plain vertical wheel both scroll the code, matching `Tabs`.
-      const delta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
+      // ONLY horizontal intent scrolls the code. A code block is an inline
+      // element in a vertically scrolling document, not a scroll container that
+      // owns its viewport, so a plain vertical wheel belongs to the page.
+      //
+      // This deliberately does NOT follow `Tabs`, which the earlier version
+      // cited: a `Tabs` strip is a horizontal-only widget with no vertical
+      // travel of its own, so borrowing whichever axis moved costs nothing
+      // there. Here it cost the page its scroll — measured on a live blog post,
+      // a `deltaX: 0, deltaY: 120` wheel over an overflowing block reported
+      // `defaultPrevented: true` with `scrollY` unmoved at 1050, so the pointer
+      // had to leave the block before the page would scroll at all.
+      //
+      // Shift+wheel is included because a mouse with no horizontal wheel has no
+      // other way to reach the tail, and shift-as-horizontal is the platform
+      // convention every browser already applies to `overflow-x` boxes. A
+      // trackpad's own horizontal swipe arrives as `deltaX` and needs no
+      // modifier.
+      const horizontal = e.shiftKey === true ? deltaY || deltaX : deltaX;
+      if (horizontal === 0) return;
       const before = this.scrollX;
       // Through `setScrollX`, so the clamp and the content-epoch bump have exactly
       // one implementation.
-      this.setScrollX(before + delta);
+      this.setScrollX(before + horizontal);
       // Only when the offset actually moved, so a wheel at either end of travel
       // still scrolls the page instead of trapping it inside the code block.
       if (this.scrollX !== before) e.nativeEvent?.preventDefault?.();
     });
+  }
+
+  /**
+   * The language name shown in the header, or `''` when there is nothing to show.
+   *
+   * Normalized exactly as the highlighter normalizes its lookup key, so the label
+   * and the colouring can never disagree about which language this is: a fence
+   * may be written ` ```Bash ` or carry attributes (` ```ts title="a.ts" `), and
+   * the label has to be the language, not the raw info string.
+   *
+   * Lowercased for the same reason `streamdown` lowercases its own
+   * (`lib/code-block/header.tsx:15`): the fence's capitalization is incidental,
+   * and a document mixing ` ```JS ` with ` ```js ` should not render two
+   * different-looking labels for one language.
+   */
+  private languageLabel(): string {
+    return (
+      this.lang
+        .trim()
+        .toLowerCase()
+        .split(/[\s:,{]/)[0] ?? ''
+    );
+  }
+
+  /**
+   * Height in px of the header band, or `0` when it is off.
+   *
+   * The label sits in a band of its own rather than floating over the code,
+   * because a translucent overlay above real glyphs is unreadable at small sizes
+   * and would fight the horizontal scroll: the code slides under it, so any text
+   * drawn on top would collide with a different token every frame.
+   */
+  private headerHeight(): number {
+    if (!this.showLanguage) return 0;
+    // Label size plus symmetric breathing room derived from the block's own
+    // padding, so a theme that opens the block up opens the header up with it
+    // rather than leaving a cramped band on a generous block.
+    return this.theme.codeLangFontSize + Math.round(this.pad * 0.75);
+  }
+
+  /**
+   * Local y of the first line of code.
+   *
+   * Everything that positions a row — the painter, the projection, the grid's
+   * own origin — goes through this, so the header offset cannot be applied to
+   * one and forgotten on another. That class of mismatch is exactly what
+   * detaches selection carriers from the glyphs they cover.
+   */
+  private contentTop(): number {
+    return this.headerHeight() + this.pad;
   }
 
   /**
@@ -800,7 +1063,7 @@ export class CodeBlock extends UIComponent {
     rows.length = grid.lines.length;
     for (let row = 0; row < grid.lines.length; row++) {
       const line = grid.lines[row];
-      const y = this.pad + row * this.lineH;
+      const y = this.contentTop() + row * this.lineH;
       if (!contentLineInHint(hint, y, this.lineH)) continue;
       rows[row] = {
         text: this.source.slice(line.sourceStart, line.sourceEnd),
@@ -829,6 +1092,12 @@ export class CodeBlock extends UIComponent {
       // render() draws cell-by-cell (no ligatures can form); the DOM copy
       // must not ligate either or Firefox selection geometry drifts.
       ligatures: 'none',
+      // `render()` clips the glyph pass to this box, so the DOM copy must too.
+      // A line wider than the box otherwise projects carriers past the entity,
+      // and the browser paints their selection highlight over whatever is drawn
+      // beside the block — measured 1580px of carrier against a 1566px viewport
+      // on a real page, the highlight running through the prose to its right.
+      clipToBounds: true,
       grid,
     };
   }
@@ -844,6 +1113,11 @@ export class CodeBlock extends UIComponent {
    *
    * The last previously-seen line is deliberately NOT reused: a chunk usually
    * lands mid-line, so that line's text (and therefore its tokenization) changes.
+   *
+   * Prefix reuse survives multi-line constructs because {@link lineCarry} records
+   * the state ENTERING each line, so resuming at the reuse boundary needs no
+   * rescan: a carried state is a pure function of the preceding text, and that
+   * text is byte-identical over the reused prefix by construction.
    */
   private buildLines(code: string): void {
     // The projection reports `source` and the grid built from it; `setCode` is
@@ -858,19 +1132,25 @@ export class CodeBlock extends UIComponent {
       while (reusable < limit && previous[reusable] === rawLines[reusable]) reusable++;
     }
 
-    if (reusable > 0) {
-      const next = this.lines.slice(0, reusable);
-      for (let i = reusable; i < rawLines.length; i++) {
-        next.push(highlightLine(rawLines[i]!, this.lang, this.theme));
-      }
-      this.lines = next;
-    } else {
-      this.lines = rawLines.map((l) => highlightLine(l, this.lang, this.theme));
+    const lines = reusable > 0 ? this.lines.slice(0, reusable) : [];
+    const carries = reusable > 0 ? this.lineCarry.slice(0, reusable) : [];
+    // The state the first re-tokenized line starts in. `lineCarry[reusable]` is
+    // that line's own entering state, recorded on the previous build.
+    let carry: CarryState = reusable > 0 ? (this.lineCarry[reusable] ?? null) : null;
+    for (let i = reusable; i < rawLines.length; i++) {
+      carries.push(carry);
+      const result = highlightLine(rawLines[i]!, this.lang, this.theme, carry);
+      lines.push(result.segments);
+      carry = result.carry;
     }
+    this.lines = lines;
+    this.lineCarry = carries;
 
     this.rawLines = rawLines;
     this.grid = null;
-    this.height = this.pad * 2 + rawLines.length * this.lineH;
+    // Still a pure function of line COUNT — the header only changes the constant
+    // term, so `setWidth()`'s documented invariant holds unchanged.
+    this.height = this.contentTop() + this.pad + rawLines.length * this.lineH;
   }
 
   private ensureGrid(): PreparedContentGrid {
@@ -941,14 +1221,34 @@ export class CodeBlock extends UIComponent {
     // interface — so the clip is a hard rect inside a `codeRadius` background and
     // the corner arcs are a few px wider than the clip. Accepted; see
     // `forge/decisions/code-block-overflow-2026-08.md`.
+    // Header band, painted before the clip so the label is never affected by the
+    // glyph clip below, and before the glyphs so it cannot be overdrawn.
+    const header = this.headerHeight();
+    if (header > 0) {
+      r.fillText(
+        this.languageLabel(),
+        this.pad,
+        // Vertically centred in the band by its own cap height rather than by
+        // font size: `fillText` takes a baseline, so centring the em box would
+        // sit the visible letterforms low. 0.7 of the label size below the band's
+        // centre line is where a lowercase-plus-cap run reads as centred.
+        (header + this.theme.codeLangFontSize * 0.7) / 2,
+        this.langFont,
+        this.theme.codeLangColor,
+      );
+    }
+
     r.save();
-    r.clip(0, 0, this.width, this.height);
+    // Clipped to start BELOW the header, not at the block's top edge: the code
+    // scrolls horizontally under a stationary label, so a band-height clip is
+    // what stops a tall glyph or a scrolled line from painting across it.
+    r.clip(0, header, this.width, this.height - header);
     // Same clamping accessor the projection reads, so the painted glyphs and the
     // selection carriers cannot disagree about the offset.
     const scrollX = this.scrollX;
 
     for (let row = 0; row < grid.lines.length; row++) {
-      const yBaseline = this.pad + row * this.lineH + this.lineH * 0.75;
+      const yBaseline = this.contentTop() + row * this.lineH + this.lineH * 0.75;
       const segments = this.lines[row];
       let segmentIndex = 0;
       let segmentEnd = segments[0]?.text.length ?? 0;

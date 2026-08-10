@@ -16,9 +16,13 @@ box width.
 - `render()` clips its glyphs to the block box, so nothing paints outside the
   background.
 - A new `scrollX` / `maxScrollX` / `setScrollX()` API, clamped to the content.
-- A wheel over the block scrolls it horizontally, taking whichever axis the user
-  moved, and `preventDefault`s only when the offset actually changed so a wheel at
-  either end of travel still scrolls the page.
+- A wheel over the block scrolls it horizontally on **horizontal intent only** —
+  a `deltaX` swipe, or `shift`+wheel for a mouse with no horizontal wheel. A plain
+  vertical wheel belongs to the page, because a code block is an inline element in
+  a scrolling document rather than a scroll container that owns its viewport.
+  `ctrl`+wheel is left to browser zoom. `preventDefault` fires only when the
+  offset actually changed, so a wheel at either end of travel still scrolls the
+  page.
 
 Overflow-not-wrap is unchanged, and so is the invariant `setWidth()` documents:
 **`height` remains a function of line count alone**, and a width change still
