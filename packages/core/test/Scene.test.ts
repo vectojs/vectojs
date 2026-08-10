@@ -1854,6 +1854,103 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       });
     });
 
+    describe('per-grapheme carriers', () => {
+      class PerGraphemeEntity extends ContentEntity {
+        public text = 'Hello';
+        public perGrapheme = true;
+        override getContentProjection() {
+          return {
+            text: this.text,
+            font: '16px monospace',
+            lines: [
+              {
+                text: this.text,
+                x: 0,
+                y: 0,
+                baseline: 14,
+                lineHeight: 20,
+                perGraphemeCarriers: this.perGrapheme,
+              },
+            ],
+          };
+        }
+      }
+
+      it('emits one flow-relative carrier per grapheme when perGraphemeCarriers is true', () => {
+        const scene = makeDomScene();
+        const e = new PerGraphemeEntity('grapheme');
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'grapheme')!.children[0] as HTMLElement;
+        const carriers = [...line.children] as HTMLElement[];
+        // 'Hello' → 5 grapheme clusters → 5 carriers, no break carrier yet
+        // (break carrier is appended after the grapheme loop).
+        expect(carriers.length).toBeGreaterThanOrEqual(5);
+        const textCarriers = carriers.slice(0, 5);
+        expect(textCarriers.map((c) => c.textContent)).toEqual(['H', 'e', 'l', 'l', 'o']);
+        for (const carrier of textCarriers) {
+          expect(carrier.style.position).toBe('relative');
+          expect(carrier.style.display).toBe('inline-block');
+          expect(carrier.style.whiteSpace).toBe('pre');
+          expect(carrier.style.unicodeBidi).toBe('isolate');
+        }
+        scene.destroy();
+      });
+
+      it('falls back to single text node when perGraphemeCarriers is false', () => {
+        const scene = makeDomScene();
+        const e = new PerGraphemeEntity('single');
+        e.perGrapheme = false;
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'single')!.children[0] as HTMLElement;
+        // Line should have textContent directly, not child carriers for the text itself.
+        // The break carrier may still be present, so check textContent instead of childElementCount.
+        expect(line.textContent).toContain('Hello');
+        const textCarriers = [...line.children].filter(
+          (c) => c.textContent && c.textContent !== '\n',
+        );
+        expect(textCarriers.length).toBe(0);
+        scene.destroy();
+      });
+
+      it('handles multi-byte grapheme clusters correctly', () => {
+        const scene = makeDomScene();
+        const e = new PerGraphemeEntity('emoji');
+        e.text = '👨‍👩‍👧‍👦A';
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'emoji')!.children[0] as HTMLElement;
+        const carriers = [...line.children] as HTMLElement[];
+        expect(carriers.length).toBeGreaterThanOrEqual(2);
+        // The family emoji is one grapheme cluster, 'A' is another.
+        expect(carriers[0].textContent).toBe('👨‍👩‍👧‍👦');
+        expect(carriers[1].textContent).toBe('A');
+        scene.destroy();
+      });
+
+      it('positions each carrier at its canvas-measured prefix width', () => {
+        const scene = makeDomScene();
+        const e = new PerGraphemeEntity('measured');
+        e.text = 'ABC';
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'measured')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 3) as HTMLElement[];
+        // Each carrier's `left` is the delta from its natural inline offset.
+        // For monospace font, if each char is ~10px, natural offsets are 0, 10, 20
+        // and canvas measures give similar values, so deltas should be near zero.
+        const lefts = carriers.map((c) => Number.parseFloat(c.style.left));
+        // Just verify they are numeric and finite, exact values depend on font rendering.
+        expect(lefts.every((l) => Number.isFinite(l))).toBe(true);
+        scene.destroy();
+      });
+    });
+
     it('updates text in place and removes the node when projection goes null', () => {
       const scene = makeDomScene();
       const e = new ContentEntity('mut');

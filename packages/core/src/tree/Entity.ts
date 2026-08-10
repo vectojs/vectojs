@@ -127,6 +127,20 @@ export interface ContentProjectionLine {
   lineHeight?: number;
   /** Styled text runs in visual order. */
   runs?: ContentProjectionRun[];
+  /**
+   * Emit one flow-relative carrier per grapheme cluster on this line instead
+   * of a single text node. Used by natural-order (non-bidi, non-justified) text
+   * to correct the residual ~0.3% per-character Gecko grid-fit drift that causes
+   * selection highlight boxes to lag or lead painted glyphs.
+   *
+   * Only meaningful when `runs` is absent or empty. Setting it on a line that
+   * already has positioned runs is a no-op — those lines use their own
+   * flow-relative carriers already.
+   *
+   * Must NOT be set for bidi/RTL lines: per-glyph carriers break logical caret
+   * hit-mapping when DOM order != visual order (PR #146 revert).
+   */
+  perGraphemeCarriers?: boolean;
 }
 
 /**

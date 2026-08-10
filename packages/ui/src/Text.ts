@@ -287,6 +287,21 @@ export class Text extends UIComponent {
         font: this.font,
         lineHeight: this.lineHeight,
         runs,
+        // Natural-order lines only. Gecko grid-fits DOM advances to integer
+        // device pixels while canvas keeps fractional ones, so a single text
+        // node drifts from the painted glyphs by 1-2px across a body-text line.
+        // Per-grapheme carriers pin every cluster to its measured canvas x.
+        //
+        // Deliberately NOT gated on font family or size: measured on Firefox 153
+        // the disagreement's SIGN flips with size for one family (monospace
+        // 12px -0.37, 15px 0.00, 22px +0.42, 24px -0.47), so no family or
+        // threshold gate is sound. Emitting always is correct everywhere and
+        // costs only DOM nodes on lines that did not need it.
+        //
+        // Excluded when bidi: DOM order is logical while x is visual, so
+        // per-glyph carriers break caret hit-mapping (PR #146 revert). Excluded
+        // when justified because those lines already carry positioned runs.
+        perGraphemeCarriers: !this.hasBidi && !justified,
       };
     });
     return {
