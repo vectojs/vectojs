@@ -187,7 +187,7 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    Register the same real identity in every repository a task touches. Never
    reuse a previous agent merely because it is active in the registry.
 
-   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.1 on 2026-08-10). The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
+   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.3 on 2026-08-10). Since 0.5.2, text output is compact one-line summaries by design. **To see anything the one-liner omits, use `--json | jq` and note the payload is nested under `.data`** — `--json` already returns the complete record (15 fields including `depends_on`/`blocks`), so there is nothing to configure. Do **not** reach for `--fields`/`[output.fields]`: measured 2026-08-11 on 0.5.3 they are purely subtractive and text mode ignores them outright, because the compact renderer hardcodes its template (`output.rs:252`) — naming extra fields shows nothing extra, and naming fewer prints malformed output (`--fields display_id` renders `CTX-0320 []` followed by a space, i.e. empty status and title). Filed as [carryctx#68](https://github.com/Xuepoo/carryctx/issues/68). `--verbose` (or `[output] verbose = true`) pretty-prints the full record in text mode. Since 0.5.3, piping to an early-closing consumer (`| head`) exits 141 silently instead of panicking. The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
 
 7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
 
@@ -220,9 +220,8 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    collided for two handoffs created in the same millisecond; ids are now sequential
    `HO-0001`-style.
 
-   **Still broken in 0.5.1, measured:** `handoff accept --claim-task` leaves the
-   task's `owner_agent_id` null and its status `ready`, so run `task claim` /
-   `task start` yourself. The record's `completed_work`/`remaining_work`/`blockers`/
+   **Fixed in 0.5.3, verified:** `handoff accept --claim-task` now claims the task
+   for the accepting agent (status `in_progress`, `owner_agent_id` set). The record's `completed_work`/`remaining_work`/`blockers`/
    `risks`/`next_steps` stay `[]` — `create` has no flags for them and does not
    inherit them from a checkpoint — so substance lives in the document and in
    progress notes, never in the request. `--format markdown` returns JSON for
@@ -239,3 +238,38 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    full workflow; the generic `handoff-prompt` skill
    (`Xuepoo/handoff-prompt`) holds the template and the serial/parallel and
    reconciliation rules.
+
+8. **Order dependent work with `task depend`, not prose.** When one task must
+   land before another, record the edge instead of only saying so in a handoff
+   summary — the ordering then survives into `task show`/`context` and cannot be
+   lost when the document is skimmed:
+
+   ```bash
+   carryctx task depend CTX-0320 --on CTX-0321 --agent opencode
+   ```
+
+   Read as "CTX-0320 depends on CTX-0321"; the **first** ref is the blocked task
+   and `--on` is the prerequisite. The reciprocal `blocks` edge is derived, so do
+   not add it. Kinds are `strong` (default) and `informational`/`info` — **not**
+   the `blocks`/`relates_to` the `--help` text suggests, and an invalid value
+   exits 2 printing **nothing at all** ([carryctx#69](https://github.com/Xuepoo/carryctx/issues/69)),
+   so omit `--kind` unless you want `informational`. A `strong` edge is enforced:
+   `task claim`/`task start` refuse a task whose strong prerequisites are not
+   complete (`domain/task.rs:135-162`), which is the point — it makes a wrong
+   ordering fail loudly instead of silently.
+
+   Verify the edge with `--json`, since compact text cannot show it:
+
+   ```bash
+   carryctx task show CTX-0320 --json | jq -c '.data | {depends_on, blocks}'
+   ```
+
+   `task create --depends-on <ULID>` sets the edge at creation, and
+   `task undepend <ref> --on <ref>` removes one.
+
+   **Do not put substance in `--description`**: `task create` parses the flag and
+   discards it (stored `null`), and `task edit` has no such flag, so the field is
+   unreachable by any CLI path ([carryctx#70](https://github.com/Xuepoo/carryctx/issues/70)).
+   Detail belongs in `progress note` / `decision add --rationale` / the handoff
+   document, as it already does. `parent_task_id` exists in the record but no flag
+   sets it either, so dependencies are the only usable structure between tasks.
