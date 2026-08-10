@@ -1,0 +1,5 @@
+interface:
+  display_name: "Handoff Prompt"
+  short_description: "Write a structured handoff prompt for the next session"
+policy:
+  allow_implicit_invocation: false
