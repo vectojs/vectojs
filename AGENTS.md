@@ -187,7 +187,7 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    Register the same real identity in every repository a task touches. Never
    reuse a previous agent merely because it is active in the registry.
 
-   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.0 on 2026-08-10). The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
+   **Run `carryctx` from the global install** — plain `carryctx …`, not `bunx carryctx …`. It is also pinned as a `devDependency` so a contributor gets a working version from a plain `bun install` with no separate install step, and `bunx carryctx` / `./node_modules/.bin/carryctx` resolve identically (both 0.5.1 on 2026-08-10). The global binary is the default because it is faster per invocation and because carryctx is the one tool here that reads and writes **state** (`.git/carryctx/state.sqlite`) rather than only inspecting files — which is also why it must be run from inside a git repo. If the global and pinned versions ever diverge, prefer the newer and note it, since a schema migration lands in the binary rather than in the repo.
 
 7. **Session handoff via CarryCtx**: when a session ends with work remaining, write a handoff document into `$VECTOJS_WORKSPACE/vectojs-docs/handoff-prompt/` (timestamp-first naming, per its `TEMPLATE.md` and README rules), then **route it and snapshot state**:
 
@@ -211,7 +211,16 @@ AT-synthesized `click` still work under it. Precedent: `RadioGroup`/`Tabs` (#160
    an idempotent no-op rather than an error; `stats` attributes checkpoints per agent
    and no longer bills every session to now (it reported 4784h before).
 
-   **Still broken in 0.5.0, measured:** `handoff accept --claim-task` leaves the
+   **Fixed in 0.5.1**: `handoff list` now defaults to **pending only** — it used to
+   return every record ever created, which is why a session-start check here surfaced
+   7 handoffs when 1 was actionable. `--all` restores the unfiltered view, `--status
+<pending|accepted|declined|closed>` picks one state (the domain spellings `open`/
+   `rejected` also parse), and `--for-agent <name-ULID-or-role>` filters by target.
+   `handoff create` also stopped deriving `display_id` from a ULID prefix, which
+   collided for two handoffs created in the same millisecond; ids are now sequential
+   `HO-0001`-style.
+
+   **Still broken in 0.5.1, measured:** `handoff accept --claim-task` leaves the
    task's `owner_agent_id` null and its status `ready`, so run `task claim` /
    `task start` yourself. The record's `completed_work`/`remaining_work`/`blockers`/
    `risks`/`next_steps` stay `[]` — `create` has no flags for them and does not
