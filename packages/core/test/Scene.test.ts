@@ -1708,6 +1708,152 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       scene.destroy();
     });
 
+    describe('positioned-run carriers', () => {
+      /** Justified line: per-word runs at explicit x, with the gaps widened. */
+      class PositionedRunEntity extends ContentEntity {
+        public lineX = 0;
+        public runs: Array<{ text: string; x?: number; width?: number }> = [
+          { text: 'The', x: 0, width: 30 },
+          { text: ' ', x: 30, width: 20 },
+          { text: 'quick', x: 50, width: 50 },
+          { text: ' ', x: 100, width: 20 },
+          { text: 'brown', x: 120, width: 50 },
+        ];
+        override getContentProjection() {
+          return {
+            text: 'The quick brown\nfox',
+            font: '16px sans-serif',
+            lines: [
+              {
+                text: 'The quick brown',
+                x: this.lineX,
+                y: 0,
+                baseline: 14,
+                lineHeight: 20,
+                runs: this.runs,
+                separatorAfter: '\n',
+              },
+              { text: 'fox', x: 0, y: 20, baseline: 14, lineHeight: 20 },
+            ],
+          };
+        }
+      }
+
+      it('places carriers flow-relative so plaintext copy does not break per run', () => {
+        const scene = makeDomScene();
+        scene.add(new PositionedRunEntity('justified'));
+        tick(scene);
+
+        const line = contentEl(scene, 'justified')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 5) as HTMLElement[];
+        // `position: absolute` blockifies a carrier (computed `display: block`),
+        // and layout-aware plaintext serialization inserts a break at every
+        // block box — which copied a justified paragraph as one line PER RUN
+        // (measured: 16 newlines on a 3-line paragraph, real Chrome 151).
+        // Staying in one inline flow is what keeps a line copying as a line.
+        for (const carrier of carriers) {
+          expect(carrier.style.position).toBe('relative');
+          expect(carrier.style.display).toBe('inline-block');
+          expect(carrier.style.whiteSpace).toBe('pre');
+          expect(carrier.style.boxSizing).toBe('border-box');
+        }
+        // `left` is the delta from the carrier's NATURAL inline offset (the sum
+        // of preceding carrier widths), not from the line origin — so widths
+        // 30/20/50/20 put each box at its own absolute x.
+        expect(carriers.map((c) => Number.parseFloat(c.style.left))).toEqual([0, 0, 0, 0, 0]);
+        expect(carriers.map((c) => Number.parseFloat(c.style.width))).toEqual([30, 20, 50, 20, 50]);
+        // The spaces are real characters in the DOM, so copy keeps the words apart.
+        expect(line.textContent).toBe('The quick brown\n');
+        scene.destroy();
+      });
+
+      it('offsets each carrier by the gap between its x and the running inline offset', () => {
+        const scene = makeDomScene();
+        const e = new PositionedRunEntity('gapped');
+        // Widths that do NOT tile the x positions: natural offsets end up at
+        // 0, 10, 30, 40, 60 while the runs want 0, 30, 50, 100, 120.
+        e.runs = [
+          { text: 'a', x: 0, width: 10 },
+          { text: ' ', x: 30, width: 20 },
+          { text: 'b', x: 50, width: 10 },
+          { text: ' ', x: 100, width: 20 },
+          { text: 'c', x: 120, width: 10 },
+        ];
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'gapped')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 5) as HTMLElement[];
+        expect(carriers.map((c) => Number.parseFloat(c.style.left))).toEqual([0, 20, 20, 60, 60]);
+        scene.destroy();
+      });
+
+      it('subtracts the line origin so a shifted line still lands at its own x', () => {
+        const scene = makeDomScene();
+        const e = new PositionedRunEntity('shifted');
+        e.lineX = 64;
+        e.runs = [
+          { text: 'ab', x: 64, width: 16 },
+          { text: ' ', x: 80, width: 8 },
+          { text: 'cd', x: 88, width: 16 },
+        ];
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'shifted')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 3) as HTMLElement[];
+        // The line box already starts at x=64, so the first carrier needs no
+        // offset and the rest tile naturally.
+        expect(carriers.map((c) => Number.parseFloat(c.style.left))).toEqual([0, 0, 0]);
+        scene.destroy();
+      });
+
+      it('keeps DOM order logical, which is what makes RTL copy correct', () => {
+        const scene = makeDomScene();
+        const e = new PositionedRunEntity('rtl');
+        // Logical order (as RichText emits, sorted by source index) with
+        // DECREASING x — the visual order is the reverse. Flow-relative
+        // placement handles this because `left` is a delta from the running
+        // inline offset, never a function of visual order.
+        e.runs = [
+          { text: 'A', x: 40, width: 20 },
+          { text: 'B', x: 20, width: 20 },
+          { text: 'C', x: 0, width: 20 },
+        ];
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'rtl')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 3) as HTMLElement[];
+        for (const carrier of carriers) expect(carrier.style.position).toBe('relative');
+        // Natural offsets are 0, 20, 40; the wanted x are 40, 20, 0.
+        expect(carriers.map((c) => Number.parseFloat(c.style.left))).toEqual([40, 0, -40]);
+        // Copy follows DOM order, so the logical string survives.
+        expect(line.textContent).toBe('ABC\n');
+        scene.destroy();
+      });
+
+      it('falls back to absolute placement when a positioned run has no width', () => {
+        const scene = makeDomScene();
+        const e = new PositionedRunEntity('nowidth');
+        // Without a width the running inline offset cannot advance, so every
+        // later carrier would desync. Keep the old behaviour for that line.
+        e.runs = [
+          { text: 'The', x: 0, width: 30 },
+          { text: ' quick', x: 30 },
+          { text: 'brown', x: 120, width: 50 },
+        ];
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'nowidth')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 3) as HTMLElement[];
+        for (const carrier of carriers) expect(carrier.style.position).toBe('absolute');
+        expect(carriers.map((c) => Number.parseFloat(c.style.left))).toEqual([0, 30, 120]);
+        scene.destroy();
+      });
+    });
+
     it('updates text in place and removes the node when projection goes null', () => {
       const scene = makeDomScene();
       const e = new ContentEntity('mut');

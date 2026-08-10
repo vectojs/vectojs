@@ -523,13 +523,15 @@ export class RichText extends UIComponent {
   private positionedRuns(
     nodes: LayoutResult['nodes'],
   ): Array<{ text: string; font: string; x: number; width: number }> {
-    // Visual order. One carrier PER GLYPH: justify widens the gaps between words
-    // (and the engine can even reorder a trailing space around a wrap boundary),
-    // so only a per-glyph carrier positioned at each glyph's own visual x keeps
-    // the DOM selection box on the drawn glyphs. Each carrier's text is the
-    // glyph's LOGICAL source substring (not node.char) so copy / AT stay correct
-    // for shaped scripts; carriers are emitted in visual order but the browser
-    // reads their text nodes in DOM order, which for LTR justify is logical too.
+    // LOGICAL order (sorted by source index), one carrier PER GLYPH: justify
+    // widens the gaps between words (and the engine can even reorder a trailing
+    // space around a wrap boundary), so only a per-glyph carrier positioned at
+    // each glyph's own visual x keeps the DOM selection box on the drawn glyphs.
+    // Each carrier's text is the glyph's LOGICAL source substring (not node.char)
+    // so copy / AT stay correct for shaped scripts. DOM order is what plaintext
+    // serialization and screen readers read, so keeping it logical is what makes
+    // an RTL justified line copy in the right order; Scene places these
+    // flow-relative, which does not require visual order.
     const glyphs = nodes.slice().sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
     const runs: Array<{
       text: string;
