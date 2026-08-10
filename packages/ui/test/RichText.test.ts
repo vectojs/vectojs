@@ -241,9 +241,25 @@ describe('RichText', () => {
     expect(right).toBeCloseTo(canvasRight, 0);
   });
 
-  it('left-aligned RichText keeps natural-flow runs (no positioned x)', () => {
+  it('left-aligned single-style RichText emits per-grapheme carriers, not runs', () => {
     const rt = new RichText([{ text: 'aa aa aa aa aa' }], { maxWidth: 80 });
     const line0 = rt.getContentProjection()!.lines![0];
+    // A single-style ragged line takes the per-grapheme carrier path instead of
+    // styled runs: Scene pins each cluster to its canvas prefix, which is what
+    // corrects the Gecko grid-fit drift. `runs` is omitted so Scene reaches that
+    // branch at all — it is gated on the line having no runs.
+    expect(line0.perGraphemeCarriers).toBe(true);
+    expect(line0.runs).toBeUndefined();
+  });
+
+  it('left-aligned mixed-style RichText keeps natural-flow runs (no positioned x)', () => {
+    // Mixed style must keep styled runs: the per-grapheme loop applies one font
+    // per line, so carrying it here would drop the inline bold/italic.
+    const rt = new RichText([{ text: 'aa aa ', style: { bold: true } }, { text: 'bb bb bb' }], {
+      maxWidth: 80,
+    });
+    const line0 = rt.getContentProjection()!.lines![0];
+    expect(line0.perGraphemeCarriers).toBe(false);
     expect(line0.runs!.every((run) => run.x === undefined)).toBe(true);
   });
 

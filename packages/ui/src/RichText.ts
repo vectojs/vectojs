@@ -604,12 +604,26 @@ export class RichText extends UIComponent {
         : source.length;
       // Justified lines need positioned runs so the DOM selection box tracks
       // the widened canvas spacing; ragged (left) lines keep cheap natural flow.
-      const runs =
-        this.engine.textAlign === 'justify'
-          ? this.positionedRuns(nodes)
-          : this.logicalRuns(sourceStart, sourceEnd);
+      const justified = this.engine.textAlign === 'justify';
+      const runs = justified
+        ? this.positionedRuns(nodes)
+        : this.logicalRuns(sourceStart, sourceEnd);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
+
+      // Detect bidi: any node with isRTL means the line has mixed direction.
+      const hasBidi = nodes.some((node) => node.isRTL);
+
+      // Detect single-style: all nodes share the same font (no mid-line style change).
+      // The per-grapheme carrier loop in Scene.ts uses one font per line; mixed-style
+      // lines need styled runs to preserve their inline bold/italic/color changes.
+      const singleStyle = runs.length === 1;
+
+      // Emit per-grapheme flow-relative carriers for natural-order, single-style lines
+      // to correct the residual ~0.3% per-character Gecko grid-fit drift. Bidi and
+      // justified lines already get positioned runs; mixed-style lines keep styled runs.
+      const perGraphemeCarriers = !justified && !hasBidi && singleStyle;
+
       return {
         nodes,
         projection: {
@@ -625,7 +639,8 @@ export class RichText extends UIComponent {
           // component default. Keep the native selection box on that same
           // rhythm when a heading or inline large text shares a line.
           lineHeight: largest * 1.5,
-          runs,
+          runs: perGraphemeCarriers ? undefined : runs,
+          perGraphemeCarriers,
         },
       };
     });
