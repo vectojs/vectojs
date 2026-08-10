@@ -4489,16 +4489,40 @@ export class Scene {
             const separator = line.separatorAfter ?? (index < lines.length - 1 ? '\n' : '');
             if (line.runs && line.runs.length > 0) {
               // Positioned runs (justify / RTL / non-natural spacing): each run
-              // carries its own absolute canvas x. Place each as an ABSOLUTELY
-              // positioned carrier at `left = run.x - line.x` inside the line
-              // (itself absolutely positioned, so it is the containing block).
-              // Absolute (not flow-relative) positioning is what lets the DOM
-              // order stay LOGICAL — correct for copy / screen readers / RTL —
-              // while every box still lands at its VISUAL x, so the selection
-              // rectangles overlap the drawn glyphs regardless of order. (A
-              // flow-relative `left = x - runningX` only works when runs are in
-              // visual order, which RTL logical-order runs are not.)
+              // carries its own absolute canvas x. Place each as a FLOW-RELATIVE
+              // carrier — `position: relative; display: inline-block` with
+              // `left = run.x - runningX`, where `runningX` accumulates each
+              // carrier's own width in DOM order.
+              //
+              // Flow-relative, not absolute. `position: absolute` blockifies the
+              // carrier (computed `display: block`), and layout-aware plaintext
+              // serialization — `innerText` and the clipboard's `text/plain`
+              // flavour — inserts a break at every block box, so copying a
+              // justified paragraph returned one line PER RUN (measured: 16
+              // newlines on a 3-visual-line paragraph, real Chrome 151). Staying
+              // in one inline flow is what keeps copy, find-in-page and screen
+              // readers reading a line as a line.
+              //
+              // This does NOT require runs in visual order, and DOM order stays
+              // LOGICAL — which is what plaintext serialization and AT read, and
+              // therefore what keeps RTL copy correct. A relatively-positioned
+              // box remains in flow, so its natural inline offset is the sum of
+              // the PRECEDING carriers' widths (`runningX`, DOM order); `left`
+              // then shifts it visually by the exact remaining delta to reach
+              // `run.x`. The arithmetic never consults visual order, so
+              // logical-order RTL runs land at their visual x just the same.
+              // `ContentGridProjector` has always done this (`left = cell.x -
+              // logicalX` accumulated in source order, carrying bidi levels).
+              //
+              // `runningX` advances by `run.width`, so a positioned run without
+              // one would desync every later carrier on the line. Such a line
+              // falls back to the previous absolute placement instead; both
+              // in-repo producers always set `width`.
               const positioned = line.runs.some((run) => run.x !== undefined);
+              const flowRelative =
+                positioned &&
+                line.runs.every((run) => run.x === undefined || run.width !== undefined);
+              let runningX = line.x;
               for (let runIndex = 0; runIndex < line.runs.length; runIndex++) {
                 const run = line.runs[runIndex];
                 const runElement = document.createElement('span');
@@ -4508,8 +4532,18 @@ export class Scene {
                 // the visual line's shared baseline for every mixed-size run.
                 runElement.style.lineHeight = `${lineHeight}px`;
                 if (positioned && run.x !== undefined) {
-                  runElement.style.position = 'absolute';
-                  runElement.style.left = `${run.x - line.x}px`;
+                  if (flowRelative) {
+                    runElement.style.position = 'relative';
+                    runElement.style.display = 'inline-block';
+                    runElement.style.left = `${run.x - runningX}px`;
+                    runElement.style.boxSizing = 'border-box';
+                    // Non-null by `flowRelative`, which requires a width on every
+                    // positioned run of this line.
+                    runningX += run.width as number;
+                  } else {
+                    runElement.style.position = 'absolute';
+                    runElement.style.left = `${run.x - line.x}px`;
+                  }
                   runElement.style.top = '0';
                   if (run.width !== undefined) runElement.style.width = `${run.width}px`;
                   runElement.style.whiteSpace = 'pre';

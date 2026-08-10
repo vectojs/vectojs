@@ -114,6 +114,35 @@ const shiftedRich = new RichText(
   { font: '16px serif', maxWidth: 190 },
 ).setPosition(40, 430);
 const flowProjection = new FlowProjectionEntity().setPosition(820, 230);
+// Justified text is the case that ships positioned-run carriers, and the one
+// whose copied plaintext regressed: absolute carriers blockified, so every run
+// became its own line and every inter-word space vanished. Multi-line and
+// multi-word on purpose — the defect only shows across runs.
+const justified = new Text('The quick brown fox jumps over the lazy dog and keeps running', {
+  font: '18px sans-serif',
+  lineHeight: 26,
+  maxWidth: 240,
+  textAlign: 'justify',
+}).setPosition(1500, 40);
+// Same source and metrics, natural flow: the control that proves a copy
+// assertion is measuring justify and not the shared projection machinery.
+const justifiedControl = new Text('The quick brown fox jumps over the lazy dog and keeps running', {
+  font: '18px sans-serif',
+  lineHeight: 26,
+  maxWidth: 240,
+}).setPosition(1500, 300);
+// Justified RTL: RichText's justify path emits per-glyph carriers in LOGICAL
+// (source) order, so consecutive carriers run right-to-left. Flow-relative
+// placement has to keep DOM order logical for copy while each box still lands at
+// its visual x.
+const justifiedRtl = new RichText(
+  [
+    { text: 'مرحبا بك في ', style: { fontSize: 18 } },
+    { text: 'VectoJS', style: { fontSize: 18, bold: true } },
+    { text: ' اليوم', style: { fontSize: 18 } },
+  ],
+  { font: '18px serif', maxWidth: 200, textAlign: 'justify' },
+).setPosition(1500, 560);
 const rtl = new Text('مرحبا بك في VectoJS', {
   font: '24px serif',
   lineHeight: 36,
@@ -179,6 +208,9 @@ scene.add(rotatedText);
 scene.add(mirroredRich);
 scene.add(shiftedRich);
 scene.add(flowProjection);
+scene.add(justified);
+scene.add(justifiedControl);
+scene.add(justifiedRtl);
 scene.add(rtl);
 scene.add(ligature);
 scene.add(area);
@@ -229,6 +261,9 @@ function lineBaseline(root: HTMLElement, lineIndex: number): number {
   mirroredRich,
   shiftedRich,
   flowProjection,
+  justified,
+  justifiedControl,
+  justifiedRtl,
   rtl,
   ligature,
   area,

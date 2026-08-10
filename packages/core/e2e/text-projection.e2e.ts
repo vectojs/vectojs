@@ -777,6 +777,49 @@ async function dragMarkdownProjection(
   }, target.expectedContentId);
 }
 
+/**
+ * Copied plaintext of a projected entity, measured the way the clipboard's
+ * `text/plain` flavour is produced: clone the selected contents into an offscreen
+ * `white-space: pre` probe and read `innerText`, which is LAYOUT-aware.
+ *
+ * `Selection.toString()` cannot see either defect this guards — it walks DOM text
+ * nodes and ignores layout, so it reported 0 newlines and a space-less string for
+ * a selection the clipboard broke at every word.
+ */
+async function copiedPlaintext(
+  page: Page,
+  entityKey: string,
+): Promise<{ innerText: string; textContent: string; spaces: number; newlines: number }> {
+  return page.evaluate((key) => {
+    const app = (window as any).__vecto;
+    const root = app.scene.getContentElement(app[key].id) as HTMLElement;
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;left:0;top:3000px;white-space:pre';
+    probe.appendChild(range.cloneContents());
+    document.body.appendChild(probe);
+    const innerText = probe.innerText;
+    probe.remove();
+    const textContent = root.textContent ?? '';
+    return {
+      innerText,
+      textContent,
+      spaces: (textContent.match(/ /g) ?? []).length,
+      newlines: (innerText.match(/\n/g) ?? []).length,
+    };
+  }, entityKey);
+}
+
+/** Number of visual lines a projected entity materialized. */
+async function projectedLineCount(page: Page, entityKey: string): Promise<number> {
+  return page.evaluate((key) => {
+    const app = (window as any).__vecto;
+    const root = app.scene.getContentElement(app[key].id) as HTMLElement;
+    return root.children.length;
+  }, entityKey);
+}
+
 async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> {
   const browser: Browser = await puppeteer.launch({
     browser: browserCase.browser,
@@ -1352,6 +1395,27 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       '#clipboard-sink',
       (element) => (element as HTMLTextAreaElement).value,
     );
+    const justifiedCopy = await copiedPlaintext(page, 'justified');
+    const justifiedControlCopy = await copiedPlaintext(page, 'justifiedControl');
+    const justifiedRtlCopy = await copiedPlaintext(page, 'justifiedRtl');
+    const justifiedLines = await projectedLineCount(page, 'justified');
+    const justifiedControlLines = await projectedLineCount(page, 'justifiedControl');
+    const justifiedCarrierCss = await page.evaluate(() => {
+      const app = (window as any).__vecto;
+      const root = app.scene.getContentElement(app.justified.id) as HTMLElement;
+      const line = root.children[0] as HTMLElement;
+      const carriers = [...line.children].filter(
+        (c) => Number.parseFloat((c as HTMLElement).style.width) > 0,
+      ) as HTMLElement[];
+      return {
+        count: carriers.length,
+        // Computed, not inline: `position: absolute` BLOCKIFIES an inline
+        // element, and it is the resulting block box that makes layout-aware
+        // serialization insert a newline per carrier.
+        displays: [...new Set(carriers.map((c) => getComputedStyle(c).display))],
+        positions: [...new Set(carriers.map((c) => getComputedStyle(c).position))],
+      };
+    });
     const forwardBlankDrag = await dragAcrossCodeBlankRegions(page, false);
     const reverseBlankDrag = await dragAcrossCodeBlankRegions(page, true);
     const childRoleHotspots = await probeChildRoleHotspots(page);
@@ -1442,6 +1506,77 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
         `${browserCase.name} Text selection right drifts from canvas ${JSON.stringify(sc)}`,
       );
     }
+    // --- justified copy fidelity ------------------------------------------
+    // Justified text ships positioned-run carriers. With `position: absolute`
+    // each carrier blockified, so copied plaintext came out one line PER WORD
+    // with every inter-word space missing (measured on real Chrome 151: 16
+    // newlines and 0 spaces on a paragraph whose correct answer is 2 and 14).
+    // The natural-flow control has identical source, font and maxWidth, so any
+    // divergence between the two is attributable to justify alone.
+    const justifiedSource = 'The quick brown fox jumps over the lazy dog and keeps running';
+    for (const [label, copy, lines] of [
+      ['justified', justifiedCopy, justifiedLines],
+      ['justifiedControl', justifiedControlCopy, justifiedControlLines],
+    ] as const) {
+      // Copy equals the source, modulo the soft-wrap breaks the visual lines add.
+      assert.equal(
+        copy.innerText.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim(),
+        justifiedSource,
+        `${browserCase.name} ${label} copied plaintext lost characters: ${JSON.stringify(copy.innerText)}`,
+      );
+      // Newlines only at visual line ends — never one per carrier.
+      assert.ok(
+        copy.newlines <= lines,
+        `${browserCase.name} ${label} copy has ${copy.newlines} newlines for ${lines} visual lines: ${JSON.stringify(copy.innerText)}`,
+      );
+      // Every inter-word space is a real character, not folded into a carrier
+      // width. A soft-wrapped line keeps its break space, so the projected total
+      // is the source's spaces; a hard break would consume one per line.
+      assert.equal(
+        copy.spaces,
+        justifiedSource.split(' ').length - 1,
+        `${browserCase.name} ${label} copied text lost spaces (${copy.spaces} of ${justifiedSource.split(' ').length - 1}): ${JSON.stringify(copy.textContent)}`,
+      );
+    }
+    // Justify must not cost newlines relative to natural flow at the same width.
+    assert.equal(
+      justifiedCopy.newlines,
+      justifiedControlCopy.newlines,
+      `${browserCase.name} justify added newlines vs natural flow (${justifiedCopy.newlines} vs ${justifiedControlCopy.newlines})`,
+    );
+    // The carriers stay inline. An absolutely-positioned inline element computes
+    // to `display: block`, which is the mechanism behind the newline-per-carrier
+    // breakage, so assert the computed values rather than the inline style.
+    assert.ok(
+      justifiedCarrierCss.count > 1,
+      `${browserCase.name} justified line had ${justifiedCarrierCss.count} sized carriers`,
+    );
+    assert.deepEqual(
+      justifiedCarrierCss.positions,
+      ['relative'],
+      `${browserCase.name} justified carriers not flow-relative: ${JSON.stringify(justifiedCarrierCss)}`,
+    );
+    assert.deepEqual(
+      justifiedCarrierCss.displays,
+      ['inline-block'],
+      `${browserCase.name} justified carriers blockified: ${JSON.stringify(justifiedCarrierCss)}`,
+    );
+    // RTL justify: RichText emits per-glyph carriers in LOGICAL order, so this is
+    // the case the old absolute path was said to require. Copy must come out in
+    // logical order with its spaces, on one line.
+    assert.ok(
+      justifiedRtlCopy.spaces > 0,
+      `${browserCase.name} justified RTL copy has no spaces: ${JSON.stringify(justifiedRtlCopy.textContent)}`,
+    );
+    assert.ok(
+      justifiedRtlCopy.textContent.includes('VectoJS'),
+      `${browserCase.name} justified RTL copy lost its LTR run: ${JSON.stringify(justifiedRtlCopy.textContent)}`,
+    );
+    assert.ok(
+      justifiedRtlCopy.textContent.includes('مرحبا'),
+      `${browserCase.name} justified RTL copy lost its RTL run: ${JSON.stringify(justifiedRtlCopy.textContent)}`,
+    );
+
     assert.match(result.textarea.font, /16px/);
     const textareaLineHeight = Number.parseFloat(result.textarea.lineHeight);
     assert.ok(

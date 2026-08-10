@@ -158,63 +158,80 @@ export class Text extends UIComponent {
    */
   /**
    * Positioned per-word runs for a justified line, so the DOM selection box
-   * overlaps the widened canvas spacing instead of drifting. Each run's `x` is
-   * its first glyph's canvas x and its `width` spans to the next word (gap
-   * included), so the inter-word space is selectable and the highlight covers
-   * the widened gap exactly. Only used on the justify path — left-aligned text
-   * keeps the cheaper single-string line.
+   * overlaps the widened canvas spacing instead of drifting. Each word run's `x`
+   * is its first glyph's canvas x and its `width` is the word's own advance;
+   * every inter-word space becomes its OWN run whose width spans the widened gap
+   * to the next word, so the gap stays selectable and the space character really
+   * exists for copy. Only used on the justify path — left-aligned text keeps the
+   * cheaper single-string line.
    */
   private justifiedRuns(lineIndex: number): ContentProjectionRun[] | undefined {
     const lineQuantum = this.fontSize * 1.5;
-    const glyphs = this.glyphNodes
-      .filter((n) => Math.round(n.y / lineQuantum) === lineIndex)
-      .sort((a, b) => a.x - b.x);
+    // SOURCE order, deliberately not sorted by `x`. The concatenated run text has
+    // to reproduce the line exactly, and only source order guarantees that. A
+    // line-trailing space is also the case that makes an `x` sort wrong rather
+    // than merely unnecessary: justify collapses it, so the engine leaves it at
+    // the last word's own x (measured: `' '` at x=64 on a line whose last word
+    // occupies 64..80), and sorting by x splices it INTO that word — turning
+    // `'aa'` into `'a'` + `'a'`. Only the non-bidi path reaches here (see
+    // `getContentProjection`), so source order is already visual order for every
+    // painted glyph.
+    const glyphs = this.glyphNodes.filter((n) => Math.round(n.y / lineQuantum) === lineIndex);
     if (glyphs.length === 0) return undefined;
     const runs: ContentProjectionRun[] = [];
+    // Right edge of the last emitted run, so a collapsed trailing space can be
+    // placed at the line end instead of at its own artifact x.
+    let cursor = glyphs[0].x;
+    const push = (text: string, x: number, width: number) => {
+      runs.push({ text, x, width, font: this.font });
+      cursor = x + width;
+    };
     let wordStart = -1;
-    const flush = (endExclusive: number, nextX: number | undefined) => {
+    const flushWord = (endExclusive: number) => {
       if (wordStart < 0) return;
       const first = glyphs[wordStart];
+      const last = glyphs[endExclusive - 1];
       const text = glyphs
         .slice(wordStart, endExclusive)
         .map((n) => n.char)
         .join('');
-      // Width spans to the next word's x (gap included) or the word's own end.
-      const last = glyphs[endExclusive - 1];
-      const ownEnd = last.x + last.width;
-      runs.push({
-        text,
-        x: first.x,
-        width: (nextX ?? ownEnd) - first.x,
-        font: this.font,
-      });
+      // The word's OWN extent. The trailing gap belongs to the following space
+      // run, which carries the space character that copy needs — folding the gap
+      // into this width instead emitted no space at all (measured: zero spaces
+      // in the projected text of a justified paragraph).
+      push(text, first.x, last.x + last.width - first.x);
       wordStart = -1;
     };
     for (let i = 0; i < glyphs.length; i++) {
-      const isSpace = glyphs[i].char.trim() === '';
-      if (isSpace) {
-        // Close the current word; the space is folded into the word's trailing
-        // width (above), not its own carrier, so copy keeps a single space.
-        flush(i, glyphs[i + 1]?.x);
-      } else if (wordStart < 0) {
-        wordStart = i;
+      if (glyphs[i].char.trim() !== '') {
+        if (wordStart < 0) wordStart = i;
+        continue;
+      }
+      flushWord(i);
+      const spaceStart = i;
+      while (i + 1 < glyphs.length && glyphs[i + 1].char.trim() === '') i++;
+      const text = glyphs
+        .slice(spaceStart, i + 1)
+        .map((n) => n.char)
+        .join('');
+      const nextX = glyphs[i + 1]?.x;
+      if (nextX === undefined) {
+        // Line-trailing space: justify collapsed it, the canvas paints nothing,
+        // and its own x is the artifact described above. Emit it at the line end
+        // with zero width — the character still exists for copy (the carrier
+        // keeps `white-space: pre`), while a zero-width box contributes no
+        // selection rectangle that could drift off the drawn glyphs.
+        push(text, cursor, 0);
+      } else {
+        // Span to the next glyph so the run covers the gap justify widened; that
+        // contiguity is what keeps the highlight seamless across the gap.
+        push(text, glyphs[spaceStart].x, Math.max(0, nextX - glyphs[spaceStart].x));
       }
     }
-    flush(glyphs.length, undefined);
+    flushWord(glyphs.length);
     return runs.length > 0 ? runs : undefined;
   }
 
-  /**
-   * Positioned per-glyph runs for a bidi (RTL / mixed) line. Emitted in LOGICAL
-   * order (sorted by source index) so DOM copy and screen-reader order stay
-   * correct, but each carrier is positioned at its VISUAL x. Because every
-   * carrier's `width` equals its glyph advance, the browser's inline-flow cursor
-   * tracks the running `logicalX` in Scene, so `left = x - logicalX` lands each
-   * glyph at its absolute visual x regardless of the (non-visual) DOM order —
-   * the same technique the code-grid path uses. A selected logical range then
-   * highlights the correct (possibly visually-discontiguous) rectangles, which
-   * is exactly correct RTL selection behavior.
-   */
   /**
    * Visual left origin (min glyph x) of a bidi line. The engine right-aligns
    * RTL lines, so their glyphs don't start at x=0; projecting the logical line
