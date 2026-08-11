@@ -1,4 +1,4 @@
-import { Entity, type ContentProjection } from '../tree/Entity';
+import { Entity, type ContentProjection, type ContentProjectionLine } from '../tree/Entity';
 import {
   LayoutEngine,
   type GlyphMeasurer,
@@ -38,6 +38,18 @@ export class TextEntity extends Entity {
   private isHovered: boolean = false;
   /** Bumped by {@link applyLayout}; read by `Scene` to skip an unchanged sync. */
   private contentEpoch = 0;
+  /**
+   * Visual lines with real canvas geometry, rebuilt by {@link applyLayout}
+   * exactly when `this.nodes` changes.
+   *
+   * Without this the Scene placed the DOM copy at the entity origin and let the
+   * browser flow it at CSS `normal` line-height, while the canvas lays lines out
+   * at `1.5em` pitch with the baseline at `0.8em` — so every line after the
+   * first drifted further from the painted glyphs (measured ~6 px on line 0 and
+   * ~0.35 em per line for a 24 px font, Firefox). Per-line carriers pin the DOM
+   * baseline to the canvas baseline by construction, same as `ui/Text`.
+   */
+  private projectionLines: ContentProjectionLine[] = [];
 
   constructor(text: string, atlas: any, maxWidth: number, fontSize: number = 24) {
     super();
@@ -58,11 +70,22 @@ export class TextEntity extends Entity {
   /**
    * Mirror the rendered text into the DOM content layer: find-in-page, screen
    * readers, crawlers, and translation see the same string the canvas draws.
+   *
+   * Each visual line is emitted with its own y/baseline/line-height so the DOM
+   * line boxes sit exactly on the drawn glyphs instead of flowing at the
+   * browser's `normal` metrics. Line text is the LOGICAL source slice (not the
+   * per-glyph visual text), so shaped or reordered content still copies and
+   * finds in source order — the same contract `ui/Text` ships.
    */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
     // 'sans-serif' matches the shared measurer and the fillText fallback.
-    return { text: this.text, font: `${this.fontSize}px sans-serif` };
+    return {
+      text: this.text,
+      font: `${this.fontSize}px sans-serif`,
+      lineHeight: this.fontSize * 1.5,
+      lines: this.projectionLines,
+    };
   }
 
   public override getContentEpoch(): number {
@@ -119,9 +142,9 @@ export class TextEntity extends Entity {
 
   /** Hot pass: place the cached {@link PreparedText} and refresh the a11y box. */
   private applyLayout() {
-    // The projection reports `text` + `fontSize`; every mutator that can change
-    // either routes through here (`fontSize` is constructor-only), so one bump
-    // covers them all.
+    // The projection reports `text` + `fontSize` + the line geometry below;
+    // every mutator that can change any of them routes through here
+    // (`fontSize` is constructor-only), so one bump covers them all.
     this.contentEpoch++;
     const result = this.layout.layoutPrepared(this.prepared);
     this.nodes = result.nodes;
@@ -131,6 +154,69 @@ export class TextEntity extends Entity {
     this.height = result.totalHeight;
     // Bounding box offset: text is drawn downwards from baseline, so we adjust Y
     this.a11yOffsetY = 0;
+
+    // Regroup glyphs into the same visual rows the canvas draws, with source
+    // ranges so the projected text stays byte-identical to `this.text`.
+    const lineQuantum = this.fontSize * 1.5; // the engine's internal line advance
+    const nodesByLine = new Map<number, Array<(typeof this.nodes)[number]>>();
+    let maxIdx = -1;
+    for (const node of this.nodes) {
+      const idx = Math.round(node.y / lineQuantum);
+      const list = nodesByLine.get(idx) ?? [];
+      list.push(node);
+      nodesByLine.set(idx, list);
+      if (idx > maxIdx) maxIdx = idx;
+    }
+    const justify = this.layout.textAlign === 'justify';
+    // First pass: every row's source extent, so a row's separator can pair
+    // with the IMMEDIATE next row's start — including a blank row's own start,
+    // which is only known once its own (empty) extent has been computed.
+    const starts: number[] = [];
+    const ends: number[] = [];
+    let previousEnd = 0;
+    for (let i = 0; i <= maxIdx; i++) {
+      const nodes = nodesByLine.get(i) ?? [];
+      let start =
+        nodes.length > 0
+          ? Math.min(...nodes.map((node) => node.sourceIndex ?? previousEnd))
+          : previousEnd;
+      const end =
+        nodes.length > 0
+          ? Math.max(
+              ...nodes.map((node) => (node.sourceIndex ?? previousEnd) + (node.sourceLength ?? 0)),
+            )
+          : start;
+      // Source skipped before the first painted glyph (a leading hard break or
+      // trimmed space) still belongs to the first visual row.
+      if (i === 0) start = 0;
+      starts.push(start);
+      ends.push(end);
+      previousEnd = Math.max(previousEnd, end);
+    }
+    const lines: ContentProjectionLine[] = [];
+    for (let i = 0; i <= maxIdx; i++) {
+      const nodes = nodesByLine.get(i) ?? [];
+      const start = starts[i];
+      const end = ends[i];
+      const nextStart = i + 1 <= maxIdx ? starts[i + 1] : this.text.length;
+      const hasRtl = nodes.some((node) => node.isRTL === true);
+      lines.push({
+        text: this.text.slice(start, Math.max(start, end)),
+        separatorAfter: this.text.slice(end, Math.max(end, nextStart)),
+        x: 0,
+        y: i * lineQuantum,
+        baseline: this.fontSize * 0.8,
+        font: `${this.fontSize}px sans-serif`,
+        lineHeight: lineQuantum,
+        // Per-grapheme carriers pin each cluster to its canvas-measured x so
+        // Gecko's grid-fit advance rounding cannot drift the find-in-page
+        // highlight off the drawn glyphs. Bidi lines must keep one text node
+        // (DOM order is logical; per-glyph carriers break caret mapping), and
+        // justify moves glyphs off their natural x, so both fall back to flow.
+        ...(hasRtl || justify ? {} : { perGraphemeCarriers: true as const }),
+      });
+    }
+    this.projectionLines = lines;
   }
 
   public isPointInside(globalX: number, globalY: number): boolean {
