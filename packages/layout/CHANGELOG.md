@@ -1,5 +1,22 @@
 # @vectojs/layout
 
+## 0.9.2
+
+### Patch Changes
+
+- fdd334a: fix: GlyphMeasurer now measures bold/italic text with correct font weight/style
+
+  **Root cause**: `GlyphMeasurer.measure()` only accepted `fontFamily` parameter, never `bold` or `italic`. This caused bold text to be measured with non-bold font metrics, resulting in cumulative width errors that squeezed spaces to near-zero width ("canvas-nativeUI runtime" → "canvas-nativeUI runtime").
+
+  **Changes**:
+  - `GlyphMeasurer` interface: added optional `bold?` and `italic?` parameters to `measure()`
+  - `LayoutEngine.glyphWidth()`: passes `style?.bold` and `style?.italic` to measurer at all 4 call sites
+  - `RichText baseMeasurer`: constructs `ctx.font` as `"[italic ][bold ]<size>px <family>"` and includes bold/italic in cache key
+  - `Text fontMeasurer`, `createCanvasMeasurer`, `createMetricsMeasurer`: accept new params (unused, for API compatibility)
+  - Updated `TextStyle.bold`/`italic` doc comments: now "affects both measurement and rendering" (was "rendering only")
+
+  **Verification**: All tests pass (layout 230/230, ui 593/593). Bold spans in Markdown now render with correct spacing.
+
 ## 0.9.1
 
 ### Patch Changes
