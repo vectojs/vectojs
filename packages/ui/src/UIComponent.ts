@@ -19,6 +19,14 @@ export abstract class UIComponent extends Entity {
   /** Inner padding in pixels, used by box-style components. */
   public padding: number = 0;
 
+  /**
+   * Per-axis padding in pixels, set by `@vectojs/styles` when a style uses
+   * `padding: { x, y }`. Box components prefer these over {@link padding}
+   * when non-zero, so horizontal and vertical insets can differ.
+   */
+  public paddingX: number = 0;
+  public paddingY: number = 0;
+
   /** Played automatically when the component mounts to a live scene, if set. */
   protected enterMotion?: MotionSpec;
   /** Played by {@link dismiss} before the component removes itself, if set. */
