@@ -1,4 +1,4 @@
-import { Entity, type ContentProjection } from '../tree/Entity';
+import { Entity, type ContentProjection, type ContentProjectionLine } from '../tree/Entity';
 import { MSDFFont } from '@vectojs/text';
 import { LayoutWorkerManager } from '@vectojs/layout';
 
@@ -61,6 +61,13 @@ export class MSDFTextEntity extends Entity {
     yCoords: Float32Array;
     packedStyles: Uint32Array;
   } | null = null;
+
+  /**
+   * Visual rows rebuilt from {@link layoutResult} (see
+   * {@link rebuildProjectionLines}). Empty until a layout reply lands and the
+   * reply's shaped glyphs can be mapped back to the source text 1:1.
+   */
+  private projectionLines: ContentProjectionLine[] = [];
 
   constructor(text: string, options: MSDFTextEntityOptions) {
     super();
@@ -200,6 +207,10 @@ export class MSDFTextEntity extends Entity {
     // The projection reports `text` + `fontSize` + `lineHeight`, and every
     // mutator that can change any of them ends here.
     this.contentEpoch++;
+    // A reply from a PREVIOUS queue could still be in flight with geometry for
+    // the old text; project the coarse fallback until the fresh reply lands,
+    // or the Scene would pair new text with stale line carriers.
+    this.projectionLines = [];
     LayoutWorkerManager.getInstance().queueLayout(this.id, this.layoutText, {
       fontId: this.font.id,
       fontSize: this.fontSize,
@@ -213,6 +224,12 @@ export class MSDFTextEntity extends Entity {
         if (res.seqId < this.lastRenderedSeqId) return; // ignore stale responses
         this.lastRenderedSeqId = res.seqId;
         this.layoutResult = res;
+        // The layout reply is what can turn the projection from "text + font
+        // only" into per-line geometry; without an epoch bump here the Scene
+        // would early-return on the unchanged epoch and the DOM carriers would
+        // never materialize (only a repaint is scheduled by markDirty).
+        this.contentEpoch++;
+        this.rebuildProjectionLines();
         this.scene?.markDirty();
       },
     });
@@ -221,14 +238,120 @@ export class MSDFTextEntity extends Entity {
   /**
    * Mirror the rendered text into the DOM content layer: find-in-page, screen
    * readers, crawlers, and translation see the same string the canvas draws.
+   *
+   * `baseline` + `lineHeight` are always emitted (they come from the font
+   * metrics, no layout reply needed), so the DOM line boxes at least land on
+   * the canvas rhythm: the first baseline at `ascender × fontSize` and every
+   * row advancing `(ascender − descender) × fontSize`. Once a layout reply is
+   * in AND its shaped glyphs map back to the source 1:1 (unshaped LTR text —
+   * bidi, shaping, soft hyphens or `\r` all fall back to the coarse branch),
+   * per-line carriers pin each row's baseline exactly to the painted glyphs.
    */
   public override getContentProjection(): ContentProjection | null {
     if (!this.text) return null;
+    const metrics = this.font.data.metrics;
+    // Descender is stored NEGATIVE (msdfLayout.ts reads it the same way).
+    const asc = metrics?.ascender ?? 0.8;
+    const desc = metrics?.descender ?? -0.2;
+    const actualLineHeight = this.lineHeight ?? this.fontSize * (asc - desc);
     return {
       text: this.text,
       font: `${this.fontSize}px ${this.fallbackFont}`,
-      lineHeight: this.lineHeight,
+      lineHeight: actualLineHeight,
+      baseline: asc * this.fontSize,
+      lines: this.projectionLines.length > 0 ? this.projectionLines : undefined,
     };
+  }
+
+  /**
+   * Group the worker's positioned glyphs into the same visual rows the canvas
+   * draws. Only runs when the reply's glyph sequence equals the source string
+   * (one glyph per source char, no bidi reordering, no shaping, no soft
+   * hyphens, no `\r`) — only then do glyph offsets line up with source offsets
+   * byte-for-byte, which is what keeps find-in-page and the Scene's dev-mode
+   * equality check correct. Every other text falls back to the coarse branch's
+   * `baseline` + `lineHeight`, which still pins the row rhythm.
+   */
+  private rebuildProjectionLines(): void {
+    const res = this.layoutResult;
+    if (!res) {
+      this.projectionLines = [];
+      return;
+    }
+    const shaped: string[] = [];
+    for (let i = 0; i < res.codePoints.length; i++) {
+      shaped.push(String.fromCodePoint(res.codePoints[i]));
+    }
+    // Glyphs are the source minus its newlines, 1:1 in order — a hard break
+    // advances the line without emitting a glyph.
+    const sourceWithoutNewlines = this.text.replace(/\n/g, '');
+    if (
+      this.textAlign !== 'left' ||
+      shaped.join('') !== sourceWithoutNewlines ||
+      res.yCoords.length !== res.codePoints.length
+    ) {
+      this.projectionLines = [];
+      return;
+    }
+
+    const metrics = this.font.data.metrics;
+    const asc = metrics?.ascender ?? 0.8;
+    const desc = metrics?.descender ?? -0.2;
+    const actualLineHeight = this.lineHeight ?? this.fontSize * (asc - desc);
+    const baseline = asc * this.fontSize;
+
+    // Glyph index → source index. Newlines are not glyphs, so the k-th glyph
+    // is the k-th non-newline source character.
+    const srcIdx: number[] = [];
+    for (let i = 0; i < this.text.length; i++) {
+      if (this.text[i] !== '\n') srcIdx.push(i);
+    }
+
+    const glyphsByLine = new Map<number, number[]>();
+    let maxIdx = -1;
+    for (let i = 0; i < res.yCoords.length; i++) {
+      const idx = Math.round((res.yCoords[i] - baseline) / actualLineHeight);
+      const list = glyphsByLine.get(idx) ?? [];
+      list.push(i);
+      glyphsByLine.set(idx, list);
+      if (idx > maxIdx) maxIdx = idx;
+    }
+
+    // First pass: each row's source extent (start = first glyph's source
+    // index, end = one past the last glyph's), so a row's separator can pair
+    // with the IMMEDIATE next row's start — blank rows included.
+    const starts: number[] = [];
+    const ends: number[] = [];
+    let previousEnd = 0;
+    for (let i = 0; i <= maxIdx; i++) {
+      const glyphs = glyphsByLine.get(i) ?? [];
+      const start = glyphs.length > 0 ? srcIdx[glyphs[0]] : previousEnd;
+      const end = glyphs.length > 0 ? srcIdx[glyphs[glyphs.length - 1]] + 1 : start;
+      starts.push(start);
+      ends.push(end);
+      previousEnd = Math.max(previousEnd, end);
+    }
+
+    const lines: ContentProjectionLine[] = [];
+    for (let i = 0; i <= maxIdx; i++) {
+      const start = starts[i];
+      const end = ends[i];
+      const nextStart = i + 1 <= maxIdx ? starts[i + 1] : this.text.length;
+      lines.push({
+        text: this.text.slice(start, Math.max(start, end)),
+        separatorAfter: this.text.slice(end, Math.max(end, nextStart)),
+        // Left-aligned LTR glyphs start at x 0. No perGraphemeCarriers: the
+        // DOM measures the FALLBACK font, not the atlas font, so natural flow
+        // at the fallback's own advances stays self-consistent (pin carriers
+        // to atlas x and the fallback text would misalign instead).
+        x: 0,
+        y: i * actualLineHeight,
+        baseline,
+        font: `${this.fontSize}px ${this.fallbackFont}`,
+        lineHeight: actualLineHeight,
+      });
+    }
+    this.projectionLines = lines;
   }
 
   public override getContentEpoch(): number {

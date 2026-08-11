@@ -331,6 +331,130 @@ test('MSDFTextEntity exposes its text and font for the DOM content mirror', () =
   expect(proj.lineHeight).toBe(40);
 });
 
+test('MSDFTextEntity projection pins baseline and line rhythm from font metrics', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('MSDF findable', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 32,
+  });
+  const proj = entity.getContentProjection()!;
+  // Font metrics: ascender 0.8, descender -0.2 → baseline 0.8em, pitch 1.0em.
+  expect(proj.baseline).toBeCloseTo(25.6, 5);
+  expect(proj.lineHeight).toBe(32);
+  // No layout reply yet → no per-line carriers, only the coarse alignment.
+  expect(proj.lines).toBeUndefined();
+
+  // An explicit lineHeight option wins over the metric-derived pitch.
+  const withLh = new MSDFTextEntity('x', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 32,
+    lineHeight: 40,
+  });
+  expect(withLh.getContentProjection()!.lineHeight).toBe(40);
+});
+
+test('MSDFTextEntity projection emits per-line carriers from a layout reply', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('ab\ncd', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+  });
+  entity['layoutResult'] = {
+    width: 40,
+    height: 48,
+    codePoints: new Uint32Array([97, 98, 99, 100]),
+    xCoords: new Float32Array([0, 10, 0, 10]),
+    yCoords: new Float32Array([19.2, 19.2, 43.2, 43.2]),
+    packedStyles: new Uint32Array([
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+    ]),
+  };
+  entity['rebuildProjectionLines']();
+  const proj = entity.getContentProjection()!;
+  expect(proj.lines).toHaveLength(2);
+  expect(proj.lines![0]).toMatchObject({ text: 'ab', x: 0, y: 0, lineHeight: 24 });
+  expect(proj.lines![0].separatorAfter).toBe('\n');
+  expect(proj.lines![0].baseline).toBeCloseTo(19.2, 5);
+  expect(proj.lines![1]).toMatchObject({ text: 'cd', y: 24, lineHeight: 24 });
+  expect(proj.lines![1].separatorAfter).toBe('');
+});
+
+test('MSDFTextEntity projection keeps blank rows byte-identical to the source', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('a\n\nb', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+  });
+  entity['layoutResult'] = {
+    width: 20,
+    height: 72,
+    codePoints: new Uint32Array([97, 98]),
+    xCoords: new Float32Array([0, 0]),
+    yCoords: new Float32Array([19.2, 67.2]),
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0, (0xffffff << 8) | 0]),
+  };
+  entity['rebuildProjectionLines']();
+  const proj = entity.getContentProjection()!;
+  const rebuilt = proj.lines!.map((line) => `${line.text}${line.separatorAfter ?? ''}`).join('');
+  expect(rebuilt).toBe('a\n\nb');
+  expect(proj.lines).toHaveLength(3);
+  expect(proj.lines![1].text).toBe('');
+  expect(proj.lines![2].y).toBe(48);
+});
+
+test('MSDFTextEntity projection falls back when glyphs cannot map back to source', () => {
+  const font = new MSDFFont(fontJson);
+  // Shaping/bidi: the reply's glyph sequence differs from the source text, so
+  // glyph offsets cannot be source offsets — coarse branch keeps correctness.
+  const shaped = new MSDFTextEntity('مرحبا', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+  });
+  shaped['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([0x645, 0x631, 0x62d, 0x628]),
+    xCoords: new Float32Array([0, 10, 20, 30]),
+    yCoords: new Float32Array([19.2, 19.2, 19.2, 19.2]),
+    packedStyles: new Uint32Array([
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+      (0xffffff << 8) | 0,
+    ]),
+  };
+  shaped['rebuildProjectionLines']();
+  expect(shaped.getContentProjection()!.lines).toBeUndefined();
+  expect(shaped.getContentProjection()!.baseline).toBeCloseTo(19.2, 5);
+
+  // Justify stretches glyph x away from natural flow; line carriers would
+  // describe rows the fallback font cannot reproduce.
+  const justified = new MSDFTextEntity('ab', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    textAlign: 'justify',
+  });
+  justified['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([97, 98]),
+    xCoords: new Float32Array([0, 50]),
+    yCoords: new Float32Array([19.2, 19.2]),
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0, (0xffffff << 8) | 0]),
+  };
+  justified['rebuildProjectionLines']();
+  expect(justified.getContentProjection()!.lines).toBeUndefined();
+});
+
 /**
  * A minimal HTMLImageElement stand-in whose listeners can be fired on demand.
  * jsdom has `Image`, but a blob-backed one fires neither `load` nor `error`
