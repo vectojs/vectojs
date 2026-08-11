@@ -176,6 +176,59 @@ describe('TextEntity content projection', () => {
     expect(e.getContentProjection()!.text).toBe('changed');
   });
 
+  it('emits one line per canvas row with matching geometry', () => {
+    const e = new TextEntity('aa bb cc dd', mockAtlas, 400, 24);
+    const proj = e.getContentProjection()!;
+    // Canvas pitch is 1.5em; baseline sits at 0.8em inside each line.
+    expect(proj.lineHeight).toBe(36);
+    expect(proj.lines).toHaveLength(1);
+    expect(proj.lines![0]).toMatchObject({
+      text: 'aa bb cc dd',
+      x: 0,
+      y: 0,
+      lineHeight: 36,
+      perGraphemeCarriers: true,
+    });
+    expect(proj.lines![0].baseline).toBeCloseTo(19.2, 5);
+  });
+
+  it('keeps line text and separators byte-identical to the source', () => {
+    const source = 'alpha beta gamma\ndelta epsilon zeta\n\neta theta';
+    const e = new TextEntity(source, mockAtlas, 100, 24); // 100px wrap → several rows
+    const proj = e.getContentProjection()!;
+    const rebuilt = proj.lines!.map((line) => `${line.text}${line.separatorAfter ?? ''}`).join('');
+    expect(rebuilt).toBe(source);
+    // Blank rows from doubled newlines are projected, matching the canvas rows.
+    expect(proj.lines!.some((line) => line.text === '')).toBe(true);
+    // Per-row y follows the canvas 1.5em pitch.
+    for (let i = 0; i < proj.lines!.length; i++) {
+      expect(proj.lines![i].y).toBe(i * 36);
+    }
+  });
+
+  it('skips per-grapheme carriers for bidi and justified lines', () => {
+    const rtl = new TextEntity('مرحبا بك', mockAtlas, 400, 24);
+    expect(
+      rtl.getContentProjection()!.lines!.some((line) => line.perGraphemeCarriers === true),
+    ).toBe(false);
+
+    const justified = new TextEntity('aa bb cc', mockAtlas, 400, 24);
+    justified.setTextAlign('justify');
+    expect(
+      justified.getContentProjection()!.lines!.every((line) => line.perGraphemeCarriers !== true),
+    ).toBe(true);
+  });
+
+  it('reflows the projected lines on setMaxWidth and setText', () => {
+    const e = new TextEntity('aaaa bbbb cccc dddd', mockAtlas, 1000, 24);
+    expect(e.getContentProjection()!.lines).toHaveLength(1);
+    e.setMaxWidth(60); // wraps to several lines
+    expect(e.getContentProjection()!.lines!.length).toBeGreaterThan(1);
+    e.setText('short');
+    expect(e.getContentProjection()!.lines).toHaveLength(1);
+    expect(e.getContentProjection()!.lines![0].text).toBe('short');
+  });
+
   it('setTextAlign and setHyphenator reflow through the layout engine', () => {
     const e = new TextEntity('aa bb cc dd', mockAtlas, 400, 24);
     expect(e.setTextAlign('justify')).toBe(e);
