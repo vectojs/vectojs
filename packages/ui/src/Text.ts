@@ -65,7 +65,13 @@ function fontMeasurer(font: string): GlyphMeasurer | null {
   if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
-    measure(char: string): number {
+    measure(
+      char: string,
+      _fontSize?: number,
+      _fontFamily?: string,
+      _bold?: boolean,
+      _italic?: boolean,
+    ): number {
       let w = cache.get(char);
       if (w === undefined) {
         ctx.font = font;

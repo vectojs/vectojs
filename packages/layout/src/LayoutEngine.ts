@@ -93,8 +93,17 @@ export interface GlyphMeasurer {
   /** Measure one grapheme's advance at `fontSize`. `fontFamily`, when given,
    *  overrides the measurer's base family for this glyph — needed so a run in a
    *  different family (e.g. inline monospace `code` inside proportional prose)
-   *  is measured at its own metrics, not the base font's. */
-  measure(char: string, fontSize: number, fontFamily?: string): number;
+   *  is measured at its own metrics, not the base font's.
+   *  `bold` and `italic`, when given, request measuring with those styles active
+   *  so the measured width matches what the renderer will paint — a bold glyph is
+   *  genuinely wider than its regular counterpart in most fonts. */
+  measure(
+    char: string,
+    fontSize: number,
+    fontFamily?: string,
+    bold?: boolean,
+    italic?: boolean,
+  ): number;
 }
 
 /**
@@ -106,9 +115,9 @@ export interface TextStyle {
   fontSize?: number;
   /** Fill color, e.g. `'#38bdf8'`. */
   color?: string;
-  /** Bold weight (rendering only; width still measured at base metrics). */
+  /** Bold weight (affects both measurement and rendering since LayoutEngine 2.x). */
   bold?: boolean;
-  /** Italic slant (rendering only). */
+  /** Italic slant (affects both measurement and rendering since LayoutEngine 2.x). */
   italic?: boolean;
   /**
    * CSS font-family for this run, overriding the base family (e.g. a monospace
@@ -852,13 +861,18 @@ export class LayoutEngine {
     fontAtlas: GlyphAtlas,
     fontSize: number,
     fontFamily?: string,
+    bold?: boolean,
+    italic?: boolean,
   ): number {
     // A run-specific family (e.g. inline monospace code) skips the atlas — the
     // atlas is baked for the base family, so measuring it there would return the
     // wrong advance; go straight to the measurer with the run's family.
-    const glyphInfo = fontFamily === undefined ? fontAtlas[char] : undefined;
+    // Bold/italic also bypass the atlas for the same reason: the atlas is baked
+    // at base weight and slant, so bold or italic glyphs are wider or slanted
+    // differently than what the atlas records.
+    const glyphInfo = fontFamily === undefined && !bold && !italic ? fontAtlas[char] : undefined;
     if (glyphInfo) return glyphInfo.width * (fontSize / glyphInfo.baseSize);
-    if (this.measurer) return this.measurer.measure(char, fontSize, fontFamily);
+    if (this.measurer) return this.measurer.measure(char, fontSize, fontFamily, bold, italic);
 
     // Neither source can answer, so this advance is fabricated. Count it and say
     // so once: the failure is otherwise completely silent — layout, hit-testing
@@ -1056,7 +1070,7 @@ export class LayoutEngine {
             fallbackToCanvas = true;
           }
 
-          const w = this.glyphWidth(glyphKey, fontAtlas, fontSize);
+          const w = this.glyphWidth(glyphKey, fontAtlas, fontSize, undefined, false, false);
 
           glyphs.push({
             char,
@@ -1118,7 +1132,14 @@ export class LayoutEngine {
       paragraphs,
       fontSize,
       fallbackToCanvas: fallbackToCanvas || undefined,
-      hyphenWidth: this.glyphWidth(this.glyphKeyFor('-', fontAtlas), fontAtlas, fontSize),
+      hyphenWidth: this.glyphWidth(
+        this.glyphKeyFor('-', fontAtlas),
+        fontAtlas,
+        fontSize,
+        undefined,
+        false,
+        false,
+      ),
     };
   }
 
@@ -1440,7 +1461,16 @@ export class LayoutEngine {
             fallbackToCanvas = true;
           }
 
-          const w = obj ? obj.width : this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
+          const w = obj
+            ? obj.width
+            : this.glyphWidth(
+                glyphKey,
+                fontAtlas,
+                gfs,
+                style?.fontFamily,
+                style?.bold,
+                style?.italic,
+              );
 
           glyphs.push({
             char,
@@ -1553,7 +1583,16 @@ export class LayoutEngine {
         // See the full-shaping path: a reserved object is not an atlas miss.
         const inAtlas = obj !== undefined || !!fontAtlas[glyphKey];
         if (char.trim().length > 0 && !inAtlas) wordFallback = true;
-        const w = obj ? obj.width : this.glyphWidth(glyphKey, fontAtlas, gfs, style?.fontFamily);
+        const w = obj
+          ? obj.width
+          : this.glyphWidth(
+              glyphKey,
+              fontAtlas,
+              gfs,
+              style?.fontFamily,
+              style?.bold,
+              style?.italic,
+            );
         glyphs.push({
           char,
           width: w,
