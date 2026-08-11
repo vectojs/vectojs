@@ -1,0 +1,49 @@
+{
+  "name": "@vectojs/styles",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "CSS-property-name style objects for VectoJS: typed syntax sugar that maps CSS-like declarations onto numeric entity fields.",
+  "keywords": [
+    "styles",
+    "css",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/styles"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --external @vectojs/core --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vectojs/core": "^1.34.2"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}
