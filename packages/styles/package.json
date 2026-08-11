@@ -36,7 +36,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --external @vectojs/core --clean && tsc -p tsconfig.build.json",
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --external @vectojs/core --clean && tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "dependencies": {
