@@ -184,12 +184,18 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
   if (!ctx) return createMetricsMeasurer(familyOf(font));
   const cache = new Map<string, number>();
   return {
-    measure(char: string, fontSize: number, fontFamily?: string): number {
+    measure(
+      char: string,
+      fontSize: number,
+      fontFamily?: string,
+      bold?: boolean,
+      italic?: boolean,
+    ): number {
       const family = fontFamily ?? familyOf(font);
-      const key = `${fontSize} ${family} ${char}`;
+      const key = `${fontSize} ${family} ${bold ? 'bold' : ''} ${italic ? 'italic' : ''} ${char}`;
       let w = cache.get(key);
       if (w === undefined) {
-        ctx.font = `${fontSize}px ${family}`;
+        ctx.font = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSize}px ${family}`;
         w = ctx.measureText(char).width;
         cache.set(key, w);
       }

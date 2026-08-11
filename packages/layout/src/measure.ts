@@ -43,7 +43,13 @@ export function createCanvasMeasurer(
   const cache = new Map<string, number>();
 
   return {
-    measure(char: string, fontSize: number): number {
+    measure(
+      char: string,
+      fontSize: number,
+      _fontFamily?: string,
+      _bold?: boolean,
+      _italic?: boolean,
+    ): number {
       let base = cache.get(char);
       if (base === undefined) {
         ctx.font = font;
@@ -87,7 +93,13 @@ export function createMetricsMeasurer(fontFamily: string = 'sans-serif'): GlyphM
   let runVersion = -1;
 
   return {
-    measure(char: string, fontSize: number, family?: string): number {
+    measure(
+      char: string,
+      fontSize: number,
+      family?: string,
+      _bold?: boolean,
+      _italic?: boolean,
+    ): number {
       if (baseVersion !== fontMetricsVersion()) {
         baseVersion = fontMetricsVersion();
         baseSource = getFontMetrics(fontFamily);
