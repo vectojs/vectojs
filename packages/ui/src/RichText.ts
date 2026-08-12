@@ -493,9 +493,15 @@ export class RichText extends UIComponent {
   }
 
   /** Rebuild styled DOM runs from a logical UTF-16 source interval. */
-  private logicalRuns(start: number, end: number): Array<{ text: string; font: string }> {
-    const runs: Array<{ text: string; font: string }> = [];
+  private logicalRuns(
+    start: number,
+    end: number,
+    lineX = 0,
+  ): Array<{ text: string; font: string; x: number; width: number }> {
+    const runs: Array<{ text: string; font: string; x: number; width: number }> = [];
+    const mctx = getSharedMeasuringContext();
     let offset = 0;
+    let currentX = lineX;
     for (const span of this.spans) {
       const spanEnd = offset + span.text.length;
       const from = Math.max(start, offset);
@@ -509,9 +515,27 @@ export class RichText extends UIComponent {
         const text = span.object
           ? (span.object.alt ?? '')
           : span.text.slice(from - offset, to - offset);
+        // Measure width with this run's font to get accurate canvas advance.
+        // For mixed-style lines, each run is rendered with its own font, so the
+        // DOM carrier must use the same per-run width instead of a single line-level
+        // font measurement. Without this, bold runs measured with a regular font
+        // produce carriers narrower than the canvas glyphs, causing drift (GH-458).
+        let width = 0;
+        if (mctx && text.length > 0) {
+          mctx.font = font;
+          width = mctx.measureText(text).width;
+        }
         const previous = runs.at(-1);
-        if (previous?.font === font) previous.text += text;
-        else runs.push({ text, font });
+        if (previous?.font === font) {
+          previous.text += text;
+          previous.width += width;
+          // Track running x even when coalescing, so the next distinct-font
+          // run gets the correct starting x.
+          currentX += width;
+        } else {
+          runs.push({ text, font, x: currentX, width });
+          currentX += width;
+        }
       }
       offset = spanEnd;
     }
@@ -611,9 +635,10 @@ export class RichText extends UIComponent {
       // Justified lines need positioned runs so the DOM selection box tracks
       // the widened canvas spacing; ragged (left) lines keep cheap natural flow.
       const justified = this.engine.textAlign === 'justify';
+      const lineX = Math.min(...nodes.map((node) => node.x));
       const runs = justified
         ? this.positionedRuns(nodes)
-        : this.logicalRuns(sourceStart, sourceEnd);
+        : this.logicalRuns(sourceStart, sourceEnd, lineX);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
 
@@ -621,13 +646,16 @@ export class RichText extends UIComponent {
       const hasBidi = nodes.some((node) => node.isRTL);
 
       // Detect single-style: all nodes share the same font (no mid-line style change).
-      // The per-grapheme carrier loop in Scene.ts uses one font per line; mixed-style
-      // lines need styled runs to preserve their inline bold/italic/color changes.
+      // Single-style non-bidi lines use per-grapheme carriers (one <span> per grapheme
+      // cluster, each pinned to its canvas prefix width) to correct the ~0.3%
+      // per-character Gecko grid-fit drift. Mixed-style lines use the positioned-run
+      // carriers returned by logicalRuns(), which measure each run with its own font
+      // — previously they lacked x/width so the DOM used natural flow widths → drift.
       const singleStyle = runs.length === 1;
 
-      // Emit per-grapheme flow-relative carriers for natural-order, single-style lines
-      // to correct the residual ~0.3% per-character Gecko grid-fit drift. Bidi and
-      // justified lines already get positioned runs; mixed-style lines keep styled runs.
+      // Use per-grapheme carriers only for single-style LTR lines.
+      // Mixed-style lines now get per-run positioned carriers from logicalRuns(),
+      // which carry x/width measured at each run's own font.
       const perGraphemeCarriers = !justified && !hasBidi && singleStyle;
 
       return {
@@ -637,7 +665,7 @@ export class RichText extends UIComponent {
           // only the emitted string substitutes each inline object's `alt`.
           text: this.projectedSlice(sourceStart, sourceEnd),
           separatorAfter: this.projectedSlice(sourceEnd, Math.max(sourceEnd, nextStart)),
-          x: Math.min(...nodes.map((node) => node.x)),
+          x: lineX,
           y,
           baseline,
           font,

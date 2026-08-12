@@ -252,15 +252,29 @@ describe('RichText', () => {
     expect(line0.runs).toBeUndefined();
   });
 
-  it('left-aligned mixed-style RichText keeps natural-flow runs (no positioned x)', () => {
-    // Mixed style must keep styled runs: the per-grapheme loop applies one font
-    // per line, so carrying it here would drop the inline bold/italic.
-    const rt = new RichText([{ text: 'aa aa ', style: { bold: true } }, { text: 'bb bb bb' }], {
-      maxWidth: 80,
+  it('left-aligned mixed-style RichText emits positioned runs with x/width (GH-458)', () => {
+    // Mixed-style lines now get per-run positioned carriers: each run carries x
+    // and width measured at its own font so Scene can set carrier widths that
+    // match the canvas, preventing selection highlight drift on bold/link spans.
+    // In jsdom (no real canvas) widths are 0; what matters is that x/width are
+    // present as numbers — that is what gates Scene's positioned-carrier path
+    // on `run.x !== undefined` / `run.width !== undefined`.
+    const rt = new RichText([{ text: 'aa ', style: { bold: true } }, { text: 'bb cc' }], {
+      maxWidth: 200,
     });
     const line0 = rt.getContentProjection()!.lines![0];
     expect(line0.perGraphemeCarriers).toBe(false);
-    expect(line0.runs!.every((run) => run.x === undefined)).toBe(true);
+    const runs = line0.runs!;
+    expect(runs.length).toBeGreaterThan(1);
+    for (const run of runs) {
+      // x and width must be defined numbers, not undefined.
+      expect(typeof run.x).toBe('number');
+      expect(typeof run.width).toBe('number');
+    }
+    // Runs must be in logical left-to-right order (x non-decreasing).
+    for (let i = 1; i < runs.length; i++) {
+      expect(runs[i].x as number).toBeGreaterThanOrEqual(runs[i - 1].x as number);
+    }
   });
 
   it('justify preserves per-style-run fonts and logical text in the projection', () => {
