@@ -257,6 +257,15 @@ export class Text extends UIComponent {
   /** Mirror the rendered text into the DOM content layer (find-in-page, SR, SEO). */
   public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     if (!this.text) return null;
+    // Coarse tier: return text only, skip the per-line build.
+    if (hint?.textOnly) {
+      return {
+        text: this.text,
+        font: this.font,
+        lineHeight: this.lineHeight,
+        selectable: this.selectable,
+      };
+    }
     const justified = this.engine.textAlign === 'justify';
     // Only build the rows in the band. Unlike the grid path, Scene reads these
     // positionally and every entry carries its own `y`, so a compacted array is

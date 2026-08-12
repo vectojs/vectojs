@@ -170,6 +170,18 @@ export interface ContentProjectionHint {
    */
   minY?: number;
   maxY?: number;
+  /**
+   * When `true`, the caller only needs {@link ContentProjection.text} — no
+   * `lines`, no `grid`. Entities receiving this should return the full source
+   * text without building per-line or per-glyph structures, which avoids the
+   * O(glyphs) layout walk that the coarse resident tier would discard anyway.
+   *
+   * Entities may ignore this hint and still return `lines`; the caller will
+   * simply not use them. Returning fewer than all lines is **not** safe under
+   * this hint: if `lines` is non-empty, Scene interprets it as the line
+   * window, which must cover the whole text for correctness.
+   */
+  textOnly?: boolean;
 }
 
 /**

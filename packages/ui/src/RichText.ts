@@ -723,6 +723,15 @@ export class RichText extends UIComponent {
     // release the DOM node on every frame it is rebuilt.
     if (!this.sourceText()) return null;
     const text = this.projectedSlice(0, this.sourceText().length);
+    // Coarse tier: return text only, skip the O(glyphs) visual-line build.
+    if (hint?.textOnly) {
+      return {
+        text,
+        font: this.font,
+        lineHeight: this.baseFontSize * 1.5,
+        selectable: this.selectable,
+      };
+    }
     // The engine advances lines by fontSize × 1.5; without matching the DOM
     // line-height, multi-line selection highlights drift off the glyphs.
     return {

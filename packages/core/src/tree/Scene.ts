@@ -4371,8 +4371,16 @@ export class Scene {
     // O(visible glyphs). Windowing only the DOM leaves this call rebuilding the
     // whole document every synced frame, which measured as no time win at all
     // (Chrome 1.1x, Firefox 0.95x) despite 35x fewer elements.
+    //
+    // For the coarse tier, also signal textOnly so entities can skip building
+    // lines/grid structures that Scene will discard. This avoids O(document
+    // glyphs) layout on every off-viewport block (CTX-0204).
     const projection = node.getContentProjection(
-      lineBand ? { minY: lineBand.minY, maxY: lineBand.maxY } : undefined,
+      lineBand
+        ? { minY: lineBand.minY, maxY: lineBand.maxY, textOnly: tier === 'coarse' }
+        : tier === 'coarse'
+          ? { textOnly: true }
+          : undefined,
     );
 
     if (!projection || !projection.text) {

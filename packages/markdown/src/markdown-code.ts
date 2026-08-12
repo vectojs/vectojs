@@ -1045,6 +1045,16 @@ export class CodeBlock extends UIComponent {
 
   public override getContentProjection(hint?: ContentProjectionHint): ContentProjection | null {
     if (!this.source) return null;
+    // Coarse tier: return text only, skip the O(document glyphs) grid build.
+    if (hint?.textOnly) {
+      return {
+        text: this.source,
+        font: this.codeFont,
+        lineHeight: this.lineH,
+        selectable: this.selectable,
+        ligatures: 'none',
+      };
+    }
     const grid = this.ensureGrid();
     // Read once so every row of this projection shares one offset even if the
     // clamp basis were to change mid-walk.
