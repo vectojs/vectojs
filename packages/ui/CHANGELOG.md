@@ -1,5 +1,42 @@
 # @vectojs/ui
 
+## 2.16.1
+
+### Patch Changes
+
+- 624aef7: feat(core): `ContentProjectionHint.textOnly` so the coarse tier stops building discarded lines
+
+  A resident but off-viewport block (the coarse content tier) is projected as a
+  single text node — Scene writes `projection.text` and never reads `lines` or
+  `grid`. It nonetheless asked entities for a full projection, so every such block
+  ran its O(glyphs) layout walk on each synced frame and the result was discarded
+  on the same frame.
+
+  `ContentProjectionHint` gains `textOnly`, set by Scene for coarse-tier syncs.
+  `Text`, `RichText` and `CodeBlock` return text plus metrics and skip the line /
+  grid build when they see it. The hint stays advisory: an entity may ignore it and
+  return `lines` anyway, and the text is never narrowed, so find-in-page and
+  screen-reader read-ahead keep reaching off-screen content unchanged.
+
+- 3a26dc2: fix(ui): per-run positioned carriers for mixed-style RichText (GH-458)
+
+  `logicalRuns()` now measures each run's canvas advance at its own font and
+  returns `{x, width}` alongside `{text, font}`. Scene's positioned-carrier
+  path (`run.x !== undefined`) then sets `runElement.style.width` to the
+  canvas-measured value, so the DOM selection box tracks the drawn bold/italic/
+  link glyphs instead of using the browser's natural-flow width.
+
+  Previously mixed-style lines (bold/link spans, `runs.length > 1`) fell through
+  to natural-flow DOM rendering because `logicalRuns()` returned runs without
+  `x`/`width`. Per-grapheme carriers (single-style path) were correct; this fixes
+  the remaining class of selection drift visible on large text with inline bold
+  or link formatting.
+
+- dd31151: Image with an empty `alt` no longer projects an empty `aria-label` on its
+  shadow `<img>` node — a presentation-only image (`alt: ''`) used to emit
+  `aria-label=""`, which fails the ARIA `presentation-role-conflict` audit in
+  Lighthouse. Empty alt now projects no label attribute at all.
+
 ## 2.16.0
 
 ### Minor Changes
