@@ -143,7 +143,7 @@ describe('selection fidelity of content projections', () => {
 
     it('single-style bold line: line.font carries bold for perGraphemeCarriers (GH-459)', () => {
       // Regression: when a line has one style run (singleStyle = true) with bold,
-      // Scene's perGraphemeCarriers path uses `lineFont` to measure prefix widths.
+      // Scene's perGraphemeCarriers path uses `lineFont` to measure grapheme advances.
       // If line.font strips bold and gives the base weight, measurement is too
       // narrow → carriers drift from the painted glyphs. Fix: line.font = runs[0].font.
       const rt = new RichText([{ text: 'Bold heading', style: { bold: true, fontSize: 24 } }], {
