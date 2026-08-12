@@ -629,7 +629,6 @@ export class RichText extends UIComponent {
     const source = this.sourceText();
     return groups.map((nodes, index) => {
       const largest = Math.max(...nodes.map((node) => node.height));
-      const font = this.nodeFont(undefined, largest);
       let sourceStart = Math.min(...nodes.map((node) => node.sourceIndex ?? 0));
       const sourceEnd = Math.max(
         ...nodes.map((node) => (node.sourceIndex ?? 0) + (node.sourceLength ?? 0)),
@@ -646,22 +645,32 @@ export class RichText extends UIComponent {
       const runs = justified
         ? this.positionedRuns(nodes)
         : this.logicalRuns(sourceStart, sourceEnd);
+
+      // `line.font` is used in two places: (a) `lineElement.style.font` which sets
+      // the CSS fallback for the line box, and (b) `mctx.font` in the
+      // `perGraphemeCarriers` path, where it must match the font the canvas
+      // ACTUALLY used to paint those glyphs — or the prefix-width measurements will
+      // be wrong and grapheme carriers drift from the painted text.
+      //
+      // For a single-style line (singleStyle = runs.length === 1), every glyph was
+      // painted with `runs[0].font` (which carries bold/italic/fontFamily from the
+      // span's TextStyle via `nodeFont`). Using `nodeFont(undefined, largest)` here
+      // strips that style and gives the base weight, so a bold heading's carriers
+      // are measured at normal weight → widths are too narrow → visible drift.
+      //
+      // Fix: use `runs[0].font` for single-style lines so measurement matches paint.
+      // Multi-style lines use per-run widths from `logicalRuns`, so `line.font` is
+      // only the line-element fallback and bold/italic accuracy is not critical there.
+      const singleStyle = runs.length === 1;
+      const font = singleStyle && runs[0] ? runs[0].font : this.nodeFont(undefined, largest);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
 
       // Detect bidi: any node with isRTL means the line has mixed direction.
       const hasBidi = nodes.some((node) => node.isRTL);
 
-      // Detect single-style: all nodes share the same font (no mid-line style change).
-      // Single-style non-bidi lines use per-grapheme carriers (one <span> per grapheme
-      // cluster, each pinned to its canvas prefix width) to correct the ~0.3%
-      // per-character Gecko grid-fit drift. Mixed-style lines use the positioned-run
-      // carriers returned by logicalRuns(), which measure each run with its own font
-      // — previously they lacked x/width so the DOM used natural flow widths → drift.
-      const singleStyle = runs.length === 1;
-
       // Use per-grapheme carriers only for single-style LTR lines.
-      // Mixed-style lines now get per-run positioned carriers from logicalRuns(),
+      // Mixed-style lines get per-run positioned carriers from logicalRuns(),
       // which carry x/width measured at each run's own font.
       const perGraphemeCarriers = !justified && !hasBidi && singleStyle;
 

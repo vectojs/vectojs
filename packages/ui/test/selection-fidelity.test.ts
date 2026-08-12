@@ -141,6 +141,21 @@ describe('selection fidelity of content projections', () => {
       expect(line?.runs?.find((run) => run.text === 'large')?.font).toContain('bold');
     });
 
+    it('single-style bold line: line.font carries bold for perGraphemeCarriers (GH-459)', () => {
+      // Regression: when a line has one style run (singleStyle = true) with bold,
+      // Scene's perGraphemeCarriers path uses `lineFont` to measure prefix widths.
+      // If line.font strips bold and gives the base weight, measurement is too
+      // narrow → carriers drift from the painted glyphs. Fix: line.font = runs[0].font.
+      const rt = new RichText([{ text: 'Bold heading', style: { bold: true, fontSize: 24 } }], {
+        font: '16px sans-serif',
+      });
+      const line = rt.getContentProjection()!.lines?.[0];
+      expect(line?.perGraphemeCarriers).toBe(true); // LTR single-style → per-grapheme
+      expect(line?.runs).toBeUndefined(); // perGraphemeCarriers → no runs array
+      expect(line?.font).toContain('bold'); // must carry bold for measurement
+      expect(line?.font).toContain('24px');
+    });
+
     it('preserves logical mixed-run and RTL source across visual rows', () => {
       const source = 'small office مرحبا VectoJS';
       const rt = new RichText(
