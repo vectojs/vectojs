@@ -9,7 +9,10 @@
  */
 
 const WEIGHT_RE = /^(normal|bold|bolder|lighter|[1-9]00)$/;
-const SIZE_RE = /^[+-]?(\d+\.?\d*|\.\d+)(px|em|rem|pt)$/;
+// Deliberately branch-safe: no adjacent same-class quantifiers (`\d+\.?\d*`
+// overlaps digit classes and is what CodeQL flags as polynomial-redos), and
+// the longer unit alternatives come first so `em|rem` is never a prefix pair.
+const SIZE_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:rem|em|px|pt)$/;
 
 interface FontParts {
   weight?: string;
