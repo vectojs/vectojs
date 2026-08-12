@@ -26,7 +26,17 @@ afterEach(() => {
 
 const themeA = tokens({ accent: '#111111', 'radius-md': 8, gap: 10 });
 const themeB = tokens({ accent: '#eeeeee', 'radius-md': 16, gap: '12px' });
-const reset = tokens({ accent: '#000000', 'radius-md': 1, gap: 2 });
+const reset = tokens({
+  accent: '#000000',
+  'radius-md': 1,
+  gap: 2,
+  weight: 500,
+  'bad-size': 12,
+  font: '16px Inter',
+  fontFamily: 'Inter, sans-serif',
+  fontSize: '16px',
+  fontWeight: '400',
+});
 
 describe('css() merge', () => {
   it('later sources win and inputs are not mutated', () => {
@@ -122,6 +132,61 @@ describe('setTheme() switching', () => {
     setTheme(themeA);
     expect(e.bg).toBe('#111111');
   });
+
+  it('accumulates multiple var() styles on one entity (GH-451)', () => {
+    setTheme(themeA);
+    const scene = liveScene();
+    const e = stub({ bg: '', color: '' });
+    e.scene = scene as never;
+    applyStyle(e, style({ backgroundColor: 'var(--accent)' }));
+    applyStyle(e, style({ color: 'var(--accent)' }));
+    expect(e.bg).toBe('#111111');
+    expect(e.color).toBe('#111111');
+
+    setTheme(themeB);
+    expect(e.bg).toBe('#eeeeee');
+    expect(e.color).toBe('#eeeeee');
+
+    setTheme(themeA);
+    expect(e.bg).toBe('#111111');
+    expect(e.color).toBe('#111111');
+  });
+
+  it('does not clobber a later literal with an earlier var() on the same key (GH-451)', () => {
+    setTheme(themeA);
+    const e = stub({ bg: '' });
+    applyStyle(e, style({ backgroundColor: 'var(--accent)' }));
+    applyStyle(e, style({ backgroundColor: '#ffffff' }));
+    expect(e.bg).toBe('#ffffff');
+
+    setTheme(themeB);
+    expect(e.bg).toBe('#ffffff'); // literal wins; the switch must not replay the old var
+  });
+
+  it('re-tracks a key when a var() re-replaces a literal (GH-451)', () => {
+    setTheme(themeA);
+    const e = stub({ bg: '' });
+    applyStyle(e, style({ backgroundColor: 'var(--accent)' }));
+    applyStyle(e, style({ backgroundColor: '#ffffff' }));
+    applyStyle(e, style({ backgroundColor: 'var(--accent)' }));
+    expect(e.bg).toBe('#111111');
+
+    setTheme(themeB);
+    expect(e.bg).toBe('#eeeeee');
+  });
+
+  it('tracks padding objects per key and drops them on a literal override (GH-451)', () => {
+    setTheme(themeA);
+    const e = stub({ paddingX: 0, paddingY: 0 });
+    applyStyle(e, style({ padding: { x: 'var(--gap)', y: 2 } }));
+    expect(e.paddingX).toBe(10);
+
+    applyStyle(e, style({ padding: { x: 5, y: 2 } }));
+    expect(e.paddingX).toBe(5);
+
+    setTheme(themeB);
+    expect(e.paddingX).toBe(5); // literal stays
+  });
 });
 
 describe('font composition', () => {
@@ -143,6 +208,62 @@ describe('font composition', () => {
     const e = stub({ font: '' });
     applyStyle(e, style({ fontFamily: 'Inter' }));
     expect(e.font).toBe('16px Inter');
+  });
+
+  it('rejects a bare-number fontSize token (GH-452)', () => {
+    const e = stub({ font: '16px Inter' });
+    const broken = tokens({
+      accent: '#000000',
+      'bad-size': 18,
+      'radius-md': 8,
+      gap: 4,
+      fontFamily: 'Inter',
+      fontSize: '16px',
+      fontWeight: '400',
+    });
+    setTheme(broken);
+    expect(() => applyStyle(e, style({ fontSize: 'var(--bad-size)' }))).toThrow(/unit-bearing/);
+    setTheme(reset);
+  });
+
+  it('rejects a font shorthand leaked into fontFamily (GH-452)', () => {
+    setTheme(reset);
+    const e = stub({ font: '16px Inter' });
+    expect(() => applyStyle(e, style({ fontFamily: 'var(--font)' }))).toThrow(
+      /looks like a font shorthand/,
+    );
+  });
+
+  it('resolves preset font segment tokens into a valid shorthand (GH-452)', () => {
+    const lightFull = tokens({ ...PRESET_THEMES.light, gap: 2, weight: 500, 'bad-size': 12 });
+    setTheme(lightFull);
+    const e = stub({ font: '' });
+    applyStyle(
+      e,
+      style({
+        fontFamily: 'var(--fontFamily)',
+        fontSize: 'var(--fontSize)',
+        fontWeight: 'var(--fontWeight)',
+      }),
+    );
+    expect(e.font).toBe('400 16px Inter, sans-serif');
+  });
+
+  it('resolves a number fontWeight token through String() (GH-452)', () => {
+    const e = stub({ font: '16px Inter' });
+    const withWeight = tokens({
+      accent: '#000000',
+      weight: 600,
+      'radius-md': 8,
+      gap: 4,
+      fontFamily: 'Inter',
+      fontSize: '16px',
+      fontWeight: '400',
+    });
+    setTheme(withWeight);
+    applyStyle(e, style({ fontWeight: 'var(--weight)' }));
+    expect(e.font).toBe('600 16px Inter');
+    setTheme(reset);
   });
 
   it('is skipped on entities without a font field', () => {

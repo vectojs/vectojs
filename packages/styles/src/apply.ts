@@ -1,6 +1,6 @@
 import type { Entity } from '@vectojs/core';
 import { composeFont } from './font';
-import { getTheme, trackVarStyle, type Theme } from './theme';
+import { getTheme, trackVarKeys, VAR_RE, type Theme } from './theme';
 import type { AppliedStyle, CssLength, Style } from './types';
 
 type ValueOf<T> = T[keyof T];
@@ -93,8 +93,6 @@ const RULES: Record<string, Rule> = {
 /** Font shorthand segments, special-cased in the apply loop. */
 const FONT_KEYS = ['fontFamily', 'fontSize', 'fontWeight'] as const;
 
-const VAR_RE = /^var\(--([\w-]+)\)$/;
-
 /** Resolve a single value against the theme; non-`var()` values pass through. */
 function resolveValue(value: unknown, theme: Theme): unknown {
   if (typeof value !== 'string') return value;
@@ -162,8 +160,24 @@ export function applyStyleResolved(entity: Entity, style: Style): AppliedStyle {
       const field = 'font';
       if (!(field in entity)) continue;
       fontTouched = true;
-      if (key === 'fontFamily') fontChanges.fontFamily = value as string;
-      if (key === 'fontSize') fontChanges.fontSize = String(value);
+      if (key === 'fontFamily') {
+        if (typeof value === 'string' && /\d/.test(value)) {
+          throw new TypeError(
+            `@vectojs/styles: fontFamily resolved to '${value}' which looks like a font shorthand — ` +
+              `reference the 'font' token (full shorthand) or a family-only token instead`,
+          );
+        }
+        fontChanges.fontFamily = value as string;
+      }
+      if (key === 'fontSize') {
+        if (typeof value === 'number') {
+          throw new TypeError(
+            `@vectojs/styles: fontSize resolved to the bare number ${value} — ` +
+              `use a unit-bearing token (e.g. '16px') so the composed font string stays valid`,
+          );
+        }
+        fontChanges.fontSize = String(value);
+      }
       if (key === 'fontWeight') fontChanges.fontWeight = String(value);
       applied.push(key);
       continue;
@@ -221,9 +235,12 @@ export function applyStyleResolved(entity: Entity, style: Style): AppliedStyle {
  * @returns The CSS property names that were written, in object order.
  */
 export function applyStyle(entity: Entity, s: Style): AppliedStyle {
-  const { style: resolved, hadVar } = resolveStyle(s, getTheme());
+  const { style: resolved } = resolveStyle(s, getTheme());
   const result = applyStyleResolved(entity, resolved);
-  if (hadVar) trackVarStyle(entity, s);
+  // Always sync tracking: var() values register their keys, and literal values
+  // on the same key stop tracking (they must not be replayed on a theme
+  // switch). trackVarKeys is a no-op for keys absent from the style.
+  trackVarKeys(entity, s);
   return result;
 }
 
