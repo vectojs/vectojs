@@ -4591,53 +4591,85 @@ export class Scene {
               // device pixels for layout while canvas keeps fractional ones, so a
               // single text node drifts from the painted glyphs by 1–2 px across
               // a body-text line (~0.3% per character). Pinning every grapheme
-              // cluster to its canvas-measured prefix eliminates the drift.
+              // cluster to its canvas-measured advance eliminates the drift.
               //
               // Carrier CSS mirrors the positioned-run pattern from line 4535.
               //
-              // Width is the CANVAS PREFIX DIFFERENCE, not the isolated grapheme
-              // width: `measureText(prefix_end) - measureText(prefix_start)`.
-              // This preserves kerning and ligature widths for the full string —
-              // summing individual `measureText(char)` widths omits both, but
-              // prefix differences are what the canvas actually painted. Setting
-              // `width` on the carrier forces the DOM to accumulate the same total
-              // as the canvas regardless of how the browser resolves ligatures
-              // within each `inline-block` span.
+              // The measurement MUST follow the line's paint model, declared by
+              // `line.shapedPaint`:
               //
-              // `runningX` is the sum of carrier widths assigned so far, which
-              // equals the canvas prefix width at each step. `left = canvasX - runningX`
-              // is always 0 for the very first carrier; later carriers stay 0 too
-              // because `runningX` tracks the same prefix totals as `canvasX`. The
-              // arithmetic still works if a carrier's internal font rendering differs
-              // from the canvas, because `left` compensates for any residual delta.
+              // - Per-glyph painters (`shapedPaint` unset — RichText, core
+              //   TextEntity) place every glyph by summing ISOLATED per-grapheme
+              //   advances (layout's measure.ts and RichText's baseMeasurer
+              //   measure one grapheme at a time), and paint follows layout:
+              //   RichText's flushRun coalesces a run into one shaped fillText
+              //   only when the shaped width agrees with the summed advances
+              //   within 0.5px, and otherwise draws per character at layout's x.
+              //   The ink is UNKERNED, so each carrier's width is the isolated
+              //   `measureText(segment)`. A shaped prefix would include kerning
+              //   the canvas never painted — carriers pinned to it drift ahead
+              //   of the ink by the accumulated kerning delta (measured 5–8px
+              //   over a ~300px kerning-heavy 16px line in both Gecko and
+              //   Blink; worst on bold, matching the reported "bold and link
+              //   spans drift most" symptom). Ligatures cannot diverge here:
+              //   neither layout nor paint ever forms one.
+              //
+              // - Shaped painters (`shapedPaint` true — ui/Text's fast
+              //   one-fillText-per-line path) hand the browser the whole line
+              //   string, so the ink INCLUDES kerning and ligatures. Carrier
+              //   widths are then shaped PREFIX DIFFERENCES,
+              //   `measureText(prefix_end) - measureText(prefix_start)`, which
+              //   accumulate to exactly the painted extent — isolated advances
+              //   would widen the DOM line past the ink by that same delta in
+              //   the other direction (caught by the ligature DOM/Canvas width
+              //   e2e). `left = canvasX - runningX` stays ≈0 and only absorbs
+              //   residual per-carrier rendering differences.
               const mctx = getSharedMeasuringContext();
               if (mctx) {
                 mctx.font = lineFont;
                 const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
-                const segments = [...segmenter.segment(line.text)];
-                let runningX = 0;
-                for (let segIdx = 0; segIdx < segments.length; segIdx++) {
-                  const { segment, index } = segments[segIdx];
-                  const nextIndex =
-                    segIdx + 1 < segments.length ? segments[segIdx + 1].index : line.text.length;
-                  // Canvas x of this grapheme's left edge.
-                  const canvasX = mctx.measureText(line.text.slice(0, index)).width;
-                  // Canvas width of this grapheme (prefix difference, preserves ligatures).
-                  const canvasWidth =
-                    mctx.measureText(line.text.slice(0, nextIndex)).width - canvasX;
-                  const carrierEl = document.createElement('span');
-                  carrierEl.textContent = segment;
-                  carrierEl.style.position = 'relative';
-                  carrierEl.style.display = 'inline-block';
-                  carrierEl.style.left = `${canvasX - runningX}px`;
-                  carrierEl.style.width = `${canvasWidth}px`;
-                  carrierEl.style.boxSizing = 'border-box';
-                  carrierEl.style.lineHeight = `${lineHeight}px`;
-                  carrierEl.style.whiteSpace = 'pre';
-                  carrierEl.style.verticalAlign = 'top';
-                  carrierEl.style.unicodeBidi = 'isolate';
-                  lineElement.appendChild(carrierEl);
-                  runningX += canvasWidth;
+                if (line.shapedPaint) {
+                  const segments = [...segmenter.segment(line.text)];
+                  let runningX = 0;
+                  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+                    const { segment, index } = segments[segIdx];
+                    const nextIndex =
+                      segIdx + 1 < segments.length ? segments[segIdx + 1].index : line.text.length;
+                    // Canvas x of this grapheme's left edge in the shaped line.
+                    const canvasX = mctx.measureText(line.text.slice(0, index)).width;
+                    // Shaped width of this grapheme (prefix difference preserves
+                    // the kerning/ligature contraction the paint applied).
+                    const canvasWidth =
+                      mctx.measureText(line.text.slice(0, nextIndex)).width - canvasX;
+                    const carrierEl = document.createElement('span');
+                    carrierEl.textContent = segment;
+                    carrierEl.style.position = 'relative';
+                    carrierEl.style.display = 'inline-block';
+                    carrierEl.style.left = `${canvasX - runningX}px`;
+                    carrierEl.style.width = `${canvasWidth}px`;
+                    carrierEl.style.boxSizing = 'border-box';
+                    carrierEl.style.lineHeight = `${lineHeight}px`;
+                    carrierEl.style.whiteSpace = 'pre';
+                    carrierEl.style.verticalAlign = 'top';
+                    carrierEl.style.unicodeBidi = 'isolate';
+                    lineElement.appendChild(carrierEl);
+                    runningX += canvasWidth;
+                  }
+                } else {
+                  for (const { segment } of segmenter.segment(line.text)) {
+                    const canvasWidth = mctx.measureText(segment).width;
+                    const carrierEl = document.createElement('span');
+                    carrierEl.textContent = segment;
+                    carrierEl.style.position = 'relative';
+                    carrierEl.style.display = 'inline-block';
+                    carrierEl.style.width = `${canvasWidth}px`;
+                    carrierEl.style.boxSizing = 'border-box';
+                    carrierEl.style.lineHeight = `${lineHeight}px`;
+                    carrierEl.style.whiteSpace = 'pre';
+                    carrierEl.style.verticalAlign = 'top';
+                    carrierEl.style.unicodeBidi = 'isolate';
+                    lineElement.appendChild(carrierEl);
+                  }
                 }
               } else {
                 // DOM-free environment (SSR): fall back to single text node.

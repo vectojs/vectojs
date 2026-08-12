@@ -226,6 +226,14 @@ function baseMeasurer(font: string): GlyphMeasurer | null {
  */
 const COALESCE_TOLERANCE_PX = 0.5;
 
+/**
+ * Shared grapheme segmenter for run-width measurement. Locale-independent for
+ * grapheme granularity, so one instance serves every RichText; constructing a
+ * segmenter per call showed up in the same steady-state profile that motivated
+ * `_lineGroupsCache`.
+ */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter('en', { granularity: 'grapheme' });
+
 export class RichText extends UIComponent {
   public spans: StyledSpan[];
   public font: string;
@@ -534,7 +542,19 @@ export class RichText extends UIComponent {
         let width = 0;
         if (mctx && text.length > 0) {
           mctx.font = font;
-          width = mctx.measureText(text).width;
+          // Sum ISOLATED grapheme advances rather than taking one shaped
+          // `measureText(text)`. Layout placed these glyphs by summing isolated
+          // per-grapheme advances (`baseMeasurer` measures one grapheme at a
+          // time), and paint follows layout (`flushRun` falls back to
+          // per-character draws whenever shaping would move a glyph), so a
+          // whole-string shaped width includes kerning the canvas never
+          // painted. A carrier pinned to the shaped width drifted the selection
+          // box ahead of the ink by the accumulated kerning delta — measured
+          // 5–8px over a ~300px kerning-heavy 16px line in both Gecko and
+          // Blink, worst on bold runs.
+          for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+            width += mctx.measureText(segment).width;
+          }
         }
         const previous = runs.at(-1);
         if (previous?.font === font) {

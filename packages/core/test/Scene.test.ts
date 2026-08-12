@@ -1858,6 +1858,7 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       class PerGraphemeEntity extends ContentEntity {
         public text = 'Hello';
         public perGrapheme = true;
+        public shaped = false;
         override getContentProjection() {
           return {
             text: this.text,
@@ -1870,6 +1871,7 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
                 baseline: 14,
                 lineHeight: 20,
                 perGraphemeCarriers: this.perGrapheme,
+                shapedPaint: this.shaped,
               },
             ],
           };
@@ -1932,7 +1934,7 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
         scene.destroy();
       });
 
-      it('positions each carrier at its canvas-measured prefix width', () => {
+      it('pins each carrier to its isolated grapheme advance width', () => {
         const scene = makeDomScene();
         const e = new PerGraphemeEntity('measured');
         e.text = 'ABC';
@@ -1941,12 +1943,38 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
         const line = contentEl(scene, 'measured')!.children[0] as HTMLElement;
         const carriers = [...line.children].slice(0, 3) as HTMLElement[];
-        // Each carrier's `left` is the delta from its natural inline offset.
-        // For monospace font, if each char is ~10px, natural offsets are 0, 10, 20
-        // and canvas measures give similar values, so deltas should be near zero.
-        const lefts = carriers.map((c) => Number.parseFloat(c.style.left));
-        // Just verify they are numeric and finite, exact values depend on font rendering.
-        expect(lefts.every((l) => Number.isFinite(l))).toBe(true);
+        // Each carrier's width is the ISOLATED advance of its own grapheme —
+        // the same measurement layout used to place the glyph — not a shaped
+        // prefix difference, which would include kerning the canvas never
+        // painted. Exact values depend on font rendering; assert the shape.
+        const widths = carriers.map((c) => Number.parseFloat(c.style.width));
+        expect(widths.every((w) => Number.isFinite(w))).toBe(true);
+        // No `left` correction: carriers flow naturally, widths alone carry
+        // the geometry.
+        for (const carrier of carriers) expect(carrier.style.left).toBe('');
+        scene.destroy();
+      });
+
+      it('measures shaped-prefix carriers when the line declares shapedPaint', () => {
+        const scene = makeDomScene();
+        const e = new PerGraphemeEntity('shaped');
+        e.text = 'ABC';
+        e.shaped = true;
+        scene.add(e);
+        tick(scene);
+
+        const line = contentEl(scene, 'shaped')!.children[0] as HTMLElement;
+        const carriers = [...line.children].slice(0, 3) as HTMLElement[];
+        // A shaped painter (one fillText per line) kerns/ligates the ink, so
+        // carriers are pinned to shaped PREFIX DIFFERENCES of the whole line
+        // and carry a `left` correction for any residual delta — the inverse
+        // contract of the isolated-advance branch above.
+        const widths = carriers.map((c) => Number.parseFloat(c.style.width));
+        expect(widths.every((w) => Number.isFinite(w))).toBe(true);
+        for (const carrier of carriers) {
+          expect(carrier.style.left).not.toBe('');
+          expect(Number.isFinite(Number.parseFloat(carrier.style.left))).toBe(true);
+        }
         scene.destroy();
       });
     });

@@ -141,6 +141,21 @@ export interface ContentProjectionLine {
    * hit-mapping when DOM order != visual order (PR #146 revert).
    */
   perGraphemeCarriers?: boolean;
+  /**
+   * The canvas painted this line's ink as ONE shaped `fillText(line.text)`, so
+   * the ink includes the browser's kerning and ligatures. Per-grapheme
+   * carriers must then be measured as shaped PREFIX DIFFERENCES of the whole
+   * line — isolated grapheme advances would omit exactly the kerning/ligature
+   * contraction the paint applied, widening the DOM line past the ink.
+   *
+   * Leave unset for per-glyph painters (glyphs placed at summed isolated
+   * advances, e.g. RichText and TextEntity): there the ink is unkerned, and
+   * shaped prefixes would drift the carriers ahead of it by the accumulated
+   * kerning delta instead.
+   *
+   * Only meaningful alongside {@link perGraphemeCarriers}.
+   */
+  shapedPaint?: boolean;
 }
 
 /**
