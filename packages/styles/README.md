@@ -51,6 +51,24 @@ applyStyle(title, style({ fontFamily: 'Inter', fontSize: '18px', fontWeight: 700
 - Layout keys require a container entity (Stack/Flow); anything else throws.
 - `applyStyle` marks the entity's scene dirty when it writes anything.
 
+## Property support matrix (GH-453)
+
+Not every CSS-named property maps to every component — `applyStyle` skips keys
+whose field does not exist on the entity (shared styles) and throws on
+container-only keys applied to non-containers. What that means in practice:
+
+| Property                                                    | Works on                                                | Notes                                                                                                                                                                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x`/`y`/`width`/`height`, `opacity`, `scaleX/Y`, `rotation` | any entity with the field                               | `rotation` is radians, not degrees.                                                                                                                                                            |
+| `backgroundColor`, `color`                                  | components with `bg` / `color` (Button, Card, Text, …)  | `Button` has no `borderColor` — the key is skipped silently on it.                                                                                                                             |
+| `borderColor`                                               | components that expose `borderColor` (Card, Popover, …) | Silently skipped elsewhere by design (shared-style contract).                                                                                                                                  |
+| `borderRadius`                                              | components with `radius` (Button, Card, …)              |                                                                                                                                                                                                |
+| `font` / `lineHeight`                                       | text-bearing components (Text, RichText, Input, …)      | `font` is the full shorthand.                                                                                                                                                                  |
+| `fontFamily`/`fontSize`/`fontWeight`                        | text-bearing components                                 | Compose into the `font` shorthand. `fontSize` needs a unit-bearing token; `fontFamily` must not reference the `font` shorthand token — both throw loudly.                                      |
+| `textAlign`                                                 | `Text`/`RichText`/`TextEntity` (via `setTextAlign`)     | Only `left` and `justify` exist in the stack; `center`/`right` throw (revisit when ui Text supports them).                                                                                     |
+| `padding`                                                   | components with `paddingX`/`paddingY` (ui components)   | Sizing is fixed at construction; consumers that read the fields live pick changes up.                                                                                                          |
+| `display`/`flexDirection`/`gap`/`alignItems`/`flexWrap`     | Stack/Flow containers                                   | `display: flex` is validation-only. Container detection is "has a `direction` field", so any entity carrying `direction` accepts these keys — give non-layout entities a different field name. |
+
 ## Install
 
 ```sh

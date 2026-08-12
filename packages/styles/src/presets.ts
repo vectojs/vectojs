@@ -21,6 +21,9 @@ export const PRESET_THEMES: Record<'light' | 'dark' | 'github' | 'dracula', Them
     'radius-md': 8,
     'radius-lg': 12,
     font: '16px Inter',
+    fontFamily: 'Inter, sans-serif',
+    fontSize: '16px',
+    fontWeight: '400',
     fontMono: '13px ui-monospace, SFMono-Regular, Menlo, monospace',
   },
   dark: {
@@ -34,6 +37,9 @@ export const PRESET_THEMES: Record<'light' | 'dark' | 'github' | 'dracula', Them
     'radius-md': 8,
     'radius-lg': 12,
     font: '16px Inter',
+    fontFamily: 'Inter, sans-serif',
+    fontSize: '16px',
+    fontWeight: '400',
     fontMono: '13px ui-monospace, SFMono-Regular, Menlo, monospace',
   },
   github: {
@@ -47,6 +53,9 @@ export const PRESET_THEMES: Record<'light' | 'dark' | 'github' | 'dracula', Them
     'radius-md': 8,
     'radius-lg': 12,
     font: '16px Inter',
+    fontFamily: 'Inter, sans-serif',
+    fontSize: '16px',
+    fontWeight: '400',
     fontMono: '13px ui-monospace, SFMono-Regular, Menlo, monospace',
   },
   dracula: {
@@ -60,6 +69,9 @@ export const PRESET_THEMES: Record<'light' | 'dark' | 'github' | 'dracula', Them
     'radius-md': 8,
     'radius-lg': 12,
     font: '16px Inter',
+    fontFamily: 'Inter, sans-serif',
+    fontSize: '16px',
+    fontWeight: '400',
     fontMono: '13px ui-monospace, SFMono-Regular, Menlo, monospace',
   },
 };
