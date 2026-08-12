@@ -56,7 +56,7 @@ export class Image extends UIComponent {
   }
 
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'img', src: this.src, alt: this.alt, label: this.alt };
+    return { tag: 'img', src: this.src, alt: this.alt, label: this.alt || undefined };
   }
 
   public render(r: IRenderer): void {
