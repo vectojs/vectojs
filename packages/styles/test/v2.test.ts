@@ -226,6 +226,16 @@ describe('font composition', () => {
     setTheme(reset);
   });
 
+  it('parses a long digit run with a bad unit in linear time (code-scanning ReDoS)', () => {
+    // Regression for the js/polynomial-redos alert on SIZE_RE. A 20k digit
+    // run with a non-unit suffix must fail the size parse fast — this test
+    // would time out under the old `\d+\.?\d*` backtracking, which enumerates
+    // O(n²) split points across the adjacent digit classes.
+    const e = stub({ font: '16px Inter' });
+    const long = '9'.repeat(20000) + 'zzz';
+    expect(() => applyStyle(e, style({ fontSize: long }))).not.toThrow();
+  });
+
   it('rejects a font shorthand leaked into fontFamily (GH-452)', () => {
     setTheme(reset);
     const e = stub({ font: '16px Inter' });
