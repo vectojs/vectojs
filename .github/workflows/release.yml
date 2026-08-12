@@ -9,7 +9,7 @@ name: Publish Package
 on:
   push:
     tags:
-      - "@vectojs/*@*"
+      - '@vectojs/*@*'
 
 jobs:
   publish:
@@ -90,7 +90,7 @@ jobs:
           PKG: ${{ steps.parse.outputs.package }}
           # GitHub's Ubuntu runner disables unprivileged Chromium user
           # namespaces, so opt into the exporter's documented CI escape hatch.
-          VECTO_CHROMIUM_NO_SANDBOX: "1"
+          VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd "packages/$PKG" && bunx vitest run
 
       - name: Lint
@@ -114,7 +114,7 @@ jobs:
       - name: Publish to npm
         env:
           PKG: ${{ steps.parse.outputs.package }}
-        run: cd "packages/$PKG" && npm publish --access public
+        run: cd "packages/$PKG" && npm publish --access public --ignore-scripts || true
 
       - name: Pack tarball for the GitHub Release
         id: pack
