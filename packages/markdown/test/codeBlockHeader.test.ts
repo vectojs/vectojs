@@ -171,6 +171,32 @@ describe('configurable block affordances', () => {
     expect(resolved.labels.saved).toBe('Saved');
   });
 
+  it('disables table controls without touching code controls', () => {
+    const md = new Markdown('```ts\nx\n```\n\n| a |\n| - |\n| 1 |', {
+      blockAffordances: true,
+      affordances: { table: { copy: false, download: false } },
+    });
+    // First block is the code fence: still wrapped with both controls.
+    const codeWrapper = md.content.children[0];
+    const codeLabels = codeWrapper.children
+      .filter((c) => c instanceof CodeBlock === false)
+      .map((c) => (c as unknown as BlockAffordanceButton).label)
+      .filter((l): l is string => typeof l === 'string');
+    expect(codeLabels).toEqual(['Copy code', 'Download code']);
+    // Table block: unwrapped because every table control is disabled.
+    expect(md.content.children[1]).not.toHaveProperty('children.length', 2);
+  });
+
+  it('resolves per-kind overrides with top-level fallback', () => {
+    const resolved = resolveBlockAffordanceConfig({
+      copy: true,
+      download: true,
+      table: { copy: false },
+    });
+    expect(resolved.code).toEqual({ copy: true, download: true });
+    expect(resolved.table).toEqual({ copy: false, download: true });
+  });
+
   it('keeps the success label configurable independently of the resting one', () => {
     // Separate strings rather than derived: no suffix or tense rule survives
     // translation.
