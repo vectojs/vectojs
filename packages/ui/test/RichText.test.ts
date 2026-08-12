@@ -252,13 +252,16 @@ describe('RichText', () => {
     expect(line0.runs).toBeUndefined();
   });
 
-  it('left-aligned mixed-style RichText emits positioned runs with x/width (GH-458)', () => {
-    // Mixed-style lines now get per-run positioned carriers: each run carries x
-    // and width measured at its own font so Scene can set carrier widths that
-    // match the canvas, preventing selection highlight drift on bold/link spans.
-    // In jsdom (no real canvas) widths are 0; what matters is that x/width are
-    // present as numbers — that is what gates Scene's positioned-carrier path
-    // on `run.x !== undefined` / `run.width !== undefined`.
+  it('left-aligned mixed-style RichText emits per-run widths and no x (GH-458)', () => {
+    // Each run carries the width the canvas advanced for it, measured at its OWN
+    // font, so Scene can pin the DOM carrier to it instead of letting the browser
+    // measure the same text differently — the drift on bold/link spans.
+    //
+    // And NO `x`: a packed run's x is the sum of the preceding widths, so it
+    // would carry no information, while setting it makes Scene force `dir="ltr"`
+    // on the line box and the line must keep `auto` to stay bidi-correct.
+    // In jsdom there is no real canvas, so widths are 0; the contract under test
+    // is which FIELDS are present.
     const rt = new RichText([{ text: 'aa ', style: { bold: true } }, { text: 'bb cc' }], {
       maxWidth: 200,
     });
@@ -267,14 +270,13 @@ describe('RichText', () => {
     const runs = line0.runs!;
     expect(runs.length).toBeGreaterThan(1);
     for (const run of runs) {
-      // x and width must be defined numbers, not undefined.
-      expect(typeof run.x).toBe('number');
       expect(typeof run.width).toBe('number');
+      expect(run.x).toBeUndefined();
     }
-    // Runs must be in logical left-to-right order (x non-decreasing).
-    for (let i = 1; i < runs.length; i++) {
-      expect(runs[i].x as number).toBeGreaterThanOrEqual(runs[i - 1].x as number);
-    }
+    // Styles stay distinct — the whole reason these lines cannot use the
+    // single-font per-grapheme path.
+    expect(runs.some((run) => run.font?.includes('bold'))).toBe(true);
+    expect(runs.some((run) => !run.font?.includes('bold'))).toBe(true);
   });
 
   it('justify preserves per-style-run fonts and logical text in the projection', () => {

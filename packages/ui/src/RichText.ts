@@ -493,15 +493,31 @@ export class RichText extends UIComponent {
   }
 
   /** Rebuild styled DOM runs from a logical UTF-16 source interval. */
+  /**
+   * Logical style runs for a natural-flow (ragged, non-bidi) line, each carrying
+   * the width the CANVAS advanced for it.
+   *
+   * `width` and no `x`, deliberately. A packed run's visual x is just the sum of
+   * the preceding widths, so `Scene`'s `left = run.x - runningX` is identically 0
+   * and the `x` would carry no information — while *setting* it flips
+   * `hasPositionedRuns`, which makes `Scene` force `dir="ltr"` on the line box.
+   * That is correct for justify/RTL, where the engine already did the bidi
+   * reorder, and wrong here: these lines must keep `dir="auto"` so the browser
+   * bidis the text itself and caret hit-mapping stays right. Setting `x` broke
+   * the real-browser projection e2e for exactly that reason.
+   *
+   * The width alone is what fixes GH-458. Each run is measured at its OWN font,
+   * so a bold or larger span gets the advance the canvas actually painted; with
+   * no width, the DOM used its own natural-flow measurement of that text and the
+   * selection box drifted per word, worst on large text.
+   */
   private logicalRuns(
     start: number,
     end: number,
-    lineX = 0,
-  ): Array<{ text: string; font: string; x: number; width: number }> {
-    const runs: Array<{ text: string; font: string; x: number; width: number }> = [];
+  ): Array<{ text: string; font: string; width: number }> {
+    const runs: Array<{ text: string; font: string; width: number }> = [];
     const mctx = getSharedMeasuringContext();
     let offset = 0;
-    let currentX = lineX;
     for (const span of this.spans) {
       const spanEnd = offset + span.text.length;
       const from = Math.max(start, offset);
@@ -515,11 +531,6 @@ export class RichText extends UIComponent {
         const text = span.object
           ? (span.object.alt ?? '')
           : span.text.slice(from - offset, to - offset);
-        // Measure width with this run's font to get accurate canvas advance.
-        // For mixed-style lines, each run is rendered with its own font, so the
-        // DOM carrier must use the same per-run width instead of a single line-level
-        // font measurement. Without this, bold runs measured with a regular font
-        // produce carriers narrower than the canvas glyphs, causing drift (GH-458).
         let width = 0;
         if (mctx && text.length > 0) {
           mctx.font = font;
@@ -529,12 +540,8 @@ export class RichText extends UIComponent {
         if (previous?.font === font) {
           previous.text += text;
           previous.width += width;
-          // Track running x even when coalescing, so the next distinct-font
-          // run gets the correct starting x.
-          currentX += width;
         } else {
-          runs.push({ text, font, x: currentX, width });
-          currentX += width;
+          runs.push({ text, font, width });
         }
       }
       offset = spanEnd;
@@ -638,7 +645,7 @@ export class RichText extends UIComponent {
       const lineX = Math.min(...nodes.map((node) => node.x));
       const runs = justified
         ? this.positionedRuns(nodes)
-        : this.logicalRuns(sourceStart, sourceEnd, lineX);
+        : this.logicalRuns(sourceStart, sourceEnd);
       const y = Math.min(...nodes.map((node) => node.y));
       const baseline = nodes[0].y + nodes[0].height * 0.8 - y;
 

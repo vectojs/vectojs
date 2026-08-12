@@ -4565,6 +4565,23 @@ export class Scene {
                   // carrier's x already places it in visual order.
                   runElement.style.unicodeBidi = 'isolate';
                   runElement.dir = 'ltr';
+                } else if (run.width !== undefined) {
+                  // Width WITHOUT a position: a natural-flow styled line, where
+                  // the run's visual x is just the sum of the preceding widths.
+                  // Pinning each carrier to the width the CANVAS advanced for it
+                  // (measured at that run's own font) is what stops a bold or
+                  // larger span from drifting under the browser's own
+                  // measurement of the same text (GH-458).
+                  //
+                  // Deliberately no `left`, no `absolute`, no `dir`: the line box
+                  // keeps `dir="auto"` so the browser still bidis the text and
+                  // caret hit-mapping stays correct. `inline-block` is required
+                  // for `width` to apply to an inline box at all.
+                  runElement.style.display = 'inline-block';
+                  runElement.style.width = `${run.width}px`;
+                  runElement.style.boxSizing = 'border-box';
+                  runElement.style.whiteSpace = 'pre';
+                  runElement.style.verticalAlign = 'top';
                 }
                 lineElement.appendChild(runElement);
               }
