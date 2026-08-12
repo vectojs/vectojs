@@ -2036,12 +2036,12 @@ export class Markdown extends UIComponent {
   /** Copy and download controls for one fenced code block, per {@link affordanceConfig}. */
   private codeBlockAffordances(source: string, lang: string): BlockAffordanceButton[] {
     const opts = this.affordanceButtonOptions();
-    const { copy, download, labels } = this.affordanceConfig;
+    const { code, labels } = this.affordanceConfig;
     const controls: BlockAffordanceButton[] = [];
     // Pushed in visual order — `BlockWithAffordances` lays the list out
     // right-to-left from the block's right edge specifically so list order is
     // also DOM order, and therefore tab and screen-reader order.
-    if (copy) {
+    if (code.copy) {
       controls.push(
         new BlockAffordanceButton(
           labels.copyCode,
@@ -2051,7 +2051,7 @@ export class Markdown extends UIComponent {
         ),
       );
     }
-    if (download) {
+    if (code.download) {
       controls.push(
         new BlockAffordanceButton(
           labels.downloadCode,
@@ -2066,11 +2066,11 @@ export class Markdown extends UIComponent {
 
   /** Copy (as Markdown) and download (as CSV) controls for one table, per {@link affordanceConfig}. */
   private tableAffordances(tblToken: Tokens.Table): BlockAffordanceButton[] {
-    const { copy, download, labels } = this.affordanceConfig;
+    const { table, labels } = this.affordanceConfig;
     const content = tableContentOf(tblToken);
     const opts = this.affordanceButtonOptions();
     const controls: BlockAffordanceButton[] = [];
-    if (copy) {
+    if (table.copy) {
       // Markdown rather than CSV for the clipboard: the reader copied it out of a
       // Markdown document and the overwhelmingly likely destination is another
       // one. CSV is what the download is for, where a spreadsheet is the target.
@@ -2083,7 +2083,7 @@ export class Markdown extends UIComponent {
         ),
       );
     }
-    if (download) {
+    if (table.download) {
       controls.push(
         new BlockAffordanceButton(
           labels.downloadTable,

@@ -28,6 +28,13 @@ export interface MarkdownTheme {
   codeColor?: string;
   /** Code block background color. */
   codeBgColor?: string;
+  /**
+   * Code block border color. Optional — when unset the block paints no
+   * border, matching the previous behaviour; a document whose code blocks
+   * need to stand out from the page background (light themes, dense layouts)
+   * supplies a divider colour here.
+   */
+  codeBorderColor?: string;
   /** Blockquote border/accent color. */
   quoteBorderColor?: string;
   /**
@@ -311,6 +318,7 @@ export const DEFAULT_THEME: Required<MarkdownTheme> = {
   headingColor: '#f8fafc',
   codeColor: '#a5f3fc',
   codeBgColor: 'rgba(30, 41, 59, 0.85)',
+  codeBorderColor: 'transparent',
   quoteBorderColor: '#6366f1',
   quoteTextColor: '#e2e8f0',
   hrColor: 'rgba(148, 163, 184, 0.3)',

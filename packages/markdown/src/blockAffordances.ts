@@ -260,6 +260,19 @@ export interface BlockAffordanceConfig {
   /** Show the download-as-file control. Default `true`. */
   download?: boolean;
   /**
+   * Per-kind overrides for code-block controls. A key left undefined inherits
+   * the top-level {@link copy} / {@link download} value, so `{ table: { copy: false } }`
+   * disables table copy while keeping everything else at the defaults.
+   */
+  code?: { copy?: boolean; download?: boolean };
+  /**
+   * Per-kind overrides for table controls. Same inheritance rule as
+   * {@link code}: an omitted key falls back to the top-level value. This is
+   * what a document with tables that already carry a 'Copy' affordance in
+   * their own UI uses to avoid offering two overlapping copy controls.
+   */
+  table?: { copy?: boolean; download?: boolean };
+  /**
    * Labels, for localization or for a house style that says "Copy" rather than
    * "Copy code".
    *
@@ -287,6 +300,10 @@ export interface BlockAffordanceConfig {
 export interface ResolvedBlockAffordanceConfig {
   copy: boolean;
   download: boolean;
+  /** Code-block controls, per {@link BlockAffordanceConfig.code}. */
+  code: { copy: boolean; download: boolean };
+  /** Table controls, per {@link BlockAffordanceConfig.table}. */
+  table: { copy: boolean; download: boolean };
   labels: Required<NonNullable<BlockAffordanceConfig['labels']>>;
 }
 
@@ -299,9 +316,19 @@ export interface ResolvedBlockAffordanceConfig {
 export function resolveBlockAffordanceConfig(
   config: BlockAffordanceConfig = {},
 ): ResolvedBlockAffordanceConfig {
+  const copy = config.copy ?? true;
+  const download = config.download ?? true;
   return {
-    copy: config.copy ?? true,
-    download: config.download ?? true,
+    copy,
+    download,
+    code: {
+      copy: config.code?.copy ?? copy,
+      download: config.code?.download ?? download,
+    },
+    table: {
+      copy: config.table?.copy ?? copy,
+      download: config.table?.download ?? download,
+    },
     labels: {
       copyCode: config.labels?.copyCode ?? 'Copy code',
       downloadCode: config.labels?.downloadCode ?? 'Download code',

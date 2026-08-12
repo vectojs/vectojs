@@ -1189,6 +1189,11 @@ export class CodeBlock extends UIComponent {
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, this.theme.codeRadius);
     r.fill(this.theme.codeBgColor);
+    if (this.theme.codeBorderColor && this.theme.codeBorderColor !== 'transparent') {
+      r.beginPath();
+      r.roundRect(0.5, 0.5, this.width - 1, this.height - 1, this.theme.codeRadius);
+      r.stroke(this.theme.codeBorderColor, 1);
+    }
 
     const grid = this.ensureGrid();
 
