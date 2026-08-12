@@ -713,6 +713,55 @@ function styleRangeEquals(
 }
 
 /**
+ * GH-457: Pre-merge word segments that must not be separated by line breaks.
+ * Rule 1 — '@' must stay with the following identifier (e.g., @vectojs/core).
+ * Rule 2 — Trailing/closing punctuation must not start a line; merge it onto
+ *          the preceding word.
+ */
+function suppressLineBreaks(words: PreparedWord[]): PreparedWord[] {
+  const ORPHAN_PUNCT = new Set(['.', ',', ':', ';', ')', ']', '}', '!', '?']);
+  const result: PreparedWord[] = [];
+  let i = 0;
+  while (i < words.length) {
+    const cur = words[i];
+    // Rule 1: Merge '@' with all immediately following non-whitespace words.
+    if (cur.glyphs.length === 1 && cur.glyphs[0].char === '@' && !cur.isWhitespace) {
+      const merged = { ...cur };
+      let j = i + 1;
+      while (j < words.length && !words[j].isWhitespace) {
+        merged.glyphs = [...merged.glyphs, ...words[j].glyphs];
+        merged.width += words[j].width;
+        merged.isWordLike = true;
+        j++;
+      }
+      result.push(merged);
+      i = j;
+      continue;
+    }
+    // Rule 2: Merge orphan trailing punctuation onto the preceding word.
+    if (
+      result.length > 0 &&
+      cur.glyphs.length === 1 &&
+      !cur.isWhitespace &&
+      ORPHAN_PUNCT.has(cur.glyphs[0].char)
+    ) {
+      const prev = result[result.length - 1];
+      result[result.length - 1] = {
+        glyphs: [...prev.glyphs, ...cur.glyphs],
+        width: prev.width + cur.width,
+        isWordLike: prev.isWordLike,
+        isWhitespace: false,
+      };
+      i++;
+      continue;
+    }
+    result.push(cur);
+    i++;
+  }
+  return result;
+}
+
+/**
  * VectoJS Global Layout Engine (Intl.Segmenter)
  * Advanced Typography Engine supporting CJK, Emoji, and Western Graphemes
  */
@@ -1696,7 +1745,8 @@ export class LayoutEngine {
 
       let x = 0;
       let lines = 1;
-      for (const word of paragraph.words) {
+      const words = suppressLineBreaks(paragraph.words);
+      for (const word of words) {
         if (x + word.width > this.maxWidth && x > 0) {
           // Trailing whitespace never forces a wrap (matches the full path).
           if (word.isWordLike === false && word.isWhitespace) continue;
@@ -1945,7 +1995,7 @@ export class LayoutEngine {
       const lineHeight = Math.max(pMax * 1.5, pMax * 0.8 + objDescent);
       if (!startLine(lineHeight)) break; // out of vertical bounds
 
-      const wordQueue = paragraph.words.slice();
+      const wordQueue = suppressLineBreaks(paragraph.words.slice());
       for (let qi = 0; qi < wordQueue.length; qi++) {
         const word = wordQueue[qi];
         // Word-level wrap: keep the word whole by jumping to the next free

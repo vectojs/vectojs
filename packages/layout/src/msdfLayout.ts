@@ -178,58 +178,110 @@ export function computeMSDFLayout(
     const breakableAnywhere = code >= 0x2e80;
     if (breakableAnywhere) wordStartIdx = -1;
 
+    // Line-break suppression rules (GH-457):
+    // 1. No line may START with trailing/closing punctuation.
+    // 2. No break may split '@' from the following identifier.
+    const isOrphanPunct =
+      code === 0x2e || // .
+      code === 0x2c || // ,
+      code === 0x3a || // :
+      code === 0x3b || // ;
+      code === 0x29 || // )
+      code === 0x5d || // ]
+      code === 0x7d; // }
+    const prevCode = i > 0 ? chars[i - 1].codePointAt(0) : undefined;
+    const isAfterAt = prevCode === 0x40; // @
+
     if (curX + advance > maxWidth && curX > 0) {
       if (code === 32) {
         breakLine(true); // swallow the wrapping space entirely
         continue;
       }
-      // Prefer a soft-hyphen break: the last recorded opportunity whose hyphen
-      // still fits the line splits the word here rather than moving it whole.
-      let hy = -1;
-      for (let s = softBreaks.length - 1; s >= 0; s--) {
-        if (softBreaks[s].x + hyphenWidth <= maxWidth) {
-          hy = s;
-          break;
-        }
-      }
-      if (hy >= 0) {
-        const brk = softBreaks[hy];
-        const brokenLine = lineIndex;
-        if (brk.x + hyphenWidth > maxLineWidth) maxLineWidth = brk.x + hyphenWidth;
-        wrapClosedLines.add(brokenLine); // hyphenated line can be justified
-        // Move the tail (glyphs from brk.at onward) onto the next line FIRST,
-        // then append the hyphen — appending first would let the move loop
-        // (j < length) drag the hyphen down onto the new line too.
-        const shift = xCoords[brk.at];
-        lineIndex++;
-        const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
-        for (let j = brk.at; j < xCoords.length; j++) {
-          xCoords[j] -= shift;
-          yCoords[j] = nodeY;
-          lineOf[j] = lineIndex;
-        }
-        curX -= shift;
-        emitHyphen(brk.x, brokenLine); // visible hyphen stays on the old line
-        wordStartIdx = brk.at;
-        softBreaks = [];
-      } else if (wordStartIdx >= 0 && xCoords[wordStartIdx] > 0) {
-        // Keep the word intact: move its already-placed glyphs onto a new line.
-        const shift = xCoords[wordStartIdx];
+      // Suppress break before orphan punctuation: pull the punctuation back to
+      // the previous line by forcing the preceding word (or glyph) to wrap with it.
+      if (isOrphanPunct && wordStartIdx >= 0 && xCoords[wordStartIdx] > 0) {
+        // Move back one more glyph so the punct stays attached to its anchor.
+        const anchorIdx = Math.max(0, wordStartIdx - 1);
+        const shift = xCoords[anchorIdx];
         if (shift > maxLineWidth) maxLineWidth = shift;
-        wrapClosedLines.add(lineIndex); // the line the word left behind wrapped
+        wrapClosedLines.add(lineIndex);
         lineIndex++;
         const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
-        for (let j = wordStartIdx; j < xCoords.length; j++) {
+        for (let j = anchorIdx; j < xCoords.length; j++) {
           xCoords[j] -= shift;
           yCoords[j] = nodeY;
           lineOf[j] = lineIndex;
         }
         curX -= shift;
+        wordStartIdx = anchorIdx;
+        softBreaks = [];
+      } else if (isAfterAt && wordStartIdx >= 0 && xCoords[wordStartIdx] > 0) {
+        // '@' must stay with the identifier: wrap the whole '@identifier' token.
+        // wordStartIdx points to the char after '@', so wrap from wordStartIdx - 1.
+        const atIdx = wordStartIdx - 1;
+        const shift = xCoords[atIdx];
+        if (shift > maxLineWidth) maxLineWidth = shift;
+        wrapClosedLines.add(lineIndex);
+        lineIndex++;
+        const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
+        for (let j = atIdx; j < xCoords.length; j++) {
+          xCoords[j] -= shift;
+          yCoords[j] = nodeY;
+          lineOf[j] = lineIndex;
+        }
+        curX -= shift;
+        wordStartIdx = atIdx;
         softBreaks = [];
       } else {
-        // No usable word boundary on this line (word longer than maxWidth, or
-        // CJK): break before this glyph.
-        breakLine(true);
+        // Normal wrap logic: soft-hyphen, word-boundary, or CJK per-glyph break.
+        // Prefer a soft-hyphen break: the last recorded opportunity whose hyphen
+        // still fits the line splits the word here rather than moving it whole.
+        let hy = -1;
+        for (let s = softBreaks.length - 1; s >= 0; s--) {
+          if (softBreaks[s].x + hyphenWidth <= maxWidth) {
+            hy = s;
+            break;
+          }
+        }
+        if (hy >= 0) {
+          const brk = softBreaks[hy];
+          const brokenLine = lineIndex;
+          if (brk.x + hyphenWidth > maxLineWidth) maxLineWidth = brk.x + hyphenWidth;
+          wrapClosedLines.add(brokenLine); // hyphenated line can be justified
+          // Move the tail (glyphs from brk.at onward) onto the next line FIRST,
+          // then append the hyphen — appending first would let the move loop
+          // (j < length) drag the hyphen down onto the new line too.
+          const shift = xCoords[brk.at];
+          lineIndex++;
+          const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
+          for (let j = brk.at; j < xCoords.length; j++) {
+            xCoords[j] -= shift;
+            yCoords[j] = nodeY;
+            lineOf[j] = lineIndex;
+          }
+          curX -= shift;
+          emitHyphen(brk.x, brokenLine); // visible hyphen stays on the old line
+          wordStartIdx = brk.at;
+          softBreaks = [];
+        } else if (wordStartIdx >= 0 && xCoords[wordStartIdx] > 0) {
+          // Keep the word intact: move its already-placed glyphs onto a new line.
+          const shift = xCoords[wordStartIdx];
+          if (shift > maxLineWidth) maxLineWidth = shift;
+          wrapClosedLines.add(lineIndex); // the line the word left behind wrapped
+          lineIndex++;
+          const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
+          for (let j = wordStartIdx; j < xCoords.length; j++) {
+            xCoords[j] -= shift;
+            yCoords[j] = nodeY;
+            lineOf[j] = lineIndex;
+          }
+          curX -= shift;
+          softBreaks = [];
+        } else {
+          // No usable word boundary on this line (word longer than maxWidth, or
+          // CJK): break before this glyph.
+          breakLine(true);
+        }
       }
     }
 
