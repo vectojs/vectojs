@@ -15,7 +15,15 @@ never painted. On kerning-heavy Latin text this drifted the native selection
 box up to 5-8px across a ~300px line in both Gecko and Blink, per word and
 style dependent.
 
-Both paths now measure the same isolated grapheme advances the layout and
-paint use: Scene's per-grapheme carriers measure each grapheme segment in
-isolation (no prefix subtraction, no left correction), and `logicalRuns`
-sums per-grapheme advances instead of shaped run widths.
+The carrier measurement now follows the line's paint model, declared by a
+new `ContentProjectionLine.shapedPaint` flag:
+
+- Per-glyph painters (`RichText`, core `TextEntity` — ink at unkerned layout
+  positions) get isolated grapheme advances: Scene's per-grapheme carriers
+  measure each grapheme segment in isolation (no prefix subtraction, no left
+  correction), and `logicalRuns` sums per-grapheme advances instead of
+  shaped run widths.
+- Shaped painters (`ui/Text`'s fast one-`fillText`-per-line path — ink
+  includes browser kerning and ligatures) declare `shapedPaint: true` and
+  keep shaped prefix-difference carriers, which accumulate to exactly the
+  painted extent (verified by the ligature DOM/Canvas width e2e).

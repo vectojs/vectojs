@@ -317,6 +317,13 @@ export class Text extends UIComponent {
         // per-glyph carriers break caret hit-mapping (PR #146 revert). Excluded
         // when justified because those lines already carry positioned runs.
         perGraphemeCarriers: !this.hasBidi && !justified,
+        // render()'s fast default paints this line as ONE shaped
+        // `fillText(line)`, so the ink includes browser kerning and ligatures
+        // and the carriers must be measured as shaped prefix differences. The
+        // glyph-accurate path (perGlyph: justify/hyphenate, or bidi) paints per
+        // glyph at unkerned layout x instead, so it must NOT declare shaped
+        // paint.
+        shapedPaint: !this.perGlyph && !this.hasBidi,
       };
     });
     return {
