@@ -48,9 +48,14 @@ export class Overlay extends UIComponent {
     this.interactive = false;
     // Seed the hidden state (instant, before any transition is configured), then
     // declare how show/hide animate. Replaces the old hand-rolled *= 0.18 lerp.
+    // `a11yHidden` is part of the seed for the same reason it is part of
+    // hide(): a never-shown overlay must not project itself OR its interactive
+    // children — the projection walk only stops recursing on `a11yHidden`, not
+    // on a non-interactive parent.
     this.opacity = 0;
     this.scaleX = 0.92;
     this.scaleY = 0.92;
+    this.a11yHidden = true;
     this.setTransition({
       opacity: { duration: 160, easing: 'easeOutQuad' },
       scaleX: 'spring',
@@ -66,6 +71,9 @@ export class Overlay extends UIComponent {
     this._mount(target);
     this._position(target);
     this.visible = true;
+    // Symmetric with hide(): interactive and a11yHidden flip together, so a
+    // show→hide→show cycle keeps projecting.
+    this.interactive = true;
     this.a11yHidden = false;
     this.opacity = 1;
     this.scaleX = 1;
@@ -93,6 +101,9 @@ export class Overlay extends UIComponent {
     if (!this.parent) scene.overlayRoot.add(this);
     this._placeAt(x, y);
     this.visible = true;
+    // Symmetric with hide(): interactive and a11yHidden flip together, so a
+    // show→hide→show cycle keeps projecting.
+    this.interactive = true;
     this.a11yHidden = false;
     this.opacity = 1;
     this.scaleX = 1;
