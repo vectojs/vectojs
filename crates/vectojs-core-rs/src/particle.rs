@@ -36,7 +36,7 @@
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
-use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_UNINITIALIZED};
+use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_OK, STATUS_OVERFLOW, STATUS_UNINITIALIZED};
 
 // hasPendingAnimations epsilons — must match ComputeParticleEntity.ts:204-205.
 const EPS_VELOCITY: f32 = 0.5; // px/s — below this a particle looks at rest
@@ -98,9 +98,19 @@ fn free_particles() {
 
 /// Allocate for `capacity` particles (+padding), freeing the previous allocation
 /// first — the JS side re-inits in place when a larger particle count arrives.
+///
+/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when `capacity + 8` or its byte
+/// size cannot be represented: a hostile count used to wrap silently in release
+/// (allocating a tiny SoA that `particle_step` then overran) and panic in
+/// debug. On rejection the previous allocation is untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn particle_init(capacity: usize) {
-    let n = capacity + 8;
+pub extern "C" fn particle_init(capacity: usize) -> i32 {
+    let Some(n) = capacity.checked_add(8) else {
+        return STATUS_OVERFLOW;
+    };
+    if n.checked_mul(size_of::<f32>()).is_none() {
+        return STATUS_OVERFLOW;
+    }
     free_particles();
     unsafe {
         P.px = leak_f32(n);
@@ -112,12 +122,51 @@ pub extern "C" fn particle_init(capacity: usize) {
         P.life = leak_f32(n);
         P.capacity = capacity;
     }
+    STATUS_OK
 }
 
 /// True once `particle_init` has allocated the SoA.
 #[inline]
 fn particles_ready() -> bool {
     unsafe { P.capacity > 0 && !P.px.is_null() }
+}
+
+/// `Math.min` semantics for f32: propagate NaN (unlike Rust's `f32::min`,
+/// which ignores it), and treat `-0 < +0`. The JS f32 oracle
+/// (`particleStepReferenceF32`) uses `Math.min`/`Math.max` for every clamp, so
+/// a NaN argument there poisons the result — the kernel must poison identically
+/// or the differential test diverges.
+#[inline]
+fn js_min_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() { a } else { b }
+    } else if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max` semantics for f32: propagate NaN; treat `+0 > -0`.
+#[inline]
+fn js_max_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_positive() { a } else { b }
+    } else if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max(lo, Math.min(x, hi))` with Math semantics (see [`js_min_f32`]).
+#[inline]
+fn js_clamp_f32(x: f32, lo: f32, hi: f32) -> f32 {
+    js_max_f32(lo, js_min_f32(x, hi))
 }
 
 macro_rules! ptr_export {
@@ -178,20 +227,23 @@ pub unsafe extern "C" fn particle_step(
         return -STATUS_CAPACITY;
     }
     unsafe {
-        // clamp() == max(a, min(x, b)) for finite inputs (NaN cases pre-guarded),
-        // so this stays bit-identical to updateCPU's Math.max(a, Math.min(x, b));
-        // the JS f32 reference uses the same clamps.
+        // Every clamp here uses `js_*` Math semantics, not `f32::clamp`/
+        // `f32::max`: Rust's versions IGNORE NaN while `Math.min`/`Math.max`
+        // PROPAGATE it, so a NaN argument used to be silently replaced by a
+        // valid bound (1.0 etc.) while the JS oracle NaN-poisons the result —
+        // the two paths then diverged bit-wise. `dt` is pre-guarded instead
+        // because the oracle also pre-guards it (`isNaN(dt) ? 0.016 : ...`).
         let safe_dt = if dt.is_nan() {
             0.016
         } else {
             dt.clamp(0.0, 0.1)
         };
-        let safe_w = width.max(1.0);
-        let safe_h = height.max(1.0);
-        let k = spring_k.clamp(0.0, 10.0);
-        let damp = damping.clamp(0.0, 1.0);
-        let bounce = bounce_damping.clamp(0.0, 1.0);
-        let max_v = max_velocity.max(1.0);
+        let safe_w = js_max_f32(1.0, width);
+        let safe_h = js_max_f32(1.0, height);
+        let k = js_clamp_f32(spring_k, 0.0, 10.0);
+        let damp = js_clamp_f32(damping, 0.0, 1.0);
+        let bounce = js_clamp_f32(bounce_damping, 0.0, 1.0);
+        let max_v = js_max_f32(1.0, max_velocity);
         let mouse_on =
             !mouse_x.is_nan() && !mouse_y.is_nan() && mouse_x > -9000.0 && mouse_y > -9000.0;
         let expl_on = expl_active != 0;
@@ -278,13 +330,13 @@ pub unsafe extern "C" fn particle_step(
                 nvy = -nvy * bounce;
             }
 
-            npx = npx.clamp(0.0, safe_w);
-            npy = npy.clamp(0.0, safe_h);
+            npx = js_clamp_f32(npx, 0.0, safe_w);
+            npy = js_clamp_f32(npy, 0.0, safe_h);
 
             // 6. Life decay.
             let mut nlife = life;
             if life >= 0.0 {
-                nlife = (life - safe_dt * 0.5).max(0.0);
+                nlife = js_max_f32(0.0, life - safe_dt * 0.5);
             }
 
             *P.px.add(i) = npx;

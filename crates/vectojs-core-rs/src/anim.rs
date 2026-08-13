@@ -20,7 +20,7 @@
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
-use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_OK, STATUS_UNINITIALIZED};
+use crate::{SIMD_ALIGN, STATUS_CAPACITY, STATUS_OK, STATUS_OVERFLOW, STATUS_UNINITIALIZED};
 
 // SpringPhysics constants — must match packages/math/src/SpringPhysics.ts exactly.
 const MAX_FRAME_DT: f64 = 0.25; // seconds simulated per update() call
@@ -107,10 +107,22 @@ fn free_anim() {
 /// Allocate for `spring_cap` springs and `tween_cap` tweens (+8 tail pad),
 /// freeing the previous allocation first — the JS side re-inits in place on
 /// growth, so the old SoA must be released or each growth leaks it.
+///
+/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when a capacity's size
+/// arithmetic cannot be represented: a hostile count used to wrap silently in
+/// release (allocating tiny arrays the kernels then overran) and panic in
+/// debug. On rejection the previous allocation is untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) {
-    let s = spring_cap + 8;
-    let t = tween_cap + 8;
+pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) -> i32 {
+    let Some(s) = spring_cap.checked_add(8) else {
+        return STATUS_OVERFLOW;
+    };
+    let Some(t) = tween_cap.checked_add(8) else {
+        return STATUS_OVERFLOW;
+    };
+    if s.checked_mul(size_of::<f64>()).is_none() || t.checked_mul(size_of::<f64>()).is_none() {
+        return STATUS_OVERFLOW;
+    }
     free_anim();
     unsafe {
         A.s_val = leak_f64(s);
@@ -129,6 +141,7 @@ pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) {
         A.spring_capacity = spring_cap;
         A.tween_capacity = tween_cap;
     }
+    STATUS_OK
 }
 
 /// True once `anim_init` has allocated the spring SoA.

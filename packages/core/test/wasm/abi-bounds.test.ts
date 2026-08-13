@@ -20,7 +20,7 @@ const haveWasm = existsSync(wasmPath);
 
 interface RawExports {
   memory: WebAssembly.Memory;
-  init(capacity: number, maxRuns: number): void;
+  init(capacity: number, maxRuns: number): number;
   set_run_count(n: number): number;
   compose_simd(): number;
   compose_scalar(): number;
@@ -30,7 +30,7 @@ interface RawExports {
   p_run_len(): number;
   p_wa(): number;
   p_x(): number;
-  anim_init(springCap: number, tweenCap: number): void;
+  anim_init(springCap: number, tweenCap: number): number;
   spring_step(dt: number, count: number): number;
   tween_step(dt: number, count: number): number;
   p_s_val(): number;
@@ -41,7 +41,7 @@ interface RawExports {
   p_s_mass(): number;
   p_t_elapsed(): number;
   p_t_val(): number;
-  particle_init(capacity: number): void;
+  particle_init(capacity: number): number;
   particle_step(
     dt: number,
     mouseX: number,
@@ -336,5 +336,47 @@ describe.skipIf(!haveWasm)('particle ABI bounds validation', () => {
 
     // Neither success value is negative, so `flag < 0` is an unambiguous test.
     expect(particleStep(ex, 99)).toBeLessThan(0);
+  });
+});
+
+// Capacity size arithmetic: `capacity + 8` and the byte-size products used to be
+// unchecked, so a hostile count wrapped on wasm32 release (allocating a tiny
+// store the kernels then overran — heap corruption, not a trap) and panicked in
+// debug. Every `*_init` must now reject with STATUS_OVERFLOW instead, leaving
+// the previous allocation untouched.
+describe.skipIf(!haveWasm)('init size-overflow rejection', () => {
+  it('rejects a transform capacity whose +8 pad wraps', () => {
+    const ex = load();
+    // On wasm32 usize, capacity + 8 wraps for this count (JS passes it through
+    // ToInt32 as 2^32 - 4).
+    expect(ex.init(2 ** 32 - 4, 16)).toBe(WASM_STATUS.OVERFLOW);
+    // And one whose byte size n * 8 wraps.
+    expect(ex.init(2 ** 32 - 12, 16)).toBe(WASM_STATUS.OVERFLOW);
+    // A normal init still succeeds afterwards.
+    expect(ex.init(64, 8)).toBe(WASM_STATUS.OK);
+  });
+
+  it('rejects anim/particle capacities with the same wrap', () => {
+    const ex = load();
+    expect(ex.anim_init(2 ** 32 - 4, 4)).toBe(WASM_STATUS.OVERFLOW);
+    expect(ex.particle_init(2 ** 32 - 4)).toBe(WASM_STATUS.OVERFLOW);
+    expect(ex.anim_init(4, 4)).toBe(WASM_STATUS.OK);
+    expect(ex.particle_init(4)).toBe(WASM_STATUS.OK);
+  });
+
+  it('a rejected init leaves the previous store usable', () => {
+    const ex = load();
+    ex.init(16, 4);
+    // Establish a known-good frame.
+    const x = new Float64Array(ex.memory.buffer, ex.p_x(), 24);
+    x[1] = 5;
+    writeRun(ex, 0, 0, 1, 1);
+    expect(ex.set_run_count(1)).toBe(WASM_STATUS.OK);
+    expect(ex.compose_scalar()).toBe(WASM_STATUS.OK);
+
+    // Reject a hostile growth: the old store (and its run table) must stay
+    // live, not be freed and replaced by a wrapped tiny allocation.
+    expect(ex.init(2 ** 32 - 4, 16)).toBe(WASM_STATUS.OVERFLOW);
+    expect(ex.compose_scalar()).toBe(WASM_STATUS.OK);
   });
 });

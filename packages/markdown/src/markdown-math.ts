@@ -226,12 +226,21 @@ const MATH_CACHE_LIMIT = 256;
  * two documents decodes to the same bitmap. An entry is created on first paint
  * attempt, not eagerly: a formula that never scrolls into view is never decoded.
  *
- * Unbounded on purpose, unlike {@link mathCache}. Entries are `HTMLImageElement`
- * handles keyed by the URI already held in that bounded cache, so this map cannot
- * outgrow it by more than the formulas a document currently displays. A cap here
- * would evict a bitmap that is still on screen and make it flash back to blank.
+ * Bounded, unlike its first draft. Two mechanisms keep it in line with
+ * {@link mathCache}: {@link renderMathToSVGDataURI} deletes the raster whose
+ * render it just evicted, and {@link ensureInlineMathRaster} additionally caps
+ * the map at {@link INLINE_RASTER_LIMIT}, evicting the least-recently-painted
+ * entry first (the paint path re-inserts on every hit, so a bitmap that is
+ * still on screen stays recent and is not evicted). A later re-paint simply
+ * re-decodes, at worst flashing the formula blank for one frame — the same
+ * trade the mathCache eviction already makes.
  */
 const inlineMathRasters = new Map<string, InlineMathRaster>();
+
+/** Upper bound on {@link inlineMathRasters}. A decoded bitmap costs its decoded
+ *  pixels in memory, and a long-lived document (a streamed chat, a re-themed
+ *  feed) once grew this map without limit while mathCache capped at 256. */
+const INLINE_RASTER_LIMIT = MATH_CACHE_LIMIT;
 
 interface InlineMathRaster {
   /** `undefined` when this environment has no `Image` (SSR, plain unit tests). */
@@ -273,14 +282,29 @@ export function unsubscribeInlineMathRaster(notify: () => void): void {
  * Ensure the raster for `uri` is decoding, and return it.
  *
  * Synchronous and idempotent: the paint path calls it on every frame the formula
- * is visible, and only the first call starts a decode.
+ * is visible, and only the first call starts a decode. Every hit re-inserts the
+ * entry, making the map LRU-ordered so the cap below evicts the bitmap painted
+ * longest ago rather than one still on screen.
  */
 function ensureInlineMathRaster(uri: string): InlineMathRaster {
   const existing = inlineMathRasters.get(uri);
-  if (existing) return existing;
+  if (existing) {
+    inlineMathRasters.delete(uri);
+    inlineMathRasters.set(uri, existing);
+    return existing;
+  }
 
   const entry: InlineMathRaster = { decoded: false };
   inlineMathRasters.set(uri, entry);
+  // Bound the map at the same size as mathCache: a long-lived document that
+  // paints thousands of distinct formulas must not retain a decoded bitmap for
+  // each of them. The evicted formula re-decodes on its next paint, which is
+  // one blank frame for a formula that has not been painted recently.
+  while (inlineMathRasters.size > INLINE_RASTER_LIMIT) {
+    const oldest = inlineMathRasters.keys().next().value;
+    if (oldest === undefined || oldest === uri) break;
+    inlineMathRasters.delete(oldest);
+  }
 
   // Guarded for the same reason `Image` guards it: jsdom and SSR have no
   // `globalThis.Image`, and a formula must degrade to a blank box rather than
@@ -431,7 +455,13 @@ export function renderMathToSVGDataURI(
   if (converted) {
     if (mathCache.size >= MATH_CACHE_LIMIT) {
       const oldest = mathCache.keys().next().value;
-      if (oldest !== undefined) mathCache.delete(oldest);
+      if (oldest !== undefined) {
+        // Drop the raster whose render just left the cache, or the decoded
+        // bitmap would outlive its conversion and pin memory indefinitely.
+        const evicted = mathCache.get(oldest);
+        mathCache.delete(oldest);
+        if (evicted) inlineMathRasters.delete(evicted.uri);
+      }
     }
     mathCache.set(key, converted);
   }

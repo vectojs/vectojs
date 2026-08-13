@@ -245,11 +245,26 @@ fn free_store() {
 /// previous allocation first. Safe to call repeatedly: the JS side re-inits in
 /// place when the scene grows, so the old store must be released before the new
 /// pointers overwrite it or every growth leaks 24 arrays of linear memory.
+///
+/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when `capacity + 8` or the
+/// resulting byte sizes cannot be represented — a hostile count used to wrap
+/// silently in release (allocating a tiny store that kernels then overran,
+/// which is heap corruption) and panic in debug. On rejection the previous
+/// store is untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn init(capacity: usize, max_runs: usize) {
+pub extern "C" fn init(capacity: usize, max_runs: usize) -> i32 {
     // Pad so a 2-lane (f64) tail can read one slot past the logical end without
     // a bounds check or a separate scalar remainder loop.
-    let n = capacity + 8;
+    let Some(n) = capacity.checked_add(8) else {
+        return STATUS_OVERFLOW;
+    };
+    // The layouts `leak_f64`/`leak_i32` reconstruct must not wrap either: a
+    // wrapped byte size would allocate (and later free) a layout that does not
+    // match the element count the kernels index.
+    if n.checked_mul(size_of::<f64>()).is_none() || max_runs.checked_mul(size_of::<i32>()).is_none()
+    {
+        return STATUS_OVERFLOW;
+    }
     free_store();
     unsafe {
         S.x = leak_f64(n);
@@ -281,6 +296,7 @@ pub extern "C" fn init(capacity: usize, max_runs: usize) {
         S.run_capacity = max_runs;
         S.run_count = 0;
     }
+    STATUS_OK
 }
 
 /// Status codes returned by the exports that can reject their arguments.
@@ -294,6 +310,10 @@ pub const STATUS_CAPACITY: i32 = 1;
 pub const STATUS_UNINITIALIZED: i32 = 2;
 /// A sibling run referenced a slot or parent outside the allocated range.
 pub const STATUS_BAD_RUN: i32 = 3;
+/// A requested capacity could not be represented (its size arithmetic
+/// overflowed). The previous store is left untouched, so the caller's views
+/// stay valid and it can fall back to the JS path.
+pub const STATUS_OVERFLOW: i32 = 4;
 
 /// True once `init` has allocated the store.
 #[inline]

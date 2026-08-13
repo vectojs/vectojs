@@ -21,7 +21,7 @@
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
 
-use crate::SIMD_ALIGN;
+use crate::{SIMD_ALIGN, STATUS_OK, STATUS_OVERFLOW, STATUS_UNINITIALIZED};
 
 struct Hit {
     // World-space AABBs, one slot per entity. Index == draw order (topmost = max).
@@ -92,13 +92,32 @@ fn free_hit() {
     }
 }
 
+/// True once `hit_init` has allocated the AABB arrays.
+#[inline]
+fn hits_ready() -> bool {
+    unsafe { H.entity_cap > 0 && !H.minx.is_null() }
+}
+
 /// Allocate for `entity_cap` AABBs, `cell_cap` grid cells, and `item_cap`
 /// (entity, cell) membership pairs, freeing the previous allocation first — the
 /// JS side re-inits in place on growth. The caller sizes `item_cap` for the
 /// expected entity span (small entities ≈ 1–4 cells each).
+///
+/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when `entity_cap + 8` or the
+/// resulting byte sizes cannot be represented: a hostile count used to wrap
+/// silently in release (allocating tiny arrays the kernels then overran) and
+/// panic in debug. On rejection the previous allocation is untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) {
-    let e = entity_cap + 8;
+pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) -> i32 {
+    let Some(e) = entity_cap.checked_add(8) else {
+        return STATUS_OVERFLOW;
+    };
+    if e.checked_mul(size_of::<f64>()).is_none()
+        || cell_cap.checked_mul(size_of::<i32>()).is_none()
+        || item_cap.checked_mul(size_of::<i32>()).is_none()
+    {
+        return STATUS_OVERFLOW;
+    }
     free_hit();
     unsafe {
         H.minx = leak_f64(e);
@@ -113,6 +132,7 @@ pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) 
         H.cell_cap = cell_cap;
         H.item_cap = item_cap;
     }
+    STATUS_OK
 }
 
 macro_rules! ptr_export_f64 {
@@ -171,8 +191,16 @@ fn clampi(v: i32, lo: i32, hi: i32) -> i32 {
 /// `count` is clamped to the capacity `hit_init` allocated, so a caller passing
 /// a stale/too-large count can never walk `cell_range`'s reads past the AABB
 /// arrays — the excess entities are silently not indexed rather than read OOB.
+///
+/// Returns [`STATUS_OK`], or [`STATUS_UNINITIALIZED`] when `hit_init` has not
+/// run yet — a call-order mistake used to be reachable through to a null
+/// dereference (a trap that aborts the whole shared wasm instance, killing
+/// every backend of the Scene).
 #[unsafe(no_mangle)]
-pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
+pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) -> i32 {
+    if !hits_ready() {
+        return STATUS_UNINITIALIZED;
+    }
     unsafe {
         let count = count.min(H.entity_cap);
         let cs = if cell_size > 0.0 { cell_size } else { 64.0 };
@@ -182,13 +210,11 @@ pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
         H.grid_h = gh;
         H.cell_size = cs;
         H.item_overflow = 0;
-        let cells = (gw * gh) as usize;
+        // `gw * gh` is computed in i64: the i32 product wraps on a hostile
+        // viewport in release (silently indexing the wrong cells) and panics in
+        // debug. Both dims are < 2^31, so the i64 product cannot overflow.
+        let cells = (gw as i64 * gh as i64).min(H.cell_cap as i64) as usize;
         // Guard: never write past the allocated cell arrays.
-        let cells = if cells <= H.cell_cap {
-            cells
-        } else {
-            H.cell_cap
-        };
 
         for c in 0..cells {
             *H.cell_count.add(c) = 0;
@@ -202,20 +228,26 @@ pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
             };
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
-                    let c = (cy * gw + cx) as usize;
-                    if c < cells {
-                        *H.cell_count.add(c) += 1;
+                    // Same i64 cell index as the cell count above: the i32
+                    // `cy * gw + cx` wraps for huge grids.
+                    let c = cy as i64 * gw as i64 + cx as i64;
+                    if c < cells as i64 {
+                        *H.cell_count.add(c as usize) += 1;
                     }
                 }
             }
         }
 
-        // Prefix sum → cell_start; seed cursor.
-        let mut acc = 0i32;
+        // Prefix sum → cell_start; seed cursor. `acc` is i64 for the same
+        // reason: total memberships can exceed i32::MAX when a hostile
+        // entity/cell combination inflates the counts, and a wrapped offset
+        // would misdirect every scatter below.
+        let mut acc = 0i64;
         for c in 0..cells {
-            *H.cell_start.add(c) = acc;
-            *H.cursor.add(c) = acc;
-            acc += *H.cell_count.add(c);
+            let start = acc.min(i32::MAX as i64) as i32;
+            *H.cell_start.add(c) = start;
+            *H.cursor.add(c) = start;
+            acc += *H.cell_count.add(c) as i64;
         }
 
         // Pass 2: scatter entity indices into their cells (in ascending index
@@ -228,12 +260,15 @@ pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
             };
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
-                    let c = (cy * gw + cx) as usize;
-                    if c >= cells {
+                    let c = cy as i64 * gw as i64 + cx as i64;
+                    if c >= cells as i64 {
                         continue;
                     }
+                    let c = c as usize;
                     let w = *H.cursor.add(c);
-                    if (w as usize) < H.item_cap {
+                    // `w < i32::MAX` guards the `w + 1` below: a saturated
+                    // offset must not wrap around to a valid-looking small one.
+                    if (w as usize) < H.item_cap && w < i32::MAX {
                         *H.items.add(w as usize) = i as i32;
                         *H.cursor.add(c) = w + 1;
                     } else {
@@ -255,6 +290,7 @@ pub extern "C" fn hit_build(count: usize, vw: f64, vh: f64, cell_size: f64) {
         for c in 0..cells {
             *H.cell_count.add(c) = *H.cursor.add(c) - *H.cell_start.add(c);
         }
+        STATUS_OK
     }
 }
 
@@ -289,8 +325,15 @@ unsafe fn cell_range(
 /// Topmost entity whose AABB contains `(px, py)`, or -1. Scans only the pointer's
 /// cell. Items are in ascending index order, so the last containing item is the
 /// topmost (largest draw-order index).
+///
+/// Returns `-STATUS_UNINITIALIZED` when `hit_init` has not run yet, so a
+/// query-before-init is distinguishable from a genuine miss — a caller must not
+/// treat "no grid" as "nothing hit".
 #[unsafe(no_mangle)]
 pub extern "C" fn hit_query(px: f64, py: f64) -> i32 {
+    if !hits_ready() {
+        return -STATUS_UNINITIALIZED;
+    }
     unsafe {
         let cs = H.cell_size;
         let gw = H.grid_w;

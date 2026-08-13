@@ -19,10 +19,10 @@ const haveWasm = existsSync(wasmPath);
 
 interface RawExports {
   memory: WebAssembly.Memory;
-  init(capacity: number, maxRuns: number): void;
-  anim_init(springCap: number, tweenCap: number): void;
-  hit_init(entityCap: number, cellCap: number, itemCap: number): void;
-  particle_init(capacity: number): void;
+  init(capacity: number, maxRuns: number): number;
+  anim_init(springCap: number, tweenCap: number): number;
+  hit_init(entityCap: number, cellCap: number, itemCap: number): number;
+  particle_init(capacity: number): number;
 }
 
 function load(): RawExports {

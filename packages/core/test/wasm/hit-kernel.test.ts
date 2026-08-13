@@ -6,20 +6,27 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { WASM_STATUS } from '../../src/wasm/backend';
 
 const wasmPath = resolve(process.cwd(), 'src/wasm/vectojs_core.wasm');
 const haveWasm = existsSync(wasmPath);
 
 interface HitExports {
   memory: WebAssembly.Memory;
-  hit_init(entityCap: number, cellCap: number, itemCap: number): void;
-  hit_build(count: number, vw: number, vh: number, cellSize: number): void;
+  hit_init(entityCap: number, cellCap: number, itemCap: number): number;
+  hit_build(count: number, vw: number, vh: number, cellSize: number): number;
   hit_query(px: number, py: number): number;
   hit_overflow(): number;
   p_h_minx(): number;
   p_h_miny(): number;
   p_h_maxx(): number;
   p_h_maxy(): number;
+}
+
+/** Load a raw instance with NO `hit_init`, for call-order tests. */
+function loadRaw(): HitExports {
+  const module = new WebAssembly.Module(readFileSync(wasmPath));
+  return new WebAssembly.Instance(module, {}).exports as unknown as HitExports;
 }
 
 function instantiate(entityCap: number, cellCap: number, itemCap: number) {
@@ -212,5 +219,37 @@ describe.skipIf(!haveWasm)('G3 spike — hit-test broad-phase', () => {
       expect(got).toBeGreaterThanOrEqual(-1);
       expect(got).toBeLessThan(ENTITY_CAP);
     }
+  });
+
+  it('rejects build and query before hit_init instead of trapping', () => {
+    // A call-order mistake used to dereference null grid pointers: a trap that
+    // aborts the whole shared wasm instance — every backend of the Scene dies
+    // with it. Both exports must now reject with a status instead.
+    const ex = loadRaw();
+    expect(ex.hit_build(4, 400, 300, 64)).toBe(WASM_STATUS.UNINITIALIZED);
+    expect(ex.hit_query(10, 10)).toBe(-WASM_STATUS.UNINITIALIZED);
+  });
+
+  it('rejects an entity cap whose +8 pad overflows, leaving the old grid live', () => {
+    const VW = 400;
+    const VH = 300;
+    const CS = 64;
+    const gw = Math.ceil(VW / CS);
+    const gh = Math.ceil(VH / CS);
+    const { ex, minx, miny, maxx, maxy } = instantiate(8, gw * gh, 128);
+
+    minx[0] = 50;
+    miny[0] = 50;
+    maxx[0] = 60;
+    maxy[0] = 60;
+    ex.hit_build(1, VW, VH, CS);
+    expect(ex.hit_query(55, 55)).toBe(0);
+
+    // capacity + 8 wraps on wasm32 usize for this count; the init must reject
+    // rather than allocate a 4-slot array and let hit_build overrun it.
+    expect(ex.hit_init(2 ** 32 - 4, gw * gh, 128)).toBe(WASM_STATUS.OVERFLOW);
+
+    // The previous grid is untouched by a rejected init.
+    expect(ex.hit_query(55, 55)).toBe(0);
   });
 });
