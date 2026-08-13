@@ -30,6 +30,24 @@ export const WASM_STATUS = {
   BAD_RUN: 3,
 } as const;
 
+/**
+ * True when a backend's resident typed-array views must be rebuilt: the shared
+ * `WebAssembly.Memory` buffer they were constructed over has been detached
+ * (reads as `byteLength === 0`) or replaced. Every backend of a Scene shares one
+ * instance and therefore one linear memory, so ANY backend's `*_init` can grow
+ * it and detach the views of every other backend. The transform backend keeps
+ * this check inline in {@link WasmTransformBackend.revalidateViews}; the anim/
+ * hit/particle backends reuse this helper.
+ */
+export function viewsStale(
+  cap: number,
+  probe: ArrayBufferView,
+  memory: WebAssembly.Memory,
+): boolean {
+  if (cap === 0) return false;
+  return probe.byteLength === 0 || probe.buffer !== memory.buffer;
+}
+
 /** The raw C ABI the crate (`crates/vectojs-core-rs`) exports. */
 interface CoreExports {
   memory: WebAssembly.Memory;

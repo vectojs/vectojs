@@ -92,6 +92,31 @@ describe('fenced-block registry sabotage', () => {
     expect(codeBlocksOf(md)).toHaveLength(1);
   });
 
+  it('replaces the CodeBlock placeholder once the renderer load resolves', async () => {
+    // A deferred load: the fence renders (as a CodeBlock) before the load is
+    // resolved, then the resolution must swap the plugin entity in.
+    let resolveLoad!: (r: () => Entity) => void;
+    const marker = new Entity();
+    registerFencedBlockRenderer('sabotage', {
+      load: () =>
+        new Promise<() => Entity>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    });
+
+    const md = new Markdown('```sabotage\nhello\n```\n');
+    expect(codeBlocksOf(md)).toHaveLength(1);
+
+    resolveLoad(() => marker);
+    // The renderer load promise is cached; awaiting it also drains the rebuild
+    // continuation Markdown attached (registered before this await), so the
+    // plugin entity is in the tree by the time this resolves.
+    await ensureFencedBlockRenderer('sabotage');
+
+    expect(walk(md.content)).toContain(marker);
+    expect(codeBlocksOf(md)).toHaveLength(0);
+  });
+
   it('falls back when the renderer returns null', async () => {
     registerFencedBlockRenderer('sabotage', {
       async load() {

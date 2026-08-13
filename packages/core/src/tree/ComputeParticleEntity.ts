@@ -387,6 +387,7 @@ export class ComputeParticleEntity extends Entity {
   ): boolean {
     const count = this.maxParticles;
     backend.ensure(count);
+    backend.revalidateViews();
     backend.gather(this.particleData, count, true);
     const pending = backend.step(count, {
       dt,
