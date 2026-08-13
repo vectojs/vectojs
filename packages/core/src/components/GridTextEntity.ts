@@ -23,7 +23,10 @@ export class GridTextEntity extends Entity {
   public updateGrid(ascii: string[]) {
     this.grid = ascii;
     this.rows = ascii.length;
-    this.cols = ascii[0]?.length || 0;
+    // Width is the WIDEST row, not the first one: a ragged grid whose first row
+    // is empty (['', 'abc']) would otherwise lay out at 0 columns and paint
+    // nothing, even though later rows have characters to draw.
+    this.cols = ascii.reduce((widest, row) => Math.max(widest, row?.length ?? 0), 0);
   }
 
   public isPointInside(_globalX: number, _globalY: number): boolean {

@@ -113,7 +113,7 @@ export interface TabsOptions {
  * });
  */
 export class Tabs extends UIComponent {
-  public tabs: TabItem[];
+  private _tabs: TabItem[] = [];
   public value: string;
   public tabHeight: number;
   public font: string;
@@ -136,7 +136,11 @@ export class Tabs extends UIComponent {
 
   constructor(opts: TabsOptions) {
     super();
-    this.tabs = opts.tabs;
+    // Backing field directly, not the setter: the setter's re-sync exists for
+    // POST-construction reassignment, and the constructor does its own initial
+    // sync at the end (the setter would run mid-construction, before width/
+    // height/tabWidth exist).
+    this._tabs = opts.tabs;
     this.value = opts.value ?? (opts.tabs.length > 0 ? opts.tabs[0].id : '');
     this.width = opts.width;
     this.height = opts.height;
@@ -238,6 +242,23 @@ export class Tabs extends UIComponent {
   public selectTab(id: string, focusIt = false): void {
     if (id !== this.value) this.emit('change', { value: id });
     if (focusIt) this._focusTabHotspot(id);
+  }
+
+  /**
+   * The tab set. Reassigning the array re-syncs the a11y hotspot pool and the
+   * bar geometry in place — the transparent `role="tab"` hotspots must not
+   * keep describing the OLD array after a replacement (an owner that replaces
+   * rather than mutates its tab list would otherwise leave keyboard focus and
+   * AT activation pointing at stale labels/ids). Content mounting is picked up
+   * by {@link update}, which re-derives it every frame.
+   */
+  public get tabs(): TabItem[] {
+    return this._tabs;
+  }
+  public set tabs(value: TabItem[]) {
+    if (value === this._tabs) return;
+    this._tabs = value;
+    this._syncTabHotspots();
   }
 
   /** Arrow-key navigation within the tablist (WCAG tab pattern): Left/Up → prev,
@@ -371,10 +392,10 @@ export class Tabs extends UIComponent {
   }
 
   /**
-   * Re-derive content geometry every frame: `tabs` is a public field owners
-   * reassign directly (no setter to intercept), and the bar height itself is
-   * dynamic under `autoHideTabBar` — the active content must follow both
-   * without requiring a `change` emit.
+   * Re-derive content geometry every frame: the active content must follow a
+   * `tabs` reassignment (which re-syncs the hotspot pool via its setter) and
+   * the dynamically-hiding bar (`autoHideTabBar`) without requiring a `change`
+   * emit.
    */
   public update(dt: number, time: number): void {
     super.update(dt, time);

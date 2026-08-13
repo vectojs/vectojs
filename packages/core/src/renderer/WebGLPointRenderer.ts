@@ -52,9 +52,9 @@ export interface PointRenderer {
    *
    * Batching here is by primitive type — one draw per active type — so draw calls
    * and batches are the same number, and both are bounded at five plus one per
-   * mid-frame MSDF atlas switch. That switch is the only variable term and the
-   * only thing worth watching: it forces a commit of glyphs batched against the
-   * previous font.
+   * mid-frame atlas switch (MSDF or sprite). Those switches are the only
+   * variable term and the only thing worth watching: each forces a commit of
+   * glyphs/sprites batched against the previous atlas.
    */
   stats?(): WebGLDrawStats;
   /** Add one circle in world (CSS-pixel) coordinates; `alpha` multiplies the color's. */
@@ -903,6 +903,27 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       : null;
   const maxPointSize = pointSizeRange ? pointSizeRange[1] : Infinity;
 
+  // Commit the pending sprite batch with the CURRENTLY bound atlas. Called
+  // from flush(), and from setTexture() before an atlas switch so sprites
+  // batched against the previous raster aren't drawn with the new one — the
+  // sprite-path counterpart of drawGlyphs()'s MSDF-atlas guard.
+  const drawSprites = () => {
+    if (spriteCount === 0 || !texture) return;
+    const bytes = spriteCount * VERTS_PER_QUAD * PACKED_QUAD_VERT_STRIDE;
+    gl.useProgram(spriteProgram);
+    gl.bindVertexArray(spriteVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, spriteData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(sUTex, 0);
+    gl.uniform2f(sURes, logicalW, logicalH);
+    ensureQuadIndices(spriteCount);
+    gl.drawElements(gl.TRIANGLES, spriteCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
+    frameDrawCalls++;
+    spriteCount = 0;
+  };
+
   // Commit the pending glyph batch with the CURRENTLY bound MSDF atlas. Called
   // from flush(), and from setMSDFTexture() before an atlas switch so glyphs
   // batched against the previous font aren't drawn with the new one.
@@ -978,6 +999,11 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       // frame retries. No in-repo caller passes an undecoded source today, but
       // this is public API and the sprite path has the identical shape.
       if (!isSourceReady(source)) return;
+      // Different atlas: sprites already batched belong to the previous raster
+      // — draw them with it before the upload replaces the texture contents.
+      // Without this commit they would survive into flush() and be drawn
+      // sampling the NEW atlas with the OLD UVs.
+      drawSprites();
       if (!texture) {
         texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -1183,18 +1209,7 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
       }
 
       if (spriteCount > 0 && texture) {
-        const bytes = spriteCount * VERTS_PER_QUAD * PACKED_QUAD_VERT_STRIDE;
-        gl.useProgram(spriteProgram);
-        gl.bindVertexArray(spriteVAO);
-        gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, spriteData.u8.subarray(0, bytes), gl.DYNAMIC_DRAW);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.uniform1i(sUTex, 0);
-        gl.uniform2f(sURes, logicalW, logicalH);
-        ensureQuadIndices(spriteCount);
-        gl.drawElements(gl.TRIANGLES, spriteCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
-        frameDrawCalls++;
+        drawSprites();
       }
 
       gl.bindVertexArray(null);

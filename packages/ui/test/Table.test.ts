@@ -273,6 +273,20 @@ describe('Table', () => {
       expect([...after].some((i) => i >= 190 && i <= 210)).toBe(true); // ~200 mounted
     });
 
+    it('re-syncs string cells of mounted rows on layout()', () => {
+      // reconcileVirtualRows syncs cells only on MOUNT, so an in-place edit to
+      // the public rows array used to stay stale until the row scrolled out
+      // and back. layout() must pick the edit up for mounted rows directly.
+      const t = makeTable(40);
+      const cell = (t as any).bodyCells[0][0] as Text;
+      expect(cell.text).toBe('a0');
+
+      t.rows[0]![0] = 'edited-in-place';
+      t.layout();
+
+      expect(cell.text).toBe('edited-in-place');
+    });
+
     it('classic (no viewportHeight) still mounts every cell and grows to fit', () => {
       const t = new Table({
         headers: ['A', 'B'],

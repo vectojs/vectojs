@@ -73,4 +73,30 @@ describe('GridTextEntity', () => {
     entity.render(mockRenderer as any);
     expect(mockRenderer.save).not.toHaveBeenCalled();
   });
+
+  it('sizes cols from the widest row, not the first (ragged grid)', () => {
+    const entity = new GridTextEntity({}, 10);
+    // First row is empty: the OLD first-row-only computation laid this out at
+    // 0 columns and rendered nothing, even though the second row has 3 chars.
+    entity.updateGrid(['', 'abc']);
+    expect(entity.rows).toBe(2);
+    expect(entity.cols).toBe(3);
+
+    mockRenderer.save.mockClear();
+    mockRenderer.fillText.mockClear();
+    entity.render(mockRenderer as any);
+    // All three characters of the second row are drawn (no characters in the
+    // empty first row).
+    const drawn = mockRenderer.fillText.mock.calls.map((call) => call[0]);
+    expect(drawn).toEqual(['a', 'b', 'c']);
+  });
+
+  it('tolerates rows shorter than the widest (undefined trailing chars)', () => {
+    const entity = new GridTextEntity({}, 10);
+    entity.updateGrid(['abcd', 'x']);
+    expect(entity.cols).toBe(4);
+    // Row 1 only has one char; the render loop must not throw on the missing
+    // trailing cells.
+    expect(() => entity.render(mockRenderer as any)).not.toThrow();
+  });
 });

@@ -13,6 +13,13 @@ export type RGBA = [number, number, number, number];
 const CACHE_MAX = 1000;
 const cache = new Map<string, RGBA>();
 let fallbackCtx: CanvasRenderingContext2D | null | undefined;
+/**
+ * Probe color for detecting an ignored `fillStyle` assignment (unparseable
+ * input). `#010203` reads back verbatim on every engine, and anything reaching
+ * the canvas path has already failed the `#`/`rgb()` fast paths, so it can
+ * never legitimately equal the sentinel.
+ */
+const SENTINEL = '#010203';
 
 function fromHex(hex: string): RGBA | null {
   const h = hex.slice(1);
@@ -64,7 +71,16 @@ function fromCanvas(css: string): RGBA | null {
   // The 1x1 canvas is shared across parses; a semi-transparent fill would
   // source-over-composite with the previous parse's pixel, so clear it first.
   fallbackCtx.clearRect(0, 0, 1, 1);
+  // Assigning an unparseable color to `fillStyle` is silently IGNORED by the
+  // canvas, so the fill below would sample the PREVIOUS parse's color — an
+  // invalid input would read back as whatever was last drawn, poisoning the
+  // per-string cache. Probe with a sentinel: if it survives the assignment,
+  // the color did not parse and the caller must fall back to opaque black.
+  // (Anything reaching this path has already failed the `#`/`rgb()` fast
+  // paths, so it can never legitimately equal the `#…` sentinel.)
+  fallbackCtx.fillStyle = SENTINEL;
   fallbackCtx.fillStyle = css;
+  if (fallbackCtx.fillStyle === SENTINEL) return null;
   fallbackCtx.fillRect(0, 0, 1, 1);
   const d = fallbackCtx.getImageData(0, 0, 1, 1).data;
   return [d[0] / 255, d[1] / 255, d[2] / 255, d[3] / 255];
@@ -76,8 +92,8 @@ function fromCanvas(css: string): RGBA | null {
  * Fast paths handle `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa` and `rgb()`/`rgba()`;
  * other forms (named colors, `hsl()`, …) resolve via a cached 1×1 canvas when a
  * DOM is available. Results are cached per input string and shared by identity,
- * so callers must treat the returned array as read-only. Unparseable input with
- * no DOM yields opaque black `[0, 0, 0, 1]`.
+ * so callers must treat the returned array as read-only. Unparseable input
+ * yields opaque black `[0, 0, 0, 1]` regardless of DOM availability.
  *
  * @param css - A CSS color string, e.g. `'#38bdf8'` or `'rgba(0,0,0,.5)'`.
  * @returns The cached `[r, g, b, a]` tuple in `[0, 1]`.

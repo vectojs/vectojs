@@ -34,6 +34,44 @@ describe('URL policy', () => {
     expect(isSafeUrl(url)).toBe(false);
   });
 
+  it.each([
+    // Entity-encoded colon (numeric and named): an HTML attribute parser
+    // decodes these, so a consumer embedding the sanitized string into markup
+    // would resolve the scheme to javascript: unless the check decodes first.
+    'javascript&#58;alert(1)',
+    'javascript&#x3a;alert(1)',
+    'javascript&colon;alert(1)',
+    // Entity-encoded scheme letters hide the colon from the naive scan AND
+    // break the scheme-name pattern, which read them as a relative URL.
+    '&#106;avascript:alert(1)',
+    'java&#115;cript:alert(1)',
+    // Encoded control chars combined with a literal colon.
+    'java&Tab;script:alert(1)',
+    'java&NewLine;script:alert(1)',
+    // Mixed-case and whitespace forms a parser still resolves.
+    '  JaVaScRiPt&#58;alert(1)  ',
+    'data&#x3a;text/html,<script>alert(1)</script>',
+  ])('rejects entity-encoded executable schemes in %j', (url) => {
+    expect(sanitizeUrl(url)).toBe('#');
+    expect(isSafeUrl(url)).toBe(false);
+  });
+
+  it('passes safe URLs that merely contain character references', () => {
+    // Decoding happens for the CHECK only; the caller's string is returned
+    // verbatim when the decoded form is safe.
+    expect(sanitizeUrl('https&#58;//example.com/docs')).toBe('https&#58;//example.com/docs');
+    expect(isSafeUrl('https&#58;//example.com/docs')).toBe(true);
+    // A query string full of ampersands is not a character reference.
+    expect(sanitizeUrl('/search?q=a&b=1')).toBe('/search?q=a&b=1');
+  });
+
+  it('treats a double-encoded colon the way the parser does (decoded once)', () => {
+    // &amp;colon; decodes to the LITERAL text `&colon;`, which is not a colon —
+    // exactly what a browser's single decode pass produces, and therefore
+    // still inert in any sink.
+    expect(sanitizeUrl('javascript&amp;colon;alert(1)')).toBe('javascript&amp;colon;alert(1)');
+  });
+
   it('handles empty and non-string values without throwing', () => {
     expect(sanitizeUrl('   ')).toBe('');
     expect(sanitizeUrl(null)).toBe('');

@@ -288,6 +288,12 @@ export class VirtualList<T = unknown> extends UIComponent {
       this._pool.clear();
       this._targetY = 0;
       this._scrollY = 0;
+      // Zero the integrator velocity alongside: it tracks the PREVIOUS list's
+      // motion, so without this the first update() after a replace carries the
+      // old flick into the new list and `_scrollY` overshoots past the content
+      // edge (negative at the top, past `_maxScroll()` at the bottom) before
+      // the exponential decay pulls it back.
+      this._velY = 0;
     }
     this._reconcile();
     this.scene?.markDirty({ entity: this.id, reason: 'items-changed' });
