@@ -2,6 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Scene, Entity } from '@vectojs/core';
 import { Overlay } from '../src/Overlay';
+import { Popover } from '../src/Popover';
+import { Button } from '../src/Button';
 
 // Minimal concrete subclass for testing the base Overlay behavior.
 class TestOverlay extends Overlay {
@@ -134,10 +136,56 @@ describe('Overlay.showAtPoint', () => {
     expect(overlay.interactive).toBe(false);
     expect((scene as any).a11yElements.get(overlay.id)).toBeUndefined();
 
-    // Re-show restores both.
-    overlay.interactive = true;
+    // Re-show restores both — showAtPoint itself must flip `interactive` back
+    // on (it drops it in hide()), not the caller.
     overlay.showAtPoint(60, 60, scene);
     (scene as any).syncA11y((scene as any).root);
     expect((scene as any).a11yElements.get(overlay.id)).toBeInstanceOf(HTMLElement);
+  });
+});
+
+describe('Popover hidden-state invariant', () => {
+  function makeHost(): { scene: Scene; target: Entity; popover: Popover; sync: () => void } {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const target = new Entity('target');
+    target.interactive = true;
+    target.width = 40;
+    target.height = 40;
+    scene.add(target);
+    const popover = new Popover({ target, width: 100, height: 60 });
+    popover.add(new Button('Option A'));
+    scene.add(popover);
+    return { scene, target, popover, sync: () => (scene as any).syncA11y((scene as any).root) };
+  }
+
+  const projectedButtons = (scene: Scene): number =>
+    [...(scene as any).a11yElements.values()].filter(
+      (el: HTMLElement) => el.tagName.toLowerCase() === 'button',
+    ).length;
+
+  it('does not project itself or its children before the first show', () => {
+    const { scene, popover, sync } = makeHost();
+    sync();
+    expect((scene as any).a11yElements.get(popover.id)).toBeUndefined();
+    expect(projectedButtons(scene)).toBe(0);
+  });
+
+  it('projects again after a full show→hide→show cycle', () => {
+    const { scene, target, popover, sync } = makeHost();
+    sync();
+    expect(projectedButtons(scene)).toBe(0);
+
+    target.emit('click', {});
+    sync();
+    expect(projectedButtons(scene)).toBe(1);
+
+    popover.hide();
+    sync();
+    expect(projectedButtons(scene)).toBe(0);
+
+    target.emit('click', {});
+    sync();
+    expect(projectedButtons(scene)).toBe(1);
   });
 });

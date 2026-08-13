@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Scene } from '@vectojs/core';
-import { Slider, Dropdown, Button, Input, TextArea } from '../src';
+import { Slider, Dropdown, Button, Input, TextArea, ProgressBar } from '../src';
 
 function fakeCtx(): CanvasRenderingContext2D {
   return new Proxy(
@@ -45,6 +45,24 @@ describe('UI component accessibility contract', () => {
     expect(sliderEl.getAttribute('aria-valuenow')).toBe('30');
     expect(sliderEl.getAttribute('aria-valuemin')).toBe('10');
     expect(sliderEl.getAttribute('aria-valuemax')).toBe('50');
+  });
+
+  it('projects role="progressbar" with a live aria-valuenow', () => {
+    // ProgressBar declared role/progressbar + value but was never interactive,
+    // so the projection gate dropped it entirely and the semantics were dead.
+    // Like Image, it needs a semantic mirror while drawing nothing interactive.
+    const { scene, root, tick } = makeScene();
+    const bar = new ProgressBar({ value: 0.45 }).setPosition(0, 0);
+    scene.add(bar);
+    tick();
+
+    const el = root.querySelector('[role="progressbar"]')!;
+    expect(el).not.toBeNull();
+    expect(el.getAttribute('aria-valuenow')).toBe('45');
+
+    bar.setValue(0.8);
+    tick();
+    expect(el.getAttribute('aria-valuenow')).toBe('80');
   });
 
   describe('disabled and validation state', () => {

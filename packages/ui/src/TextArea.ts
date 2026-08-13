@@ -10,6 +10,13 @@ export interface WrappedLine {
   start: number;
   /** Absolute offset into the source value where this line ends (exclusive). */
   end: number;
+  /**
+   * Paragraph-relative minimum `sourceIndex` over the line's layout nodes.
+   * Set by TextArea's internal `computeLines` (absent on `wrapText` output).
+   * Needed because the nodes are kept in VISUAL (x-sorted) order, so the
+   * source-first node is not `nodes[0]` on an RTL line — see `offsetX`.
+   */
+  minSourceIndex?: number;
 }
 
 /**
@@ -391,16 +398,22 @@ export class TextArea extends UIComponent {
         });
       } else {
         for (const group of lineGroups) {
+          // Visual (x) order — this is what makes `nodes[0]` the visually
+          // leftmost glyph, which for an RTL run is the source-LAST node. So
+          // `minSourceIndex` must be captured here, before any caller assumes
+          // source order.
           group.sort((a, b) => a.x - b.x);
 
           const text = group.map((n) => n.char).join('');
 
           let start = paragraphText.length;
           let end = 0;
+          let minSourceIndex = paragraphText.length;
           for (const node of group) {
             const nodeStart = node.sourceIndex ?? 0;
             const nodeLen = node.sourceLength ?? 0;
             if (nodeStart < start) start = nodeStart;
+            if (nodeStart < minSourceIndex) minSourceIndex = nodeStart;
             if (nodeStart + nodeLen > end) end = nodeStart + nodeLen;
           }
 
@@ -409,6 +422,7 @@ export class TextArea extends UIComponent {
             start: pStart + start,
             end: pStart + end,
             nodes: group,
+            minSourceIndex,
           } as any);
         }
       }
@@ -442,7 +456,10 @@ export class TextArea extends UIComponent {
   private offsetX(line: any, offset: number): number {
     if (!line.nodes || line.nodes.length === 0) return 0;
 
-    const pStart = line.start - (line.nodes[0].sourceIndex ?? 0);
+    // Base on the line's minimum sourceIndex, NOT nodes[0]: the nodes are in
+    // visual (x) order, so on an RTL line nodes[0] is the source-LAST node and
+    // a nodes[0]-based base shifts every offset by the run length.
+    const pStart = line.start - (line.minSourceIndex ?? 0);
     let targetNode: any = null;
     let isRTL = false;
 
@@ -573,7 +590,10 @@ export class TextArea extends UIComponent {
         } else {
           // Precise per-glyph highlight
           r.beginPath();
-          const pStart = line.start - (line.nodes[0].sourceIndex ?? 0);
+          // Same base-offset rule as offsetX: minSourceIndex, not nodes[0]
+          // (visual order), or RTL lines compare shifted offsets and the wrong
+          // glyphs light up.
+          const pStart = line.start - (line.minSourceIndex ?? 0);
           for (const node of line.nodes) {
             const start = pStart + (node.sourceIndex ?? 0);
             const len = node.sourceLength ?? 0;
