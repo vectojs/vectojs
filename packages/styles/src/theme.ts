@@ -66,23 +66,37 @@ export function getTheme(): Theme {
  * caller-side changes. Styles without `var()` references are not tracked and
  * are unaffected.
  *
+ * The switch is atomic with respect to token resolution: every tracked style
+ * is resolved against `next` *before* the active theme changes, so a theme
+ * that is missing a referenced token throws while the scene, the active theme
+ * and the pair bookkeeping are all still fully consistent under the previous
+ * theme — never half-restyled.
+ *
  * Throws if a token value does not survive the mapped property's validation
  * (e.g. `--gap: '50%'`), so a broken theme fails loudly on switch.
  */
 export function setTheme(next: Theme): void {
   if (next === current.theme) return;
   const previous = current.theme;
-  current.theme = next;
   const pairs = varPairs.get(previous);
+  // Dry-run: resolve every tracked style against `next` first. A missing token
+  // throws here, before `current.theme` moves or any entity is touched.
+  const resolved = new Map<Entity, Style>();
   if (pairs) {
-    const nextPairs = pairsOf(next);
     for (const [entity, keys] of pairs) {
       const style: Style = {};
       for (const [key, expr] of keys) {
         (style as Record<string, unknown>)[key] = expr;
       }
-      reapplyStyle(entity, style, next);
-      nextPairs.set(entity, keys);
+      resolved.set(entity, resolveStyle(style, next).style);
+    }
+  }
+  current.theme = next;
+  if (pairs) {
+    const nextPairs = pairsOf(next);
+    for (const [entity, style] of resolved) {
+      applyStyleResolved(entity, style);
+      nextPairs.set(entity, pairs.get(entity)!);
     }
     varPairs.delete(previous);
   }
@@ -124,5 +138,5 @@ export function trackVarKeys(entity: Entity, style: Style): void {
 }
 
 // Re-exported for the apply layer without an import cycle.
-import { reapplyStyle } from './apply';
+import { applyStyleResolved, resolveStyle } from './apply';
 export type { Style };

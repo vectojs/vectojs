@@ -4,6 +4,7 @@ import {
   applyStyle,
   css,
   DEFAULT_THEME,
+  getTheme,
   PRESET_THEMES,
   setTheme,
   style,
@@ -122,6 +123,30 @@ describe('setTheme() switching', () => {
     applyStyle(e, style({ borderRadius: 'var(--radius-md)' }));
     const broken = tokens({ accent: '#999999', 'radius-md': '50%', gap: 4 });
     expect(() => setTheme(broken)).toThrow(/borderRadius/);
+  });
+
+  it('is atomic when the next theme is missing a tracked token (GH-485)', () => {
+    setTheme(themeA);
+    const e1 = stub({ bg: '' });
+    const e2 = stub({ radius: 0 });
+    applyStyle(e1, style({ backgroundColor: 'var(--accent)' }));
+    applyStyle(e2, style({ borderRadius: 'var(--radius-md)' }));
+    expect(e1.bg).toBe('#111111');
+    expect(e2.radius).toBe(8);
+
+    const partial = tokens({ accent: '#222222' }); // lacks --radius-md
+    expect(() => setTheme(partial)).toThrow(/unknown token/);
+
+    // The failed switch must leave everything fully under the previous theme:
+    // theme not committed, neither entity restyled, tracking still intact.
+    expect(getTheme()).toBe(themeA);
+    expect(e1.bg).toBe('#111111');
+    expect(e2.radius).toBe(8);
+
+    // And a subsequent valid switch must still re-resolve every pair.
+    setTheme(themeB);
+    expect(e1.bg).toBe('#eeeeee');
+    expect(e2.radius).toBe(16);
   });
 
   it('applying a new var() style after a switch registers under the new theme', () => {
