@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { Entity, Scene } from '@vectojs/core';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { Entity, Scene, type A11yAttributes, type DevtoolsDescriptor } from '@vectojs/core';
 import { Button, Stack } from '@vectojs/ui';
 import { attachDevtools } from '../src/index';
+import { clearDevtoolsPlugins, registerDevtoolsPlugin } from '../src/plugin';
 
 class Box extends Entity {
   constructor(id: string, w = 40, h = 20) {
@@ -22,6 +23,23 @@ function makeHost(): Scene {
   document.body.appendChild(parent);
   return new Scene(canvas, { disableWindowResize: true });
 }
+
+/** A Box whose descriptor fills the whole INSPECT_ROWS budget (12 descriptor lines). */
+class FullDescBox extends Box {
+  public override getDevtoolsDescriptor(): DevtoolsDescriptor {
+    return {
+      kind: 'busy',
+      groups: [
+        {
+          label: 'state',
+          fields: Array.from({ length: 11 }, (_, i) => ({ label: `f${i}`, value: i })),
+        },
+      ],
+    };
+  }
+}
+
+afterEach(() => clearDevtoolsPlugins());
 
 describe('attachDevtools', () => {
   it('mounts a panel, mirrors the host tree, and tears down cleanly', () => {
@@ -156,6 +174,83 @@ describe('attachDevtools', () => {
     expect(panel.selection).toBe(a);
     const readout = (panel as any).detailLines.map((l: { text: string }) => l.text).join('\n');
     expect(readout).toContain('#a');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('selectFinding resolves a plugin finding row to its entity (unified list)', () => {
+    const host = makeHost();
+    const target = new Box('plugged');
+    host.add(target);
+    registerDevtoolsPlugin({
+      id: 'aud',
+      audits: [
+        { id: 'a', run: () => [{ kind: 'thing', entityId: target.id, message: 'went wrong' }] },
+      ],
+    });
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.audit();
+    // A clean scene has no scene findings, so the plugin finding is row 0.
+    expect(panel.getPluginFindings()).toHaveLength(1);
+    panel.selectFinding(0);
+    expect(panel.selection?.id).toBe('plugged');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('the transient "owned by parent" warning survives a readout that fills all rows', () => {
+    const host = makeHost();
+    const stack = new Stack({ direction: 'vertical' });
+    host.add(stack);
+    const child = new FullDescBox('owned');
+    stack.add(child); // Stack owns child.x/y, so the x edit is an override
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(child);
+    (panel as any).applyEdit('x', '5');
+
+    // describeEntity fills all INSPECT_ROWS for this entity; the transient
+    // warning appended as a 21st line was silently dropped by the bounded
+    // write loop — the one line the user was looking for right now.
+    const lines = (panel as any).detailLines.map((l: { text: string }) => l.text);
+    expect(lines.join('\n')).toContain('is owned by');
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('caches the full-scene a11y audit across refresh ticks (recomputed on structure change)', () => {
+    const host = makeHost();
+    let a11yCalls = 0;
+    class Counting extends Box {
+      public override getA11yAttributes(): A11yAttributes {
+        a11yCalls++;
+        return {};
+      }
+    }
+    const counter = new Counting('cnt');
+    host.add(counter);
+    const other = new Box('sel');
+    host.add(other);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(other); // first audit runs here
+    const afterSelect = a11yCalls;
+    expect(afterSelect).toBeGreaterThan(0);
+
+    // Unchanged structure: the audit must not walk the scene again on the
+    // periodic refresh fast path (it used to — every 500ms tick).
+    panel.refresh();
+    panel.refresh();
+    expect(a11yCalls).toBe(afterSelect);
+
+    // A structure bump re-runs the audit once.
+    host.add(new Box('late'));
+    panel.refresh();
+    expect(a11yCalls).toBeGreaterThan(afterSelect);
 
     panel.detach();
     host.destroy();

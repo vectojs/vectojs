@@ -133,10 +133,12 @@ describe('MSDFFont', () => {
     const { glyphs, width } = font.layout('A\u0301B', 100);
     // All three quads exist (the mark is drawn)…
     expect(glyphs.map((g) => g.char)).toEqual(['A', '\u0301', 'B']);
-    // …but the mark advanced 0, so 'B' sits right after 'A' (kerning applies,
-    // since the mark does not reset the kern pair's left side in the atlas —
-    // width is A(0.6) + B(0.5) with no contribution from the mark.
-    expect(width).toBeCloseTo(0.6 * 100 + 0.5 * 100);
+    // …but the mark advanced 0, so 'B' sits right after 'A'. The mark must not
+    // replace the kerning base either: kern(A,B) = −0.05 still applies, or
+    // `prevCode` pointed at the mark and the pair was silently dropped —
+    // pen = A(0.6) + kern(−0.05) = 0.55em, B.left at pen + 0.1em = 65.
+    expect(glyphs[2].x).toBeCloseTo(65);
+    expect(width).toBeCloseTo(0.6 * 100 - 0.05 * 100 + 0.5 * 100);
   });
 
   it('reserves no advance for a missing nonspacing mark', () => {
