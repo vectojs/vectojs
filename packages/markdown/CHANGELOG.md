@@ -1,5 +1,30 @@
 # @vectojs/markdown
 
+## 0.20.2
+
+### Patch Changes
+
+- 2d87d37: Fix a fenced code block staying a plain `CodeBlock` forever when its registered plugin renderer finishes loading _after_ the fence was already rendered. `ensureFencedBlockRenderer` was fire-and-forget: a one-shot `new Markdown('```mermaid\n...\n```')`, a `setContent()`, or a fence closed in the final stream chunk built the fallback `CodeBlock` and nothing re-rendered when the load resolved. The code arm now schedules a rebuild (coalesced per instance via `fencedRebuildPending`, guarded by `isDestroyed` and `isFencedBlockRendererReady`) so the plugin entity replaces the placeholder; a renderer that loads but returns `null` remains a permanent fallback and never rebuilds.
+- f6cde39: Fix two late-arrival rebuild gaps. An inline image nested in a blockquote, a `:::` container or a list item never re-measured after its decode: `inlineImageBoxesStale` only walked top-level `heading`/`table` tokens, so a nested heading's badge kept the square box it reserved before knowing its aspect ratio — the walk now recurses through the same three nesting shapes `containsImage` uses. And a late `*[TERM]:` definition did not retroactively style prose in a single-block document: the `abbreviationsChanged` cap forced `matchLen` to 0, and for one token `0 === oldTokens.length - 1` satisfied the in-place condition with the new dictionary already installed, so only the tail child was restyled — the in-place branches are now gated on `!abbreviationsChanged`.
+- d86f5ce: P3 defects from the 2026-08-13 review, across core, markdown and ui.
+
+  - core: `Entity.remove` now unregisters the detached subtree from the batched-driver candidate set (off-tree drivers no longer tick until completion, and re-attach resumes them); `WasmBackendFacade.syncStore` clears `_aabbsFresh` on both rejection returns so a fused hit gather never reads the previous frame's AABBs after a transient kernel rejection; the content-grid zero-measurement branch publishes `vectoGridReady` from a frame callback like the probe-free branch; `parseColorToRGBA` returns opaque black for unparseable input instead of the previous parse's canvas color; `sanitizeUrl` decodes HTML character references before scheme detection so entity-encoded `javascript:` payloads rewrite to `#`; `SplineEntity` bakes at the renderer's clamped `pixelRatio` and re-bakes on change; `WebGLPointRenderer.setTexture` commits the pending sprite batch before an atlas swap; `GridTextEntity.updateGrid` sizes `cols` from the widest row; `Scene.step` docstring unit corrected to milliseconds.
+  - markdown: `CodeBlock.setCode` zeroes the highlight-segment reuse prefix when the language changes; the worker's per-instance raw cache is bounded with oldest-entry eviction.
+  - ui: `TreeView` catches lazy-load rejections, clears the loading state and rebuilds rows; virtualized `Table.layout()` re-syncs string cells of mounted rows; reassigning the public `tabs`/`options` arrays re-syncs the a11y hotspot pools; non-keyed `VirtualList.setItems` zeroes `_velY` so a replace no longer overshoots the content edge.
+
+- e41dd95: P3 review defects from the 2026-08-13 full-repo review (#499, #500).
+
+  `@vectojs/tex`: `\llap`/`\clap` ink now lands where CSS puts it (llap ends at the anchor, clap straddles it) instead of all three laps sharing rlap's rightward draw; the emitted viewBox expands to the union of placed ink, so `\smash`/`\hphantom` content and `\llap` ink left of the origin are no longer clipped; and the `color` option (plus `\cancel` strokes and grouped fills) is attribute-escaped before interpolation, hardening the emitter against future user-derived colours.
+
+  `@vectojs/markdown`: `inlineMathRasters` is now bounded — a render's raster is dropped when mathCache evicts the render, and the map is capped at the same 256 entries, evicting the least-recently-painted bitmap (re-decoding on the next paint) instead of growing unbounded in long-lived documents.
+
+  `@vectojs/core` (WASM kernels): `particle_step` now mirrors the JS oracle's `Math.min`/`Math.max` NaN propagation instead of `f32`'s NaN-ignoring clamps, keeping the differential test bit-identical; `hit_build`/`hit_query` gained an initialized guard so a call-order mistake returns a status instead of trapping the shared instance; and every `*_init` rejects capacities whose `+8` pad or byte size wraps on wasm32 (silent heap-corrupting allocations in release), with `gw * gh` cell arithmetic moved to i64.
+
+- Updated dependencies [e41dd95]
+- Updated dependencies [064cb65]
+- Updated dependencies [bea6212]
+  - @vectojs/tex@0.1.1
+
 ## 0.20.1
 
 ### Patch Changes
