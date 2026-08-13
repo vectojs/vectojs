@@ -37,7 +37,7 @@ import {
   PARTICLE_OFFSET_ORIGIN_Y,
   PARTICLE_OFFSET_LIFE,
 } from '../tree/ComputeParticleEntity';
-import { WASM_STATUS } from './backend';
+import { WASM_STATUS, viewsStale } from './backend';
 
 /** The raw C ABI the crate exports for the particle kernel. */
 interface ParticleExports {
@@ -126,6 +126,16 @@ export class ParticleBackend {
     this.cap = count + PAD;
     this.ex.particle_init(this.cap);
     this.refreshViews();
+  }
+
+  /**
+   * Re-create the typed-array views if another backend's allocation grew the
+   * shared linear memory and detached them (see {@link viewsStale}). Call after
+   * {@link ensure} and before {@link gather}/{@link scatter}.
+   */
+  public revalidateViews(): void {
+    if (this.cap === 0) return;
+    if (viewsStale(this.cap, this.view.px, this.ex.memory)) this.refreshViews();
   }
 
   /**

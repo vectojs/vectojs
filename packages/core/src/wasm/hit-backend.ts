@@ -11,8 +11,10 @@
  * {@link candidatesAt} returns the AABB-overlapping candidates in a cell
  * (ascending entity index — scan from the end for topmost-first); the caller
  * re-checks each one against its entity's own precise `isPointInside` (so
- * non-rectangular hit shapes stay correct) before trusting a result.
+ *  non-rectangular hit shapes stay correct) before trusting a result.
  */
+
+import { viewsStale } from './backend';
 
 /** The raw C ABI the crate (`crates/vectojs-core-rs/src/hit.rs`) exports. */
 interface HitExports {
@@ -82,6 +84,16 @@ export class HitTestBackend {
     this.gridW = gw;
     this.gridH = gh;
     this.cellSize = cellSize;
+  }
+
+  /**
+   * Re-create the typed-array views if another backend's allocation grew the
+   * shared linear memory and detached them (see {@link viewsStale}). Call after
+   * {@link ensure} and before writing into {@link inputView}.
+   */
+  public revalidateViews(): void {
+    if (this.entityCap === 0) return;
+    if (viewsStale(this.entityCap, this.vminx, this.ex.memory)) this.refreshViews();
   }
 
   /**

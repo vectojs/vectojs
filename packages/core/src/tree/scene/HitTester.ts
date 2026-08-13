@@ -181,6 +181,7 @@ export class HitTester {
     // previous typed-array views, so sizing after writing would write into a
     // stale buffer.
     backend.ensure(gathered.count, width, height, 64);
+    backend.revalidateViews();
     const view = backend.inputView();
     view.minx.set(gathered.minx.subarray(0, gathered.count));
     view.miny.set(gathered.miny.subarray(0, gathered.count));

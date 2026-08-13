@@ -20,7 +20,7 @@
  * wasm-side state to invalidate.
  */
 
-import { WASM_STATUS } from './backend';
+import { WASM_STATUS, viewsStale } from './backend';
 
 /** The raw C ABI the crate (`crates/vectojs-core-rs/src/anim.rs`) exports. */
 interface AnimExports {
@@ -101,6 +101,16 @@ export class AnimBackend {
     this.tweenCap = tweenCount + PAD;
     this.ex.anim_init(this.springCap, this.tweenCap);
     this.refreshViews();
+  }
+
+  /**
+   * Re-create the typed-array views if another backend's allocation grew the
+   * shared linear memory and detached them (see {@link viewsStale}). Call after
+   * {@link ensure} and before writing into {@link springView}/{@link tweenView}.
+   */
+  public revalidateViews(): void {
+    if (this.springCap === 0) return;
+    if (viewsStale(this.springCap, this.sv.val, this.ex.memory)) this.refreshViews();
   }
 
   /**
