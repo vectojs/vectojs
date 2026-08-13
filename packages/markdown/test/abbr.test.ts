@@ -223,4 +223,24 @@ describe('a definition arriving late re-styles already-rendered prose', () => {
     md.appendMarkdown('*[HTML]: HyperText Markup Language');
     expect(abbrSpans(md)).toEqual([{ text: 'HTML', title: 'HyperText Markup Language' }]);
   });
+
+  it('restyles prose in a single-block document too', () => {
+    // A document that is ONE token hits the reconciler's single-block case:
+    // `abbreviationsChanged` caps `matchLen` to 0, and
+    // `0 === oldTokens.length - 1` holds, so the blockquote in-place branch
+    // fired with the new dictionary already installed and only the quote's
+    // TAIL child was restyled — the earlier inner paragraph kept spans built
+    // before the definition existed. Gating the in-place branches on
+    // `abbreviationsChanged` forces the full rebuild the cap was promising,
+    // which is what makes the streamed document match a one-shot build of the
+    // combined text. The two inner paragraphs matter: one paragraph spanning
+    // both lines is itself the tail, so its restyle would mask the bug.
+    const streamed = new Markdown('> HTML is fun\n>\n> more', { width: 600 });
+    streamed.appendMarkdown('\n\n*[HTML]: HyperText');
+    const oneShot = new Markdown('> HTML is fun\n>\n> more\n\n*[HTML]: HyperText', {
+      width: 600,
+    });
+    expect(abbrSpans(streamed)).toEqual(abbrSpans(oneShot));
+    expect(abbrSpans(streamed).map((s) => s.text)).toEqual(['HTML']);
+  });
 });
