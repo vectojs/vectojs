@@ -244,6 +244,7 @@ export class DriverTicker {
     tD.length = tweenCount;
 
     backend.ensure(springCount, tweenCount);
+    backend.revalidateViews();
     if (springCount > 0) {
       const sv = backend.springView();
       for (let i = 0; i < springCount; i++) {
