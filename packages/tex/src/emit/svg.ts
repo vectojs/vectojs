@@ -116,8 +116,17 @@ export interface EmitResult {
   placements: GlyphPlacement[];
 }
 
+/**
+ * The effective ink colour a placement resolved to, when the span tree carries
+ * one (`style.color` from `\color`/`\textcolor`/phantom). Undefined means the
+ * caller's default fill applies.
+ */
+interface ColoredPlacement {
+  color?: string;
+}
+
 /** One placed glyph outline. */
-interface PlacedGlyph {
+interface PlacedGlyph extends ColoredPlacement {
   font: string;
   code: number;
   /** Pen x, internal units. */
@@ -129,7 +138,7 @@ interface PlacedGlyph {
 }
 
 /** One filled axis-aligned rectangle: rules, fraction lines, borders. */
-interface PlacedRect {
+interface PlacedRect extends ColoredPlacement {
   x: number;
   y: number;
   w: number;
@@ -142,7 +151,7 @@ interface PlacedRect {
 }
 
 /** One stroked line from a `\cancel` overlay SVG (a `LineNode`). */
-interface PlacedLine {
+interface PlacedLine extends ColoredPlacement {
   /** x endpoints. When `fullWidth`, fractions of the container width (0..1),
    *  resolved against the enclosing vlist row's extent. */
   x1: number;
@@ -156,7 +165,7 @@ interface PlacedLine {
 }
 
 /** One placed stretchy path from `svgGeometry`, already in 1000:1 units. */
-interface PlacedPath {
+interface PlacedPath extends ColoredPlacement {
   d: string;
   x: number;
   y: number;
@@ -194,6 +203,8 @@ type RowAlign = 'left' | 'center' | 'right';
  * - `.sqrt > .vlist-t { text-align: center }` (katex.scss:406)
  * - `.katex-accent > .vlist-t { text-align: center }` (katex.scss:411)
  * - `.col-align-c|l|r > .vlist-t` (katex.scss:442-452)
+ * - `.op-limits > .vlist-t { text-align: center }` (katex.scss:253-255)
+ * - `.x-arrow, .mover, .munder { text-align: center }` (katex.scss:568-570)
  *
  * The chain is outermost-first, so the nearest enclosing rule wins by scanning
  * from the end.
@@ -210,7 +221,15 @@ function rowAlign(chain: readonly string[]): RowAlign {
     if (c === 'col-align-l') {
       return 'left';
     }
-    if (c === 'mfrac' || c === 'sqrt' || c === 'katex-accent') {
+    if (
+      c === 'mfrac' ||
+      c === 'sqrt' ||
+      c === 'katex-accent' ||
+      c === 'op-limits' ||
+      c === 'x-arrow' ||
+      c === 'mover' ||
+      c === 'munder'
+    ) {
       return 'center';
     }
   }
@@ -255,7 +274,9 @@ function parseLength(value: string | undefined): { value: number; pct: boolean }
  * belongs.
  *
  * `y` is the baseline of the current node, positive downward from the formula
- * baseline. `scale` is the accumulated sizing ratio.
+ * baseline. `scale` is the accumulated sizing ratio. `color` is the effective
+ * ink colour inherited from enclosing spans' `style.color` (`\color`,
+ * `\textcolor`, phantom); a node's own `style.color` overrides it.
  */
 function walk(
   node: HtmlDomNode | SvgNode | PathNode | LineNode | Img,
@@ -263,14 +284,15 @@ function walk(
   classChain: readonly string[],
   y: number,
   scale: number,
+  color: string | undefined,
 ): void {
   if (node instanceof SymbolNode) {
-    emitSymbol(node, state, classChain, y, scale);
+    emitSymbol(node, state, classChain, y, scale, color);
     return;
   }
 
   if (node instanceof SvgNode) {
-    emitSvgNode(node, state, y, scale);
+    emitSvgNode(node, state, y, scale, color);
     return;
   }
 
@@ -287,7 +309,7 @@ function walk(
   }
 
   if (node instanceof Span || node instanceof Anchor || node instanceof DocumentFragment) {
-    emitContainer(node, state, classChain, y, scale);
+    emitContainer(node, state, classChain, y, scale, color);
   }
 }
 
@@ -298,11 +320,18 @@ function emitSymbol(
   classChain: readonly string[],
   y: number,
   scale: number,
+  inheritedColor: string | undefined,
 ): void {
   // A zero-width space is layout scaffolding (`vlist-s`), never ink.
   if (node.text === '\u200b' || node.text === '') {
     return;
   }
+
+  // The kernel writes `color: transparent` onto every node of a phantom
+  // (`Options.getColor`, domTree.ts:75-78). Phantom ink must occupy the same
+  // advance and box as its visible twin but contribute no outlines.
+  const color = node.style.color ?? inheritedColor;
+  const phantom = color === 'transparent';
 
   const { font } = resolveFont([...classChain, ...node.classes]);
 
@@ -318,13 +347,19 @@ function emitSymbol(
     const glyph = getGlyph(font, code);
 
     if (glyph) {
-      state.glyphs.push({ font, code, x: penX, y, scale });
+      if (!phantom) {
+        state.glyphs.push({ font, code, x: penX, y, scale, color });
+      }
       penX += (glyph.advance / UNITS_PER_EM) * UPEM * scale;
     } else {
-      state.missing.add(`${font}/U+${code.toString(16).toUpperCase().padStart(4, '0')}`);
-      // Advance so surrounding layout stays put even when an outline is absent
-      // from the whitelist. The vendored metrics table covers every character
-      // KaTeX can lay out, which is a superset of the shipped outlines.
+      // Phantom content never needs an outline, so a missing glyph there is
+      // not a reportable absence. Advance so surrounding layout stays put even
+      // when an outline is absent from the whitelist. The vendored metrics
+      // table covers every character KaTeX can lay out, which is a superset of
+      // the shipped outlines.
+      if (!phantom) {
+        state.missing.add(`${font}/U+${code.toString(16).toUpperCase().padStart(4, '0')}`);
+      }
       const m = getCharacterMetrics(ch, font, 'math');
       penX += (m?.width ?? node.width) * UPEM * scale;
     }
@@ -343,6 +378,7 @@ function emitSvgNode(
   state: EmitState,
   y: number,
   scale: number,
+  color: string | undefined,
   clipEm?: number,
 ): void {
   const widthLen = parseLength(node.attributes.width);
@@ -354,6 +390,9 @@ function emitSvgNode(
   // `stretchyEnclose` for this shape, so treat it as a stroked diagonal line
   // whose x endpoints defer to the vlist extent (like `fullWidth` rules).
   if (widthLen.pct) {
+    if (color === 'transparent') {
+      return;
+    }
     const boxH = heightEm * UPEM * scale;
     const top = y - boxH;
     for (const child of node.children) {
@@ -370,6 +409,7 @@ function emitSvgNode(
           y2: top + y2.value * boxH,
           stroke: stroke * UPEM * scale,
           fullWidth: true,
+          color,
         });
       }
     }
@@ -407,24 +447,27 @@ function emitSvgNode(
       if (d) {
         // The path's own coordinate space is y-down with its origin at the top
         // of the box, and the box's bottom sits on this node's baseline.
-        state.paths.push({
-          d,
-          x: state.x,
-          y: y - heightEm * UPEM * scale,
-          sx,
-          sy,
-          // Clip only when the declared width exceeds what is visible, so an
-          // unclipped stretchy arrow costs no clipPath.
-          clip:
-            sliced && rawWidthEm > widthEm
-              ? {
-                  x: state.x,
-                  y: y - heightEm * UPEM * scale,
-                  w: widthEm * UPEM * scale,
-                  h: heightEm * UPEM * scale,
-                }
-              : undefined,
-        });
+        if (color !== 'transparent') {
+          state.paths.push({
+            d,
+            x: state.x,
+            y: y - heightEm * UPEM * scale,
+            sx,
+            sy,
+            color,
+            // Clip only when the declared width exceeds what is visible, so an
+            // unclipped stretchy arrow costs no clipPath.
+            clip:
+              sliced && rawWidthEm > widthEm
+                ? {
+                    x: state.x,
+                    y: y - heightEm * UPEM * scale,
+                    w: widthEm * UPEM * scale,
+                    h: heightEm * UPEM * scale,
+                  }
+                : undefined,
+          });
+        }
       }
     }
   }
@@ -439,6 +482,7 @@ function emitContainer(
   classChain: readonly string[],
   y: number,
   scale: number,
+  inheritedColor: string | undefined,
 ): void {
   const classes = 'classes' in node ? node.classes : [];
   const style = 'style' in node ? node.style : {};
@@ -454,6 +498,12 @@ function emitContainer(
   ) {
     return;
   }
+
+  // `style.color` overrides whatever was inherited, and every descendant
+  // inherits the result. `transparent` is how the kernel marks phantom ink
+  // (Options.getColor), which must keep its advance but place no ink.
+  const color = style.color ?? inheritedColor;
+  const phantom = color === 'transparent';
 
   const chain = [...classChain, ...classes];
   const localScale = scale * sizingRatio(classes);
@@ -490,22 +540,30 @@ function emitContainer(
   state.x += parseEm(style.paddingLeft) * UPEM * localScale;
 
   if (classes.includes('vlist-t')) {
-    emitVList(node as Span<HtmlDomNode>, state, chain, y, localScale, rowAlign(chain));
+    emitVList(node as Span<HtmlDomNode>, state, chain, y, localScale, rowAlign(chain), color);
     state.x += parseEm(style.marginRight) * UPEM * localScale;
     return;
   }
 
-  // A `frac-line` draws its rule as a CSS bottom border spanning the full
-  // width of its container, so its width is not knowable here.
-  if (classes.includes('frac-line')) {
-    const thickness = parseEm(style.borderBottomWidth) || node.height;
-    state.rects.push({
-      x: state.x,
-      y: y - node.height * UPEM * localScale,
-      w: 0,
-      h: Math.max(thickness * UPEM * localScale, 0),
-      fullWidth: true,
-    });
+  // A line span draws its rule as a CSS border spanning the full width of its
+  // container, so its width is not knowable here: `frac-line`, `underline-line`
+  // and `overline-line` (functions/underline.ts:15, overline.ts:19),
+  // `katex-hline`/`katex-hdashline` (environments/array.ts:521-526) all write
+  // `borderBottomWidth` via `makeLineSpan`; `katex-sout` (functions/enclose.ts:33)
+  // strikes through with its own height instead. Like a border, the rule spans
+  // the row and occupies no advance.
+  if (style.borderBottomWidth || classes.includes('katex-sout')) {
+    if (!phantom) {
+      const thickness = parseEm(style.borderBottomWidth) || node.height;
+      state.rects.push({
+        x: state.x,
+        y: y - node.height * UPEM * localScale,
+        w: 0,
+        h: Math.max(thickness * UPEM * localScale, 0),
+        fullWidth: true,
+        color,
+      });
+    }
     return;
   }
 
@@ -515,12 +573,15 @@ function emitContainer(
     const w = node.width * UPEM * localScale;
     const h = (node.height + node.depth) * UPEM * localScale;
     if (w > 0 && h > 0) {
-      state.rects.push({
-        x: state.x + parseEm(style.marginLeft) * UPEM * localScale,
-        y: y - node.height * UPEM * localScale,
-        w,
-        h,
-      });
+      if (!phantom) {
+        state.rects.push({
+          x: state.x + parseEm(style.marginLeft) * UPEM * localScale,
+          y: y - node.height * UPEM * localScale,
+          w,
+          h,
+          color,
+        });
+      }
       state.x += w;
       return;
     }
@@ -552,9 +613,9 @@ function emitContainer(
 
   for (const child of node.children ?? []) {
     if (clipEm != null && child instanceof SvgNode) {
-      emitSvgNode(child, state, childY, localScale, clipEm);
+      emitSvgNode(child, state, childY, localScale, color, clipEm);
     } else {
-      walk(child, state, chain, childY, localScale);
+      walk(child, state, chain, childY, localScale, color);
     }
   }
 
@@ -588,6 +649,7 @@ function emitVList(
   y: number,
   scale: number,
   align: RowAlign = 'left',
+  color: string | undefined,
 ): void {
   const startX = state.x;
   let maxX = state.x;
@@ -629,7 +691,7 @@ function emitVList(
       };
       const rowChain = [...classChain, ...row.classes];
       for (const child of row.children ?? []) {
-        walk(child, probe, rowChain, 0, scale);
+        walk(child, probe, rowChain, 0, scale, color);
       }
       rowWidths.push(probe.x);
       // A measuring pass must not lose a genuinely missing glyph.
@@ -661,7 +723,7 @@ function emitVList(
 
     const rowChain = [...classChain, ...row.classes];
     for (const child of row.children ?? []) {
-      walk(child, state, rowChain, rowY, scale);
+      walk(child, state, rowChain, rowY, scale, color);
     }
 
     maxX = Math.max(maxX, state.x + parseEm(row.style.marginRight) * UPEM * scale);
@@ -718,7 +780,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     lines: [],
     missing: new Set(),
   };
-  walk(tree, state, [], 0, 1);
+  walk(tree, state, [], 0, 1, undefined);
 
   // Any rule still unresolved was not inside a vlist, so it spans the formula.
   for (const r of state.rects) {
@@ -772,51 +834,85 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
 
   const body: string[] = [];
 
-  for (const g of state.glyphs) {
-    const glyph = getGlyph(g.font, g.code);
-    if (!glyph?.path) {
-      continue;
+  // Consecutive placements that resolved to the same explicit colour are
+  // wrapped in one nested `<g fill="...">`, so `\color{red}x` needs no
+  // per-element fill attribute and the root group keeps the caller's default.
+  // The render callbacks may return '' for skipped ink, which still leaves the
+  // surrounding group structure intact.
+  const grouped = <T extends { color?: string }>(
+    items: readonly T[],
+    render: (item: T) => string,
+  ): string => {
+    let out = '';
+    let open: string | undefined;
+    for (const item of items) {
+      if (item.color !== open) {
+        if (open !== undefined) {
+          out += '</g>';
+        }
+        if (item.color !== undefined) {
+          out += `<g fill="${item.color}">`;
+        }
+        open = item.color;
+      }
+      out += render(item);
     }
-    // Outlines are y-up and the document is y-down. Flip per placement rather
-    // than rewriting path data, which would lose precision and prevent reuse.
-    const transform = `translate(${fmt(g.x)} ${fmt(g.y)}) scale(${fmt(g.scale)} ${fmt(-g.scale)})`;
-    const id = defId.get(`${g.font}\u0000${g.code}`);
-    body.push(
-      id
-        ? `<use href="#${id}" transform="${transform}"/>`
-        : `<path transform="${transform}" d="${glyph.path}"/>`,
-    );
-  }
+    if (open !== undefined) {
+      out += '</g>';
+    }
+    return out;
+  };
 
-  for (const r of state.rects) {
-    if (r.w <= 0 || r.h <= 0) {
-      continue;
-    }
-    body.push(`<rect x="${fmt(r.x)}" y="${fmt(r.y)}" width="${fmt(r.w)}" height="${fmt(r.h)}"/>`);
-  }
+  body.push(
+    grouped(state.glyphs, (g) => {
+      const glyph = getGlyph(g.font, g.code);
+      if (!glyph?.path) {
+        return '';
+      }
+      // Outlines are y-up and the document is y-down. Flip per placement
+      // rather than rewriting path data, which would lose precision and
+      // prevent reuse.
+      const transform = `translate(${fmt(g.x)} ${fmt(g.y)}) scale(${fmt(g.scale)} ${fmt(-g.scale)})`;
+      const id = defId.get(`${g.font}\u0000${g.code}`);
+      return id
+        ? `<use href="#${id}" transform="${transform}"/>`
+        : `<path transform="${transform}" d="${glyph.path}"/>`;
+    }),
+  );
+
+  body.push(
+    grouped(state.rects, (r) => {
+      if (r.w <= 0 || r.h <= 0) {
+        return '';
+      }
+      return `<rect x="${fmt(r.x)}" y="${fmt(r.y)}" width="${fmt(r.w)}" height="${fmt(r.h)}"/>`;
+    }),
+  );
 
   for (const l of state.lines) {
     body.push(
       `<line x1="${fmt(l.x1)}" y1="${fmt(l.y1)}" x2="${fmt(l.x2)}" y2="${fmt(l.y2)}" ` +
-        `stroke="${color}" stroke-width="${fmt(l.stroke)}"/>`,
+        `stroke="${l.color ?? color}" stroke-width="${fmt(l.stroke)}"/>`,
     );
   }
 
-  for (const p of state.paths) {
-    const transform = `translate(${fmt(p.x)} ${fmt(p.y)}) scale(${fmt(p.sx)} ${fmt(p.sy)})`;
-    let clipAttr = '';
-    if (p.clip) {
-      // A same-document fragment reference, which resolves inside a data URI.
-      // Only an *external* url() would fail there.
-      const id = `c${defs.length}`;
-      defs.push(
-        `<clipPath id="${id}"><rect x="${fmt(p.clip.x)}" y="${fmt(p.clip.y)}" ` +
-          `width="${fmt(p.clip.w)}" height="${fmt(p.clip.h)}"/></clipPath>`,
-      );
-      clipAttr = ` clip-path="url(#${id})"`;
-    }
-    body.push(`<path${clipAttr} transform="${transform}" d="${p.d}"/>`);
-  }
+  body.push(
+    grouped(state.paths, (p) => {
+      const transform = `translate(${fmt(p.x)} ${fmt(p.y)}) scale(${fmt(p.sx)} ${fmt(p.sy)})`;
+      let clipAttr = '';
+      if (p.clip) {
+        // A same-document fragment reference, which resolves inside a data URI.
+        // Only an *external* url() would fail there.
+        const id = `c${defs.length}`;
+        defs.push(
+          `<clipPath id="${id}"><rect x="${fmt(p.clip.x)}" y="${fmt(p.clip.y)}" ` +
+            `width="${fmt(p.clip.w)}" height="${fmt(p.clip.h)}"/></clipPath>`,
+        );
+        clipAttr = ` clip-path="url(#${id})"`;
+      }
+      return `<path${clipAttr} transform="${transform}" d="${p.d}"/>`;
+    }),
+  );
 
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt((boxW / UPEM) * emPx)}" ` +
