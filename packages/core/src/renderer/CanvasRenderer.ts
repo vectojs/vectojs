@@ -236,6 +236,15 @@ export class CanvasRenderer implements IRenderer {
     this.ctx.canvas.style.width = `${width}px`;
     this.ctx.canvas.style.height = `${height}px`;
     this.ctx.scale(dpr, dpr);
+    // Setting `canvas.width`/`canvas.height` resets the whole 2D context state
+    // per spec (font → 10px sans-serif, fillStyle → #000000). Drop the caches so
+    // the next draw re-applies them; otherwise a draw using the same font/color
+    // string as the cache skips the assignment and paints with the reset
+    // defaults — the same reset `contextrestored` performs for a lost context.
+    this._cachedFont = '';
+    this._cachedFill = '';
+    this.batchActive = false;
+    this.batchCount = 0;
   }
 
   /** Whether the 2D context is currently lost (drawing is a no-op until it is
