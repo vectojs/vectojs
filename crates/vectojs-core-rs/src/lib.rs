@@ -55,7 +55,7 @@ mod particle;
 mod simd_f32_bench;
 
 use core::ptr;
-use std::alloc::{Layout, alloc_zeroed};
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 
 #[cfg(target_arch = "wasm32")]
 use core::arch::wasm32::*;
@@ -152,10 +152,12 @@ static mut S: Store = Store {
     run_capacity: 0,
 };
 
-/// Leak a zeroed, 16-byte-aligned `f64` array of `n` elements. Leaked on
-/// purpose: the store is a process-lifetime singleton, so there is nothing to
-/// free. `alloc_zeroed` (not `vec!`) is what guarantees the 16-byte base —
-/// `Vec<f64>` is only 8-byte aligned.
+/// Allocate a zeroed, 16-byte-aligned `f64` array of `n` elements. The
+/// allocation is freed by [`free_f64`] when a later `init` replaces the store —
+/// the JS side re-inits **in place** on every growth (`backend.ts::ensure`), so
+/// the previous allocation must be released or each growth leaks a full store
+/// and dlmalloc can never reuse the block. `alloc_zeroed` (not `vec!`) is what
+/// guarantees the 16-byte base — `Vec<f64>` is only 8-byte aligned.
 fn leak_f64(n: usize) -> *mut f64 {
     let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
     let p = unsafe { alloc_zeroed(layout) } as *mut f64;
@@ -163,19 +165,92 @@ fn leak_f64(n: usize) -> *mut f64 {
     p
 }
 /// Run tables are read/written scalar (no SIMD), so 4-byte `i32` alignment is
-/// fine; a plain leaked `Vec` suffices.
+/// fine; a plain leaked `Vec` suffices. Freed by [`free_i32`] on re-init.
 fn leak_i32(n: usize) -> *mut i32 {
     Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
 }
 
-/// Allocate for `capacity` entities and `max_runs` sibling runs. Idempotent per
-/// module instance in practice: called once after instantiation with the
-/// high-water mark; a growing scene re-instantiates or the JS side caps upload.
+/// Free an `f64` array allocated by [`leak_f64`] with `n` elements. The layout
+/// is reconstructed exactly from `n` and [`SIMD_ALIGN`], so `p` must be the
+/// live pointer `leak_f64(n)` returned.
+pub(crate) fn free_f64(p: *mut f64, n: usize) {
+    if p.is_null() {
+        return;
+    }
+    let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
+    // SAFETY: `p` is the live allocation from `leak_f64(n)` and is freed exactly
+    // once — the caller overwrites the store field immediately after.
+    unsafe { dealloc(p.cast(), layout) };
+}
+
+/// Free an `f32` array allocated with the same 16-byte-aligned `f64`-style
+/// layout but `n` f32 elements (`particle` SoA). See [`free_f64`].
+pub(crate) fn free_f32(p: *mut f32, n: usize) {
+    if p.is_null() {
+        return;
+    }
+    let layout = Layout::from_size_align(n * size_of::<f32>(), SIMD_ALIGN).expect("valid layout");
+    // SAFETY: mirrors `free_f64`.
+    unsafe { dealloc(p.cast(), layout) };
+}
+
+/// Free an `i32` array allocated by [`leak_i32`] with `n` elements: the mirror
+/// image of the `Box` leak, dropping the box to run the allocator's free.
+pub(crate) fn free_i32(p: *mut i32, n: usize) {
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: `p` came from `leak_i32(n)` (a leaked `Box<[i32; n]>`) and is
+    // dropped exactly once — the caller overwrites the store field after.
+    unsafe {
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(p, n)));
+    }
+}
+
+/// Free every allocation the previous `init` made, if any. `S.capacity` and
+/// `S.run_capacity` still record the sizes those pointers were allocated with,
+/// so this must run before `init` overwrites either.
+fn free_store() {
+    unsafe {
+        let n = S.capacity + 8;
+        free_f64(S.x, n);
+        free_f64(S.y, n);
+        free_f64(S.sx, n);
+        free_f64(S.sy, n);
+        free_f64(S.cos, n);
+        free_f64(S.sin, n);
+        free_f64(S.opacity, n);
+        free_f64(S.wa, n);
+        free_f64(S.wb, n);
+        free_f64(S.wc, n);
+        free_f64(S.wd, n);
+        free_f64(S.we, n);
+        free_f64(S.wf, n);
+        free_f64(S.wo, n);
+        free_f64(S.bx, n);
+        free_f64(S.by, n);
+        free_f64(S.bw, n);
+        free_f64(S.bh, n);
+        free_f64(S.aminx, n);
+        free_f64(S.aminy, n);
+        free_f64(S.amaxx, n);
+        free_f64(S.amaxy, n);
+        free_i32(S.run_parent, S.run_capacity);
+        free_i32(S.run_start, S.run_capacity);
+        free_i32(S.run_len, S.run_capacity);
+    }
+}
+
+/// Allocate for `capacity` entities and `max_runs` sibling runs, freeing the
+/// previous allocation first. Safe to call repeatedly: the JS side re-inits in
+/// place when the scene grows, so the old store must be released before the new
+/// pointers overwrite it or every growth leaks 24 arrays of linear memory.
 #[unsafe(no_mangle)]
 pub extern "C" fn init(capacity: usize, max_runs: usize) {
     // Pad so a 2-lane (f64) tail can read one slot past the logical end without
     // a bounds check or a separate scalar remainder loop.
     let n = capacity + 8;
+    free_store();
     unsafe {
         S.x = leak_f64(n);
         S.y = leak_f64(n);
