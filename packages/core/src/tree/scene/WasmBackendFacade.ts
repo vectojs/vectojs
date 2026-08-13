@@ -240,6 +240,13 @@ export class WasmBackendFacade {
    * main render walk onto it; passing `null` reverts to the JS path.
    */
   public setTransform(backend: WasmTransformBackend | null): void {
+    // A backend identity change (e.g. `setWasmRuntime(sharedRuntime)` re-running
+    // `enableWasmTransforms`) installs a NEW backend that shares linear memory
+    // with the old one but has never received `uploadRuns`: its input/world
+    // views are zero-length. An unchanged tree structure would skip the
+    // rebuild in `syncStore`, so the resident store state must be invalidated
+    // on identity change, not only on topology change.
+    const backendChanged = backend !== this._transform && this._transform !== null;
     this._transform = backend;
     this._mode = backend ? 'wasm' : 'js';
     // An explicit install is the documented way back after a permanent
@@ -247,6 +254,13 @@ export class WasmBackendFacade {
     // otherwise the very next rejection would trip the limit again. The warning
     // latch is deliberately NOT reset: one report per scene is the point.
     this._uploadRejections = 0;
+    if (backendChanged) {
+      this._treeStore = null;
+      this._storeStructureVersion = -1;
+      this._inputs = null;
+      this._world = null;
+      this._aabbsFresh = false;
+    }
   }
 
   // ── The shared runtime ──────────────────────────────────────────────────────
