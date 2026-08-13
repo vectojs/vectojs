@@ -54,13 +54,21 @@ const TEXT_PREVIEW_MAX = 80;
  * covers Input/TextArea-likes. Constructor-name checks would break under
  * minified production bundles, so shape is the contract here.
  */
+export function textContentOf(entity: Entity): string | undefined {
+  return typeof (entity as unknown as { text?: unknown }).text === 'string'
+    ? (entity as unknown as { text: string }).text
+    : typeof (entity as unknown as { value?: unknown }).value === 'string'
+      ? (entity as unknown as { value: string }).value
+      : undefined;
+}
+
+/**
+ * Display preview of an entity's text content, truncated at
+ * `TEXT_PREVIEW_MAX`. Panel rows are for reading, so they get the preview; the
+ * a11y audit needs the full string — see {@link textContentOf}.
+ */
 export function textPreviewOf(entity: Entity): string | undefined {
-  const candidate =
-    typeof (entity as unknown as { text?: unknown }).text === 'string'
-      ? (entity as unknown as { text: string }).text
-      : typeof (entity as unknown as { value?: unknown }).value === 'string'
-        ? (entity as unknown as { value: string }).value
-        : undefined;
+  const candidate = textContentOf(entity);
   if (candidate === undefined) return undefined;
   return candidate.length > TEXT_PREVIEW_MAX
     ? `${candidate.slice(0, TEXT_PREVIEW_MAX)}…`

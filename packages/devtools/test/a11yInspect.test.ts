@@ -86,6 +86,14 @@ describe('inspectA11y', () => {
     expect(info.nameSource).toBe('text');
   });
 
+  it('reports the full text as the accessible name, not the 80-char display preview', () => {
+    const full = 'A'.repeat(80) + 'tail';
+    const node = new Node({ tag: 'button' }, { text: full });
+    scene.add(node);
+    const info = inspectA11y(scene, node);
+    expect(info.accessibleName).toBe(full);
+  });
+
   it('reports nameSource none when there is no name at all', () => {
     const node = new Node({ tag: 'button' });
     scene.add(node);
@@ -299,6 +307,28 @@ describe('auditA11y: duplicate-label', () => {
     scene.add(new Node({ tag: 'span', label: 'Total' }));
     expect(kinds(auditA11y(scene))).not.toContain('duplicate-label');
   });
+
+  it('does not flag long names that merely share an 80-char prefix', () => {
+    // The old audit compared 80-char truncated previews, so two names that
+    // differ only past the preview window collided as false duplicates.
+    const scene = makeScene();
+    for (const suffix of ['first', 'second']) {
+      const node = new Node({ tag: 'button' }, { text: 'A'.repeat(80) + suffix });
+      node.interactive = true;
+      scene.add(node);
+    }
+    expect(kinds(auditA11y(scene))).not.toContain('duplicate-label');
+  });
+
+  it('still flags genuinely identical long names as duplicates', () => {
+    const scene = makeScene();
+    for (let i = 0; i < 2; i++) {
+      const node = new Node({ tag: 'button' }, { text: 'B'.repeat(100) });
+      node.interactive = true;
+      scene.add(node);
+    }
+    expect(kinds(auditA11y(scene))).toContain('duplicate-label');
+  });
 });
 
 describe('auditA11y scoping', () => {
@@ -355,5 +385,47 @@ describe('a11y name resolution robustness', () => {
     expect(info.nameSource).toBe('none');
     // And it is reported as unnamed, which is the truth for a screen reader.
     expect(auditA11y(scene).map((f) => f.kind)).toContain('no-accessible-name');
+  });
+});
+
+describe('a11y getA11yAttributes() robustness', () => {
+  class Hostile extends Node {
+    public override getA11yAttributes(): A11yAttributes {
+      throw new Error('broken a11y attributes');
+    }
+  }
+
+  it('a throwing getA11yAttributes() kills only that entity, not the audit', () => {
+    const scene = makeScene();
+    scene.add(new Hostile());
+    const button = new Node({ tag: 'button' });
+    button.interactive = true;
+    scene.add(button);
+
+    // The walk used to call getA11yAttributes() unguarded, so one hostile
+    // entity took the whole-scene audit (and the panel's A11y tab) down.
+    const findings = auditA11y(scene);
+    expect(findings.some((f) => f.kind === 'no-accessible-name' && f.entityId === button.id)).toBe(
+      true,
+    );
+  });
+
+  it('a throwing getA11yAttributes() does not kill the reading-order query', () => {
+    const scene = makeScene();
+    scene.add(new Hostile());
+    const button = new Node({ tag: 'button', label: 'ok' });
+    scene.add(button);
+
+    const order = a11yReadingOrder(scene);
+    expect(order.map((i) => i.entityId)).toEqual([button.id]);
+  });
+
+  it('inspectA11y treats a throwing getA11yAttributes() as unprojected instead of throwing', () => {
+    const scene = makeScene();
+    const hostile = new Hostile();
+    scene.add(hostile);
+    const info = inspectA11y(scene, hostile);
+    expect(info.projected).toBe(false);
+    expect(info.accessibleName).toBeUndefined();
   });
 });
