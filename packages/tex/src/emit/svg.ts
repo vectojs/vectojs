@@ -141,6 +141,20 @@ interface PlacedRect {
   fullWidth?: boolean;
 }
 
+/** One stroked line from a `\cancel` overlay SVG (a `LineNode`). */
+interface PlacedLine {
+  /** x endpoints. When `fullWidth`, fractions of the container width (0..1),
+   *  resolved against the enclosing vlist row's extent. */
+  x1: number;
+  x2: number;
+  /** y endpoints, internal units, concrete at emit time. */
+  y1: number;
+  y2: number;
+  /** Stroke width, internal units. */
+  stroke: number;
+  fullWidth?: boolean;
+}
+
 /** One placed stretchy path from `svgGeometry`, already in 1000:1 units. */
 interface PlacedPath {
   d: string;
@@ -163,6 +177,7 @@ interface EmitState {
   glyphs: PlacedGlyph[];
   rects: PlacedRect[];
   paths: PlacedPath[];
+  lines: PlacedLine[];
   missing: Set<string>;
 }
 
@@ -209,6 +224,24 @@ function parseEm(value: string | undefined): number {
   }
   const n = Number.parseFloat(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Parses a KaTeX length, distinguishing a CSS percentage (only `\cancel`'s
+ * overlay SVG writes `width: 100%` and `x2/y2: 100%`) from an em value.
+ * Percentages are returned as a fraction in `[0, 1]`.
+ */
+function parseLength(value: string | undefined): { value: number; pct: boolean } {
+  if (!value) {
+    return { value: 0, pct: false };
+  }
+  const s = value.trim();
+  if (s.endsWith('%')) {
+    const n = Number.parseFloat(s);
+    return { value: Number.isFinite(n) ? n / 100 : 0, pct: true };
+  }
+  const n = Number.parseFloat(s);
+  return { value: Number.isFinite(n) ? n : 0, pct: false };
 }
 
 /**
@@ -312,6 +345,37 @@ function emitSvgNode(
   scale: number,
   clipEm?: number,
 ): void {
+  const widthLen = parseLength(node.attributes.width);
+  const heightEm = parseEm(node.attributes.height);
+
+  // A percentage width is `\cancel`'s overlay SVG: `width: 100%` and
+  // `x2/y2: 100%` resolve against the enclosing row in the browser, and the
+  // overlay occupies no advance width. `LineNode` is produced only by
+  // `stretchyEnclose` for this shape, so treat it as a stroked diagonal line
+  // whose x endpoints defer to the vlist extent (like `fullWidth` rules).
+  if (widthLen.pct) {
+    const boxH = heightEm * UPEM * scale;
+    const top = y - boxH;
+    for (const child of node.children) {
+      if (child instanceof LineNode) {
+        const stroke = parseEm(child.attributes['stroke-width']);
+        const x1 = parseLength(child.attributes.x1);
+        const y1 = parseLength(child.attributes.y1);
+        const x2 = parseLength(child.attributes.x2);
+        const y2 = parseLength(child.attributes.y2);
+        state.lines.push({
+          x1: x1.value,
+          y1: top + y1.value * boxH,
+          x2: x2.value,
+          y2: top + y2.value * boxH,
+          stroke: stroke * UPEM * scale,
+          fullWidth: true,
+        });
+      }
+    }
+    return;
+  }
+
   // `stretchy.svgSpan` sets width/height in em plus a viewBox in 1000:1 units,
   // and relies on `preserveAspectRatio` to stretch or slice horizontally.
   //
@@ -320,8 +384,7 @@ function emitSvgNode(
   // and relies on `.hide-tail { width: 100%; overflow: hidden }`
   // (katex.scss:513) to cut it down, so taking the SVG's own width as advance
   // reports a 400em formula. The clip is the real extent.
-  const rawWidthEm = parseEm(node.attributes.width);
-  const heightEm = parseEm(node.attributes.height);
+  const rawWidthEm = widthLen.value;
   const widthEm = clipEm != null ? Math.min(rawWidthEm, clipEm) : rawWidthEm;
 
   const viewBox = node.attributes.viewBox?.split(/\s+/).map(Number);
@@ -361,20 +424,6 @@ function emitSvgNode(
                   h: heightEm * UPEM * scale,
                 }
               : undefined,
-        });
-      }
-    } else if (child instanceof LineNode) {
-      const x1 = Number.parseFloat(child.attributes.x1 ?? '0');
-      const y1 = Number.parseFloat(child.attributes.y1 ?? '0');
-      const x2 = Number.parseFloat(child.attributes.x2 ?? '0');
-      const y2 = Number.parseFloat(child.attributes.y2 ?? '0');
-      const stroke = Number.parseFloat(child.attributes['stroke-width'] ?? '0');
-      if ([x1, y1, x2, y2].every(Number.isFinite)) {
-        state.rects.push({
-          x: state.x + Math.min(x1, x2) * sx,
-          y: y - heightEm * UPEM * scale + Math.min(y1, y2) * sy,
-          w: Math.max(Math.abs(x2 - x1) * sx, stroke * sx),
-          h: Math.max(Math.abs(y2 - y1) * sy, stroke * sy),
         });
       }
     }
@@ -546,6 +595,9 @@ function emitVList(
   // Rules inside this vlist span *its* width, not the whole formula's, so
   // remember where its rects begin and resolve them against its own extent.
   const rectStart = state.rects.length;
+  // Same for `\cancel` overlay lines, whose x endpoints are fractions of this
+  // vlist's row width.
+  const lineStart = state.lines.length;
 
   const firstRow = (vtable.children ?? []).find(
     (c): c is Span<HtmlDomNode> => c instanceof Span && c.hasClass('vlist-r'),
@@ -572,6 +624,7 @@ function emitVList(
         glyphs: [],
         rects: [],
         paths: [],
+        lines: [],
         missing: new Set(),
       };
       const rowChain = [...classChain, ...row.classes];
@@ -625,6 +678,15 @@ function emitVList(
       r.fullWidth = false;
     }
   }
+  // `\cancel` overlay lines span the same row extent.
+  for (let i = lineStart; i < state.lines.length; i++) {
+    const l = state.lines[i];
+    if (l.fullWidth) {
+      l.x1 = startX + l.x1 * width;
+      l.x2 = startX + l.x2 * width;
+      l.fullWidth = false;
+    }
+  }
 
   state.x = maxX;
 }
@@ -653,6 +715,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     glyphs: [],
     rects: [],
     paths: [],
+    lines: [],
     missing: new Set(),
   };
   walk(tree, state, [], 0, 1);
@@ -663,6 +726,14 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
       r.x = 0;
       r.w = state.x;
       r.fullWidth = false;
+    }
+  }
+  // Same fallback for `\cancel` overlay lines not enclosed in a vlist.
+  for (const l of state.lines) {
+    if (l.fullWidth) {
+      l.x1 = l.x1 * state.x;
+      l.x2 = l.x2 * state.x;
+      l.fullWidth = false;
     }
   }
 
@@ -722,6 +793,13 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
       continue;
     }
     body.push(`<rect x="${fmt(r.x)}" y="${fmt(r.y)}" width="${fmt(r.w)}" height="${fmt(r.h)}"/>`);
+  }
+
+  for (const l of state.lines) {
+    body.push(
+      `<line x1="${fmt(l.x1)}" y1="${fmt(l.y1)}" x2="${fmt(l.x2)}" y2="${fmt(l.y2)}" ` +
+        `stroke="${color}" stroke-width="${fmt(l.stroke)}"/>`,
+    );
   }
 
   for (const p of state.paths) {
