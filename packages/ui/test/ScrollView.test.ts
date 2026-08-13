@@ -277,4 +277,33 @@ describe('ScrollView', () => {
     expect(sv.content.y).toBeLessThan(0);
     expect(sv.content.y).toBeGreaterThanOrEqual(-200);
   });
+
+  it('detaches the content layer through remove(), so a leaf-first destroy cannot loop forever', () => {
+    // Regression: remove() used to redirect *every* child to
+    // this.content.remove(child). When the content layer itself self-detached
+    // inside its own destroy() (a leaf-first tree teardown that walks children
+    // before parents), content.remove(content) was a no-op, so content stayed
+    // in ScrollView.children with its destroyed flag set. Entity.destroy()
+    // then drains `while (children.length > 0) children.at(-1).destroy()`, and
+    // the already-destroyed child returns immediately without detaching — an
+    // infinite loop that froze the page main thread (vectojs-website,
+    // 2026-08-13). Direct children must detach via super.remove().
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300));
+
+    sv.content.destroy(); // leaf-first: content destroyed before its parent
+    expect(sv.children).not.toContain(sv.content); // must actually detach
+
+    sv.destroy(); // never returned before the fix
+    expect(sv.children).toHaveLength(0);
+  });
+
+  it('still routes non-content children through the content layer on remove()', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    const box = new Box(50, 300);
+    sv.add(box); // nested into sv.content by add()
+    sv.remove(box);
+    expect(sv.content.children).toHaveLength(0);
+    expect(box.parent).toBeNull();
+  });
 });
