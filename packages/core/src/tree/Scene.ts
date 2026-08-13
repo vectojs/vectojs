@@ -5289,7 +5289,7 @@ export class Scene {
 
     if (
       (hasInteractive || this.a11yElements.size > 0 || wantsContentSync) &&
-      (shouldSyncInterval || this.a11yPendingSyncAfterAnimation)
+      (shouldSyncInterval || (!hasActiveAnimation && this.a11yPendingSyncAfterAnimation))
     ) {
       this.lastA11ySync = time;
       if (hasInteractive || wantsContentSync) {
