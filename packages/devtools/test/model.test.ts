@@ -93,4 +93,19 @@ describe('pickInScene', () => {
     expect(pickInScene(scene, 50, 50)?.id).toBe('over');
     scene.destroy();
   });
+
+  it('skips an opacity-0 overlay and returns the visible entity beneath it', () => {
+    const scene = makeScene();
+    const under = new Box('under', 100, 100);
+    scene.add(under);
+    const ghost = new Box('ghost', 100, 100);
+    ghost.opacity = 0;
+    scene.showOverlay(ghost);
+
+    // An invisible overlay covers the point, but the engine's hit test rejects
+    // an opacity-0 subtree and falls through to the visible entity — the
+    // inspector must agree or it reports the entity a click could never hit.
+    expect(pickInScene(scene, 50, 50)?.id).toBe('under');
+    scene.destroy();
+  });
 });

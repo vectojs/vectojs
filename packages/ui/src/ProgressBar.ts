@@ -49,7 +49,7 @@ export class ProgressBar extends UIComponent {
     this.showText = opts.showText ?? false;
     this.font = opts.font ?? '12px sans-serif';
     this.color = opts.color ?? '#e2e8f0';
-    this.interactive = false;
+    this.interactive = true; // project the role=progressbar/aria-valuenow shadow node (no pointer handling)
   }
 
   /** Set new progress value (clamped between `0` and `1`). */

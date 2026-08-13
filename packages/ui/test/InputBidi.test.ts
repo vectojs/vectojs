@@ -68,4 +68,34 @@ describe('Input BiDi and Caret Selection Integration', () => {
     expect(caretX_1_before_a).toBe(0);
     expect(caretX_1_after_a).toBe(measureText('a', ta.font));
   });
+
+  it('places the end-of-text caret inside the line box for RTL content (matching Input)', () => {
+    // Mixed RTL+LTR: the visually-leftmost node is NOT the source-first node,
+    // so offsetX must base its offsets on the line's minimum sourceIndex. The
+    // old code used nodes[0] (visual left) and landed the caret ~a full line
+    // outside the box.
+    const value = 'مرحبا abc';
+    const ta = new TextArea({ width: 200, font: '16px sans-serif', value });
+    ta.selectionStart = value.length;
+
+    const lines = (ta as any).computeLines();
+    expect(lines.length).toBe(1);
+    const line = lines[0];
+    const caretX = (ta as any).offsetX(line, ta.selectionStart);
+
+    const nodes = (line as any).nodes;
+    const minX = Math.min(...nodes.map((n: any) => n.x));
+    const maxX = Math.max(...nodes.map((n: any) => n.x + n.width));
+    expect(caretX).toBeGreaterThanOrEqual(minX - 0.5);
+    expect(caretX).toBeLessThanOrEqual(maxX + 0.5);
+
+    // Sanity against Input, which resolves offsets from sourceIndex directly
+    // and does not have the bug. Compare relative to each line's min x, since
+    // Input lays out against an unbounded width (flush-right shift differs).
+    const input = new Input({ width: 200, font: '16px sans-serif', value });
+    const inLayout = (input as any).getLayout();
+    const inMinX = Math.min(...inLayout.nodes.map((n: any) => n.x));
+    const inputX = (input as any).charOffset(value.length);
+    expect(caretX - minX).toBeCloseTo(inputX - inMinX, 1);
+  });
 });

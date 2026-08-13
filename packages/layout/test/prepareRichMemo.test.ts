@@ -44,6 +44,26 @@ describe('prepareRich — paragraph memoization (rich streaming)', () => {
     expect(b.paragraphs[0].words[0].glyphs[0].style?.color).toBe('#00f');
   });
 
+  it('rebuilds a paragraph when lineThrough toggles (memo key carries it)', () => {
+    const e = engine();
+    const a = e.prepareRich([{ text: 'hi', style: { lineThrough: true } }], EMPTY_ATLAS, 20);
+    const b = e.prepareRich([{ text: 'hi', style: { lineThrough: false } }], EMPTY_ATLAS, 20);
+    expect(b.paragraphs[0]).not.toBe(a.paragraphs[0]);
+    expect(b.paragraphs[0].words[0].glyphs[0].style?.lineThrough).toBe(false);
+  });
+
+  it('re-shapes the cached prefix when underline toggles (streaming compare)', () => {
+    const e = engine();
+    e.prepareRich([{ text: 'hello ', style: { underline: true } }], EMPTY_ATLAS, 20);
+    const b = e.prepareRich(
+      [{ text: 'hello world', style: { underline: false } }],
+      EMPTY_ATLAS,
+      20,
+    );
+    const helloGlyphs = b.paragraphs[0].words[0].glyphs;
+    expect(helloGlyphs[0].style?.underline).toBe(false);
+  });
+
   it('keeps per-glyph styles correct across the reuse boundary', () => {
     const e = engine();
     e.prepareRich([{ text: 'red', style: { color: '#f00' } }], EMPTY_ATLAS, 20);

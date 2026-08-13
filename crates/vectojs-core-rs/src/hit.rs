@@ -75,12 +75,31 @@ fn leak_i32(n: usize) -> *mut i32 {
     Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
 }
 
+/// Free the arrays the previous `hit_init` allocated, if any. `entity_cap`
+/// already includes the tail pad, and `cell_cap`/`item_cap` are the exact i32
+/// array lengths; all three still describe the live pointers until `hit_init`
+/// overwrites them, so this must run first.
+fn free_hit() {
+    unsafe {
+        crate::free_f64(H.minx, H.entity_cap);
+        crate::free_f64(H.miny, H.entity_cap);
+        crate::free_f64(H.maxx, H.entity_cap);
+        crate::free_f64(H.maxy, H.entity_cap);
+        crate::free_i32(H.cell_start, H.cell_cap);
+        crate::free_i32(H.cell_count, H.cell_cap);
+        crate::free_i32(H.cursor, H.cell_cap);
+        crate::free_i32(H.items, H.item_cap);
+    }
+}
+
 /// Allocate for `entity_cap` AABBs, `cell_cap` grid cells, and `item_cap`
-/// (entity, cell) membership pairs. The caller sizes `item_cap` for the expected
-/// entity span (small entities ≈ 1–4 cells each).
+/// (entity, cell) membership pairs, freeing the previous allocation first — the
+/// JS side re-inits in place on growth. The caller sizes `item_cap` for the
+/// expected entity span (small entities ≈ 1–4 cells each).
 #[unsafe(no_mangle)]
 pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) {
     let e = entity_cap + 8;
+    free_hit();
     unsafe {
         H.minx = leak_f64(e);
         H.miny = leak_f64(e);
