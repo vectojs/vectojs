@@ -261,4 +261,79 @@ describe('VectoForceLayout — in-house model specifics', () => {
     expect(layout.step()).toBe(false);
     layout.dispose();
   });
+
+  it('separates exactly-coincident unlinked nodes instead of moving them in lockstep', () => {
+    // Both nodes sit at the exact same position, unlinked. The old octree
+    // collapsed them into one leaf point: identical centering, no spring, and
+    // the repulsion skip for d2 === 0 left them moving identically forever.
+    const layout = new VectoForceLayout({ seed: 4, centerStrength: 0 });
+    layout.setGraph({
+      nodes: [
+        { id: 'a', x: 100, y: -40, z: 9 },
+        { id: 'b', x: 100, y: -40, z: 9 },
+      ],
+      links: [],
+    });
+    layout.step(60);
+    expect(distance(layout.positions, 0, 1)).toBeGreaterThan(0);
+    layout.dispose();
+  });
+
+  it('counts the mass of a coincident cluster (no dropped points in the octree)', () => {
+    // Two coincident nodes must both contribute repulsion: a third node
+    // nearby has to feel ~2× the push of a single-node cluster, which is
+    // only true when the octree stores both points (mass 2, not 1).
+    const single = new VectoForceLayout({ seed: 4, centerStrength: 0 });
+    const double = new VectoForceLayout({ seed: 4, centerStrength: 0 });
+    single.setGraph({
+      nodes: [
+        { id: 'a', x: 0, y: 0, z: 0 },
+        { id: 'p', x: 50, y: 0, z: 0 },
+      ],
+      links: [],
+    });
+    double.setGraph({
+      nodes: [
+        { id: 'a', x: 0, y: 0, z: 0 },
+        { id: 'b', x: 0, y: 0, z: 0 },
+        { id: 'p', x: 50, y: 0, z: 0 },
+      ],
+      links: [],
+    });
+    single.step(1);
+    double.step(1);
+    // The probe node is pushed along +x in both, but harder in the cluster
+    // (two coincident members contribute their full mass, not one).
+    expect(double.positions[6] - 50).toBeGreaterThan(single.positions[3] - 50);
+    single.dispose();
+    double.dispose();
+  });
+
+  it('grows the octree past the 8n+8 bound instead of dropping points into NaN forces', () => {
+    // Sixty-four exactly-coincident PAIRS spread across a wide extent: each
+    // pair jitters ~1e-4 apart, so every member descends ~log2(6e4/1e-4) ≈ 30
+    // levels — far more than the 8 nodes per point the initial allocation
+    // (8n+8) reserved. Without the growth check the nodeCount overruns the
+    // flat arrays, the typed-array writes are silently dropped, and the
+    // reused-from-the-previous-tick garbage produces NaN forces.
+    const nodes = Array.from({ length: 128 }, (_, i) => ({
+      id: i,
+      x: (Math.floor(i / 2) - 32) * 1000,
+      y: 0,
+      z: 0,
+    }));
+    const layout = new VectoForceLayout({ seed: 9 });
+    layout.setGraph({ nodes, links: [] });
+    layout.step(1);
+    const tree = (layout as unknown as { tree: { nodeCount: number; capacity: number } }).tree;
+    // The pathological tick really overgrew the 8n+8 = 1032 reservation…
+    expect(tree.capacity).toBeGreaterThan(nodes.length * 8 + 8);
+    // …and the invariant held: the arrays were grown, never written past.
+    expect(tree.nodeCount).toBeLessThanOrEqual(tree.capacity);
+    layout.step(5);
+    for (let i = 0; i < layout.positions.length; i++) {
+      expect(Number.isFinite(layout.positions[i])).toBe(true);
+    }
+    layout.dispose();
+  });
 });

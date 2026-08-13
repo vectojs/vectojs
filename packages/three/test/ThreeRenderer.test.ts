@@ -56,6 +56,7 @@ describe('ThreeRenderer', () => {
           fillStyle: '',
           measureText: () => ({ width: 100 }),
           fillText: () => {},
+          scale: () => {},
         } as any;
       }
       return originalGetContext.apply(this, arguments as any);
@@ -330,6 +331,35 @@ describe('ThreeRenderer', () => {
       expect(mapDispose).toHaveBeenCalledOnce();
       expect((renderer as any).textTextureCache.size).toBe(0);
     });
+
+    it('rasterizes at the renderer pixel ratio and keys the cache on DPR', () => {
+      renderer.renderer.setPixelRatio(1);
+      renderer.fillText('hi-dpi', 0, 0, '16px sans-serif', '#fff');
+      const sd = (renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      expect((sd.map!.image as HTMLCanvasElement).width).toBe(100); // CSS-px width at DPR 1
+
+      renderer.clear();
+      renderer.renderer.setPixelRatio(2);
+      renderer.fillText('hi-dpi', 0, 0, '16px sans-serif', '#fff');
+      const hd = (renderer.scene.children[0] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+
+      // A DPR change must produce a fresh, 2x-resolution texture — not reuse
+      // the DPR-1 raster (which is why the cache key includes the DPR).
+      expect(hd.map).not.toBe(sd.map);
+      expect((hd.map!.image as HTMLCanvasElement).width).toBe(200);
+      // Two distinct cache entries: one per DPR.
+      expect((renderer as any).textTextureCache.size).toBe(2);
+    });
+
+    it('keeps CSS-pixel plane dimensions even when rasterizing at DPR', () => {
+      renderer.renderer.setPixelRatio(2);
+      renderer.fillText('Hi', 0, 50, '16px Inter', '#ffffff');
+      const entry = [...(renderer as any).textTextureCache.values()][0];
+      // Plane geometry stays in CSS pixels (100 × 24); only the backing store
+      // is scaled, so the glyphs render at their layout size, sharp.
+      expect(entry.width).toBe(100);
+      expect(entry.height).toBe(24);
+    });
   });
 
   describe('drawImage texture cache', () => {
@@ -386,6 +416,50 @@ describe('ThreeRenderer', () => {
       renderer.drawImage(d, 0, 0, 8, 8); // evicts 'a' (now the oldest)
       expect(aDispose).toHaveBeenCalledOnce();
       expect((renderer as any).imageTextureCache.has(a)).toBe(false);
+    });
+  });
+
+  describe('mirrored y-down projection: DoubleSide materials (GH-516)', () => {
+    it('fillCircle mesh is double-sided', () => {
+      renderer.fillCircle(50, 50, 10, '#ffffff');
+      const material = (renderer.scene.children[0] as THREE.Mesh)
+        .material as THREE.MeshBasicMaterial;
+      expect(material.side).toBe(THREE.DoubleSide);
+    });
+
+    it('solid path fill mesh is double-sided', () => {
+      renderer.beginPath();
+      renderer.moveTo(0, 0);
+      renderer.lineTo(20, 0);
+      renderer.lineTo(20, 20);
+      renderer.closePath();
+      renderer.fill('#38bdf8');
+      const material = (renderer.scene.children[0] as THREE.Mesh)
+        .material as THREE.MeshBasicMaterial;
+      expect(material.side).toBe(THREE.DoubleSide);
+    });
+
+    it('linear-gradient path fill mesh is double-sided', () => {
+      const grad = renderer.createLinearGradient(0, 0, 100, 100, [
+        { stop: 0, color: '#ff0000' },
+        { stop: 1, color: '#0000ff' },
+      ]);
+      renderer.beginPath();
+      renderer.moveTo(0, 0);
+      renderer.lineTo(100, 0);
+      renderer.lineTo(100, 100);
+      renderer.closePath();
+      renderer.fill(grad);
+      const material = (renderer.scene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+      expect(material.side).toBe(THREE.DoubleSide);
+    });
+
+    it('drawImage mesh is double-sided', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const material = (renderer.scene.children[0] as THREE.Mesh)
+        .material as THREE.MeshBasicMaterial;
+      expect(material.side).toBe(THREE.DoubleSide);
     });
   });
 

@@ -93,16 +93,30 @@ const RULES: Record<string, Rule> = {
 /** Font shorthand segments, special-cased in the apply loop. */
 const FONT_KEYS = ['fontFamily', 'fontSize', 'fontWeight'] as const;
 
-/** Resolve a single value against the theme; non-`var()` values pass through. */
-function resolveValue(value: unknown, theme: Theme): unknown {
+/** Resolve a single value against the theme; non-`var()` values pass through.
+ *  A token whose value is itself a `var()` reference resolves transitively;
+ *  `seen` carries the keys of the chain so far for cycle detection. */
+function resolveValue(value: unknown, theme: Theme, seen: Set<string> = new Set()): unknown {
   if (typeof value !== 'string') return value;
   const match = VAR_RE.exec(value);
   if (!match) return value;
-  const token = theme.tokens[match[1] ?? ''];
+  const key = match[1] ?? '';
+  const token = theme.tokens[key];
   if (token === undefined) {
     throw new TypeError(
-      `@vectojs/styles: unknown token 'var(--${match[1]})' — not present in the active theme`,
+      `@vectojs/styles: unknown token 'var(--${key})' — not present in the active theme`,
     );
+  }
+  if (typeof token === 'string' && VAR_RE.test(token)) {
+    // A token referencing another token: resolve transitively. A one-level
+    // resolution returned the literal 'var(--b)' here, which Canvas2D
+    // silently ignores — the previous color kept rendering.
+    if (seen.has(key)) {
+      const chain = [...seen, key].map((k) => `var(--${k})`).join(' → ');
+      throw new TypeError(`@vectojs/styles: circular var() reference: ${chain}`);
+    }
+    seen.add(key);
+    return resolveValue(token, theme, seen);
   }
   return token;
 }

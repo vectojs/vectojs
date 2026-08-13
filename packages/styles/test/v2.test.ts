@@ -37,6 +37,7 @@ const reset = tokens({
   fontFamily: 'Inter, sans-serif',
   fontSize: '16px',
   fontWeight: '400',
+  alias: '#000000',
 });
 
 describe('css() merge', () => {
@@ -255,9 +256,11 @@ describe('font composition', () => {
     // Regression for the js/polynomial-redos alert on SIZE_RE. A 20k digit
     // run with a non-unit suffix must fail the size parse fast — this test
     // would time out under the old `\d+\.?\d*` backtracking, which enumerates
-    // O(n²) split points across the adjacent digit classes.
+    // O(n²) split points across the adjacent digit classes. (The cast
+    // bypasses the compile-time fontSize narrowing — the runtime must still
+    // handle a malformed string without pathological work.)
     const e = stub({ font: '16px Inter' });
-    const long = '9'.repeat(20000) + 'zzz';
+    const long = ('9'.repeat(20000) + 'zzz') as `${number}px`;
     expect(() => applyStyle(e, style({ fontSize: long }))).not.toThrow();
   });
 
@@ -329,5 +332,54 @@ describe('padding object', () => {
   it('rejects invalid axis values', () => {
     const e = stub({ paddingX: 0, paddingY: 0 });
     expect(() => applyStyle(e, style({ padding: { x: '50%' } }))).toThrow(/padding\.x/);
+  });
+});
+
+// Transitive var() resolution lives at the end of the file on purpose: the
+// varPairs bookkeeping keeps tracked pairs alive under the module-level
+// `reset` theme once an afterEach migrates them, and every later setTheme()
+// must resolve those pairs against its theme — so these tests must not run
+// before themes that don't define the chain tokens below.
+describe('transitive var() token resolution', () => {
+  // Carry every token the reset theme defines (plus `alias`): pairs tracked
+  // by earlier tests have been migrated onto the module-level `reset` theme,
+  // and setTheme dry-runs them against whatever theme it switches to.
+  const base = { ...reset.tokens, alias: '#000000' };
+
+  it('resolves var() tokens that reference other tokens transitively', () => {
+    const chained = tokens({ ...base, alias: 'var(--accent)', accent: '#123456' });
+    setTheme(chained);
+    const e = stub({ bg: '' });
+    // A one-level resolution used to return the literal 'var(--accent)' here,
+    // which Canvas2D silently ignores — leaving the previous color on screen.
+    applyStyle(e, style({ backgroundColor: 'var(--alias)' }));
+    expect(e.bg).toBe('#123456');
+  });
+
+  it('re-resolves transitive chains when the theme switches', () => {
+    const a = tokens({ ...base, alias: 'var(--accent)', accent: '#111111' });
+    const b = tokens({ ...base, alias: 'var(--accent)', accent: '#eeeeee' });
+    setTheme(a);
+    const e = stub({ bg: '' });
+    applyStyle(e, style({ backgroundColor: 'var(--alias)' }));
+    expect(e.bg).toBe('#111111');
+    setTheme(b);
+    expect(e.bg).toBe('#eeeeee');
+  });
+
+  it('throws a targeted error on circular var() references', () => {
+    const cyclic = tokens({ ...base, x: 'var(--y)', y: 'var(--x)' });
+    setTheme(cyclic);
+    const e = stub({ bg: '' });
+    expect(() => applyStyle(e, style({ backgroundColor: 'var(--x)' }))).toThrow(/circular/);
+  });
+
+  it('throws on a transitive reference to an unknown token', () => {
+    const dangling = tokens({ ...base, dead: 'var(--ghost)' });
+    setTheme(dangling);
+    const e = stub({ bg: '' });
+    expect(() => applyStyle(e, style({ backgroundColor: 'var(--dead)' }))).toThrow(
+      /unknown token 'var\(--ghost\)'/,
+    );
   });
 });
