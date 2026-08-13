@@ -691,6 +691,10 @@ function styleRangeEquals(
       x.bold !== y.bold ||
       x.italic !== y.italic ||
       x.href !== y.href ||
+      x.underline !== y.underline ||
+      x.lineThrough !== y.lineThrough ||
+      x.highlightColor !== y.highlightColor ||
+      x.abbrTitle !== y.abbrTitle ||
       // fontFamily is passed to glyphWidth(), so it changes advances and belongs in
       // any style comparison used to decide reuse. Added 2026-07-30 alongside the
       // styleSig fix.
@@ -739,21 +743,30 @@ function suppressLineBreaks(words: PreparedWord[]): PreparedWord[] {
       continue;
     }
     // Rule 2: Merge orphan trailing punctuation onto the preceding word.
+    // Skip trailing whitespace words when searching backward: Intl.Segmenter
+    // yields `["word", " ", "!"]` for `"word !"`, and merging the `!` onto the
+    // whitespace word would make a `" !"` pseudo-word that defeats the wrap
+    // swallow check below and lets the `!` start a line — the exact failure
+    // this rule exists to prevent.
     if (
       result.length > 0 &&
       cur.glyphs.length === 1 &&
       !cur.isWhitespace &&
       ORPHAN_PUNCT.has(cur.glyphs[0].char)
     ) {
-      const prev = result[result.length - 1];
-      result[result.length - 1] = {
-        glyphs: [...prev.glyphs, ...cur.glyphs],
-        width: prev.width + cur.width,
-        isWordLike: prev.isWordLike,
-        isWhitespace: false,
-      };
-      i++;
-      continue;
+      let prevIdx = result.length - 1;
+      while (prevIdx >= 0 && result[prevIdx].isWhitespace) prevIdx--;
+      if (prevIdx >= 0) {
+        const prev = result[prevIdx];
+        result[prevIdx] = {
+          glyphs: [...prev.glyphs, ...cur.glyphs],
+          width: prev.width + cur.width,
+          isWordLike: prev.isWordLike,
+          isWhitespace: false,
+        };
+        i++;
+        continue;
+      }
     }
     result.push(cur);
     i++;
@@ -1264,7 +1277,7 @@ export class LayoutEngine {
     const fingerprint = (idx: number): string => {
       const s = styleAt[idx];
       const base = s
-        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}/${s.baselineShift ?? ''}/${s.underline ? 1 : 0}/${s.highlightColor ?? ''}/${s.abbrTitle ?? ''}`
+        ? `${s.fontSize ?? ''}/${s.color ?? ''}/${s.bold ? 1 : 0}/${s.italic ? 1 : 0}/${s.href ?? ''}/${s.fontFamily ?? ''}/${s.baselineShift ?? ''}/${s.underline ? 1 : 0}/${s.lineThrough ? 1 : 0}/${s.highlightColor ?? ''}/${s.abbrTitle ?? ''}`
         : '';
       const o = objectAt[idx];
       // `alt` is in the key even though it changes no advance: it reaches the

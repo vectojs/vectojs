@@ -82,7 +82,14 @@ export class ArabicShaper {
 
       // 1. Lam-Alef Ligature Preprocessing
       if (code === 0x0644 && i + 1 < len) {
-        const nextCode = text.charCodeAt(i + 1);
+        // Skip harakat between Lam and its next base: only the two bases matter
+        // for the ligature, so `Lam + fatha + Alef` must still ligate. The
+        // regular shaping path below applies the same skip when finding
+        // adjacent bases, and would otherwise emit a colliding initial-form Lam
+        // followed by a final-form Alef.
+        let k = i + 1;
+        while (k < len && ArabicShaper.isHarakat(text.charCodeAt(k))) k++;
+        const nextCode = k < len ? text.charCodeAt(k) : 0;
         let ligature = 0;
         if (nextCode === 0x0622)
           ligature = 0xfef5; // Lam-Alef Madda
@@ -106,7 +113,13 @@ export class ArabicShaper {
           if (ArabicShaper.getJoiningType(previousBase) === 'D') ligature++;
           shapedChars.push(String.fromCharCode(ligature));
           sourceIndices.push(i);
-          i += 2;
+          // Preserve the skipped harakat after the ligature in output order;
+          // they mark the ligature itself, not the bases it replaces.
+          for (let h = i + 1; h < k; h++) {
+            shapedChars.push(text[h]);
+            sourceIndices.push(h);
+          }
+          i = k + 1;
           continue;
         }
       }

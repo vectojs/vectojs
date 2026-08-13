@@ -145,3 +145,17 @@ test('the differential cases actually exercise wrapping (guards the guard)', () 
   const hyphenated = bothPaths(request({ text: 'aa\u00adaa\u00adaa\u00adaa', maxWidth: 25 })).main;
   expect(Array.from(hyphenated.codePoints)).toContain(0x2d);
 });
+
+test('maxHeight truncates wrapped lines (main-thread mirror)', () => {
+  // One line of height with text that wraps into several: only the first
+  // line's glyphs are emitted and the reported height stays within maxHeight.
+  const res = computeMSDFLayout(
+    request({ text: 'aaa aaa aaa aaa', maxWidth: 40, maxHeight: 10 }),
+    fontData,
+  );
+
+  expect(res.height).toBeLessThanOrEqual(10);
+  // 'aaa aaa' = 8 glyphs; the wrapped third word is dropped, not moved down.
+  expect(Array.from(res.yCoords)).toHaveLength(8);
+  for (const y of res.yCoords) expect(y).toBeLessThan(10);
+});
