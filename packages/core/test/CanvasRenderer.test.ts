@@ -32,6 +32,7 @@ const mockCtx = {
   lineCap: '' as string,
   lineJoin: '' as string,
   font: '',
+  globalAlpha: 1,
   canvas: null as any,
 };
 
@@ -235,5 +236,24 @@ describe('CanvasRenderer', () => {
     ]);
     expect(mockCtx.createLinearGradient).toHaveBeenCalledWith(0, 0, 100, 100);
     expect(grad.addColorStop).toHaveBeenCalledTimes(2);
+  });
+
+  it('updates the fill cache when flushing a fillCircle batch', () => {
+    // #469: flush() painted the batch color without telling the cache, so a
+    // following fill() of the previously cached color skipped its assignment
+    // and painted with the batch color.
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.fill('red');
+    renderer.fillCircle(10, 10, 5, 'blue');
+    renderer.fill('red');
+    expect(mockCtx.fillStyle).toBe('red');
+  });
+
+  it('restores the caller globalAlpha when flushing a fillCircle batch', () => {
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.setGlobalAlpha(0.5);
+    renderer.fillCircle(10, 10, 5, 'blue', 0.8);
+    renderer.fill('red');
+    expect(mockCtx.globalAlpha).toBe(0.5);
   });
 });

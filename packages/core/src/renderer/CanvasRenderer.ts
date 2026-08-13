@@ -432,10 +432,17 @@ export class CanvasRenderer implements IRenderer {
   flush(): void {
     if (!this.batchActive) return;
     if (this.counters) this.counters.flushes++;
+    // The caller's alpha (the render walk's `setGlobalAlpha(worldOpacity)`)
+    // must survive the batch: capture it rather than forcing 1 afterwards.
+    const prevAlpha = this.ctx.globalAlpha;
     this.ctx.globalAlpha = this.batchAlpha;
     this.ctx.fillStyle = this.batchColor;
     this.ctx.fill();
-    this.ctx.globalAlpha = 1;
+    this.ctx.globalAlpha = prevAlpha;
+    // The context now holds the batch color; without updating the cache a
+    // following draw of the previously cached color would skip its assignment
+    // and paint with the batch color instead.
+    this._cachedFill = this.batchColor;
     this.batchActive = false;
     this.batchCount = 0;
   }
