@@ -411,6 +411,9 @@ export class RichText extends UIComponent {
    * Reconcile the `<a>` hotspot children with the current logical link runs.
    * Stable across re-wrap, so per-line hit rectangles update in place; only a
    * change in link *count* rebuilds (pruning old shadow nodes via the scene).
+   * `href` is a plain field read by the click closure and `getA11yAttributes`
+   * at use time, so a same-count `setSpans` with new urls must reassign it —
+   * otherwise clicks and the projected `<a>` keep serving the stale url.
    */
   private syncHotspots(): void {
     const links = this.computeLinks();
@@ -428,6 +431,7 @@ export class RichText extends UIComponent {
     for (let k = 0; k < links.length; k++) {
       const l = links[k];
       const h = this.hotspots[k];
+      h.href = l.href;
       h.setRects(l.rects);
     }
   }

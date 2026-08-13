@@ -108,7 +108,7 @@ function resolveValue(value: unknown, theme: Theme): unknown {
 }
 
 /** Resolve `var()` references in a style object, in place of the caller's object. */
-function resolveStyle(style: Style, theme: Theme): { style: Style; hadVar: boolean } {
+export function resolveStyle(style: Style, theme: Theme): { style: Style; hadVar: boolean } {
   let hadVar = false;
   const out: Style = {};
   for (const [key, value] of Object.entries(style)) {
@@ -242,14 +242,4 @@ export function applyStyle(entity: Entity, s: Style): AppliedStyle {
   // switch). trackVarKeys is a no-op for keys absent from the style.
   trackVarKeys(entity, s);
   return result;
-}
-
-/**
- * Re-apply a tracked (possibly `var()`-referencing) style under a specific
- * theme, resolving tokens first. Used by {@link setTheme}; not part of the
- * public surface.
- */
-export function reapplyStyle(entity: Entity, s: Style, theme: Theme): AppliedStyle {
-  const { style: resolved } = resolveStyle(s, theme);
-  return applyStyleResolved(entity, resolved);
 }

@@ -6,6 +6,20 @@ function parseThreeColor(value: string): { color: THREE.Color; alpha: number } {
   return { color: new THREE.Color(r, g, b), alpha };
 }
 
+// Font-shorthand grammar, mirrored from @vectojs/styles (font.ts): the
+// shorthand puts the weight FIRST (`'700 16px Inter'`), so `parseInt` would
+// read the weight as the size. Tokenized + anchored like the styles package,
+// for the same linear-time, branch-safe reasons.
+const FONT_WEIGHT_RE = /^(normal|bold|bolder|lighter|[1-9]00)$/;
+const FONT_SIZE_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:rem|em|px|pt)$/;
+
+function parseFontSize(font: string): number {
+  const tokens = font.trim().split(/\s+/).filter(Boolean);
+  const sizeIndex = tokens[0] !== undefined && FONT_WEIGHT_RE.test(tokens[0]) ? 1 : 0;
+  const size = tokens[sizeIndex];
+  return size !== undefined && FONT_SIZE_RE.test(size) ? Number.parseFloat(size) : 16;
+}
+
 export class WebGLGradient {
   public type = 'linear';
   constructor(
@@ -735,7 +749,7 @@ export class ThreeRenderer implements IRenderer {
       ctx.font = font;
 
       const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
-      const fontSize = parseInt(font) || 16;
+      const fontSize = parseFontSize(font);
       const height = Math.max(1, Math.ceil(fontSize * 1.5));
       canvas.width = width;
       canvas.height = height;
@@ -747,6 +761,11 @@ export class ThreeRenderer implements IRenderer {
 
       const texture = new THREE.CanvasTexture(canvas);
       texture.minFilter = THREE.LinearFilter;
+      // Canvas textures upload with `flipY` by default, which puts the canvas
+      // top row at the plane's bottom edge — upside down under this renderer's
+      // y-down ortho camera. Unflip so the canvas top lands at the plane's
+      // screen-top edge and the rasterized glyphs stay upright.
+      texture.flipY = false;
       texture.userData.vectoCached = true;
 
       entry = { texture, width, height, fontSize };
@@ -765,10 +784,18 @@ export class ThreeRenderer implements IRenderer {
       transparent: true,
       opacity: this.globalAlpha,
       depthWrite: false,
+      // The y-down ortho camera mirrors the projection, which flips triangle
+      // winding in clip space and makes three.js cull FrontSide geometry.
+      // DoubleSide keeps the plane visible regardless of the mirror.
+      side: THREE.DoubleSide,
     });
     const geometry = new THREE.PlaneGeometry(width, height);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x + width / 2, y - height / 2 + fontSize, 0);
+    // Canvas2D's fillText contract puts the alphabetic baseline at (x, y). The
+    // raster canvas draws the baseline `fontSize` px below its top row, and the
+    // unflipped texture maps the top row to the plane's screen-top edge, so the
+    // plane centre sits at y - fontSize + height / 2 to land the baseline at y.
+    mesh.position.set(x + width / 2, y - fontSize + height / 2, 0);
     mesh.applyMatrix4(this.matrix);
 
     this.scene.add(mesh);

@@ -1432,9 +1432,13 @@ export class Markdown extends UIComponent {
    * the raster's aspect ratio, which is available here, and a token walk cannot be
    * confused by an entity a previous rebuild already corrected.
    *
-   * Only headings and table cells are inspected. Every other context splits an image
-   * into its own block whose `Image` entity resizes itself in `onLoad`, so a rebuild
-   * for one of those would be pure cost.
+   * Only headings and table cells are inspected, at every nesting level. Every
+   * other context splits an image into its own block whose `Image` entity resizes
+   * itself in `onLoad`, so a rebuild for one of those would be pure cost. The
+   * nesting shapes mirror `containsImage`'s walk — a blockquote's `tokens`, a
+   * `:::` container's `tokens`, and a list item's block `tokens` — so the
+   * subscription `renderToken` installed for a nested heading cannot out-reach
+   * this predicate.
    */
   private inlineImageBoxesStale(): boolean {
     const stale = (tokens: Token[] | undefined): boolean => {
@@ -1475,23 +1479,42 @@ export class Markdown extends UIComponent {
       return changed;
     };
 
-    let changed = false;
-    for (const token of this.tokens) {
-      if (token.type === 'heading') {
-        if (stale((token as Tokens.Heading).tokens)) changed = true;
-      } else if (token.type === 'table') {
-        const table = token as Tokens.Table;
-        for (const cell of table.header) {
-          if (stale(cell.tokens)) changed = true;
-        }
-        for (const row of table.rows) {
-          for (const cell of row) {
+    // Recursion mirrors `containsImage`: a heading or a table can sit inside a
+    // blockquote, a `:::` container or a list item (each of which `renderToken`
+    // descends through for its own subscription), and the same heading/table
+    // check must be re-applied at every level. Kept as one loop over block
+    // tokens rather than a per-shape special case so the two walks cannot drift.
+    const checkBlocks = (tokens: Token[] | undefined): boolean => {
+      let changed = false;
+      for (const token of tokens ?? []) {
+        if (token.type === 'heading') {
+          if (stale((token as Tokens.Heading).tokens)) changed = true;
+        } else if (token.type === 'table') {
+          const table = token as Tokens.Table;
+          for (const cell of table.header) {
             if (stale(cell.tokens)) changed = true;
+          }
+          for (const row of table.rows) {
+            for (const cell of row) {
+              if (stale(cell.tokens)) changed = true;
+            }
+          }
+        } else if (token.type === 'blockquote') {
+          if (checkBlocks((token as Tokens.Blockquote).tokens)) changed = true;
+        } else if (token.type === 'container') {
+          if (checkBlocks((token as ContainerToken).tokens)) changed = true;
+        } else if (token.type === 'list') {
+          // `listItemBlockStack` renders each item's block tokens the same way
+          // the top level renders `this.tokens`, so they are the same walk.
+          for (const item of (token as Tokens.List).items) {
+            if (checkBlocks(item.tokens)) changed = true;
           }
         }
       }
-    }
-    return changed;
+      return changed;
+    };
+
+    return checkBlocks(this.tokens);
   }
 
   public override destroy(): void {
@@ -3275,7 +3298,17 @@ export class Markdown extends UIComponent {
     // exists to call — `Table` exposes only `setSelectable`, so reuse there means
     // new public @vectojs/ui API plus key-based row identity, since the ordinal
     // marker is position-derived).
+    //
+    // The `!abbreviationsChanged` guard is the cap above taking full effect. For
+    // a document that is a SINGLE token (`oldTokens.length === 1`), the cap puts
+    // `matchLen` at `0 === oldTokens.length - 1`, which would otherwise satisfy
+    // this condition with the new dictionary already installed — and the
+    // in-place mutators only restyle their TAIL child (`updateBlockquoteTail`,
+    // `updateStreamedList`, `updateStreamedTable`), so every earlier inner
+    // paragraph/item/cell keeps spans built against the OLD dictionary and a
+    // late `*[TERM]:` definition never reaches prose that already rendered.
     const lastTokenSameType =
+      !abbreviationsChanged &&
       matchLen === oldTokens.length - 1 &&
       matchLen < newTokens.length &&
       oldTokens[matchLen]?.type === newTokens[matchLen]?.type;

@@ -81,11 +81,37 @@ fn leak_f64(n: usize) -> *mut f64 {
     p
 }
 
-/// Allocate for `spring_cap` springs and `tween_cap` tweens (+8 tail pad).
+/// Free the SoA the previous `anim_init` allocated, if any. The recorded
+/// capacities still describe the live pointers' sizes, so this must run before
+/// `anim_init` overwrites either.
+fn free_anim() {
+    unsafe {
+        let s = A.spring_capacity + 8;
+        crate::free_f64(A.s_val, s);
+        crate::free_f64(A.s_target, s);
+        crate::free_f64(A.s_vel, s);
+        crate::free_f64(A.s_stiff, s);
+        crate::free_f64(A.s_damp, s);
+        crate::free_f64(A.s_mass, s);
+        let t = A.tween_capacity + 8;
+        crate::free_f64(A.t_from, t);
+        crate::free_f64(A.t_to, t);
+        crate::free_f64(A.t_elapsed, t);
+        crate::free_f64(A.t_dur, t);
+        crate::free_f64(A.t_delay, t);
+        crate::free_f64(A.t_ease, t);
+        crate::free_f64(A.t_val, t);
+    }
+}
+
+/// Allocate for `spring_cap` springs and `tween_cap` tweens (+8 tail pad),
+/// freeing the previous allocation first — the JS side re-inits in place on
+/// growth, so the old SoA must be released or each growth leaks it.
 #[unsafe(no_mangle)]
 pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) {
     let s = spring_cap + 8;
     let t = tween_cap + 8;
+    free_anim();
     unsafe {
         A.s_val = leak_f64(s);
         A.s_target = leak_f64(s);

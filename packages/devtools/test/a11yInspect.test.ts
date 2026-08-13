@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Entity, Scene, type A11yAttributes } from '@vectojs/core';
 import { a11yReadingOrder, auditA11y, inspectA11y, type A11yAuditKind } from '../src/a11yInspect';
 
@@ -114,6 +114,43 @@ describe('inspectA11y', () => {
     const info = inspectA11y(scene, plain);
     expect(info.canvasBounds).toEqual({ x: 10, y: 20, width: 40, height: 20 });
     expect(info.projected).toBe(false);
+  });
+
+  it('normalizes domBounds to scene units when the canvas is CSS-scaled', () => {
+    // Canvas CSS width is HALF the logical width: the a11y root then carries
+    // `transform: scale(0.5, 0.5)`, so a client rect of the projected node is
+    // half the entity's logical size. domBounds must be converted back to scene
+    // units, or a perfectly aligned projection reads as diverging from the
+    // canvas (drift threshold >1px).
+    const node = new Node({ tag: 'button', label: 'Save' }); // 40×20 at (0,0)
+    scene.add(node);
+    const el = document.createElement('div');
+    vi.spyOn(scene, 'getA11yElement').mockReturnValue(el as HTMLElement);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 20,
+      bottom: 10,
+      width: 20,
+      height: 10,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(scene.canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 200,
+      bottom: 150,
+      width: 200,
+      height: 150,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const info = inspectA11y(scene, node);
+    expect(info.domBounds).toEqual({ x: 0, y: 0, width: 40, height: 20 });
   });
 });
 
