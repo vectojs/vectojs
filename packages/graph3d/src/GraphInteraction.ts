@@ -216,14 +216,16 @@ export class GraphInteraction {
     this.pressIndex = null;
   };
 
-  /** Shared drag teardown for pointerup and pointercancel. */
-  private finishDrag(dragged: number, event: PointerEvent): void {
+  /** Shared drag teardown for pointerup, pointercancel and dispose. */
+  private finishDrag(dragged: number, event?: PointerEvent): void {
     this.dragging = false;
     this.pressIndex = null;
-    try {
-      this.domElement.releasePointerCapture?.(event.pointerId);
-    } catch {
-      // Synthetic events carry no valid pointerId; capture never happened.
+    if (event) {
+      try {
+        this.domElement.releasePointerCapture?.(event.pointerId);
+      } catch {
+        // Synthetic events carry no valid pointerId; capture never happened.
+      }
     }
     if (this.options.pinOnDrag === false && this.layout?.unpinNode) {
       this.layout.unpinNode(dragged);
@@ -277,5 +279,13 @@ export class GraphInteraction {
     this.domElement.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointercancel', this.onPointerCancel);
+    // Disposing mid-drag must still run the finish path: beginDrag disabled
+    // the host's controls, and with the listeners gone no pointerup/cancel
+    // will ever fire to re-enable them — the host's controls would stay
+    // disabled forever.
+    if (this.dragging && this.pressIndex !== null) {
+      this.finishDrag(this.pressIndex);
+    }
+    this.pressActive = false;
   }
 }

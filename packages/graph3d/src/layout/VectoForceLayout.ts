@@ -43,9 +43,12 @@ const f = Math.fround;
  * O(N²) a naive all-pairs charge would cost), combined with link springs, an
  * origin-centering pull, velocity-decay integration, and alpha cooling. It is
  * deterministic (a seeded PRNG places un-seeded nodes), self-contained, and
- * computes in **f32** throughout — both to match the exposed `Float32Array`
- * position buffer and so a future Rust/WASM kernel can be differential-tested
- * bit-for-bit against this reference (the canonical JS fallback).
+ * keeps positions and velocities in **f32** to match the exposed
+ * `Float32Array` position buffer — while the Barnes-Hut octree accumulates
+ * centers of mass and computes the repulsion integral in **f64**. A future
+ * Rust/WASM kernel differential-tested bit-for-bit against this reference
+ * (the canonical JS fallback) must therefore reproduce the f64 accumulation
+ * exactly.
  *
  * Not bit-compatible with `D3ForceLayout` (a different model); it is offered as
  * an alternative {@link GraphLayout}, tuned to feel similar.
@@ -164,7 +167,13 @@ export class VectoForceLayout implements GraphLayout {
     this.tree.build(pos, n);
     const rep = f(this.repulsion * alpha);
     for (let i = 0; i < n; i++) {
-      const [ax, ay, az] = this.tree.force(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], this.theta);
+      const [ax, ay, az] = this.tree.force(
+        pos[i * 3],
+        pos[i * 3 + 1],
+        pos[i * 3 + 2],
+        this.theta,
+        i,
+      );
       this.vx[i] = f(this.vx[i] + f(ax * rep));
       this.vy[i] = f(this.vy[i] + f(ay * rep));
       this.vz[i] = f(this.vz[i] + f(az * rep));
@@ -297,6 +306,7 @@ class BarnesHutOctree {
   private mass = new Float64Array(0); // point count
   private size = new Float64Array(0); // cell edge length
   private child = new Int32Array(0); // 8 children per node, -1 = empty
+  private pointIndex = new Int32Array(0); // point index stored in a leaf, -1 = internal
   private nodeCount = 0;
   private capacity = 0;
 
@@ -326,7 +336,7 @@ class BarnesHutOctree {
     this.cz[0] = cxRoot;
 
     for (let i = 0; i < n; i++) {
-      this.insert(0, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], cxRoot, cxRoot, cxRoot, edge);
+      this.insert(0, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], cxRoot, cxRoot, cxRoot, edge, i);
     }
     this.finalizeMass(pos, n);
   }
@@ -342,11 +352,52 @@ class BarnesHutOctree {
     this.mass = new Float64Array(need);
     this.size = new Float64Array(need);
     this.child = new Int32Array(need * 8);
+    this.pointIndex = new Int32Array(need);
     // Per-node stored point (leaf) coordinates.
     this.px = new Float64Array(need);
     this.py = new Float64Array(need);
     this.pz = new Float64Array(need);
     this.hasPoint = new Uint8Array(need);
+  }
+
+  /**
+   * Allocate the next node index, growing the flat arrays first when the
+   * tree has outgrown them. The 8n+8 bound in {@link ensure} assumes ~2N
+   * internal nodes, but a pathological insert path can create up to one node
+   * per depth level (40) per point — writing past the typed-array end is
+   * silently dropped, which left the fresh node holding reused garbage from
+   * a previous tick and produced NaN forces.
+   */
+  private allocateNode(cx: number, cy: number, cz: number, size: number): number {
+    if (this.nodeCount >= this.capacity) this.grow();
+    const node = this.nodeCount++;
+    this.resetNode(node, cx, cy, cz, size);
+    return node;
+  }
+
+  private grow(): void {
+    const next = Math.max(this.capacity * 2, 64);
+    this.capacity = next;
+    this.cx = BarnesHutOctree.resized(this.cx, next);
+    this.cy = BarnesHutOctree.resized(this.cy, next);
+    this.cz = BarnesHutOctree.resized(this.cz, next);
+    this.mass = BarnesHutOctree.resized(this.mass, next);
+    this.size = BarnesHutOctree.resized(this.size, next);
+    this.px = BarnesHutOctree.resized(this.px, next);
+    this.py = BarnesHutOctree.resized(this.py, next);
+    this.pz = BarnesHutOctree.resized(this.pz, next);
+    this.hasPoint = BarnesHutOctree.resized(this.hasPoint, next);
+    this.pointIndex = BarnesHutOctree.resized(this.pointIndex, next);
+    this.child = BarnesHutOctree.resized(this.child, next * 8);
+  }
+
+  private static resized<T extends Float64Array | Int32Array | Uint8Array>(
+    src: T,
+    length: number,
+  ): T {
+    const out = new (src.constructor as new (n: number) => T)(length);
+    out.set(src);
+    return out;
   }
 
   private px = new Float64Array(0);
@@ -358,6 +409,7 @@ class BarnesHutOctree {
     this.size[node] = size;
     this.mass[node] = 0;
     this.hasPoint[node] = 0;
+    this.pointIndex[node] = -1;
     // Cell geometric center is tracked implicitly via the insertion path; store
     // it in cx/cy/cz temporarily (overwritten with center of mass in finalize).
     this.cx[node] = cx;
@@ -367,7 +419,8 @@ class BarnesHutOctree {
   }
 
   /** Insert a point into the subtree rooted at `node` whose cell is centered at
-   *  (gcx,gcy,gcz) with edge `size`. */
+   *  (gcx,gcy,gcz) with edge `size`. `pointIndex` seeds the deterministic
+   *  jitter used to keep exactly-coincident points as distinct leaves. */
   private insert(
     node: number,
     x: number,
@@ -377,6 +430,7 @@ class BarnesHutOctree {
     gcy: number,
     gcz: number,
     size: number,
+    pointIndex: number,
   ): void {
     // Descend until an empty or leaf cell.
     let curr = node;
@@ -392,25 +446,37 @@ class BarnesHutOctree {
         this.py[curr] = y;
         this.pz[curr] = z;
         this.hasPoint[curr] = 1;
+        this.pointIndex[curr] = pointIndex;
         return;
       }
       if (this.hasPoint[curr] === 1) {
         // Occupied leaf: push the existing point down, then continue for ours.
-        const ox = this.px[curr];
-        const oy = this.py[curr];
-        const oz = this.pz[curr];
+        let ox = this.px[curr];
+        let oy = this.py[curr];
+        let oz = this.pz[curr];
+        const oi = this.pointIndex[curr];
         this.hasPoint[curr] = 0;
+        this.pointIndex[curr] = -1;
         if (Math.abs(ox - x) < 1e-9 && Math.abs(oy - y) < 1e-9 && Math.abs(oz - z) < 1e-9) {
-          // Coincident points would split forever; keep this cell as a single
-          // leaf point (negligible modeling loss — near-coincident nodes barely
-          // repel, and springs/centering separate them over the next ticks).
-          this.px[curr] = x;
-          this.py[curr] = y;
-          this.pz[curr] = z;
-          this.hasPoint[curr] = 1;
-          return;
+          // Exactly-coincident points would split into the same octant
+          // forever. Collapsing them into one leaf (the old behaviour) was
+          // wrong: the cluster's mass was undercounted, and two coincident
+          // UNLINKED nodes feel identical spring (none) and centering forces,
+          // so nothing ever separated them. Jitter BOTH points — the stored
+          // one too, so neither leaf sits exactly at the true position where
+          // force() could not resolve a direction — with tiny deterministic,
+          // index-derived offsets: identical inputs jitter identically, both
+          // points stay in the tree, and the repulsion pair separates them.
+          const [sx, sy, sz] = BarnesHutOctree.jitterFor(oi);
+          ox += sx;
+          oy += sy;
+          oz += sz;
+          const [jx, jy, jz] = BarnesHutOctree.jitterFor(pointIndex);
+          x += jx;
+          y += jy;
+          z += jz;
         }
-        this.placeChild(curr, ox, oy, oz, ccx, ccy, ccz, csize);
+        this.placeChild(curr, ox, oy, oz, ccx, ccy, ccz, csize, oi);
       }
       // Route our point into the appropriate child octant.
       const oct = (x >= ccx ? 1 : 0) | (y >= ccy ? 2 : 0) | (z >= ccz ? 4 : 0);
@@ -420,8 +486,7 @@ class BarnesHutOctree {
       const nccz = ccz + (oct & 4 ? half / 2 : -half / 2);
       let childNode = this.child[curr * 8 + oct];
       if (childNode === -1) {
-        childNode = this.nodeCount++;
-        this.resetNode(childNode, nccx, nccy, nccz, half);
+        childNode = this.allocateNode(nccx, nccy, nccz, half);
         this.child[curr * 8 + oct] = childNode;
       }
       curr = childNode;
@@ -430,6 +495,28 @@ class BarnesHutOctree {
       ccz = nccz;
       csize = half;
     }
+  }
+
+  /**
+   * A deterministic ~1e-4-magnitude direction derived purely from the point
+   * index (pure integer mulberry32 draws, so it is bit-identical on every
+   * platform — the determinism contract of {@link VectoForceLayout}).
+   */
+  private static jitterFor(i: number): [number, number, number] {
+    let a = (i + 1) | 0;
+    const next = () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const x = next() - 0.5;
+    const y = next() - 0.5;
+    const z = next() - 0.5;
+    const len = Math.hypot(x, y, z) || 1;
+    const scale = 1e-4 / len;
+    return [x * scale, y * scale, z * scale];
   }
 
   /** Place an existing leaf point into a child octant of `node`. */
@@ -442,6 +529,7 @@ class BarnesHutOctree {
     ccy: number,
     ccz: number,
     csize: number,
+    pointIndex: number,
   ): void {
     const oct = (x >= ccx ? 1 : 0) | (y >= ccy ? 2 : 0) | (z >= ccz ? 4 : 0);
     const half = csize / 2;
@@ -450,14 +538,14 @@ class BarnesHutOctree {
     const nccz = ccz + (oct & 4 ? half / 2 : -half / 2);
     let childNode = this.child[node * 8 + oct];
     if (childNode === -1) {
-      childNode = this.nodeCount++;
-      this.resetNode(childNode, nccx, nccy, nccz, half);
+      childNode = this.allocateNode(nccx, nccy, nccz, half);
       this.child[node * 8 + oct] = childNode;
     }
     this.px[childNode] = x;
     this.py[childNode] = y;
     this.pz[childNode] = z;
     this.hasPoint[childNode] = 1;
+    this.pointIndex[childNode] = pointIndex;
   }
 
   /** Compute mass + center of mass for every node, bottom-up. Because nodes are
@@ -496,8 +584,17 @@ class BarnesHutOctree {
 
   /** Repulsion acceleration on a query point, as an inverse-square push away
    *  from every other point, approximated via the octree. Returns a unit-ish
-   *  direction * magnitude vector (the caller scales by repulsion * alpha). */
-  force(qx: number, qy: number, qz: number, theta: number): [number, number, number] {
+   *  direction * magnitude vector (the caller scales by repulsion * alpha).
+   *  `pointIndex` identifies the query point so its own leaf can be skipped
+   *  by identity rather than by distance — exactly-coincident distinct points
+   *  are stored as jittered leaves and must still exert force on each other. */
+  force(
+    qx: number,
+    qy: number,
+    qz: number,
+    theta: number,
+    pointIndex: number,
+  ): [number, number, number] {
     let ax = 0;
     let ay = 0;
     let az = 0;
@@ -517,9 +614,14 @@ class BarnesHutOctree {
       // Opening criterion: treat the cell as one pseudo-particle when small
       // relative to distance, or when it's a single-point leaf.
       if (isLeaf || this.size[node] * this.size[node] < theta * theta * d2) {
+        // The query point's own leaf: a point exerts no force on itself.
+        // Identity is the only sound test — d2 === 0 would also skip the
+        // jittered leaf of a coincident *other* point, whose distance to the
+        // stored query position is not the leaf separation.
+        if (isLeaf && this.pointIndex[node] === pointIndex) continue;
         if (d2 < 1e-6) {
-          // Self / coincident: skip (a point exerts no force on itself).
-          if (isLeaf && d2 === 0) continue;
+          // Near-coincident leaves get the floor instead, which caps the
+          // 1/d³ blow-up while still pushing them apart strongly.
           d2 = 1e-6;
         }
         const invD = 1 / Math.sqrt(d2);

@@ -180,6 +180,12 @@ export class ThreeAdapter {
         }
       }
       state.lastTargetId = null;
+      // Skip the trailing dispatch: lastUv still points inside the mesh, so
+      // findEntityAt below returns the (or a) hovered entity, which already
+      // received its pointerleave above — delivering again duplicates the
+      // event, and the canvas fallback would leak a leave the host never
+      // initiated.
+      return;
     }
 
     if (hitEntity) {

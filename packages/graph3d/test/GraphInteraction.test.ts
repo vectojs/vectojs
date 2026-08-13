@@ -232,4 +232,33 @@ describe('GraphInteraction', () => {
     rig.domElement.dispatchEvent(pointer('pointermove', CENTER, CENTER));
     expect(onHover).not.toHaveBeenCalled();
   });
+
+  it('dispose during an active drag re-enables host controls and fires onDragEnd', () => {
+    const layout = new D3ForceLayout();
+    layout.setGraph(DATA);
+    const onDragEnd = vi.fn();
+    const setControlsEnabled = vi.fn();
+    const interaction = new GraphInteraction({
+      ...rig,
+      layout,
+      onDragEnd,
+      setControlsEnabled,
+    });
+
+    rig.domElement.dispatchEvent(pointer('pointerdown', CENTER, CENTER));
+    rig.domElement.dispatchEvent(pointer('pointermove', CENTER + 40, CENTER));
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(false);
+
+    // Tearing the interaction down mid-drag must still run the finish path:
+    // beginDrag disabled the host's controls and, with the listeners removed,
+    // no pointerup/cancel can ever re-enable them.
+    interaction.dispose();
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(true);
+    expect(onDragEnd).toHaveBeenCalledWith(1);
+
+    // And nothing after the dispose has any effect.
+    setControlsEnabled.mockClear();
+    window.dispatchEvent(pointer('pointerup', CENTER + 40, CENTER));
+    expect(setControlsEnabled).not.toHaveBeenCalled();
+  });
 });

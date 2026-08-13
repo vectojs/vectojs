@@ -502,6 +502,10 @@ export class ThreeRenderer implements IRenderer {
       transparent: true,
       opacity: this.globalAlpha,
       depthWrite: false,
+      // The y-down ortho camera mirrors the projection, which flips triangle
+      // winding in clip space and makes three.js cull FrontSide geometry.
+      // DoubleSide keeps the plane visible regardless of the mirror.
+      side: THREE.DoubleSide,
     });
     const geometry = new THREE.PlaneGeometry(dw, dh);
     const mesh = new THREE.Mesh(geometry, material);
@@ -631,6 +635,9 @@ export class ThreeRenderer implements IRenderer {
           `,
           transparent: true,
           depthWrite: false,
+          // See fillText: the y-down ortho camera flips winding, so FrontSide
+          // shapes would be culled.
+          side: THREE.DoubleSide,
         });
 
         const mesh = new THREE.Mesh(geometry, material);
@@ -657,6 +664,9 @@ export class ThreeRenderer implements IRenderer {
         transparent: opacity < 1,
         opacity,
         depthWrite: false,
+        // See fillText: the y-down ortho camera flips winding, so FrontSide
+        // shapes would be culled.
+        side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.applyMatrix4(this.matrix);
@@ -737,7 +747,11 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    const cacheKey = `${font}|${fillCol}|${text}`;
+    const dpr = this.renderer.getPixelRatio() || 1;
+    // The DPR is part of the key: a ratio change must produce fresh rasters,
+    // not reuse textures baked at the old resolution (they would stay blurry
+    // on HiDPI or waste resolution on a 1x display).
+    const cacheKey = `${dpr}|${font}|${fillCol}|${text}`;
     let entry = this.textTextureCache.get(cacheKey);
     if (entry) {
       // Refresh LRU order (Map iteration order is insertion order).
@@ -751,8 +765,13 @@ export class ThreeRenderer implements IRenderer {
       const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
       const fontSize = parseFontSize(font);
       const height = Math.max(1, Math.ceil(fontSize * 1.5));
-      canvas.width = width;
-      canvas.height = height;
+      // Rasterize at device-pixel resolution: a CSS-pixel backing store gets
+      // upscaled on HiDPI displays and renders the glyphs blurry. The plane
+      // geometry below stays in CSS pixels, so glyphs land at layout size
+      // while sampling the sharper raster.
+      canvas.width = Math.max(1, Math.ceil(width * dpr));
+      canvas.height = Math.max(1, Math.ceil(height * dpr));
+      ctx.scale(dpr, dpr);
 
       ctx.font = font;
       ctx.fillStyle = fillCol;
@@ -811,6 +830,9 @@ export class ThreeRenderer implements IRenderer {
       transparent: opacity < 1,
       opacity,
       depthWrite: false,
+      // See fillText: the y-down ortho camera flips winding, so FrontSide
+      // circles would be culled.
+      side: THREE.DoubleSide,
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(cx, cy, 0);
