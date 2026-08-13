@@ -84,6 +84,23 @@ describe('CanvasRenderer', () => {
     expect(mockCanvas.style.height).toBe('600px');
   });
 
+  it('resize() invalidates cached font/fill so the next draw re-applies the reset context state', () => {
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.fillText('x', 0, 0, '16px Inter', '#123456');
+    renderer.fill('#654321');
+    // Setting `canvas.width`/`canvas.height` resets the 2D context state per
+    // spec; simulate that on the mock, then confirm resize() dropped the caches
+    // that would otherwise let the next draw skip re-assignment and paint with
+    // the reset defaults (10px sans-serif / black).
+    mockCtx.font = '';
+    mockCtx.fillStyle = '';
+    renderer.resize(800, 600);
+    renderer.fillText('x', 0, 0, '16px Inter', '#123456');
+    renderer.fill('#654321');
+    expect(mockCtx.font).toBe('16px Inter');
+    expect(mockCtx.fillStyle).toBe('#654321');
+  });
+
   it('maxDPR passed to the constructor caps the backing store below the real DPR', () => {
     // The fixture window has devicePixelRatio: 2 — pass maxDPR: 1 to confirm
     // it's actually clamping (not just matching the real DPR by coincidence).
