@@ -74,7 +74,15 @@ machine and CI runner uses the same locked version.
   `.ctxctl/config.toml`. Read order: `ctxctl outline <file>` →
   `ctxctl symbol <file> --name <sym> [--compact|--signature]` →
   `ctxctl read <file> --lines N-M`; wrap long command runs in
+<<<<<<< HEAD
   `ctxctl exec "<cmd>"` (no shell — use `sh -c` for pipes). Not a CI gate.
+=======
+  `ctxctl exec "<cmd>"` (no shell — use `sh -c` for pipes). A parse failure
+  is signaled (stderr warning, exit code 3, `parse_error` in JSON), never
+  silently reported as empty. Not a CI gate.
+
+>>>>>>> origin/main
+
 - **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`, wrapped as `just wasm-check`; build with `just wasm` (never a bare `cargo build --target wasm32-unknown-unknown`). Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). `just wasm` runs `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
 
 ### Benchmarks: what may be quoted
