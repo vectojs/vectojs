@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getGlyph, UNITS_PER_EM } from '../src/emit/glyphTable';
 import { emitSVG } from '../src/emit/svg';
 import { layout } from '../src/layout';
 
@@ -118,5 +119,66 @@ describe('emitSVG', () => {
     for (const out of [cancel, bcancel, xcancel]) {
       expect(out.width).toBeCloseTo(0.572, 3);
     }
+  });
+
+  it('phantom content keeps its advance but places no ink', () => {
+    // \mathstrut is \vphantom{(}, so the phantom paren shares the x's origin.
+    const out = emitSVG(layout('\\mathstrut x'));
+
+    expect(out.placements.map((p) => p.char)).toEqual(['x']);
+    expect(out.width).toBeCloseTo(0.572, 3);
+
+    // A phantom occupies exactly the advance of its visible twin.
+    const phantom = emitSVG(layout('\\phantom{x}+x'));
+    const visible = emitSVG(layout('x+x'));
+    expect(phantom.width).toBeCloseTo(visible.width, 5);
+    expect(phantom.placements.map((p) => p.char)).toEqual(['+', 'x']);
+  });
+
+  it('resolves TeX colour onto grouped fills', () => {
+    // The default output has exactly the one root fill.
+    expect(emitSVG(layout('x')).svg.match(/fill=/g) ?? []).toHaveLength(1);
+
+    const colored = emitSVG(layout('\\color{red}x'));
+    expect(colored.svg).toContain('fill="red"');
+    expect(colored.svg.match(/fill=/g) ?? []).toHaveLength(2);
+
+    // Two consecutive same-colour glyphs share one nested group.
+    const textcolor = emitSVG(layout('\\textcolor{blue}{xy}'));
+    expect(textcolor.svg).toContain('fill="blue"');
+    expect(textcolor.svg.match(/fill=/g) ?? []).toHaveLength(2);
+  });
+
+  it('emits underline and overline rules as full-width rects', () => {
+    const under = emitSVG(layout('\\underline{x}'));
+    const rects = under.svg.match(/<rect /g) ?? [];
+    expect(rects).toHaveLength(1);
+
+    // The rule spans the same advance the underlined content occupies.
+    const m = /<rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)"\/>/.exec(
+      under.svg,
+    );
+    expect(m).not.toBeNull();
+    expect(Number(m![3]) / UNITS_PER_EM).toBeCloseTo(under.width, 3);
+
+    expect(emitSVG(layout('\\overline{x}')).svg.match(/<rect /g) ?? []).toHaveLength(1);
+  });
+
+  it('centres limit rows over the operator', () => {
+    // In display style \sum gets `op-limits`, whose vlist rows are centred
+    // against the widest row (the operator itself), so the narrow subscript
+    // `n` sits under the middle of the ∑ glyph rather than at its left edge.
+    const out = emitSVG(layout('\\sum_{i=1}^n i', { displayMode: true }));
+    const sum = out.placements.find((p) => p.char === '∑');
+    const n = out.placements.find((p) => p.char === 'n');
+    expect(sum).toBeDefined();
+    expect(n).toBeDefined();
+
+    const sumW = (getGlyph(sum!.font, sum!.code)!.advance / UNITS_PER_EM) * sum!.scale;
+    const nW = (getGlyph(n!.font, n!.code)!.advance / UNITS_PER_EM) * n!.scale;
+    expect(n!.x + nW / 2).toBeCloseTo(sum!.x + sumW / 2, 3);
+
+    // The operator row is the widest, so it stays put.
+    expect(sum!.x).toBeCloseTo(0, 3);
   });
 });
