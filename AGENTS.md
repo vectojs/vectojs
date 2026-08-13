@@ -68,6 +68,15 @@ machine and CI runner uses the same locked version.
 - **Compiler**: TypeScript **7.x** everywhere; verify types with the package `build` (`tsc -p tsconfig.build.json`).
 - **Task runner (preferred entry point)**: `just` — a `Justfile` of thin wrappers over the package.json scripts + pinned toolchain. Prefer `just <recipe>` over the raw `bun run …`/`cargo …` invocations (run `just --list` to see all); each recipe calls the same underlying command, so CI parity is preserved.
 - **Unit testing**: Vitest — `just test` (all packages), `just test-pkg <pkg>`, or `just test-file <pkg> <file>` (each wraps `bun run test` / `bun run --filter …`).
+- **Agent context layer (advisory)**: `ctxctl` — token-efficient code reading
+  (outline / symbol slicing / deps / exec compression) with byte-stable output
+  for prompt caching. Pinned as a devDependency; project config in
+  `.ctxctl/config.toml`. Read order: `ctxctl outline <file>` →
+  `ctxctl symbol <file> --name <sym> [--compact|--signature]` →
+  `ctxctl read <file> --lines N-M`; wrap long command runs in
+  `ctxctl exec "<cmd>"` (no shell — use `sh -c` for pipes). A parse failure
+  is signaled (stderr warning, exit code 3, `parse_error` in JSON), never
+  silently reported as empty. Not a CI gate.
 - **Rust / WASM** (`crates/vectojs-core-rs`): `rustfmt` + `cargo clippy --target wasm32-unknown-unknown -- -D warnings`, wrapped as `just wasm-check`; build with `just wasm` (never a bare `cargo build --target wasm32-unknown-unknown`). Toolchain is pinned via `rust-toolchain.toml` (`channel = "stable"`, `wasm32-unknown-unknown` target, `clippy`+`rustfmt` components). `just wasm` runs `crates/vectojs-core-rs/build.sh`, which sets `RUSTFLAGS` explicitly to avoid a global `~/.cargo/config.toml` leaking host-only flags (e.g. `-fuse-ld=mold`) into the wasm link. The compiled `.wasm` output is gitignored — built in CI, published to npm, never committed.
 
 ### Benchmarks: what may be quoted

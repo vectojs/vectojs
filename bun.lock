@@ -12,6 +12,7 @@
         "@commitlint/cli": "^21.2.1",
         "@commitlint/config-conventional": "^21.2.0",
         "carryctx": "0.5.6",
+        "ctxctl": "^0.1.2",
         "fabric": "^7.4.0",
         "knip": "^6.31.0",
         "konva": "^10.3.0",
@@ -1010,6 +1011,18 @@
     "cssstyle": ["cssstyle@4.6.0", "", { "dependencies": { "@asamuzakjp/css-color": "^3.2.0", "rrweb-cssom": "^0.8.0" } }, "sha512-2z+rWdzbbSZv6/rhtvzvqeZQHrBaqgogqt85sqFNbabZOuFbCVFb8kPeEtZjiKkbrm395irpNKiYeFeLiQnFPg=="],
 
     "csstype": ["csstype@3.0.8", "", {}, "sha512-jXKhWqXPmlUeoQnF/EhTtTl4C9SnrxSH/jZUih3jmO6lBKr99rP3/+FmrMj4EFpOXzMtXHAZkd3x0E6h6Fgflw=="],
+
+    "ctxctl": ["ctxctl@0.1.2", "", { "optionalDependencies": { "ctxctl-cli-darwin-arm64": "0.1.2", "ctxctl-cli-darwin-x64": "0.1.2", "ctxctl-cli-linux-arm64-gnu": "0.1.2", "ctxctl-cli-linux-x64-gnu": "0.1.2", "ctxctl-cli-windows-x64": "0.1.2" }, "bin": { "ctxctl": "bin/ctxctl.js" } }, "sha512-fVnlIe1FxLf8+NT6Zf5Ek0mu3q630dISorSShjNHHCbHypWHj9SFeLNiJ9OhZi/Ro8TdKHfW7SJ0cXpCUxCXGw=="],
+
+    "ctxctl-cli-darwin-arm64": ["ctxctl-cli-darwin-arm64@0.1.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-l/N6GBjgGifSdK2pwo6KqFF7aDHHn3R/PRGhBF8VtJ9QCm7MtRtEK9/P8bCXvKD2vLu/5Dyib0vymkZ4VSLlKg=="],
+
+    "ctxctl-cli-darwin-x64": ["ctxctl-cli-darwin-x64@0.1.2", "", { "os": "darwin", "cpu": "x64" }, "sha512-LFyjV825QuRlBYzUhWPOy4sTe+W85ya22xRyVZ8wJ33cybctggRDHU8S6KMkanMl/ZyGif22t2PpNrLy/ZBQLQ=="],
+
+    "ctxctl-cli-linux-arm64-gnu": ["ctxctl-cli-linux-arm64-gnu@0.1.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-C24z0GFDaYatxo8fWnLO3xUo8uKMVIBxOy+bCSEMHEOSqkCqFf4pw7K/spTTIwL5k/40If3WKHOLO2qHhaENHw=="],
+
+    "ctxctl-cli-linux-x64-gnu": ["ctxctl-cli-linux-x64-gnu@0.1.2", "", { "os": "linux", "cpu": "x64" }, "sha512-TZVOVTkUMzKDuiQa8+Eujfh6t+mDhI5d878Dn+wqRZYcVIXY70pdifYZpwC1fieKqNY89HwFnYH/i+SU1g23TA=="],
+
+    "ctxctl-cli-windows-x64": ["ctxctl-cli-windows-x64@0.1.2", "", { "os": "win32", "cpu": "x64" }, "sha512-RzjIdxvwXiLHQYhlXFcqpilCVhNgN0b2wCJlJ34Ey2MgIL84Ee4n4YVQj4OnS4wFyQ1RRtTMsw6W7447viK7yg=="],
 
     "cytoscape": ["cytoscape@3.34.0", "", {}, "sha512-62rNSrioXw93uliKFBwjukeQyeWwH2PqDrTac31r2P6464u3AUvTk0xS4LVvT251g7IgkFunrI48ZEZGjywSOg=="],
 

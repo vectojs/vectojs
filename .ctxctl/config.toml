@@ -1,0 +1,15 @@
+# ctxctl project config — VectoJS monorepo.
+# Resolution: this file (nearest walk-up) > ~/.config/ctxctl/config.toml > defaults.
+# Arrays replace the previous level wholesale; undeclared keys fall back.
+
+[exec]
+# "fail" (substring) also catches vitest "FAIL" lines; "expected" keeps
+# assertion-diff and tsc arity error lines, which carry the useful detail.
+keep = ["error", "warning", "fail", "expected", "panic", "fatal"]
+collapse_threshold = 30
+
+[paths]
+ignore = ["node_modules", "target", "dist", ".git", ".worktrees", "tmp"]
+
+[outline]
+show_doc = true
