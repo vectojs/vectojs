@@ -114,7 +114,7 @@ describe('ThreeAdapter', () => {
     expect(capturedEvent!.clientY).toBe(450);
   });
 
-  it('triggers pointerleave event when pointer exits mesh boundary', () => {
+  it('does not dispatch a spurious canvas pointerleave when the pointer exits the mesh', () => {
     let leaveCaptured = false;
     adapter.canvas.addEventListener('pointerleave', () => {
       leaveCaptured = true;
@@ -138,7 +138,43 @@ describe('ThreeAdapter', () => {
 
     const hit = adapter.updateIntersection(mockRaycasterOut, 'pointermove');
     expect(hit).toBe(false);
-    expect(leaveCaptured).toBe(true);
+    // The exit delivers pointerleave to the hovered entity (see the dedicated
+    // test above), never as a fallback dispatch to the canvas itself — the
+    // trailing dispatch used to fire one even when nothing was hovered.
+    expect(leaveCaptured).toBe(false);
+  });
+
+  it('dispatches pointerleave exactly once to the hovered entity when the pointer exits the mesh', () => {
+    class Shape extends Entity {
+      isPointInside(x: number, y: number) {
+        return x >= 100 && x <= 200 && y >= 100 && y <= 200;
+      }
+      render() {}
+    }
+    const shape = new Shape('leave-shape').setPosition(150, 150);
+    shape.width = 100;
+    shape.height = 100;
+    shape.interactive = true;
+    adapter.vectoScene.add(shape);
+    adapter.vectoScene.render(adapter.vectoScene.getRenderer(), 16, 16);
+
+    let leaves = 0;
+    shape.on('pointerleave', () => {
+      leaves++;
+    });
+
+    // Hover the shape: UV for logical (150, 150) is (150/800, 1 - 150/600).
+    adapter.updateIntersection(
+      { intersectObject: () => [{ uv: new THREE.Vector2(0.1875, 0.75) }] } as any,
+      'pointermove',
+    );
+    // The ray then leaves the mesh entirely.
+    adapter.updateIntersection({ intersectObject: () => [] } as any, 'pointermove');
+
+    // The leave must reach the hovered entity exactly once: the trailing
+    // dispatch in dispatchAtUv used to re-deliver it to whatever entity
+    // sits under lastUv (still inside the mesh), duplicating the leave.
+    expect(leaves).toBe(1);
   });
 
   it('falls back to direct entity dispatch for a11y elements that exist but are DOM-detached (ThreeAdapter always produces these)', () => {

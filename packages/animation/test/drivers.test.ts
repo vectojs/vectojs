@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { TweenDriver, SpringDriver } from '../src/drivers';
+import type { EasingFn } from '../src/easing';
 
 // Drivers tick in milliseconds (Entity passes dt in ms).
 describe('TweenDriver', () => {
@@ -61,6 +62,32 @@ describe('TweenDriver', () => {
     expect(d.isDone()).toBe(true);
     expect(d.value).toBeCloseTo(100, 6);
   });
+
+  it('sanitizes a non-finite duration/delay instead of wedging the tween forever', () => {
+    // `Math.max(1, NaN)` is NaN, so the old code ticked to a NaN value and
+    // `isDone()` (elapsed >= NaN) never turned true — the property froze.
+    const nanDuration = new TweenDriver(0, 100, { duration: Number.NaN });
+    nanDuration.tick(500);
+    expect(Number.isFinite(nanDuration.value)).toBe(true);
+    expect(nanDuration.value).toBe(100);
+    expect(nanDuration.isDone()).toBe(true);
+
+    // A NaN delay makes `active = elapsed - NaN` NaN the same way.
+    const nanDelay = new TweenDriver(0, 100, { duration: 50, delay: Number.NaN });
+    nanDelay.tick(100);
+    expect(nanDelay.value).toBe(100);
+    expect(nanDelay.isDone()).toBe(true);
+  });
+
+  it('lands exactly on `to` even when a custom easing returns f(1) !== 1', () => {
+    const ease: EasingFn = (t) => (t >= 1 ? 0.5 : t);
+    const d = new TweenDriver(0, 100, { duration: 100, easing: ease });
+    d.tick(50);
+    expect(d.value).toBeCloseTo(50, 6);
+    d.tick(100); // past the end: isDone() is true, so value must be `to`
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBe(100);
+  });
 });
 
 describe('SpringDriver', () => {
@@ -79,6 +106,23 @@ describe('SpringDriver', () => {
     d.retarget(2);
     const after = d.value;
     expect(after).toBeCloseTo(before, 9); // no snap on retarget
+  });
+
+  it('drops a non-finite or non-positive mass instead of wedging the integrator', () => {
+    // mass 0 divides the acceleration by zero: the first update writes ±Infinity
+    // into the velocity, every later step is NaN, and `isAtRest()` (NaN < eps is
+    // false) can never turn true — the property freezes off-target.
+    const zeroMass = new SpringDriver(0, 100, { mass: 0 });
+    for (let i = 0; i < 600 && !zeroMass.isDone(); i++) zeroMass.tick(16);
+    expect(zeroMass.isDone()).toBe(true);
+    zeroMass.tick(16);
+    expect(zeroMass.value).toBeCloseTo(100, 3);
+
+    const nanStiffness = new SpringDriver(0, 100, { stiffness: Number.NaN });
+    for (let i = 0; i < 600 && !nanStiffness.isDone(); i++) nanStiffness.tick(16);
+    expect(nanStiffness.isDone()).toBe(true);
+    nanStiffness.tick(16);
+    expect(nanStiffness.value).toBeCloseTo(100, 3);
   });
 
   it('exposes the underlying SpringPhysics (no copy) for the batched WASM gather', () => {

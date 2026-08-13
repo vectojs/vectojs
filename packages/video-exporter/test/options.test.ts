@@ -75,6 +75,15 @@ describe('normalizeOptions', () => {
     );
   });
 
+  it.each([
+    ['width', 1281],
+    ['height', 719],
+  ] as const)('rejects an odd %s before the encode instead of at the very end', (field, value) => {
+    // H.264 yuv420p subsamples chroma by 2, so odd dimensions are only
+    // rejected by ffmpeg after every frame was rendered and captured.
+    expect(() => normalizeOptions(options({ [field]: value }))).toThrow(/even.*H\.264/i);
+  });
+
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects invalid duration %s',
     (duration) => {

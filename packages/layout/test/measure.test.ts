@@ -15,15 +15,21 @@ import { createCanvasMeasurer, createMetricsMeasurer, resolveGlyphMeasurer } fro
  * `.style` undefined and threw before any measurement happened.
  */
 function stubCanvas(widthOf: (s: string) => number) {
+  const fonts: string[] = [];
   const measureText = vi.fn((s: string) => ({ width: widthOf(s) }));
   const ctx = {
-    set font(_v: string) {},
+    set font(v: string) {
+      fonts.push(v);
+    },
+    get font(): string {
+      return fonts.at(-1) ?? '';
+    },
     measureText,
   };
   const spy = vi
     .spyOn(HTMLCanvasElement.prototype, 'getContext')
     .mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
-  return { measureText, restore: () => spy.mockRestore() };
+  return { measureText, fonts, restore: () => spy.mockRestore() };
 }
 
 // The measuring context is memoized process-wide, so a stub installed by one
@@ -55,6 +61,25 @@ describe('createCanvasMeasurer', () => {
       m.measure('A', 40); // cached — different size reuses the base width
       m.measure('B', 20);
       expect(measureText).toHaveBeenCalledTimes(2); // A once, B once
+    } finally {
+      restore();
+    }
+  });
+
+  it('measures per-run fontFamily/bold/italic overrides at their own style (GlyphMeasurer contract)', () => {
+    const { fonts, restore } = stubCanvas((s) => s.length * 10);
+    try {
+      const m = createCanvasMeasurer('sans-serif', 100)!;
+      m.measure('A', 20, 'monospace');
+      expect(fonts.at(-1)).toBe('100px monospace');
+      m.measure('A', 20, undefined, true);
+      expect(fonts.at(-1)).toBe('bold 100px sans-serif');
+      m.measure('A', 20, undefined, false, true);
+      expect(fonts.at(-1)).toBe('italic 100px sans-serif');
+      // Overrides neither poison the base cache nor each other.
+      expect(m.measure('A', 100)).toBeCloseTo(10);
+      expect(m.measure('A', 100, 'monospace')).toBeCloseTo(10);
+      expect(m.measure('A', 100, 'monospace', true)).toBeCloseTo(10);
     } finally {
       restore();
     }

@@ -16,6 +16,11 @@ import type { GlyphMeasurer } from './LayoutEngine';
  * {@link LayoutEngine} real per-glyph metrics for text that has no pre-baked
  * vector atlas, fixing the coarse `0.5em` line-breaking fallback.
  *
+ * Honors the {@link GlyphMeasurer} contract for per-run overrides: a
+ * `fontFamily`/`bold`/`italic` passed to `measure()` measures (and caches) at
+ * that style instead of returning the base font's numbers, so an inline
+ * `monospace` or bold run breaks lines by its own metrics.
+ *
  * Uses `getSharedMeasuringContext()` rather than its own canvas, and the
  * *attached* part is load-bearing here in a way it is not for a pure geometry
  * consumer: this measurer decides **where lines break**. A detached context
@@ -39,22 +44,26 @@ export function createCanvasMeasurer(
   const ctx = getSharedMeasuringContext();
   if (!ctx) return null;
 
-  const font = `${baseSize}px ${fontFamily}`;
   const cache = new Map<string, number>();
 
   return {
     measure(
       char: string,
       fontSize: number,
-      _fontFamily?: string,
-      _bold?: boolean,
-      _italic?: boolean,
+      runFamily?: string,
+      bold?: boolean,
+      italic?: boolean,
     ): number {
-      let base = cache.get(char);
+      // A per-run override (inline `monospace`, a bold run) measures at its own
+      // style rather than returning base-family numbers, per the
+      // `GlyphMeasurer` contract. The cache key carries the style, so a run
+      // override never poisons the base cache or vice versa.
+      const key = `${runFamily ?? ''}\u0000${bold ? 'b' : ''}${italic ? 'i' : ''}\u0000${char}`;
+      let base = cache.get(key);
       if (base === undefined) {
-        ctx.font = font;
+        ctx.font = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${baseSize}px ${runFamily ?? fontFamily}`;
         base = ctx.measureText(char).width;
-        cache.set(char, base);
+        cache.set(key, base);
       }
       return base * (fontSize / baseSize);
     },

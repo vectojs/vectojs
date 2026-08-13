@@ -78,6 +78,24 @@ describe('LayoutEngine buffer path ↔ allocating path parity', () => {
     expectParity(new LayoutEngine(100, 300), 'A B\n\nC');
   });
 
+  it('honors preserveLeadingSpaces like the allocating path (leading space kept)', () => {
+    const engine = new LayoutEngine(100, 100);
+    engine.preserveLeadingSpaces = true;
+    // The allocating path keeps the leading space when the flag is set; the
+    // zero-GC path skipped it unconditionally, so a consumer of the buffer
+    // path lost glyphs the allocating path reports.
+    const nodes = engine.layoutText(' A', atlas, 32).nodes;
+    expect(nodes.map((n) => n.char)).toEqual([' ', 'A']);
+
+    const buffer = new LayoutResultBuffer();
+    engine.layoutTextIntoBuffer(' A', atlas, 32, buffer);
+    expect(buffer.count).toBe(2);
+    expect(buffer.chars[0]).toBe(' ');
+    expect(buffer.chars[1]).toBe('A');
+    expect(buffer.xs[0]).toBeCloseTo(0);
+    expect(buffer.xs[1]).toBeCloseTo(10);
+  });
+
   it('shares one baseline for mixed-size inline runs (prepareRich)', () => {
     const engine = new LayoutEngine(400, 200);
     const runs: TextRun[] = [{ text: 'A' }, { text: 'B', style: { fontSize: 64 } }, { text: 'C' }];

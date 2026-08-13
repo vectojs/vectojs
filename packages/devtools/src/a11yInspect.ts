@@ -1,6 +1,6 @@
-import type { Bounds, Entity, Scene } from '@vectojs/core';
+import type { A11yAttributes, Bounds, Entity, Scene } from '@vectojs/core';
 import { rectToSceneBox } from './highlightGeometry';
-import { entityPath, textPreviewOf } from './inspect';
+import { entityPath, textContentOf } from './inspect';
 
 /**
  * Accessibility inspector and audits.
@@ -151,16 +151,33 @@ function domBoundsOf(scene: Scene, entity: Entity): Bounds | undefined {
 }
 
 /**
+ * `getA11yAttributes()` is app-supplied and may throw. One hostile entity must
+ * not take down the whole-scene audit or reading-order query — a debug tool
+ * that crashes on the entity you are debugging is worse than one that treats
+ * it as unprojected. Same guard `hitExplain`/`model` apply to their own
+ * app-supplied calls.
+ */
+function a11yAttributesOf(entity: Entity): A11yAttributes | undefined {
+  try {
+    return entity.getA11yAttributes();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Resolve what a screen reader would announce for this entity.
  *
  * Mirrors the projection's own precedence rather than inventing one, so a reported
- * name is the announced name.
+ * name is the announced name. Text content is used in full: the display preview
+ * truncates at 80 characters, and comparing previews would collide two labels
+ * that differ only past that window as false duplicate names.
  */
 function resolveName(entity: Entity): {
   name?: string;
   source: 'label' | 'text' | 'none';
 } {
-  const attrs = entity.getA11yAttributes();
+  const attrs = a11yAttributesOf(entity);
   // Guard the type rather than trusting it. `A11yAttributes.label` is typed
   // `string`, but a component that forwards its whole options object by mistake
   // puts an object here, and the audit would then compare objects for duplicate
@@ -168,14 +185,14 @@ function resolveName(entity: Entity): {
   if (typeof attrs?.label === 'string' && attrs.label.length > 0) {
     return { name: attrs.label, source: 'label' };
   }
-  const text = textPreviewOf(entity);
+  const text = textContentOf(entity);
   if (text) return { name: text, source: 'text' };
   return { source: 'none' };
 }
 
 /** Full accessibility readout for one entity. */
 export function inspectA11y(scene: Scene, entity: Entity): A11yInfo {
-  const attrs = entity.getA11yAttributes();
+  const attrs = a11yAttributesOf(entity);
   const projected = !!(attrs && (attrs.tag || attrs.role || attrs.label || entity.interactive));
   const { name, source } = resolveName(entity);
   const el = scene.getA11yElement?.(entity.id);
@@ -214,7 +231,7 @@ export function inspectA11y(scene: Scene, entity: Entity): A11yInfo {
 
 /** Whether an entity is reachable by keyboard. */
 function isFocusable(entity: Entity): boolean {
-  const attrs = entity.getA11yAttributes();
+  const attrs = a11yAttributesOf(entity);
   if (attrs?.disabled) return false;
   if (attrs?.tabIndex !== undefined) return attrs.tabIndex >= 0;
   return entity.interactive;
@@ -256,7 +273,7 @@ export function auditA11y(scene: Scene, opts: A11yAuditOptions = {}): A11yFindin
     // user can never encounter.
     if (entity.a11yHidden) return;
 
-    const attrs = entity.getA11yAttributes();
+    const attrs = a11yAttributesOf(entity);
     const focusable = isFocusable(entity);
     const { name } = resolveName(entity);
     const role = attrs?.role ?? (attrs?.tag ? IMPLICIT_ROLES[attrs.tag.toLowerCase()] : undefined);

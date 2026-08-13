@@ -37,8 +37,13 @@ export interface Style {
   font?: string;
   /** Font family — composed into the entity's `font` string (0.2.0+). */
   fontFamily?: string;
-  /** Font size in px — composed into the entity's `font` string (0.2.0+). */
-  fontSize?: CssLength;
+  /**
+   * Font size in px — composed into the entity's `font` string (0.2.0+).
+   * Deliberately NOT a bare number: the composed font shorthand must stay a
+   * valid canvas font string, so the unit-bearing `px` form is required (the
+   * same runtime check guards `var()` tokens that resolve to a number).
+   */
+  fontSize?: `${number}px`;
   /** Font weight — composed into the entity's `font` string (0.2.0+). */
   fontWeight?: number | 'normal' | 'bold' | 'bolder' | 'lighter';
   /** Line height in px. */
