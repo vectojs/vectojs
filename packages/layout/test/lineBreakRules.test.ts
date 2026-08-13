@@ -36,6 +36,27 @@ test('LayoutEngine: orphan closing punctuation does not start a line', () => {
   }
 });
 
+test('LayoutEngine: orphan punctuation after a space never starts a line', () => {
+  // Intl.Segmenter segments 'word !' as ['word', ' ', '!']; the '!' must merge
+  // onto 'word' (skipping the whitespace word), not onto the space.
+  const narrowAtlas: GlyphAtlas = {};
+  for (const ch of 'word !') {
+    if (!narrowAtlas[ch]) {
+      narrowAtlas[ch] = {
+        width: ch === ' ' ? 5 : ch === '!' ? 4 : 9,
+        baseSize: 16,
+        ast: null,
+      };
+    }
+  }
+  const engine = new LayoutEngine(40, 1000); // 'word' fits, 'word !' does not
+  const result = engine.layoutText('word !', narrowAtlas, 16);
+
+  const bang = result.nodes.find((n) => n.char === '!');
+  expect(bang).toBeDefined();
+  expect(bang!.x).toBeGreaterThan(2);
+});
+
 test('LayoutEngine: @ identifier stays together', () => {
   const engine = new LayoutEngine(60, 1000); // very narrow
   const result = engine.layoutText('use @vectojs for', mockAtlas, 16);

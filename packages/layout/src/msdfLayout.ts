@@ -94,7 +94,8 @@ export function computeMSDFLayout(
   request: LayoutWorkerRequest,
   font: MSDFFontData,
 ): LayoutWorkerResponse {
-  const { id, seqId, text, maxWidth, fontSize, lineHeight, letterSpacing, textAlign } = request;
+  const { id, seqId, text, maxWidth, maxHeight, fontSize, lineHeight, letterSpacing, textAlign } =
+    request;
 
   // Measure and wrap words
   const codePoints: number[] = [];
@@ -143,6 +144,22 @@ export function computeMSDFLayout(
     lineIndex++;
     wordStartIdx = -1;
     softBreaks = [];
+  };
+
+  // maxHeight truncation mirroring the main-thread LayoutEngine: its placement
+  // gate is `while (currentY < this.maxHeight)`, so a glyph whose line top is
+  // at or past maxHeight is never rendered. `hitMaxHeight` records that
+  // truncation happened, because the main thread's reported totalHeight is the
+  // top of the first unrendered line in that case, not one line past it.
+  let hitMaxHeight = false;
+  const dropFrom = (from: number) => {
+    codePoints.length = from;
+    xCoords.length = from;
+    yCoords.length = from;
+    packedStyles.length = from;
+    lineOf.length = from;
+    advances.length = from;
+    hitMaxHeight = true;
   };
 
   /** Emit a visible hyphen glyph at (x, current line) — used at a soft-hyphen
@@ -195,6 +212,9 @@ export function computeMSDFLayout(
     if (curX + advance > maxWidth && curX > 0) {
       if (code === 32) {
         breakLine(true); // swallow the wrapping space entirely
+        // A swallowed trailing space can be the last char, so it never reaches
+        // the maxHeight gate below; record the truncation here.
+        if (lineIndex * actualLineHeight >= maxHeight) hitMaxHeight = true;
         continue;
       }
       // Suppress break before orphan punctuation: pull the punctuation back to
@@ -206,6 +226,10 @@ export function computeMSDFLayout(
         if (shift > maxLineWidth) maxLineWidth = shift;
         wrapClosedLines.add(lineIndex);
         lineIndex++;
+        if (lineIndex * actualLineHeight >= maxHeight) {
+          dropFrom(anchorIdx);
+          break;
+        }
         const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
         for (let j = anchorIdx; j < xCoords.length; j++) {
           xCoords[j] -= shift;
@@ -223,6 +247,10 @@ export function computeMSDFLayout(
         if (shift > maxLineWidth) maxLineWidth = shift;
         wrapClosedLines.add(lineIndex);
         lineIndex++;
+        if (lineIndex * actualLineHeight >= maxHeight) {
+          dropFrom(atIdx);
+          break;
+        }
         const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
         for (let j = atIdx; j < xCoords.length; j++) {
           xCoords[j] -= shift;
@@ -253,6 +281,11 @@ export function computeMSDFLayout(
           // (j < length) drag the hyphen down onto the new line too.
           const shift = xCoords[brk.at];
           lineIndex++;
+          if (lineIndex * actualLineHeight >= maxHeight) {
+            dropFrom(brk.at);
+            emitHyphen(brk.x, brokenLine); // hyphen stays on the last rendered line
+            break;
+          }
           const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
           for (let j = brk.at; j < xCoords.length; j++) {
             xCoords[j] -= shift;
@@ -269,6 +302,10 @@ export function computeMSDFLayout(
           if (shift > maxLineWidth) maxLineWidth = shift;
           wrapClosedLines.add(lineIndex); // the line the word left behind wrapped
           lineIndex++;
+          if (lineIndex * actualLineHeight >= maxHeight) {
+            dropFrom(wordStartIdx);
+            break;
+          }
           const nodeY = lineIndex * actualLineHeight + ascender * fontSize;
           for (let j = wordStartIdx; j < xCoords.length; j++) {
             xCoords[j] -= shift;
@@ -290,6 +327,15 @@ export function computeMSDFLayout(
       softBreaks = [];
     } else if (wordStartIdx === -1 && !breakableAnywhere) {
       wordStartIdx = codePoints.length;
+    }
+
+    // maxHeight gate: the main-thread placement loop only runs while
+    // `currentY < maxHeight`, so a glyph whose line top is at or past
+    // maxHeight is never rendered. Covers paths that reach a new line without
+    // moving glyphs (an explicit newline, the per-glyph CJK break above).
+    if (lineIndex * actualLineHeight >= maxHeight) {
+      hitMaxHeight = true;
+      break;
     }
 
     codePoints.push(code);
@@ -323,7 +369,10 @@ export function computeMSDFLayout(
     id,
     seqId,
     width: maxLineWidth,
-    height: (lineIndex + 1) * actualLineHeight,
+    // When maxHeight truncated the output, the height is the top of the first
+    // unrendered line (mirroring LayoutEngine's totalHeight = currentY after a
+    // maxHeight break); otherwise it is one full line past the last one.
+    height: hitMaxHeight ? lineIndex * actualLineHeight : (lineIndex + 1) * actualLineHeight,
     codePoints: new Uint32Array(codePoints),
     xCoords: new Float32Array(xCoords),
     yCoords: new Float32Array(yCoords),

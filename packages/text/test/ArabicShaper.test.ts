@@ -40,6 +40,16 @@ describe('ArabicShaper', () => {
     expect(res.indexMap[0]).toBe(0); // maps back to Lam index 0
   });
 
+  it('should form the Lam-Alef ligature across intervening harakat', () => {
+    // "لَأ" (Lam + Fatha + Alef Hamza Above) -> ligature + Fatha, not the
+    // colliding isolated/initial Lam + final Alef pair.
+    const raw = '\u0644\u064E\u0623';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFEF7\u064E');
+    expect([...res.indexMap]).toEqual([0, 1]);
+  });
+
   it('should support Persian Yeh and Keheh shaping forms', () => {
     // Keheh (0x06A9) + Farsi Yeh (0x06CC) -> "کی"
     // Shaped: Initial Keheh (0xFB90) + Final Farsi Yeh (0xFBFE)
