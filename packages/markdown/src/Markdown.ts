@@ -56,6 +56,7 @@ import {
 import {
   ensureFencedBlockRenderer,
   hasFencedBlockRenderer,
+  isFencedBlockRendererReady,
   renderFencedBlock,
 } from './markdown-fenced-registry';
 
@@ -678,6 +679,10 @@ export class Markdown extends UIComponent {
    * work on a "final" document would measure and export placeholder boxes.
    */
   private mathLoadPending = false;
+  /** Coalesces the several closed-fence placeholders of one document onto a
+   *  single {@link retypesetFromTokens} once a lazy fenced-block renderer's load
+   *  resolves. Mirrors `mathLoadPending`. */
+  private fencedRebuildPending = false;
   private _userTiming: boolean;
   private tokens: Token[] = [];
   /**
@@ -1505,6 +1510,7 @@ export class Markdown extends UIComponent {
     // what lets the flush below actually release, instead of leaving an awaiting
     // `close()` pending forever against a torn-down tree.
     this.mathLoadPending = false;
+    this.fencedRebuildPending = false;
     // Nothing will reply now, so release any settlement waiter rather than
     // leaving a `close()` pending against a destroyed instance.
     this.flushAppendSettledWaiters();
@@ -3797,20 +3803,39 @@ export class Markdown extends UIComponent {
         // module is then fetched over the several chunks the fence takes to close,
         // so the closing fence renders on the synchronous path.
         if (hasFencedBlockRenderer(lang)) {
-          ensureFencedBlockRenderer(lang);
+          const loaded = isFencedBlockRendererReady(lang);
+          const loadPromise = loaded ? null : ensureFencedBlockRenderer(lang);
           // `raw`, not just `text`: a renderer has to be able to tell an open
           // fence from a closed one, exactly as `rendersAsMath` does above, or it
           // renders a half-arrived source as if it were final.
           if (isFenceClosed(codeToken.raw)) {
-            const rendered = renderFencedBlock(codeToken.text, lang, {
-              theme: t,
-              availableWidth,
-              selectable: this.selectable,
-            });
+            const rendered = loaded
+              ? renderFencedBlock(codeToken.text, lang, {
+                  theme: t,
+                  availableWidth,
+                  selectable: this.selectable,
+                })
+              : null;
             if (rendered) {
               return this.withBlockAffordances(rendered, () =>
                 this.codeBlockAffordances(codeToken.text, lang),
               );
+            }
+            // Fence closed but the renderer has not finished loading, so the
+            // CodeBlock built below is a placeholder. Rebuild once the load
+            // resolves so the plugin entity replaces it. `fencedRebuildPending`
+            // coalesces a document's (possibly several) fences onto one rebuild;
+            // `retypesetFromTokens` re-enters this arm for every fence, so a
+            // second language that resolves later re-schedules itself. A renderer
+            // that loaded but returns `null` (`loaded` true, `rendered` null) is
+            // a permanent fallback and must not rebuild.
+            if (!loaded && loadPromise && !this.fencedRebuildPending) {
+              this.fencedRebuildPending = true;
+              loadPromise.then(() => {
+                this.fencedRebuildPending = false;
+                if (this.isDestroyed) return;
+                if (isFencedBlockRendererReady(lang)) this.retypesetFromTokens();
+              });
             }
           }
         }
