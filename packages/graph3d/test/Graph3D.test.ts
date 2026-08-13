@@ -112,6 +112,30 @@ describe('Graph3D', () => {
     ).toThrow(/unknown node id/);
   });
 
+  it('leaves the previous graph untouched when a new graph has an unknown link id', () => {
+    const graph = new Graph3D();
+    graph.setGraphData(DATA);
+
+    // The bad graph must throw BEFORE clearMeshes() or any attach: the old
+    // node mesh used to be destroyed and the new one attached before the
+    // link loop threw, leaving a half-built graph (nodes, no links) in the
+    // scene.
+    expect(() =>
+      graph.setGraphData({
+        nodes: [{ id: 'a' }, { id: 'ghost-target' }],
+        links: [{ source: 'a', target: 'ghost' }],
+      }),
+    ).toThrow(/unknown node id/);
+
+    // The previous graph is fully intact and still renderable.
+    expect(graph.group.children).toHaveLength(2);
+    expect(findInstancedMesh(graph).count).toBe(3);
+    graph.applyPositions(POSITIONS);
+    const line = findLineSegments(graph).geometry.getAttribute('position').array as Float32Array;
+    expect(Array.from(line.slice(6, 12))).toEqual([-4, 5, -6, 7, -8, 9]);
+    graph.dispose();
+  });
+
   it('dispose empties the group', () => {
     const graph = new Graph3D();
     graph.setGraphData(DATA);

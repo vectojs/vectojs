@@ -66,19 +66,44 @@ export class Graph3D {
    * Rebuild GPU resources for a new graph. Instanced buffers are fixed-size,
    * so a changed node/link count means fresh meshes; styling-only changes to
    * the same topology are cheap enough to not need a separate path yet.
-   * Unknown link endpoints throw rather than rendering a line to the origin.
+   * Unknown link endpoints throw rather than rendering a line to the origin —
+   * and they throw before the previous graph is cleared or any new mesh is
+   * attached, so a rejected graph leaves the scene exactly as it was.
    */
   public setGraphData(data: GraphData): void {
+    // Resolve link endpoints FIRST, before anything is cleared or attached:
+    // an unknown id must throw while the previous graph is still fully
+    // intact. Building the node mesh before this loop used to leave a
+    // half-built graph in the scene — the new nodes attached, the links
+    // missing — and destroyed the one that was rendering fine.
+    const nodeCount = data.nodes.length;
+    const indexById = new Map<string | number, number>();
+    for (let i = 0; i < nodeCount; i++) {
+      indexById.set(data.nodes[i].id, i);
+    }
+    const linkCount = data.links.length;
+    const resolvedEndpoints = new Uint32Array(linkCount * 2);
+    for (let i = 0; i < linkCount; i++) {
+      const link = data.links[i];
+      const sourceIndex = indexById.get(link.source);
+      const targetIndex = indexById.get(link.target);
+      if (sourceIndex === undefined || targetIndex === undefined) {
+        throw new Error(
+          `Link ${String(link.source)}→${String(link.target)} references an unknown node id`,
+        );
+      }
+      resolvedEndpoints[i * 2] = sourceIndex;
+      resolvedEndpoints[i * 2 + 1] = targetIndex;
+    }
+
     this.clearMeshes();
     this.hasWarnedShortPositions = false;
 
-    const nodeCount = data.nodes.length;
-    const indexById = new Map<string | number, number>();
     this.nodeScales = new Float32Array(nodeCount);
     for (let i = 0; i < nodeCount; i++) {
-      indexById.set(data.nodes[i].id, i);
       this.nodeScales[i] = Math.cbrt(Math.max(data.nodes[i].val ?? 1, 0));
     }
+    this.linkEndpoints = resolvedEndpoints;
 
     if (nodeCount > 0) {
       const geometry = new THREE.SphereGeometry(
@@ -95,21 +120,6 @@ export class Graph3D {
         this.nodeMesh.setMatrixAt(i, this.scratchMatrix);
       }
       this.group.add(this.nodeMesh);
-    }
-
-    const linkCount = data.links.length;
-    this.linkEndpoints = new Uint32Array(linkCount * 2);
-    for (let i = 0; i < linkCount; i++) {
-      const link = data.links[i];
-      const sourceIndex = indexById.get(link.source);
-      const targetIndex = indexById.get(link.target);
-      if (sourceIndex === undefined || targetIndex === undefined) {
-        throw new Error(
-          `Link ${String(link.source)}→${String(link.target)} references an unknown node id`,
-        );
-      }
-      this.linkEndpoints[i * 2] = sourceIndex;
-      this.linkEndpoints[i * 2 + 1] = targetIndex;
     }
 
     if (linkCount > 0) {

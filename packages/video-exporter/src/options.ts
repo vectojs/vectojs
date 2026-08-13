@@ -47,6 +47,16 @@ export function normalizeOptions(options: ExportOptions): NormalizedExportOption
   if (!Number.isFinite(duration) || duration <= 0) {
     throw new TypeError('duration must be a positive finite number');
   }
+  // H.264 yuv420p chroma is subsampled by 2, so odd dimensions can never
+  // encode — but only ffmpeg knows that, and it says so at the very end of
+  // the export with raw stderr, after every frame was rendered. Reject them
+  // up front.
+  if (options.width % 2 !== 0 || options.height % 2 !== 0) {
+    throw new TypeError(
+      `width and height must be even for H.264 (yuv420p) encoding (got ` +
+        `${options.width}x${options.height})`,
+    );
+  }
 
   const isRemote = /^https?:\/\//i.test(options.url);
   const url = isRemote ? options.url : resolve(options.url);
