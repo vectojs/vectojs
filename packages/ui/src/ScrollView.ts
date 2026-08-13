@@ -153,7 +153,16 @@ export class ScrollView extends UIComponent {
   }
 
   public remove(child: Entity): this {
-    this.content.remove(child);
+    // Direct children of the ScrollView itself (the inner content container,
+    // scrollbar chrome) must detach via super.remove: redirecting them to
+    // `content.remove` is a no-op, which leaves them in `this.children` and
+    // turns Entity.destroy()'s drain loop (`while (children.length) ...`)
+    // into an infinite loop once the child is already destroyed.
+    if (child.parent === this) {
+      super.remove(child);
+    } else {
+      this.content.remove(child);
+    }
     this.updateContentSize();
     return this;
   }
