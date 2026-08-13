@@ -78,6 +78,12 @@ export class ScrollView extends UIComponent {
 
     this.on('wheel', (e) => {
       if (e.ctrlKey) return; // Allow browser zoom (Ctrl+wheel)
+      // When the content already fits the viewport there is nothing to scroll,
+      // so consuming the wheel would only turn the ScrollView's band into a
+      // page-scroll dead zone. Return before preventDefault and let the page
+      // handle it (closes #525).
+      const maxScroll = Math.max(0, this.content.height - this.height);
+      if (maxScroll <= 0) return; // content fits — let the page scroll
       e.preventDefault();
       const deltaY = e.deltaY ?? 0;
       const deltaMode = e.deltaMode ?? 0;

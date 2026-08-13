@@ -128,4 +128,14 @@ describe('A11yAttributes → aria-* projection', () => {
     entity.attrs = { role: 'textbox', invalid: true };
     expect(sync().getAttribute('aria-invalid')).toBe('true');
   });
+
+  it('opts the shadow node out of text selection (#526)', () => {
+    // Mirrors exist for AT and synthetic input, not for selection: they inherit
+    // `user-select: text` from the a11y root, so before this a drag across the
+    // canvas swept every aria-label into the native selection alongside the
+    // real content projection.
+    entity.attrs = { role: 'button', label: 'Copy' };
+    const el = sync();
+    expect(el.style.userSelect).toBe('none');
+  });
 });

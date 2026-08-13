@@ -3428,6 +3428,11 @@ export class Scene {
         el.style.padding = '0';
         el.style.outline = 'none';
         el.style.cursor = node.a11yFullViewport ? 'default' : 'pointer';
+        // Mirrors exist for AT and synthetic input, not for text selection: without
+        // this they inherit `user-select: text` from the a11y root and a drag across
+        // the page sweeps their labels into the selection.
+        el.style.userSelect = 'none';
+        el.style.webkitUserSelect = 'none';
 
         if (this.debugA11y) {
           el.style.backgroundColor = 'rgba(56, 189, 248, 0.05)';

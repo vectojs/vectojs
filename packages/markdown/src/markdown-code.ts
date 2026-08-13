@@ -1,4 +1,5 @@
 import {
+  type A11yAttributes,
   contentLineInHint,
   type ContentProjection,
   type ContentProjectionHint,
@@ -736,6 +737,109 @@ export interface CodeBlockOptions {
 }
 
 /**
+ * Pointer hit-strip height of the horizontal scrollbar, in local px. Fits inside
+ * the default bottom padding (`codePadding: 18`), so the strip sits BELOW the
+ * last line's selection carrier and cannot steal its mousedown (see
+ * {@link CodeBlock.isPointInside} for why that mousedown is sacred).
+ */
+const HSCROLL_HIT_H = 12;
+/** Painted thumb thickness — thinner than the hit strip so the affordance stays quiet. */
+const HSCROLL_THUMB_H = 4;
+/** Gap between the painted thumb and the block's bottom edge. */
+const HSCROLL_THUMB_INSET = 4;
+/** Minimum thumb length, so a very wide line still leaves something to grab. */
+const HSCROLL_THUMB_MIN = 24;
+/**
+ * Translucent neutrals rather than theme keys: the thumb has to read on both the
+ * light and dark `codeBgColor` presets, and a translucent grey does that without
+ * growing `MarkdownTheme` by three keys for a secondary affordance.
+ */
+const HSCROLL_TRACK_COLOR = 'rgba(128, 128, 128, 0.14)';
+const HSCROLL_THUMB_COLOR = 'rgba(128, 128, 128, 0.45)';
+const HSCROLL_THUMB_ACTIVE_COLOR = 'rgba(128, 128, 128, 0.75)';
+
+/**
+ * Thumb length and travel range for a track `trackW` px wide over content that
+ * extends `maxScrollX` px past the viewport. One implementation shared by the
+ * painter ({@link CodeBlock.render}) and the drag mapping ({@link HScrollTrack}),
+ * so the drawn thumb and the pointer math can never disagree.
+ */
+function hScrollMetrics(trackW: number, maxScrollX: number): { thumbW: number; range: number } {
+  const content = trackW + maxScrollX;
+  const proportional = content > 0 ? (trackW / content) * trackW : trackW;
+  const thumbW = Math.min(trackW, Math.max(HSCROLL_THUMB_MIN, proportional));
+  return { thumbW, range: Math.max(1, trackW - thumbW) };
+}
+
+/**
+ * The interactive strip along the bottom of an overflowing {@link CodeBlock}
+ * (#527): dragging maps thumb travel onto `scrollX`, pressing outside the thumb
+ * jumps to the pressed position.
+ *
+ * A separate child rather than making the block itself interactive, because the
+ * block's non-interactivity is load-bearing (see {@link CodeBlock.isPointInside}):
+ * a shadow node covering the whole block would swallow the mousedown that starts
+ * native drag-selection. This child's shadow node covers only the bottom-padding
+ * strip below the last selectable carrier, so selection above it keeps working.
+ */
+class HScrollTrack extends UIComponent {
+  /** True while a drag owns the thumb; read by the block's painter for the active tint. */
+  public dragging = false;
+  private dragAnchorX = 0;
+  private scrollAtDragStart = 0;
+
+  constructor(private readonly block: CodeBlock) {
+    super();
+    this.on('pointerdown', (e: { localX?: number }) => {
+      if (e.localX === undefined) return;
+      const maxSX = this.block.maxScrollX;
+      if (maxSX <= 0) return;
+      const { thumbW, range } = hScrollMetrics(this.width, maxSX);
+      const thumbX = (this.block.scrollX / maxSX) * range;
+      // Press outside the thumb: centre the thumb under the pointer — the
+      // track-jump every native scrollbar approximates — then let the same
+      // press begin a drag, so the user can keep adjusting without lifting.
+      if (e.localX < thumbX || e.localX > thumbX + thumbW) {
+        this.block.setScrollX(((e.localX - thumbW / 2) / range) * maxSX);
+      }
+      this.dragging = true;
+      this.dragAnchorX = e.localX;
+      this.scrollAtDragStart = this.block.scrollX;
+      this.scene?.markDirty();
+    });
+    this.on('pointermove', (e: { localX?: number }) => {
+      if (!this.dragging || e.localX === undefined) return;
+      const maxSX = this.block.maxScrollX;
+      const { range } = hScrollMetrics(this.width, maxSX);
+      // Anchor + delta rather than absolute, so grabbing the middle of the
+      // thumb does not snap its centre to the pointer.
+      const dx = e.localX - this.dragAnchorX;
+      this.block.setScrollX(this.scrollAtDragStart + (dx / range) * maxSX);
+    });
+    const endDrag = (): void => {
+      if (!this.dragging) return;
+      this.dragging = false;
+      this.scene?.markDirty();
+    };
+    this.on('pointerup', endDrag);
+    this.on('pointerleave', endDrag);
+  }
+
+  public override getA11yAttributes(): A11yAttributes {
+    return {
+      role: 'scrollbar',
+      label: 'Scroll code horizontally',
+      value: String(Math.round(this.block.scrollX)),
+      valuemin: '0',
+      valuemax: String(Math.round(this.block.maxScrollX)),
+    };
+  }
+
+  /** Nothing to draw: the thumb is painted by the owning block, so both share one pass. */
+  public render(): void {}
+}
+
+/**
  * A single self-rendering entity for fenced code blocks.
  *
  * Replaces the old N×M child-entity explosion (Container → Stack → Text per
@@ -779,6 +883,12 @@ export class CodeBlock extends UIComponent {
   /** Memoized widest prepared line, keyed by the grid identity it came from. */
   private contentWidthGrid: PreparedContentGrid | null = null;
   private contentWidthValue = 0;
+  /**
+   * The interactive horizontal scrollbar strip (#527), created lazily by
+   * {@link syncScrollTrack} the first time the block overflows. Kept, and merely
+   * disabled, when the overflow later disappears — see there for why.
+   */
+  private hTrack: HScrollTrack | null = null;
 
   private lang: string;
   private theme: Required<MarkdownTheme>;
@@ -1194,6 +1304,35 @@ export class CodeBlock extends UIComponent {
   }
 
   /**
+   * Fit the interactive scrollbar strip (#527) to the current overflow.
+   *
+   * Called from {@link render} rather than from `setWidth` or `buildLines`:
+   * `setWidth` is documented as costing nothing and `maxScrollX` costs a grid
+   * build, while `render` is about to pay for that grid anyway. Once created,
+   * the child is KEPT and merely de-`interactive`d when the overflow disappears
+   * — this runs inside the scene's tree walk, and removing a child mid-walk is
+   * how siblings get skipped.
+   */
+  private syncScrollTrack(): void {
+    if (this.maxScrollX <= 0) {
+      if (this.hTrack) this.hTrack.interactive = false;
+      return;
+    }
+    if (!this.hTrack) {
+      this.hTrack = new HScrollTrack(this);
+      this.add(this.hTrack);
+    }
+    // Direct field writes, not `setPosition`: this runs on every rendered frame,
+    // and the geometry only changes when the block was already re-laid-out —
+    // which is what marked the scene dirty in the first place.
+    this.hTrack.interactive = true;
+    this.hTrack.x = this.pad;
+    this.hTrack.y = this.height - HSCROLL_HIT_H;
+    this.hTrack.width = Math.max(0, this.width - this.pad * 2);
+    this.hTrack.height = HSCROLL_HIT_H;
+  }
+
+  /**
    * Not hit-testable, and deliberately still not `interactive`, even though the
    * block now consumes wheel events to scroll.
    *
@@ -1201,12 +1340,20 @@ export class CodeBlock extends UIComponent {
    * hit-testing, so no a11y shadow node is needed. Creating one would place a
    * `pointer-events: auto` element above the transparent text mirror and swallow
    * the mousedown that starts a native drag-selection.
+   *
+   * Pointer-driven scrolling therefore lives on the {@link HScrollTrack} CHILD,
+   * whose shadow node covers only the bottom-padding strip below the last
+   * selectable carrier — never the text itself.
    */
   isPointInside(): boolean {
     return false;
   }
 
   render(r: IRenderer): void {
+    // The scrollbar strip is (re)fitted here rather than in `setWidth`, because
+    // `setWidth` is contractually free of rebuilds and the overflow question
+    // costs a grid build — one this method is about to pay anyway.
+    this.syncScrollTrack();
     // Background
     r.beginPath();
     r.roundRect(0, 0, this.width, this.height, this.theme.codeRadius);
@@ -1326,6 +1473,29 @@ export class CodeBlock extends UIComponent {
     }
 
     r.restore();
+
+    // The horizontal scroll indicator (#527), painted by the block itself so the
+    // thumb and the glyphs it reports on can never disagree about `scrollX`
+    // within a frame. Interaction (drag, track jump) lives on the `HScrollTrack`
+    // child; painting there instead would let the two drift by a frame.
+    const maxSX = this.maxScrollX;
+    if (maxSX > 0) {
+      const trackW = Math.max(0, this.width - this.pad * 2);
+      const { thumbW, range } = hScrollMetrics(trackW, maxSX);
+      const trackY = this.height - HSCROLL_THUMB_H - HSCROLL_THUMB_INSET;
+      r.beginPath();
+      r.roundRect(this.pad, trackY, trackW, HSCROLL_THUMB_H, HSCROLL_THUMB_H / 2);
+      r.fill(HSCROLL_TRACK_COLOR);
+      r.beginPath();
+      r.roundRect(
+        this.pad + (this.scrollX / maxSX) * range,
+        trackY,
+        thumbW,
+        HSCROLL_THUMB_H,
+        HSCROLL_THUMB_H / 2,
+      );
+      r.fill(this.hTrack?.dragging ? HSCROLL_THUMB_ACTIVE_COLOR : HSCROLL_THUMB_COLOR);
+    }
   }
 }
 

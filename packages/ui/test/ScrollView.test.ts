@@ -101,6 +101,18 @@ describe('ScrollView', () => {
     expect(sv.content.y).toBeCloseTo(0, 0);
   });
 
+  it('does not consume the wheel when content fits — the page keeps it (#525)', () => {
+    // The old handler called preventDefault before asking whether there was
+    // anything to scroll, so a short ScrollView turned its whole band into a
+    // page-scroll dead zone: the wheel did nothing inside it and the page
+    // underneath never moved.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 40)); // shorter than the viewport → maxScroll = 0
+    const { evt, pd } = wheelEvent(500);
+    sv.emit('wheel', evt);
+    expect(pd()).toBe(false);
+  });
+
   it('re-clamps the scroll offset when content shrinks', () => {
     const sv = new ScrollView({ width: 200, height: 100 });
     const tall = new Box(50, 300);

@@ -399,3 +399,91 @@ describe('CodeBlock horizontal scroll', () => {
     expect(block.isPointInside()).toBe(false);
   });
 });
+
+/** Reads the private scrollbar wiring `render()` maintains (#527). */
+interface TrackProbe {
+  syncScrollTrack: () => void;
+  hTrack: {
+    interactive: boolean;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    emit: (event: string, payload: unknown) => void;
+    getA11yAttributes: () => { role?: string };
+  } | null;
+  pad: number;
+}
+
+const trackProbe = (cb: CodeBlock): TrackProbe => cb as unknown as TrackProbe;
+
+/**
+ * The pointer-driven scrollbar strip (#527). Wheel-only scrolling left a
+ * mouse-only reader with no way to reach a clipped tail and no indication one
+ * existed; the strip fixes both. The constraint every test here respects: the
+ * strip must live BELOW the last line's selection carrier, because the block's
+ * own non-interactivity (see the test above) is what keeps drag-selection alive.
+ */
+describe('CodeBlock horizontal scroll track (#527)', () => {
+  it('creates an interactive scrollbar child once the block overflows', () => {
+    const block = codeBlockFrom(LONG);
+    // Lazily, at render time — not in the constructor, where it would force an
+    // eager grid build for blocks that may never be rendered.
+    expect(trackProbe(block).hTrack).toBeNull();
+    trackProbe(block).syncScrollTrack();
+    const track = trackProbe(block).hTrack;
+    expect(track).not.toBeNull();
+    expect(track!.interactive).toBe(true);
+    expect(track!.getA11yAttributes().role).toBe('scrollbar');
+    // Inside the bottom padding, BELOW the last selection carrier.
+    expect(track!.y).toBeGreaterThanOrEqual(block.height - trackProbe(block).pad);
+    expect(track!.y + track!.height).toBeLessThanOrEqual(block.height);
+  });
+
+  it('creates no scrollbar when every line fits', () => {
+    const block = codeBlockFrom('ok\nshort', 800);
+    trackProbe(block).syncScrollTrack();
+    expect(trackProbe(block).hTrack).toBeNull();
+  });
+
+  it('disables rather than removes the track when overflow disappears', () => {
+    const block = codeBlockFrom(LONG);
+    trackProbe(block).syncScrollTrack();
+    expect(trackProbe(block).hTrack!.interactive).toBe(true);
+    block.setWidth(100_000); // now everything fits
+    trackProbe(block).syncScrollTrack();
+    // Kept: the sync runs inside the scene's tree walk, and removing a child
+    // mid-walk is how siblings get skipped.
+    expect(trackProbe(block).hTrack).not.toBeNull();
+    expect(trackProbe(block).hTrack!.interactive).toBe(false);
+  });
+
+  it('maps a full-track drag onto the full scroll travel, both ways', () => {
+    const block = codeBlockFrom(LONG);
+    trackProbe(block).syncScrollTrack();
+    const track = trackProbe(block).hTrack!;
+    expect(block.scrollX).toBe(0);
+    track.emit('pointerdown', { localX: 1 }); // on the thumb (min length 24)
+    track.emit('pointermove', { localX: track.width });
+    expect(block.scrollX).toBe(block.maxScrollX);
+    track.emit('pointermove', { localX: 1 });
+    expect(block.scrollX).toBe(0);
+    track.emit('pointerup', { localX: 1 });
+  });
+
+  it('jumps on a press outside the thumb', () => {
+    const block = codeBlockFrom(LONG);
+    trackProbe(block).syncScrollTrack();
+    const track = trackProbe(block).hTrack!;
+    track.emit('pointerdown', { localX: track.width }); // far right of the thumb
+    expect(block.scrollX).toBe(block.maxScrollX);
+    track.emit('pointerup', { localX: track.width });
+  });
+
+  it('ignores pointermove without a press, like ScrollView', () => {
+    const block = codeBlockFrom(LONG);
+    trackProbe(block).syncScrollTrack();
+    trackProbe(block).hTrack!.emit('pointermove', { localX: 50 });
+    expect(block.scrollX).toBe(0);
+  });
+});
