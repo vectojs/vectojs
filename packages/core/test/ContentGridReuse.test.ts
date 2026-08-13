@@ -476,4 +476,41 @@ describe('content grid calibration scan scope', () => {
     (scene as unknown as { _drainFrames: () => void })._drainFrames();
     expect(el.dataset.vectoGridReady).toBe('true');
   });
+
+  it('publishes gridReady from a frame callback in the zero-measurement branch too', () => {
+    // A re-scan whose every cell is unmeasurable walks the zero-measurement
+    // branch: cells exist (so this is NOT the nothing-pending early exit), but
+    // every one is stamped on the spot with nothing to probe. Natural text
+    // never produces zero-advance cells (the prepared grid asserts a positive
+    // cell width), so the unmeasurable cells are simulated by stripping the
+    // stamps and zeroing the advance the scan reads — carrier reuse leaves
+    // those attributes untouched.
+    const scene = makeCalibratingScene();
+    const entity = new GridEntity('abc');
+    scene.add(entity);
+    syncProjection(scene);
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+
+    const el = scene.getContentElement(entity.id) as HTMLElement;
+    for (const cell of [...el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')]) {
+      delete cell.dataset.vectoGridCalib; // pending again
+      cell.dataset.vectoGridAdvance = '0'; // and nothing to measure
+    }
+    delete el.dataset.vectoGridCalibration;
+    delete el.dataset.vectoGridReady;
+    syncProjection(scene);
+
+    // Branch precondition: cells exist and were stamped without a probe.
+    const cells = [...el.querySelectorAll<HTMLElement>('[data-vecto-grid-cell]')];
+    expect(cells.length).toBeGreaterThan(0);
+    expect(cells.every((c) => c.dataset.vectoGridCalib !== undefined)).toBe(true);
+    expect(el.dataset.vectoGridCalibrationSamples).toBe('0');
+
+    // Same contract as the pending-free path: ready must NOT be synchronous —
+    // carriers materialized earlier in this same task have not been laid out
+    // yet, and consumers act on the flag by measuring immediately.
+    expect(el.dataset.vectoGridReady).toBeUndefined();
+    (scene as unknown as { _drainFrames: () => void })._drainFrames();
+    expect(el.dataset.vectoGridReady).toBe('true');
+  });
 });

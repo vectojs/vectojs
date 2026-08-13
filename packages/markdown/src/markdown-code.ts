@@ -754,6 +754,13 @@ export class CodeBlock extends UIComponent {
   private grid: PreparedContentGrid | null = null;
   /** Raw (unhighlighted) lines of the last build, for prefix reuse in buildLines. */
   private rawLines: string[] | null = null;
+  /**
+   * Language the highlight segments were built under. Prefix reuse compares
+   * raw line text only, so a `setCode(code, otherLang)` with byte-identical
+   * lines would reuse segments highlighted with the WRONG language; the reuse
+   * predicate must also require this to equal the current `lang`.
+   */
+  private highlightLang: string | null = null;
   private cellWidth = 0;
   private source: string;
   /** Bumped by {@link buildLines} and {@link setSelectable}; read by `Scene`. */
@@ -1136,8 +1143,12 @@ export class CodeBlock extends UIComponent {
     const rawLines = code.split(/\r\n|\r|\n/);
     const previous = this.rawLines;
     // Longest identical prefix, excluding the previous last line (see above).
+    // Reuse additionally requires the SAME language: segments highlight under
+    // `lang`, and comparing only raw text would carry segments coloured for
+    // the previous language across a `setCode(code, otherLang)` whose lines
+    // are byte-identical.
     let reusable = 0;
-    if (previous && this.lines.length === previous.length) {
+    if (previous && this.lines.length === previous.length && this.highlightLang === this.lang) {
       const limit = Math.min(previous.length - 1, rawLines.length);
       while (reusable < limit && previous[reusable] === rawLines[reusable]) reusable++;
     }
@@ -1157,6 +1168,7 @@ export class CodeBlock extends UIComponent {
     this.lineCarry = carries;
 
     this.rawLines = rawLines;
+    this.highlightLang = this.lang;
     this.grid = null;
     // Still a pure function of line COUNT — the header only changes the constant
     // term, so `setWidth()`'s documented invariant holds unchanged.

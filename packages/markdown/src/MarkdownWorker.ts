@@ -157,6 +157,21 @@ marked.use({
  */
 const rawCache = new Map<string, { version: number; lex: IncrementalLexCache }>();
 
+/**
+ * Hard bound on per-instance cache entries. An instance GC'd without `destroy()`
+ * never sends `dispose`, so the worker-side map used to grow with every
+ * Markdown block a long-lived page ever created — and each entry holds the
+ * instance's full accumulated source plus its token tree. Bounded by
+ * oldest-entry eviction (Map insertion order): an actively-streaming instance
+ * re-touches its entry on every chunk, so eviction only ever reclaims the
+ * longest-idle ones, at the cost of one resync if one of those returns.
+ *
+ * Exported for the protocol test, which drives the real worker module and must
+ * know where the bound sits to assert the eviction. esbuild strips it from the
+ * embedded worker bundle.
+ */
+export const RAW_CACHE_MAX = 256;
+
 self.onmessage = (e: MessageEvent) => {
   // A dedicated worker only receives messages from the script that created it
   // (there is no cross-origin `postMessage` surface — `event.origin` is always
@@ -324,7 +339,14 @@ self.onmessage = (e: MessageEvent) => {
     // document, only the new text, and needs to lex only what follows the stable
     // boundary.
     if (key !== null && version !== null) {
+      // Delete-then-set re-touches the entry so insertion order doubles as
+      // recency; the eviction below then drops the longest-idle instance,
+      // never the one that is still streaming.
+      rawCache.delete(key);
       rawCache.set(key, { version: version + 1, lex: result.cache });
+      if (rawCache.size > RAW_CACHE_MAX) {
+        rawCache.delete(rawCache.keys().next().value!);
+      }
     }
     self.postMessage({
       id,

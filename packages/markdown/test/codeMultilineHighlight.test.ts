@@ -192,5 +192,27 @@ describe('CodeBlock multi-line syntax constructs', () => {
       // code, and the numeric literal.
       expect(read()[2]).toEqual([KEYWORD, CODE, NUMBER]);
     });
+
+    it('re-highlights the reused prefix when the language changes', () => {
+      const src = ['# hello', 'def f():', 'x = 1'].join('\n');
+      // Sanity: the two languages colour the same bytes differently.
+      expect(colorsOf(src, 'python', 0)).toEqual([COMMENT]);
+      expect(colorsOf(src, 'python', 1)).toEqual([KEYWORD, CODE]);
+      expect(colorsOf(src, 'ts', 0)).toEqual([CODE]);
+      expect(colorsOf(src, 'ts', 1)).toEqual([CODE]);
+
+      // Same bytes, new language. The byte-identical line prefix must NOT keep
+      // the python highlight segments — segments are coloured per-language, and
+      // reusing them across a lang switch paints `#` comments and `def`
+      // keywords that the new language does not have.
+      const switched = new CodeBlock(src, 'python', 400, 'default');
+      switched.setCode(src, 'ts');
+      const oneShot = new CodeBlock(src, 'ts', 400, 'default');
+      const read = (cb: CodeBlock) =>
+        (cb as unknown as { lines: Seg[][] }).lines.map((row) =>
+          row.map((s) => `${s.text}=${s.color}`),
+        );
+      expect(read(switched)).toEqual(read(oneShot));
+    });
   });
 });

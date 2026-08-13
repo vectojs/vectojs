@@ -672,12 +672,20 @@ export class ContentProjectionManager {
     // reason to spend two animation frames. Distinct from the `pendingCells` early
     // exit above, which covers the already-calibrated steady state.
     if (measurements.length === 0) {
-      // The probe is not in the document yet (it is appended below), so it needs no
-      // removal here — it simply goes unreferenced.
-      el.dataset.vectoGridCalibration = calibrationKey;
-      el.dataset.vectoGridReady = 'true';
+      // `vectoGridReady` must be published from a frame callback, not
+      // synchronously — the identical contract violation the `pendingCells`
+      // early exit above is documented against: carriers materialized earlier
+      // in this same task have not been laid out yet, so a synchronous flag
+      // hands consumers (the e2e, a Table cell drag) a zero-width rect.
       el.dataset.vectoGridCalibrationSamples = '0';
       delete el.dataset.vectoGridCalibrationPending;
+      const readyFrame = requestAnimationFrame(() => {
+        this.calibrationFrameHandles.delete(entityId);
+        if (!el.isConnected) return;
+        el.dataset.vectoGridCalibration = calibrationKey;
+        el.dataset.vectoGridReady = 'true';
+      });
+      this.calibrationFrameHandles.set(entityId, readyFrame);
       return;
     }
 

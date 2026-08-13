@@ -1042,6 +1042,11 @@ export abstract class Entity {
       s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
       s.markDirty({ entity: this.id, reason: 'child-added' });
       child._notifyMounted(); // fire onMounted for the newly-live subtree
+      // Resume batched drivers the subtree had in flight when it was detached —
+      // the mirror of the unregister in remove(), so re-attaching a subtree
+      // removed mid-animation keeps its motion on the batch path. Optional like
+      // markStructureChanged: a minimal scene stand-in (tests) may omit it.
+      s._registerActiveDriverSubtree?.(child);
     }
   }
 
@@ -1073,6 +1078,11 @@ export abstract class Entity {
         s.a11yNeedsReorder = true;
         s.markStructureChanged?.(); // WASM transform store layout must be rebuilt
         s.markDirty({ entity: this.id, reason: 'child-removed' });
+        // Drop the off-tree subtree from the batched-driver candidate set, or
+        // its drivers keep ticking every frame until they complete (and pin the
+        // entities in the Set meanwhile). The mirror call in _addOne resumes
+        // them if the subtree is re-attached before its drivers settle.
+        s._unregisterActiveDriverSubtree?.(child);
       }
     }
     return this;

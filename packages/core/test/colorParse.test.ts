@@ -141,4 +141,43 @@ describe('parseColorToRGBA', () => {
       (globalThis as { document?: unknown }).document = prev;
     }
   });
+
+  it('returns opaque black for unparseable input WITH a DOM (no previous-parse leakage)', async () => {
+    // Fresh module so the cached fallbackCtx from earlier tests doesn't leak in.
+    vi.resetModules();
+    // A 2d-context stub emulating the browser: assigning an INVALID color to
+    // `fillStyle` is silently ignored, so a fill would sample the PREVIOUS
+    // parse's color — exactly the leak this guards against.
+    let stored = '';
+    const ctx: Record<string, unknown> = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray([1, 2, 3, 4]) })),
+    };
+    Object.defineProperty(ctx, 'fillStyle', {
+      get() {
+        return stored;
+      },
+      set(v: string) {
+        // Only the sentinel probe and a real named color parse; anything else
+        // is ignored, as the canvas ignores unparseable assignments.
+        if (v === '#010203' || v === 'seagreen') stored = v;
+      },
+    });
+    const spy = vi.spyOn(document, 'createElement').mockReturnValue({
+      getContext: () => ctx,
+    } as unknown as HTMLCanvasElement);
+    try {
+      const mod = await import('../src/renderer/colorParse');
+      // Seed the shared 1x1 canvas with a successful parse first.
+      mod.parseColorToRGBA('seagreen');
+      // An invalid input must fall back to opaque black — NOT read back the
+      // colour the previous parse painted into the shared canvas.
+      expect(mod.parseColorToRGBA('definitely-not-a-color')).toEqual([0, 0, 0, 1]);
+      // And the seeded colour is still its own cached result, uncorrupted.
+      expect(mod.parseColorToRGBA('seagreen')).toEqual([1 / 255, 2 / 255, 3 / 255, 4 / 255]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
