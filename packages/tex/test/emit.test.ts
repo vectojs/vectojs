@@ -89,4 +89,34 @@ describe('emitSVG', () => {
     expect(w).toBeGreaterThan(0);
     expect(h).toBeGreaterThan(0);
   });
+
+  it('\\cancel advances by the content width and draws a stroked diagonal', () => {
+    // `\cancel`'s SVG is `width: 100%` — an overlay that occupies no advance.
+    // The pen must advance by the cancelled content (a single Math-Italic x),
+    // not by the 100em that `parseFloat("100%")` used to yield.
+    const out = emitSVG(layout('\\cancel{x}'));
+    expect(out.width).toBeCloseTo(0.572, 3);
+
+    // A diagonal stroke, not a filled rectangle covering the formula.
+    expect(out.svg).toContain('<line');
+    expect(out.svg).not.toContain('<rect');
+    expect(out.missing).toEqual([]);
+  });
+
+  it('\\cancel variants draw the correct diagonals', () => {
+    // \cancel → forward slash; \bcancel → back slash; \xcancel → both.
+    const cancel = emitSVG(layout('\\cancel{x}'));
+    const bcancel = emitSVG(layout('\\bcancel{x}'));
+    const xcancel = emitSVG(layout('\\xcancel{x}'));
+    const lineCount = (svg: string) => (svg.match(/<line /g) ?? []).length;
+
+    expect(lineCount(cancel.svg)).toBe(1);
+    expect(lineCount(bcancel.svg)).toBe(1);
+    expect(lineCount(xcancel.svg)).toBe(2);
+
+    // Every variant still advances by the content width, never 100em.
+    for (const out of [cancel, bcancel, xcancel]) {
+      expect(out.width).toBeCloseTo(0.572, 3);
+    }
+  });
 });
