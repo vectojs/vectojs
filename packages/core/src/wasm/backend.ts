@@ -28,6 +28,9 @@ export const WASM_STATUS = {
   UNINITIALIZED: 2,
   /** A sibling run addressed a slot or parent outside the store. */
   BAD_RUN: 3,
+  /** A requested capacity's size arithmetic overflowed; the previous store
+   *  was left untouched. */
+  OVERFLOW: 4,
 } as const;
 
 /**
@@ -51,7 +54,8 @@ export function viewsStale(
 /** The raw C ABI the crate (`crates/vectojs-core-rs`) exports. */
 interface CoreExports {
   memory: WebAssembly.Memory;
-  init(capacity: number, maxRuns: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  init(capacity: number, maxRuns: number): number;
   /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
   set_run_count(n: number): number;
   compose_simd(): number;
@@ -341,9 +345,19 @@ export class WasmTransformBackend {
 
   private ensure(count: number, runCount: number): void {
     if (count + PAD <= this.cap && runCount <= this.runCap) return;
-    this.cap = count + PAD;
-    this.runCap = Math.max(runCount, count, 1);
-    this.ex.init(count, this.runCap); // crate pads capacity by +PAD internally
+    const cap = count + PAD;
+    const runCap = Math.max(runCount, count, 1);
+    const status = this.ex.init(count, runCap); // crate pads capacity by +PAD internally
+    if (status !== WASM_STATUS.OK) {
+      // A rejected init (hostile count whose size arithmetic overflowed) leaves
+      // the previous store allocated, so these views are still valid. Nothing
+      // to refresh; the caller keeps the smaller store and must treat the batch
+      // as rejected (lastStatus).
+      this.lastStatus = status;
+      return;
+    }
+    this.cap = cap;
+    this.runCap = runCap;
     this.refreshViews();
   }
 

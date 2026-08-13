@@ -14,13 +14,15 @@
  *  non-rectangular hit shapes stay correct) before trusting a result.
  */
 
-import { viewsStale } from './backend';
+import { WASM_STATUS, viewsStale } from './backend';
 
 /** The raw C ABI the crate (`crates/vectojs-core-rs/src/hit.rs`) exports. */
 interface HitExports {
   memory: WebAssembly.Memory;
-  hit_init(entityCap: number, cellCap: number, itemCap: number): void;
-  hit_build(count: number, vw: number, vh: number, cellSize: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  hit_init(entityCap: number, cellCap: number, itemCap: number): number;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  hit_build(count: number, vw: number, vh: number, cellSize: number): number;
   hit_overflow(): number;
   p_h_minx(): number;
   p_h_miny(): number;
@@ -99,12 +101,14 @@ export class HitTestBackend {
   /**
    * Run the kernel's bucketing over whatever is currently resident in
    * {@link inputView} (write the AABBs there, and call {@link ensure} first).
-   * Returns `false` if the build overflowed its item budget — the caller must
-   * not trust {@link candidatesAt} results for this build and should fall back
-   * to the JS walk instead (never return a wrong hit).
+   * Returns `false` if the build was rejected (no `hit_init` yet) or overflowed
+   * its item budget — the caller must not trust {@link candidatesAt} results
+   * for this build and should fall back to the JS walk instead (never return a
+   * wrong hit).
    */
   runBuild(count: number, vw: number, vh: number, cellSize: number): boolean {
-    this.ex.hit_build(count, vw, vh, cellSize);
+    const status = this.ex.hit_build(count, vw, vh, cellSize);
+    if (status !== WASM_STATUS.OK) return false;
     return this.ex.hit_overflow() === 0;
   }
 
@@ -132,10 +136,18 @@ export class HitTestBackend {
     if (count + PAD <= this.entityCap && cellCount <= this.cellCap && itemCount <= this.itemCap) {
       return;
     }
-    this.entityCap = count + PAD;
-    this.cellCap = Math.max(cellCount, 1);
-    this.itemCap = Math.max(itemCount, count, 1);
-    this.ex.hit_init(count, this.cellCap, this.itemCap); // crate pads entity capacity by +PAD internally
+    const entityCap = count + PAD;
+    const cellCap = Math.max(cellCount, 1);
+    const itemCap = Math.max(itemCount, count, 1);
+    const status = this.ex.hit_init(count, cellCap, itemCap); // crate pads entity capacity by +PAD internally
+    if (status !== WASM_STATUS.OK) {
+      // A rejected init (hostile count whose size arithmetic overflowed) leaves
+      // the previous grid allocated, so the resident views are still valid.
+      return;
+    }
+    this.entityCap = entityCap;
+    this.cellCap = cellCap;
+    this.itemCap = itemCap;
     this.refreshViews();
   }
 

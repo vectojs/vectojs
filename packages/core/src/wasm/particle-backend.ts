@@ -42,7 +42,8 @@ import { WASM_STATUS, viewsStale } from './backend';
 /** The raw C ABI the crate exports for the particle kernel. */
 interface ParticleExports {
   memory: WebAssembly.Memory;
-  particle_init(capacity: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  particle_init(capacity: number): number;
   /**
    * Returns the fused pending-animation flag (0 or 1) on success, or a NEGATIVE
    * status (`-WASM_STATUS.CAPACITY`, `-WASM_STATUS.UNINITIALIZED`) when the
@@ -123,8 +124,15 @@ export class ParticleBackend {
    */
   ensure(count: number): void {
     if (count + PAD <= this.cap) return;
-    this.cap = count + PAD;
-    this.ex.particle_init(this.cap);
+    const cap = count + PAD;
+    const status = this.ex.particle_init(cap);
+    if (status !== WASM_STATUS.OK) {
+      // A rejected init (hostile count whose size arithmetic overflowed) leaves
+      // the previous SoA allocated, so the resident views are still valid.
+      this.lastStatus = status;
+      return;
+    }
+    this.cap = cap;
     this.refreshViews();
   }
 

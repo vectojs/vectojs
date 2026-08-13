@@ -129,6 +129,7 @@ interface ColoredPlacement {
 interface PlacedGlyph extends ColoredPlacement {
   font: string;
   code: number;
+  char: string;
   /** Pen x, internal units. */
   x: number;
   /** Baseline y, internal units, positive downward. */
@@ -172,6 +173,10 @@ interface PlacedPath extends ColoredPlacement {
   /** Stretchy SVGs use `preserveAspectRatio: none`, so x and y differ. */
   sx: number;
   sy: number;
+  /** Drawn extent, internal units (`y` is the top edge). Used by `emitSVG`'s
+   *  ink-bounds union, since a path's outline is opaque to the emit layer. */
+  w: number;
+  h: number;
   /**
    * Visible rectangle when an ancestor clips this path, in internal units.
    * `\sqrt` relies on `.hide-tail { overflow: hidden }` to trim a 400em
@@ -348,7 +353,7 @@ function emitSymbol(
 
     if (glyph) {
       if (!phantom) {
-        state.glyphs.push({ font, code, x: penX, y, scale, color });
+        state.glyphs.push({ font, code, char: ch, x: penX, y, scale, color });
       }
       penX += (glyph.advance / UNITS_PER_EM) * UPEM * scale;
     } else {
@@ -454,6 +459,8 @@ function emitSvgNode(
             y: y - heightEm * UPEM * scale,
             sx,
             sy,
+            w: widthEm * UPEM * scale,
+            h: heightEm * UPEM * scale,
             color,
             // Clip only when the declared width exceeds what is visible, so an
             // unclipped stretchy arrow costs no clipPath.
@@ -591,11 +598,22 @@ function emitContainer(
   // that is not `accent-full` is explicitly zero-width:
   // `.accent-body:not(.accent-full) { width: 0 }` (katex.scss:422-424), so it
   // does not widen the symbol it sits over.
+  //
+  // CSS positions the three lap classes differently (katex.scss:293-320):
+  // `.rlap > .katex-inner { left: 0 }` starts the ink at the anchor,
+  // `.llap > .katex-inner { right: 0 }` ends it at the anchor, and `.clap >
+  // .katex-inner > span { margin-left: -50% }` centres it. The span tree
+  // records no x position, so the lap content must be measured first (the
+  // measure-probe pattern from `emitVList`) and the pen shifted accordingly.
+  const lapKind = classes.includes('llap')
+    ? 'llap'
+    : classes.includes('clap')
+      ? 'clap'
+      : classes.includes('rlap')
+        ? 'rlap'
+        : undefined;
   const lapping =
-    classes.includes('rlap') ||
-    classes.includes('llap') ||
-    classes.includes('clap') ||
-    (classes.includes('accent-body') && !classes.includes('accent-full'));
+    lapKind !== undefined || (classes.includes('accent-body') && !classes.includes('accent-full'));
   const startX = state.x;
 
   // `style.top` outside a vlist shifts the baseline; `delimcenter` uses it.
@@ -610,6 +628,34 @@ function emitContainer(
   const clipEm = classes.includes('hide-tail')
     ? parseEm(style.minWidth) || parseEm(style.width) || undefined
     : undefined;
+
+  if (lapKind === 'llap' || lapKind === 'clap') {
+    // Measure the lap content without emitting it, so the shift is by the
+    // content's own advance rather than a guess. `\llap` ink must end at the
+    // anchor and `\clap` ink must straddle it, unlike `\rlap` which starts
+    // there.
+    const probe: EmitState = {
+      x: state.x,
+      glyphs: [],
+      rects: [],
+      paths: [],
+      lines: [],
+      missing: new Set(),
+    };
+    for (const child of node.children ?? []) {
+      if (clipEm != null && child instanceof SvgNode) {
+        emitSvgNode(child, probe, childY, localScale, color, clipEm);
+      } else {
+        walk(child, probe, chain, childY, localScale, color);
+      }
+    }
+    const lapWidth = probe.x - state.x;
+    state.x -= lapKind === 'llap' ? lapWidth : lapWidth / 2;
+    // A measuring pass must not lose a genuinely missing glyph.
+    for (const m of probe.missing) {
+      state.missing.add(m);
+    }
+  }
 
   for (const child of node.children ?? []) {
     if (clipEm != null && child instanceof SvgNode) {
@@ -763,6 +809,21 @@ function fmt(n: number): string {
 }
 
 /**
+ * Escapes a colour string before it is interpolated into an SVG attribute.
+ *
+ * Colours arrive from the caller's theme (`EmitOptions.color`) and from TeX
+ * input (`\color{...}`/`\textcolor{...}` writes the argument verbatim into
+ * `style.color`), so neither is guaranteed benign: a `"` terminates the
+ * attribute early and opens the SVG to attribute injection, which is why the
+ * value is escaped rather than validated — a grammar would reject legitimate
+ * colours like `var(--fg)` and `rgba(1,2,3,.5)`, while escaping is a no-op on
+ * every valid colour.
+ */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+/**
  * Emits a self-contained SVG for a laid-out span tree.
  *
  * Every glyph becomes a `<path>` outline, so the output references no font, no
@@ -804,10 +865,60 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
   const depthEm = tree.depth;
 
   const pad = padEm * UPEM;
-  const minX = -pad;
-  const minY = -heightEm * UPEM - pad;
-  const boxW = state.x + pad * 2;
-  const boxH = (heightEm + depthEm) * UPEM + pad * 2;
+
+  // The viewBox starts from the layout box (`tree.height`/`tree.depth` advance
+  // extents) plus pad, and is then expanded to the union of everything
+  // actually placed. The layout box alone clips real ink in two cases:
+  // `\smash` (and therefore `\hphantom`) zeroes height/depth while its children
+  // keep their full size, and `\llap` ink extends left of the origin. Both
+  // would otherwise be cut off at the box edge.
+  let minX = -pad;
+  let minY = -heightEm * UPEM - pad;
+  let maxX = state.x + pad;
+  let maxY = depthEm * UPEM + pad;
+
+  for (const g of state.glyphs) {
+    // Vertical extent from the kernel metrics the layout itself used
+    // (`getCharacterMetrics` returns em, height above / depth below baseline).
+    // Horizontal extent is the advance, a safe superset of the outline.
+    const m = getCharacterMetrics(g.char, g.font, 'math');
+    if (m) {
+      minY = Math.min(minY, g.y - m.height * UPEM * g.scale);
+      maxY = Math.max(maxY, g.y + m.depth * UPEM * g.scale);
+    }
+    const glyph = getGlyph(g.font, g.code);
+    const advance = glyph ? (glyph.advance / UNITS_PER_EM) * UPEM * g.scale : 0;
+    minX = Math.min(minX, g.x);
+    maxX = Math.max(maxX, g.x + advance);
+  }
+  for (const r of state.rects) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.w);
+    maxY = Math.max(maxY, r.y + r.h);
+  }
+  for (const l of state.lines) {
+    const half = l.stroke / 2;
+    minX = Math.min(minX, l.x1 - half, l.x2 - half);
+    maxX = Math.max(maxX, l.x1 + half, l.x2 + half);
+    minY = Math.min(minY, l.y1 - half, l.y2 - half);
+    maxY = Math.max(maxY, l.y1 + half, l.y2 + half);
+  }
+  for (const p of state.paths) {
+    // A clipped path's visible extent is the clip, not its declared size: the
+    // `\sqrt` radical declares 400em and relies on `hide-tail` to trim it.
+    const bx = p.clip ? p.clip.x : p.x;
+    const by = p.clip ? p.clip.y : p.y;
+    const bw = p.clip ? p.clip.w : p.w;
+    const bh = p.clip ? p.clip.h : p.h;
+    minX = Math.min(minX, bx);
+    minY = Math.min(minY, by);
+    maxX = Math.max(maxX, bx + bw);
+    maxY = Math.max(maxY, by + bh);
+  }
+
+  const boxW = maxX - minX;
+  const boxH = maxY - minY;
 
   // Deduplicate outlines: a repeated glyph is defined once and referenced,
   // which is a large win on any formula that repeats a symbol.
@@ -851,7 +962,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
           out += '</g>';
         }
         if (item.color !== undefined) {
-          out += `<g fill="${item.color}">`;
+          out += `<g fill="${escapeAttr(item.color)}">`;
         }
         open = item.color;
       }
@@ -892,7 +1003,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
   for (const l of state.lines) {
     body.push(
       `<line x1="${fmt(l.x1)}" y1="${fmt(l.y1)}" x2="${fmt(l.x2)}" y2="${fmt(l.y2)}" ` +
-        `stroke="${l.color ?? color}" stroke-width="${fmt(l.stroke)}"/>`,
+        `stroke="${escapeAttr(l.color ?? color)}" stroke-width="${fmt(l.stroke)}"/>`,
     );
   }
 
@@ -919,7 +1030,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     `height="${fmt((boxH / UPEM) * emPx)}" ` +
     `viewBox="${fmt(minX)} ${fmt(minY)} ${fmt(boxW)} ${fmt(boxH)}">` +
     (defs.length ? `<defs>${defs.join('')}</defs>` : '') +
-    `<g fill="${color}">${body.join('')}</g></svg>`;
+    `<g fill="${escapeAttr(color)}">${body.join('')}</g></svg>`;
 
   return {
     svg,

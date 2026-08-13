@@ -150,6 +150,25 @@ describe.skipIf(!haveWasm)('G4 particle kernel — WASM vs JS f32 reference (dif
         explosion: { x: 100, y: 100, force: 5 },
       }),
     },
+    {
+      // The oracle's Math.min/Math.max PROPAGATE NaN while f32::min/max
+      // IGNORE it, so the kernel used to silently replace a NaN argument with
+      // a valid bound (springK → 0, maxVelocity → 1, position clamp → the
+      // edge) and diverge from the oracle's NaN-poisoned buffer.
+      name: 'NaN parameters (Math.min/max propagate NaN)',
+      params: () => ({
+        dt: 0.016, // the one param both sides pre-guard identically
+        mouseX: NaN, // both sides disable the mouse through the same check
+        mouseY: NaN,
+        width: NaN, // Math.max(1, NaN) = NaN → poisons the final clamp
+        height: NaN,
+        springK: NaN, // NaN forces → NaN velocity → NaN position
+        damping: 0.95,
+        bounceDamping: 0.5,
+        maxVelocity: NaN, // NaN cap → speed test false, no cap applied
+        explosion: { x: 400, y: 300, force: NaN }, // NaN impulse
+      }),
+    },
   ];
 
   for (const sc of scenarios) {

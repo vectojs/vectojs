@@ -181,4 +181,82 @@ describe('emitSVG', () => {
     // The operator row is the widest, so it stays put.
     expect(sum!.x).toBeCloseTo(0, 3);
   });
+
+  it('positions lap ink per class: rlap at the anchor, llap left, clap centred', () => {
+    // \llap/\rlap/\clap expand to \math*lap{\textrm{#1}} (macros.ts:273-275),
+    // so the content is a text-roman `y`; its advance is measured from the
+    // same formula alone.
+    const yWidth = emitSVG(layout('\\textrm{y}')).width;
+    const anchor = emitSVG(layout('x')).width;
+
+    const rlap = emitSVG(layout('x\\rlap{y}'));
+    const llap = emitSVG(layout('x\\llap{y}'));
+    const clap = emitSVG(layout('x\\clap{y}'));
+
+    const rY = rlap.placements.find((p) => p.char === 'y');
+    const lY = llap.placements.find((p) => p.char === 'y');
+    const cY = clap.placements.find((p) => p.char === 'y');
+    expect(rY).toBeDefined();
+    expect(lY).toBeDefined();
+    expect(cY).toBeDefined();
+
+    // `.rlap > .katex-inner { left: 0 }` starts ink at the anchor;
+    // `.llap > .katex-inner { right: 0 }` ends it there; `.clap > .katex-inner
+    // > span { margin-left: -50% }` centres it (katex.scss:308-320).
+    expect(rY!.x).toBeCloseTo(anchor, 3);
+    expect(lY!.x).toBeCloseTo(anchor - yWidth, 3);
+    expect(cY!.x).toBeCloseTo(anchor - yWidth / 2, 3);
+
+    // A lap occupies no advance width in any direction.
+    expect(rlap.width).toBeCloseTo(anchor, 3);
+    expect(llap.width).toBeCloseTo(anchor, 3);
+    expect(clap.width).toBeCloseTo(anchor, 3);
+  });
+
+  it('expands the viewBox leftward for lap ink outside the origin', () => {
+    // `\llap{abc}` is wider than the following `x`, so its ink starts left of
+    // x=0 and the layout-box viewBox would cut it off.
+    const out = emitSVG(layout('\\llap{abc}x'));
+    const m = /viewBox="([^"]+)"/.exec(out.svg);
+    expect(m).not.toBeNull();
+    const [minX] = m![1].split(' ').map(Number);
+    expect(minX).toBeLessThan(-100); // far more than the -50 pad
+    expect(out.width).toBeCloseTo(emitSVG(layout('x')).width, 3);
+  });
+
+  it('expands the viewBox to ink when \\smash zeroes height/depth', () => {
+    // \smash zeroes the box but its children keep full size, so the fraction
+    // ink extends far above and below the baseline while the layout box is
+    // zero-height: the union viewBox must grow to include the placements.
+    const out = emitSVG(layout('\\smash{\\frac{1}{2}}'));
+
+    expect(out.height).toBe(0);
+    expect(out.depth).toBe(0);
+
+    const m = /viewBox="([^"]+)"/.exec(out.svg);
+    expect(m).not.toBeNull();
+    const [, minY, , h] = m![1].split(' ').map(Number);
+    expect(minY).toBeLessThan(-400); // numerator ink, not the -50 pad floor
+    expect(h).toBeGreaterThan(400); // fraction extent, far past the 2*pad floor
+  });
+
+  it('escapes attribute-breaking characters in colours', () => {
+    // `\color{...}` arguments are parse-time validated against a strict colour
+    // regex (Parser.ts parseColorGroup), but the `color` OPTION is interpolated
+    // into attributes unchecked — theme-derived today, future user-derived
+    // callers tomorrow. A `"` must not terminate the attribute early.
+    const themed = emitSVG(layout('x'), { color: 'a<b&c"d' });
+    expect(themed.svg).not.toContain('a<b&c"d');
+    expect(themed.svg).toContain('fill="a&lt;b&amp;c&quot;d"');
+
+    // The option colour also lands on `\cancel` line strokes, which need the
+    // same treatment.
+    const cancel = emitSVG(layout('\\cancel{x}'), { color: 'a"b' });
+    expect(cancel.svg).not.toContain('stroke="a"b"');
+    expect(cancel.svg).toContain('stroke="a&quot;b"');
+
+    // Escaping is a no-op on every valid colour, so normal themes are
+    // unchanged.
+    expect(emitSVG(layout('x'), { color: 'rgb(1, 2, 3)' }).svg).toContain('fill="rgb(1, 2, 3)"');
+  });
 });

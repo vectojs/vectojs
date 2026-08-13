@@ -7,9 +7,13 @@
  * (see `Scene._tickBatchedDrivers`), simply keeps using it.
  *
  * The kernel (`crates/vectojs-core-rs/src/anim.rs`) is bit-identical to
- * `SpringPhysics.update` for springs; tweens match to ~1e-9 (not bit-exact — a
- * `Math.pow`-vs-`powi` ULP difference recorded as a spike finding), which is why
- * a WASM-batched tween needs a `retarget`-style resync, not raw byte reuse.
+ * `SpringPhysics.update` for springs, and to the JS tweens too since the
+ * explicit-multiplication rewrite: `easing.ts` and the kernel's `ease()` both
+ * express integer powers as explicit multiplication (no `Math.pow`/`powi`,
+ * neither of which is correctly rounded), so the earlier ~1e-12 ULP gap is
+ * closed. Batched state still needs re-seeding per frame — `elapsed` is
+ * kernel-side state, so every gather re-writes it from the driver rather than
+ * letting the kernel's copy drift.
  *
  * Unlike the transform/hit-test stores, this backend holds no cross-frame
  * residency: every qualifying frame re-gathers ALL currently-active batchable
@@ -25,7 +29,8 @@ import { WASM_STATUS, viewsStale } from './backend';
 /** The raw C ABI the crate (`crates/vectojs-core-rs/src/anim.rs`) exports. */
 interface AnimExports {
   memory: WebAssembly.Memory;
-  anim_init(springCap: number, tweenCap: number): void;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see `WASM_STATUS`). */
+  anim_init(springCap: number, tweenCap: number): number;
   /** Returns a status code: 0 = ok, non-zero = rejected (see `WASM_STATUS`). */
   spring_step(dt: number, count: number): number;
   /** Returns a status code: 0 = ok, non-zero = rejected (see `WASM_STATUS`). */
@@ -97,9 +102,17 @@ export class AnimBackend {
    */
   ensure(springCount: number, tweenCount: number): void {
     if (springCount + PAD <= this.springCap && tweenCount + PAD <= this.tweenCap) return;
-    this.springCap = springCount + PAD;
-    this.tweenCap = tweenCount + PAD;
-    this.ex.anim_init(this.springCap, this.tweenCap);
+    const springCap = springCount + PAD;
+    const tweenCap = tweenCount + PAD;
+    const status = this.ex.anim_init(springCap, tweenCap);
+    if (status !== WASM_STATUS.OK) {
+      // A rejected init (hostile count whose size arithmetic overflowed) leaves
+      // the previous SoA allocated, so the resident views are still valid.
+      this.lastStatus = status;
+      return;
+    }
+    this.springCap = springCap;
+    this.tweenCap = tweenCap;
     this.refreshViews();
   }
 
