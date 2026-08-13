@@ -35,7 +35,10 @@ export class Popover extends Overlay {
     });
     this._bg = opts.bg ?? 'rgba(15,15,30,0.96)';
     this._border = opts.borderColor ?? 'rgba(255,255,255,0.14)';
-    this.interactive = true;
+    // Do NOT force interactive here: the Overlay constructor seeds the hidden
+    // state (interactive=false + a11yHidden=true), and forcing interactive on
+    // made a never-shown popover project itself and its children immediately.
+    // showAt()/showAtPoint() restore interactive + clear a11yHidden.
     this._target = opts.target;
 
     this._onClick = () => {
