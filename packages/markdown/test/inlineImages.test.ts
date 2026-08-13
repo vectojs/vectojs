@@ -172,6 +172,21 @@ describe('an image on a line it shares with text', () => {
     expect(after.width).toBeCloseTo(before.height * 4, 5);
   });
 
+  it('re-measures a heading nested in a blockquote after the decode', () => {
+    // The top-level token is a blockquote, not a heading, so
+    // `inlineImageBoxesStale` must descend into `blockquote.tokens` to find the
+    // image whose box the decode just changed — before the fix it stopped at
+    // the top level and the nested badge kept its square forever.
+    const md = new Markdown(`> # ![a](${URL})`, { width: 600 });
+    const before = objectSpans(md)[0];
+    expect(before.width).toBeCloseTo(before.height, 5);
+
+    decode(URL, 80, 20); // 4:1, a badge
+    const after = objectSpans(md)[0];
+    expect(after.height).toBeCloseTo(before.height, 5); // height never moves
+    expect(after.width).toBeCloseTo(before.height * 4, 5);
+  });
+
   it('sits on the baseline rather than hanging below it', () => {
     const md = new Markdown(`# ![a](${URL})`, { width: 600 });
     expect(objectSpans(md)[0].depth).toBe(0);

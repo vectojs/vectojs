@@ -42,10 +42,16 @@ export function buildTreeModel(root: Entity): {
  * so non-interactive (decorative) entities are still pickable.
  */
 export function findEntityAt(root: Entity, x: number, y: number): Entity | null {
+  // The engine's visibility gate (HitTester.findHitRecursively): an invisible
+  // subtree is not drawn, so nothing in it is hittable — opacity accumulates
+  // down the tree, so checking it here on entry covers every ancestor too.
+  if (root.opacity <= 0) return null;
   for (let i = root.children.length - 1; i >= 0; i--) {
     const hit = findEntityAt(root.children[i], x, y);
     if (hit) return hit;
   }
+  if (isPointerTransparent(root)) return null;
+  if (!insideClipAncestors(root, x, y)) return null;
   if (root.isPointInside && root.isPointInside(x, y)) return root;
   if (root.width > 0 && root.height > 0) {
     const local = root.worldToLocal(x, y);
@@ -54,6 +60,40 @@ export function findEntityAt(root: Entity, x: number, y: number): Entity | null 
     }
   }
   return null;
+}
+
+/**
+ * Whether the entity opts out of being a pointer hit target: a disabled control
+ * or an explicit `pointerEvents: 'none'` in its a11y attributes. Mirrors
+ * `HitTester.isPointerTransparent`, whose children are still walked (a
+ * transparent container can hold hittable descendants).
+ */
+function isPointerTransparent(entity: Entity): boolean {
+  const attrs = entity.getA11yAttributes();
+  return attrs.disabled === true || attrs.pointerEvents === 'none';
+}
+
+/**
+ * Whether the point lies inside every `clipChildren` ancestor's world box, the
+ * same ancestor check the engine's `HitTester.isHitEligible` applies, so a
+ * scrolled-out or clipped-away node is not pickable.
+ */
+function insideClipAncestors(entity: Entity, x: number, y: number): boolean {
+  for (let ancestor = entity.parent; ancestor; ancestor = ancestor.parent) {
+    if (ancestor.clipChildren && ancestor.width > 0 && ancestor.height > 0) {
+      const local = ancestor.worldToLocal(x, y);
+      if (
+        !local ||
+        local.x < 0 ||
+        local.y < 0 ||
+        local.x > ancestor.width ||
+        local.y > ancestor.height
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /** Compact one-line rendering of a descriptor field value. */

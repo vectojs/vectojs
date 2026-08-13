@@ -155,11 +155,16 @@ function layoutBox(entity: Entity): Box {
 /**
  * Convert a DOM rect into scene coordinates.
  *
+ * The projected layers (a11y, content) live in a root the browser has scaled
+ * by `cssWidth / scene.width`, so a raw client rect is not comparable to
+ * scene-space geometry — `clientToScene` undoes that scale (and any DPR/zoom)
+ * the same way `selectionAudit` normalizes its own rects.
+ *
  * jsdom reports an all-zero rect for every element, which would otherwise be
  * published as a real divergence from the canvas; treat that as unavailable.
- * This mirrors the guard `a11yInspect` already applies for the same reason.
+ * `a11yInspect.domBoundsOf` shares this helper, so the guard covers both.
  */
-function rectToSceneBox(scene: Scene, el: HTMLElement | undefined): Box | undefined {
+export function rectToSceneBox(scene: Scene, el: HTMLElement | undefined): Box | undefined {
   if (!el || typeof el.getBoundingClientRect !== 'function') return undefined;
   const rect = el.getBoundingClientRect();
   if (!rect.width && !rect.height && !rect.left && !rect.top) return undefined;

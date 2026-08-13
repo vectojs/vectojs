@@ -133,6 +133,35 @@ describe('RichText inline-link a11y contract', () => {
     expect(onLinkClick).toHaveBeenCalledOnce();
   });
 
+  it('refreshes hrefs in place when setSpans keeps the link count but changes the urls', () => {
+    const { scene, root, tick } = makeScene();
+    const rt = new RichText([
+      { text: 'a', style: { href: '/old-a' } },
+      { text: ' and ' },
+      { text: 'b', style: { href: '/old-b' } },
+    ]);
+    scene.add(rt.setPosition(0, 0));
+    tick();
+    expect([...root.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual([
+      '/old-a',
+      '/old-b',
+    ]);
+
+    // Same link count, different urls: the hotspots are reused, so the hrefs
+    // must be updated in place — otherwise clicks and the projected <a> keep
+    // serving the stale urls.
+    rt.setSpans([
+      { text: 'a', style: { href: '/new-a' } },
+      { text: ' and ' },
+      { text: 'b', style: { href: '/new-b' } },
+    ]);
+    tick();
+    expect([...root.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual([
+      '/new-a',
+      '/new-b',
+    ]);
+  });
+
   it('prunes the shadow <a> when the link run is removed (no leak)', () => {
     const { scene, root, tick } = makeScene();
     const rt = new RichText([{ text: 'x', style: { href: '/gone' } }]);

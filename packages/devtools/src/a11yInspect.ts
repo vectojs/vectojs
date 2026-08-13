@@ -1,4 +1,5 @@
 import type { Bounds, Entity, Scene } from '@vectojs/core';
+import { rectToSceneBox } from './highlightGeometry';
 import { entityPath, textPreviewOf } from './inspect';
 
 /**
@@ -79,11 +80,14 @@ export interface A11yInfo {
   /** World-space bounds of the canvas-painted entity. */
   canvasBounds: Bounds;
   /**
-   * Client-space bounds of the projected DOM node, when it is in the document.
+   * Scene-space bounds of the projected DOM node, when it is in the document.
    *
-   * Present so it can be compared against `canvasBounds`: an assistive
-   * technology's idea of where a control is comes from the DOM node, and if the
-   * two disagree the focus ring lands somewhere the user is not looking.
+   * Normalized from the client rect by the canvas's CSS→logical scale — the a11y
+   * root carries `transform: scale(cssWidth/scene.width)`, so an unscaled
+   * `getBoundingClientRect()` is in client px, not scene px. Present so it can
+   * be compared directly against `canvasBounds`: an assistive technology's idea
+   * of where a control is comes from the DOM node, and if the two disagree the
+   * focus ring lands somewhere the user is not looking.
    */
   domBounds?: Bounds;
 }
@@ -138,17 +142,12 @@ const NAME_REQUIRED_ROLES = new Set([
 
 function domBoundsOf(scene: Scene, entity: Entity): Bounds | undefined {
   const el = scene.getA11yElement?.(entity.id);
-  if (!el || typeof el.getBoundingClientRect !== 'function') return undefined;
-  const rect = el.getBoundingClientRect();
-  // jsdom returns an all-zero rect for everything, which would otherwise be
-  // reported as a real divergence from the canvas.
-  if (rect.width === 0 && rect.height === 0 && rect.x === 0 && rect.y === 0) return undefined;
-  return roundBounds({
-    x: rect.x,
-    y: rect.y,
-    width: rect.width,
-    height: rect.height,
-  });
+  // rectToSceneBox converts the client rect through clientToScene, undoing the
+  // a11y root's CSS→logical scale so the result lands in scene px and can be
+  // compared against `getWorldBounds()` — and carries the jsdom all-zero guard.
+  const box = rectToSceneBox(scene, el);
+  if (!box) return undefined;
+  return roundBounds(box);
 }
 
 /**
