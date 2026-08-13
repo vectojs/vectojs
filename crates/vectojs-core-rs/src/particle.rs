@@ -80,11 +80,28 @@ fn leak_f32(n: usize) -> *mut f32 {
     p
 }
 
-/// Allocate for `capacity` particles (+padding). Called once with the
-/// high-water mark; a larger particle count re-inits.
+/// Free the SoA the previous `particle_init` allocated, if any. `capacity`
+/// still records the logical count the live pointers were allocated with, so
+/// this must run before `particle_init` overwrites it.
+fn free_particles() {
+    unsafe {
+        let n = P.capacity + 8;
+        crate::free_f32(P.px, n);
+        crate::free_f32(P.py, n);
+        crate::free_f32(P.vx, n);
+        crate::free_f32(P.vy, n);
+        crate::free_f32(P.ox, n);
+        crate::free_f32(P.oy, n);
+        crate::free_f32(P.life, n);
+    }
+}
+
+/// Allocate for `capacity` particles (+padding), freeing the previous allocation
+/// first — the JS side re-inits in place when a larger particle count arrives.
 #[unsafe(no_mangle)]
 pub extern "C" fn particle_init(capacity: usize) {
     let n = capacity + 8;
+    free_particles();
     unsafe {
         P.px = leak_f32(n);
         P.py = leak_f32(n);
