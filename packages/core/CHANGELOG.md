@@ -1,5 +1,38 @@
 # @vectojs/core
 
+## 1.35.2
+
+### Patch Changes
+
+- bfc3c9c: Fix `CanvasRenderer.resize()` leaving the cached font/fill state stale across the backing-store resize. Setting `canvas.width`/`canvas.height` resets the whole 2D context state per spec (font to `10px sans-serif`, `fillStyle` to black); `resize()` re-applied only the DPR scale, so the first `fillText`/`fill` after a resize with the same font/color string as the cache skipped the assignment and painted with the reset defaults — a single-font app stayed on the default font forever. `resize()` now drops the cached font/fill and batch state, mirroring what the `contextrestored` handler already does for a lost context.
+- 031789a: Three rendering-loop fixes. (1) `a11ySyncInterval` no longer loses to the pending-after-animation bypass: the pending flag re-armed itself every frame while an animation was in flight, so the a11y shadow-DOM sync ran per frame instead of at the configured interval; the bypass now fires only once the animation has stopped. (2) `WasmBackendFacade.setTransform` now detects a backend identity change (e.g. re-enabling transforms after `setWasmRuntime(sharedRuntime)`) and invalidates the resident store, so the new backend receives `uploadRuns` instead of skipping the rebuild and rejecting every frame. (3) `CanvasRenderer.flush()` now syncs the cached fill style to the batch color it painted and restores the caller's `globalAlpha` instead of forcing 1, so a subsequent fill of the previously cached color no longer paints with the stale batch color.
+- d86f5ce: P3 defects from the 2026-08-13 review, across core, markdown and ui.
+
+  - core: `Entity.remove` now unregisters the detached subtree from the batched-driver candidate set (off-tree drivers no longer tick until completion, and re-attach resumes them); `WasmBackendFacade.syncStore` clears `_aabbsFresh` on both rejection returns so a fused hit gather never reads the previous frame's AABBs after a transient kernel rejection; the content-grid zero-measurement branch publishes `vectoGridReady` from a frame callback like the probe-free branch; `parseColorToRGBA` returns opaque black for unparseable input instead of the previous parse's canvas color; `sanitizeUrl` decodes HTML character references before scheme detection so entity-encoded `javascript:` payloads rewrite to `#`; `SplineEntity` bakes at the renderer's clamped `pixelRatio` and re-bakes on change; `WebGLPointRenderer.setTexture` commits the pending sprite batch before an atlas swap; `GridTextEntity.updateGrid` sizes `cols` from the widest row; `Scene.step` docstring unit corrected to milliseconds.
+  - markdown: `CodeBlock.setCode` zeroes the highlight-segment reuse prefix when the language changes; the worker's per-instance raw cache is bounded with oldest-entry eviction.
+  - ui: `TreeView` catches lazy-load rejections, clears the loading state and rebuilds rows; virtualized `Table.layout()` re-syncs string cells of mounted rows; reassigning the public `tabs`/`options` arrays re-syncs the a11y hotspot pools; non-keyed `VirtualList.setItems` zeroes `_velY` so a replace no longer overshoots the content edge.
+
+- e41dd95: P3 review defects from the 2026-08-13 full-repo review (#499, #500).
+
+  `@vectojs/tex`: `\llap`/`\clap` ink now lands where CSS puts it (llap ends at the anchor, clap straddles it) instead of all three laps sharing rlap's rightward draw; the emitted viewBox expands to the union of placed ink, so `\smash`/`\hphantom` content and `\llap` ink left of the origin are no longer clipped; and the `color` option (plus `\cancel` strokes and grouped fills) is attribute-escaped before interpolation, hardening the emitter against future user-derived colours.
+
+  `@vectojs/markdown`: `inlineMathRasters` is now bounded — a render's raster is dropped when mathCache evicts the render, and the map is capped at the same 256 entries, evicting the least-recently-painted bitmap (re-decoding on the next paint) instead of growing unbounded in long-lived documents.
+
+  `@vectojs/core` (WASM kernels): `particle_step` now mirrors the JS oracle's `Math.min`/`Math.max` NaN propagation instead of `f32`'s NaN-ignoring clamps, keeping the differential test bit-identical; `hit_build`/`hit_query` gained an initialized guard so a call-order mistake returns a status instead of trapping the shared instance; and every `*_init` rejects capacities whose `+8` pad or byte size wraps on wasm32 (silent heap-corrupting allocations in release), with `gw * gh` cell arithmetic moved to i64.
+
+- 32664a4: Free the previous SoA allocation when a WASM backend re-inits in place on capacity growth.
+
+  The transform, anim, hit, and particle backends all re-init their store in place when the scene grows (`backend.ts::ensure` and the anim/hit/particle equivalents), but the Rust `*_init` exports leaked their previous arrays with no `dealloc` anywhere — the crate's original assumption was that a growing scene re-instantiates the module. Each growth leaked 21 f64 arrays for the transform store (plus 13/8/7 for anim/hit/particle), and because dlmalloc never saw the old pointers, wasm linear memory grew monotonically for the lifetime of the instance.
+
+  `init`, `anim_init`, `hit_init`, and `particle_init` now free the previous allocation (recovering the exact size and 16-byte alignment from the capacities they already record) before overwriting the pointers, so a same-capacity re-init no longer grows `WebAssembly.Memory` and a growth enlarges it once.
+
+- e2e26d6: Fix the WASM animation, hit-test, and particle backends silently operating on detached typed-array views after the shared linear memory grows. Every backend of a Scene shares one `WebAssembly.Instance`, so any backend's `*_init` can grow the memory and detach every other backend's views over the old buffer; only the transform backend revalidated them. The anim backend then wrote gathered spring/tween state into a detached buffer (yielding `undefined` reads → NaN entity positions), the hit backend left its grid stale, and the particle backend froze. The three backends now expose `revalidateViews()` (shared `viewsStale` helper) and the anim/hit/particle call sites invoke it after `ensure()`.
+- Updated dependencies [ec78b38]
+- Updated dependencies [391cd55]
+  - @vectojs/text@0.4.1
+  - @vectojs/layout@0.9.3
+  - @vectojs/animation@0.1.2
+
 ## 1.35.1
 
 ### Patch Changes

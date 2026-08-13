@@ -1,5 +1,23 @@
 # @vectojs/ui
 
+## 2.16.5
+
+### Patch Changes
+
+- d86f5ce: P3 defects from the 2026-08-13 review, across core, markdown and ui.
+
+  - core: `Entity.remove` now unregisters the detached subtree from the batched-driver candidate set (off-tree drivers no longer tick until completion, and re-attach resumes them); `WasmBackendFacade.syncStore` clears `_aabbsFresh` on both rejection returns so a fused hit gather never reads the previous frame's AABBs after a transient kernel rejection; the content-grid zero-measurement branch publishes `vectoGridReady` from a frame callback like the probe-free branch; `parseColorToRGBA` returns opaque black for unparseable input instead of the previous parse's canvas color; `sanitizeUrl` decodes HTML character references before scheme detection so entity-encoded `javascript:` payloads rewrite to `#`; `SplineEntity` bakes at the renderer's clamped `pixelRatio` and re-bakes on change; `WebGLPointRenderer.setTexture` commits the pending sprite batch before an atlas swap; `GridTextEntity.updateGrid` sizes `cols` from the widest row; `Scene.step` docstring unit corrected to milliseconds.
+  - markdown: `CodeBlock.setCode` zeroes the highlight-segment reuse prefix when the language changes; the worker's per-instance raw cache is bounded with oldest-entry eviction.
+  - ui: `TreeView` catches lazy-load rejections, clears the loading state and rebuilds rows; virtualized `Table.layout()` re-syncs string cells of mounted rows; reassigning the public `tabs`/`options` arrays re-syncs the a11y hotspot pools; non-keyed `VirtualList.setItems` zeroes `_velY` so a replace no longer overshoots the content edge.
+
+- 4323645: Five P2 fixes from the 2026-08-13 review:
+
+  - **RichText**: `syncHotspots` now reassigns each existing link hotspot's `href` on every reconcile, so a `setSpans` that keeps the link count but changes the urls no longer leaves clicks and the projected `<a>` serving stale hrefs (#472).
+  - **VirtualList/Tree/Table**: the hand-rolled scroll integrators are dt-aware. The old per-frame gain (0.12) and decay (0.82) are the 60Hz discretization of a 7.2/s gain and an 84ms time constant (τ = −16.67/ln(0.82)), and the position step scales by dt/16.67 — a 60Hz tick reproduces the old feel exactly while the settle trajectory no longer depends on display refresh rate (#473).
+  - **Popover/Overlay**: the Overlay constructor now seeds the full hidden state (`a11yHidden = true` alongside `interactive = false`), `Popover` no longer forces `interactive = true` at construction, and `showAt`/`showAtPoint` restore `interactive` and clear `a11yHidden` symmetrically with `hide()` — a never-shown popover no longer projects itself or its children, and show→hide→show cycles keep projecting (#474).
+  - **TextArea**: caret/selection offsets for RTL content are based on the line's minimum `sourceIndex` instead of the visually-leftmost node (`nodes[0]` after x-sort), fixing caret, selection highlight, and composition geometry for mixed RTL/LTR lines (#475).
+  - **ProgressBar**: now sets `interactive = true` like other draw-only semantic surfaces (Image, ScrollView), so its declared `role="progressbar"`/`aria-valuenow` actually projects into the a11y DOM (#476).
+
 ## 2.16.4
 
 ### Patch Changes
