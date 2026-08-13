@@ -180,6 +180,13 @@ export class DevtoolsPanel {
 
   private onHostPick = (ev: MouseEvent) => {
     if (!this.pickArmed) return;
+    // The panel container is `pointer-events: none`, but its controls opt back
+    // in through their a11y shadow nodes — a click on any control (the pick
+    // button itself, search, tree rows) must reach that control instead of
+    // being consumed as a host pick. Ignoring the click and keeping pick mode
+    // armed is the least surprising: the user was aiming at panel chrome, not
+    // at the page, so the pick is still waiting for its host click.
+    if (ev.target instanceof Node && this.container.contains(ev.target)) return;
     this.pickArmed = false;
     const point = this.host.clientToScene(ev.clientX, ev.clientY);
     const hit = pickInScene(this.host, point.x, point.y);

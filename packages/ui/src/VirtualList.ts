@@ -611,10 +611,16 @@ export class VirtualList<T = unknown> extends UIComponent {
     // scroll-gated measurement would never see.
     this._measureMountedRows();
     const diff = this._targetY - this._scrollY;
-    this._velY += diff * 0.12;
-    this._velY *= 0.82;
+    // dt-aware exponential integrator: the old per-frame gain (0.12) and decay
+    // (0.82) are the 60 Hz discretization of a 7.2/s gain and an 84 ms time
+    // constant (τ = -16.67/ln(0.82)), and the position step scales by dt/16.67,
+    // so the settle trajectory is refresh-rate independent while a 60 Hz tick
+    // reproduces the old feel exactly. Same fix class as ScrollView's 0.2.x
+    // migration off its hand-rolled per-frame integrator.
+    this._velY += diff * 7.2 * (dt / 1000);
+    this._velY *= Math.exp(-dt / 84);
     if (Math.abs(this._velY) > 0.05 || Math.abs(diff) > 0.05) {
-      this._scrollY += this._velY;
+      this._scrollY += this._velY * (dt / 16.67);
       this._reconcile();
       this.scene?.markDirty();
     } else {

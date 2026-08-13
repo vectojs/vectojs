@@ -284,10 +284,15 @@ export class TreeView extends UIComponent {
   public override update(dt: number, time: number): void {
     super.update(dt, time);
     const diff = this._targetY - this._scrollY;
-    this._velY += diff * 0.12;
-    this._velY *= 0.82;
+    // dt-aware exponential integrator (mirrors VirtualList): the old per-frame
+    // gain (0.12) and decay (0.82) are the 60 Hz discretization of a 7.2/s
+    // gain and an 84 ms time constant (τ = -16.67/ln(0.82)); the position step
+    // scales by dt/16.67. Settle trajectory is refresh-rate independent, and a
+    // 60 Hz tick reproduces the old feel exactly.
+    this._velY += diff * 7.2 * (dt / 1000);
+    this._velY *= Math.exp(-dt / 84);
     if (Math.abs(this._velY) > 0.05 || Math.abs(diff) > 0.05) {
-      this._scrollY += this._velY;
+      this._scrollY += this._velY * (dt / 16.67);
       this.scene?.markDirty();
     } else {
       this._scrollY = this._targetY;

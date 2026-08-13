@@ -251,6 +251,33 @@ describe('ThreeRenderer', () => {
     (window as any).devicePixelRatio = 1;
   });
 
+  describe('fillText font parsing and baseline placement', () => {
+    it('parses the size out of a weight-first font shorthand (GH-486)', () => {
+      renderer.fillText('Hi', 0, 50, '700 16px Inter', '#ffffff');
+      const entry = [...(renderer as any).textTextureCache.values()][0];
+      expect(entry.fontSize).toBe(16);
+      expect(entry.height).toBe(24); // ceil(16 * 1.5), not ceil(700 * 1.5)
+      const mesh = renderer.scene.children[0] as THREE.Mesh;
+      expect(mesh.position.y).toBeCloseTo(50 - 16 + 24 / 2); // baseline at y=50
+    });
+
+    it('places the alphabetic baseline exactly at the requested y (GH-486)', () => {
+      renderer.fillText('Hi', 0, 50, '16px Inter', '#ffffff');
+      const entry = [...(renderer as any).textTextureCache.values()][0];
+      expect(entry.fontSize).toBe(16);
+      const mesh = renderer.scene.children[0] as THREE.Mesh;
+      expect(mesh.position.y).toBeCloseTo(50 - entry.fontSize + entry.height / 2);
+    });
+
+    it('keeps the texture unflipped and double-sided so the glyphs stay upright and visible', () => {
+      renderer.fillText('Hi', 0, 50, '16px Inter', '#ffffff');
+      const mesh = renderer.scene.children[0] as THREE.Mesh;
+      const material = mesh.material as THREE.MeshBasicMaterial;
+      expect(material.side).toBe(THREE.DoubleSide);
+      expect((material.map as THREE.CanvasTexture).flipY).toBe(false);
+    });
+  });
+
   describe('fillText texture cache', () => {
     it('reuses one texture for repeated (text, font, color) across frames', () => {
       renderer.fillText('fps: 60', 0, 0, '16px sans-serif', '#fff');
