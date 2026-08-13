@@ -74,6 +74,39 @@ describe('attachDevtools', () => {
     host.destroy();
   });
 
+  it('an armed pick ignores clicks on the panel controls and stays armed', () => {
+    const host = makeHost();
+    vi.spyOn(host, 'clientToScene').mockReturnValue({ x: 30, y: 30 });
+    const target = new Box('hosty', 100, 100);
+    host.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.armPick();
+
+    // A click whose target lives INSIDE the panel container is panel chrome (the
+    // pick button, search, tree rows): the document capture listener must let it
+    // through to the control's own handler instead of consuming it as a host
+    // pick — before the fix, stopPropagation killed the handler and the pick ran
+    // against the panel's own coordinates.
+    const dock = document.querySelector('[data-vecto-devtools]') as HTMLElement;
+    const control = document.createElement('div');
+    dock.appendChild(control);
+    const onClick = vi.fn();
+    control.addEventListener('click', onClick);
+    control.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(panel.selection).toBeNull();
+
+    // The stray panel click did not consume the one-shot pick: the next click
+    // outside the panel still performs the host pick.
+    document.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(panel.selection?.id).toBe('hosty');
+
+    panel.detach();
+    host.destroy();
+  });
+
   it('arrow keys nudge the selected entity (shift ×10)', () => {
     const host = makeHost();
     const target = new Box('nudge');
