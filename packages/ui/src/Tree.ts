@@ -218,9 +218,18 @@ export class TreeView extends UIComponent {
         this._loading.add(id);
         this._buildRows();
         this.scene?.markDirty();
-        const children = await (row.node.children as () => Promise<TreeNode[]>)();
-        this._loaded.set(id, children);
-        this._loading.delete(id);
+        try {
+          const children = await (row.node.children as () => Promise<TreeNode[]>)();
+          this._loaded.set(id, children);
+        } catch {
+          // A rejected lazy load must not strand the row in the loading state,
+          // and the rejection must be handled rather than surfacing as an
+          // unhandled promise rejection. Collapse the row so a retry is one
+          // click away (the next expand re-attempts the load).
+          this._expanded.delete(id);
+        } finally {
+          this._loading.delete(id);
+        }
       }
     }
     this._buildRows();

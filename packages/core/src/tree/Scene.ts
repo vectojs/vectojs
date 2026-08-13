@@ -1902,24 +1902,24 @@ export class Scene {
 
   /**
    * Drop `entity` and its whole subtree from the batched-driver candidate set.
-   * Called by {@link remove}/{@link hideOverlay} on detach: without this a
-   * removed-but-still-animating entity stays pinned in the Set (a leak) and its
-   * drivers keep ticking every frame even though it is off-tree. If it is later
-   * re-added, {@link registerActiveDriverSubtree} re-registers any node that
-   * still has live drivers, so the motion resumes.
+   * Called by `Entity.remove` on detach (which `remove`/`hideOverlay` route
+   * through): without this a removed-but-still-animating entity stays pinned in
+   * the Set (a leak) and its drivers keep ticking every frame even though it is
+   * off-tree. If it is later re-added, {@link _registerActiveDriverSubtree}
+   * re-registers any node that still has live drivers, so the motion resumes.
    */
-  private unregisterActiveDriverSubtree(entity: Entity): void {
+  public _unregisterActiveDriverSubtree(entity: Entity): void {
     this._driverTicker.unregisterSubtree(entity);
   }
 
   /**
    * Re-register every node in `entity`'s subtree that still has live property
-   * drivers. Called by {@link add}/{@link showOverlay} so re-attaching a subtree
-   * that was removed mid-animation resumes its batched drivers (they were
-   * dropped from the candidate set on removal, but the driver state still lives
-   * on each entity).
+   * drivers. Called by `Entity._addOne` so re-attaching a subtree that was
+   * removed mid-animation resumes its batched drivers (they were dropped from
+   * the candidate set on removal, but the driver state still lives on each
+   * entity).
    */
-  private registerActiveDriverSubtree(entity: Entity): void {
+  public _registerActiveDriverSubtree(entity: Entity): void {
     this._driverTicker.registerSubtree(entity);
   }
 
@@ -2604,8 +2604,9 @@ export class Scene {
    * @example scene.add(new CircleEntity());
    */
   public add(entity: Entity): this {
+    // Driver re-registration happens inside Entity._addOne, which this routes
+    // through — one registration point for every attach path.
     this.root.add(entity);
-    this.registerActiveDriverSubtree(entity);
     return this;
   }
 
@@ -2700,9 +2701,10 @@ export class Scene {
    * @returns `this` for method chaining.
    */
   public remove(entity: Entity): this {
+    // Driver un-registration happens inside Entity.remove, which this routes
+    // through — one deregistration point for every detach path.
     this.root.remove(entity);
     this.removeA11yRecursively(entity);
-    this.unregisterActiveDriverSubtree(entity);
     return this;
   }
 
@@ -2737,8 +2739,9 @@ export class Scene {
    * Add an overlay entity to the overlay root, bypassing main tree clipping bounds.
    */
   public showOverlay(overlay: Entity): void {
+    // Driver re-registration happens inside Entity._addOne, which this routes
+    // through.
     this.overlayRoot.add(overlay);
-    this.registerActiveDriverSubtree(overlay);
     this.markDirty();
   }
 
@@ -2746,9 +2749,10 @@ export class Scene {
    * Remove an overlay entity from the overlay root.
    */
   public hideOverlay(overlay: Entity): void {
+    // Driver un-registration happens inside Entity.remove, which this routes
+    // through.
     this.overlayRoot.remove(overlay);
     this.removeA11yRecursively(overlay);
-    this.unregisterActiveDriverSubtree(overlay);
     this.markDirty();
   }
 
@@ -3058,8 +3062,9 @@ export class Scene {
    * workload rendered ~1.0 frames per content change. To measure anything about
    * scheduling, use {@link start} and let `requestAnimationFrame` drive.
    *
-   * @param dt Seconds to advance. Not clamped by `MAX_FRAME_DT` — the caller
-   *   chooses the step, since determinism is the point.
+   * @param dt Milliseconds to advance (same unit as the rAF timestamps `loop`
+   *   feeds `render`). Not clamped by `MAX_FRAME_DT` — the caller chooses the
+   *   step, since determinism is the point.
    */
   public step(dt: number): void {
     const time = this.lastTime + dt;

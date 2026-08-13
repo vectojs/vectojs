@@ -91,7 +91,7 @@ export interface RadioGroupOptions {
  * });
  */
 export class RadioGroup extends UIComponent {
-  public options: RadioOption[];
+  private _options: RadioOption[] = [];
   public value: string;
   public direction: 'horizontal' | 'vertical';
   public gap: number;
@@ -109,7 +109,11 @@ export class RadioGroup extends UIComponent {
 
   constructor(opts: RadioGroupOptions) {
     super();
-    this.options = opts.options;
+    // Backing field directly, not the setter: the setter's re-sync exists for
+    // POST-construction reassignment, and the constructor does its own
+    // `_layout()` + `_syncHotspots()` at the end (the setter would run
+    // mid-construction, before direction/gap/size/font exist).
+    this._options = opts.options;
     this.value = opts.value ?? (opts.options.length > 0 ? opts.options[0].value : '');
     this.direction = opts.direction ?? 'vertical';
     this.gap = opts.gap ?? 12;
@@ -158,6 +162,24 @@ export class RadioGroup extends UIComponent {
   /** Whether the option is disabled (used by the radio hotspots). */
   public isDisabled(value: string): boolean {
     return this.options.find((o) => o.value === value)?.disabled ?? false;
+  }
+
+  /**
+   * The option set. Reassigning the array re-derives the component's measured
+   * geometry and re-syncs the a11y hotspot pool in place — the transparent
+   * `role="radio"` hotspots must not keep describing the OLD array after a
+   * replacement (an owner that replaces rather than mutates its option list
+   * would otherwise leave keyboard focus and AT activation pointing at stale
+   * labels/values).
+   */
+  public get options(): RadioOption[] {
+    return this._options;
+  }
+  public set options(value: RadioOption[]) {
+    if (value === this._options) return;
+    this._options = value;
+    this._layout();
+    this._syncHotspots();
   }
 
   /** Roving-tabindex tab stop: the checked option, or the first enabled option

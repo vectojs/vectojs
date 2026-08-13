@@ -24,7 +24,7 @@ let onmessage: ((e: { data: unknown }) => void) | null = null;
 let responses: WorkerResponse[] = [];
 
 /** Load a fresh worker module with `self` stubbed, so its cache starts empty. */
-async function loadWorker(): Promise<void> {
+async function loadWorker(): Promise<typeof import('../src/MarkdownWorker')> {
   responses = [];
   const selfStub = {
     set onmessage(handler: (e: { data: unknown }) => void) {
@@ -36,7 +36,7 @@ async function loadWorker(): Promise<void> {
   };
   vi.stubGlobal('self', selfStub);
   vi.resetModules();
-  await import('../src/MarkdownWorker');
+  return import('../src/MarkdownWorker');
 }
 
 /** Post one request and return the single response it produced. */
@@ -348,5 +348,58 @@ describe('MarkdownWorker delta protocol', () => {
       data: { id: 2, text: 123, instance: 'md-0', baseVersion: 0 },
     });
     expect(responses.length).toBe(before);
+  });
+
+  it('evicts the longest-idle instance once the per-instance cache reaches its bound', async () => {
+    const worker = await loadWorker();
+    const MAX = worker.RAW_CACHE_MAX;
+    // Guards the harness itself: an absent bound would silently collapse the
+    // fill loop below and the eviction would never be exercised.
+    expect(Number.isFinite(MAX) && MAX > 0).toBe(true);
+    const doc = '# Title\n\nBody.';
+    const raws = marked.lexer(doc).map((t) => t.raw);
+
+    // Fill the cache to exactly the bound with distinct instances.
+    for (let i = 0; i < MAX; i++) {
+      const res = request({
+        id: i + 1,
+        text: doc,
+        instance: `md-${i}`,
+        baseVersion: 0,
+        oldRaws: raws,
+      });
+      expect(res.needResync).toBeUndefined();
+    }
+
+    // One more instance pushes the cache past the bound; `md-0` (the longest
+    // idle) is evicted. Instances GC-d without destroy() previously grew this
+    // map forever — every entry holds the full source plus its token tree.
+    request({
+      id: 100000,
+      text: doc,
+      instance: `md-${MAX}`,
+      baseVersion: 0,
+      oldRaws: raws,
+    });
+
+    // The evicted instance can no longer extend a source it no longer holds.
+    const evicted = request({
+      id: 200000,
+      append: ' more',
+      expectedLength: doc.length + ' more'.length,
+      instance: 'md-0',
+      baseVersion: 1,
+    });
+    expect(evicted.needResync).toBe(true);
+
+    // The most recently touched instance is still resident.
+    const fresh = request({
+      id: 200001,
+      append: ' more',
+      expectedLength: doc.length + ' more'.length,
+      instance: `md-${MAX}`,
+      baseVersion: 1,
+    });
+    expect(fresh.needResync).toBeUndefined();
   });
 });

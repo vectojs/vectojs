@@ -455,6 +455,12 @@ export class WasmBackendFacade {
         // out along last frame's parent links. Leave `_storeStructureVersion`
         // untouched so the next frame retries the rebuild.
         this.transformReason = 'rejected';
+        // The store did not move to this frame's world matrices either, so any
+        // AABBs previously computed from them are stale — a fused gather must
+        // not read them. The flag is also cleared on the runKernel rejection
+        // below; both rejection returns exit with a store that does not
+        // describe the frame being rendered.
+        this._aabbsFresh = false;
         // Retrying forever is only right while the rejection might be transient
         // (a concurrent backend growing shared linear memory between `ensure()`
         // and `set_run_count()`). A topology that genuinely exceeds the crate's
@@ -529,6 +535,13 @@ export class WasmBackendFacade {
       // guards this; the resident path did not. Returning null routes the render
       // walk through JS composition, which is the permanent fallback.
       this.transformReason = 'rejected';
+      // A rejection frame renders through JS composition, whose matrices the
+      // store does not hold, so AABBs computed for the store's previous frame
+      // must not satisfy a fused gather this frame. Without this clear, an
+      // `ensureAabbs()` between a successful frame and its rejected successor
+      // would return early and the gather would hit-test against last frame's
+      // geometry.
+      this._aabbsFresh = false;
       return null;
     }
     // The world matrices just changed, so any AABBs computed from the previous

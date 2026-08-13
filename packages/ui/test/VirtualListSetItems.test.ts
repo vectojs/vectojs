@@ -85,4 +85,24 @@ describe('VirtualList setItems', () => {
     expect(priv._targetY).toBe(0);
     expect(priv._scrollY).toBe(0);
   });
+
+  it('zeroes scroll velocity in the unkeyed path (no transient overshoot after a replace)', () => {
+    const list = makeList(
+      Array.from({ length: 500 }, (_, i) => `item-${i}`),
+      { keyed: false },
+    );
+    const priv = list as unknown as { _scrollY: number; _velY: number };
+
+    // Build real downward scroll velocity mid-flight (wheel + integrator).
+    list.emit('wheel', { deltaY: 200, preventDefault() {} });
+    for (let i = 0; i < 40; i++) list.update(16, 40 + i * 16);
+    expect(Math.abs(priv._velY)).toBeGreaterThan(0.05); // precondition: in flight
+
+    // Replacing the list resets scroll to the top; the stale velocity must not
+    // survive into the new list, or the first update() carries the old flick
+    // and `_scrollY` overshoots past the content edge.
+    list.setItems(['X', 'Y', 'Z']);
+    list.update(16, 4000);
+    expect(priv._scrollY).toBe(0);
+  });
 });

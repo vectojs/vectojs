@@ -171,6 +171,12 @@ export class SplineEntity extends Entity {
   private bakedWidth = 0;
   private bakedHeight = 0;
   /**
+   * Device-pixel ratio the bitmap was rasterized at. Tracked so a DPR change
+   * (browser zoom, a monitor move, a renderer whose clamp changed) re-bakes
+   * instead of blitting a bitmap at the wrong device density forever.
+   */
+  private bakedDPR = 0;
+  /**
    * Gradient strokes can't be baked to a solid-color bitmap; they render
    * per-frame. Derived from `_doc`, so it is NOT readonly — assigning a new
    * document has to recompute it (see the `doc` setter).
@@ -421,19 +427,19 @@ export class SplineEntity extends Entity {
   }
 
   /** Bake all equations into an OffscreenCanvas once (when available). */
-  private bake(): void {
+  private bake(dpr: number): void {
     this.baked = true;
     const pad = this.lineWidth + 2;
     const w = Math.max(1, Math.ceil(this.bounds.width) + pad * 2);
     const h = Math.max(1, Math.ceil(this.bounds.height) + pad * 2);
     this.bakedWidth = w;
     this.bakedHeight = h;
-    // Bake at devicePixelRatio: the main canvas is DPR-scaled, so a 1x bitmap
-    // would be upscaled (blurry) on HiDPI displays. Blitting uses w×h (logical).
-    const dpr =
-      typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number'
-        ? window.devicePixelRatio || 1
-        : 1;
+    // Bake at the RENDERER's device-pixel ratio (clamped by maxDPR), not the raw
+    // window ratio: the main canvas is scaled by the clamped value, so a bitmap
+    // rasterized at a higher window DPR would be downsampled on every blit
+    // (blurry on HiDPI) and one at a lower ratio upscaled. Blitting uses w×h
+    // (logical).
+    this.bakedDPR = dpr;
     let canvas: HTMLCanvasElement | OffscreenCanvas;
     if (typeof OffscreenCanvas !== 'undefined') {
       canvas = new OffscreenCanvas(w * dpr, h * dpr);
@@ -495,7 +501,17 @@ export class SplineEntity extends Entity {
   public render(r: IRenderer): void {
     let rendered = false;
     if (this.cache && !this.containsGradient) {
-      if (!this.baked) this.bake();
+      // The renderer's live pixel ratio (already clamped to its maxDPR); a
+      // renderer that does not expose it falls back to the window ratio, which
+      // was the historical behaviour and remains correct for an unclamped
+      // backing store.
+      const dpr =
+        typeof r.pixelRatio === 'number' && r.pixelRatio > 0
+          ? r.pixelRatio
+          : typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number'
+            ? window.devicePixelRatio || 1
+            : 1;
+      if (!this.baked || this.bakedDPR !== dpr) this.bake(dpr);
       if (this.offscreen) {
         const pad = this.lineWidth + 2;
         r.drawImage(

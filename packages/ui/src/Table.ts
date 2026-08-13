@@ -749,8 +749,11 @@ export class Table extends UIComponent {
   /**
    * Recompute cell wrapping, row heights, and child positions.
    *
-   * Call after mutating an externally supplied Entity cell. String-backed
-   * cells are owned by the Table and are already kept consistent.
+   * Call after mutating an externally supplied Entity cell, or after editing a
+   * string cell in the public {@link rows} array — the sync covers every row in
+   * classic mode and the mounted (viewport) rows in virtualized mode. A
+   * `RichText` whose spans you replaced is picked up: it re-measures from
+   * `cell.height`.
    */
   public layout(): this {
     this.headerHeight = this.baseRowHeight;
@@ -783,6 +786,18 @@ export class Table extends UIComponent {
       clip.height = Math.max(0, this.viewportHeight - this.headerHeight);
       this.clampScroll();
       this._scrollY = this._targetY;
+      // `rows` is a public field: an owner may edit a string cell in place and
+      // call layout(). reconcileVirtualRows syncs cells only on MOUNT, so
+      // without this pass the edit would stay stale until the row scrolled out
+      // and back. Bounded by the mounted (viewport) rows, so layout() keeps its
+      // O(viewport) guarantee rather than degrading to O(rows).
+      for (const rowIndex of this.mountedRows) {
+        const row = this.bodyCells[rowIndex];
+        for (let column = 0; column < row.length; column++) {
+          this.syncStringCell(row[column], this.rows[rowIndex]?.[column]);
+          this.fitCell(row[column], column);
+        }
+      }
       this.reconcileVirtualRows();
       this._syncGridA11y();
       this.scene?.markDirty();
