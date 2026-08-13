@@ -12,6 +12,7 @@
         "@commitlint/cli": "^21.2.1",
         "@commitlint/config-conventional": "^21.2.0",
         "carryctx": "0.5.6",
+        "ctxctl": "^0.1.0",
         "fabric": "^7.4.0",
         "knip": "^6.31.0",
         "konva": "^10.3.0",
@@ -41,7 +42,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.35.0",
+      "version": "1.35.1",
       "dependencies": {
         "@vectojs/animation": "^0.1.1",
         "@vectojs/layout": "^0.9.1",
@@ -185,7 +186,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.16.1",
+      "version": "2.16.4",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.12.1",
@@ -1010,6 +1011,18 @@
     "cssstyle": ["cssstyle@4.6.0", "", { "dependencies": { "@asamuzakjp/css-color": "^3.2.0", "rrweb-cssom": "^0.8.0" } }, "sha512-2z+rWdzbbSZv6/rhtvzvqeZQHrBaqgogqt85sqFNbabZOuFbCVFb8kPeEtZjiKkbrm395irpNKiYeFeLiQnFPg=="],
 
     "csstype": ["csstype@3.0.8", "", {}, "sha512-jXKhWqXPmlUeoQnF/EhTtTl4C9SnrxSH/jZUih3jmO6lBKr99rP3/+FmrMj4EFpOXzMtXHAZkd3x0E6h6Fgflw=="],
+
+    "ctxctl": ["ctxctl@0.1.0", "", { "optionalDependencies": { "ctxctl-cli-darwin-arm64": "0.1.0", "ctxctl-cli-darwin-x64": "0.1.0", "ctxctl-cli-linux-arm64-gnu": "0.1.0", "ctxctl-cli-linux-x64-gnu": "0.1.0", "ctxctl-cli-windows-x64": "0.1.0" }, "bin": { "ctxctl": "bin/ctxctl.js" } }, "sha512-R029o9+S4+jZFneiSMRWI2AHk87sbJFyWPYJ5iiKw7zpZ5YaeUlV0yha0K2SmDoH6lNXvjfdAX9jvBJDQJCoAQ=="],
+
+    "ctxctl-cli-darwin-arm64": ["ctxctl-cli-darwin-arm64@0.1.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-d5pb67dE3RGVi5u5tWoWew0HkJwTozN0uisyN7RJBkyeSPtkhqkF3ym0QeIIXtn3B8Vn43OLOOCuXmUZow8vhA=="],
+
+    "ctxctl-cli-darwin-x64": ["ctxctl-cli-darwin-x64@0.1.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-2q78N7D5t3D7lRPPf2JYy/QaL5HGcMc4Gt62KA8FylMKNji5kC1aYai89FRlXBH88yBSLfdxNF02zZwaSncdMA=="],
+
+    "ctxctl-cli-linux-arm64-gnu": ["ctxctl-cli-linux-arm64-gnu@0.1.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-PaIm1V39VgZ+YUeO3N2Fiih5XeNSlAf1t+svkcVY8d97GLFWbXkyq8CO8IAzFAcCPKI07sWaM5aTEy009B7Ohg=="],
+
+    "ctxctl-cli-linux-x64-gnu": ["ctxctl-cli-linux-x64-gnu@0.1.0", "", { "os": "linux", "cpu": "x64" }, "sha512-U8K5LFR6IkWAvg+Lo5knwYCwicqiP5+coDCDyOnNbD0qtA+TIzW4Gflzg+WPaqXB/IOuYTz9tHCdL5p8SCbhxQ=="],
+
+    "ctxctl-cli-windows-x64": ["ctxctl-cli-windows-x64@0.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-mvtLf3JxLS79At69nKizG6PRv/iJ7C/AKuUqdF2gsiewT2Xs6IkM6/3qEV6ojAMDolTHQHNUWp18EOlH5JSWyA=="],
 
     "cytoscape": ["cytoscape@3.34.0", "", {}, "sha512-62rNSrioXw93uliKFBwjukeQyeWwH2PqDrTac31r2P6464u3AUvTk0xS4LVvT251g7IgkFunrI48ZEZGjywSOg=="],
 
