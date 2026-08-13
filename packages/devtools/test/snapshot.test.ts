@@ -273,4 +273,31 @@ describe('keyed diffing', () => {
     expect(diffs[0]).toMatchObject({ kind: 'removed', path: 'root > Row{k:row-b}' });
     scene.destroy();
   });
+
+  it('does not double-pair or drop removals on a mixed keyed/unkeyed level', () => {
+    const scene = makeScene();
+    scene.resize(400, 300);
+    const row = new Row('r', 'row-1');
+    const spacer = new Box('s', 20, 20);
+    scene.add(row);
+    scene.add(spacer);
+    const before = captureSnapshot(scene);
+
+    // Reorder to [Spacer, Row] and move both with the swap. The keyed Row keeps
+    // its identity, while the unkeyed Spacer at slot 1 disappears and one
+    // appears at slot 0 — with no key to link them, the honest diff is one
+    // removal, one addition, and the Row's own change. The pre-fix pairing
+    // diffed the same old Row twice (once against the Spacer, once against
+    // itself) and reported no removal at all.
+    scene.rootEntity.children.reverse();
+    row.setPosition(0, 20);
+    spacer.setPosition(0, 0);
+
+    const diffs = diffSnapshots(before, captureSnapshot(scene));
+    expect(diffs.filter((d) => d.kind === 'removed')).toHaveLength(1);
+    expect(diffs.filter((d) => d.kind === 'changed')).toHaveLength(1);
+    expect(diffs.filter((d) => d.kind === 'added')).toHaveLength(1);
+    expect(diffs.filter((d) => d.kind === 'changed')[0]!.path).toBe('root > Row{k:row-1}');
+    scene.destroy();
+  });
 });

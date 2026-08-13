@@ -207,23 +207,40 @@ function keyedPairs(a: SnapshotNode[], b: SnapshotNode[]): Pairing[] {
 
   const pairs: Pairing[] = [];
   const claimed = new Set<string>();
+  // `a` nodes already consumed by a pair. Pairing goes through this set so a
+  // node can never be matched twice — the mixed-level bug paired the keyed
+  // node once positionally and once by key — and the removal pass can trust it
+  // to know which nodes really did get a partner.
+  const used = new Set<SnapshotNode>();
   // Walk `b` so the output is ordered by the new tree, which is the order a
   // reader is looking at.
   b.forEach((nb, index) => {
     if (nb.key === undefined) {
-      pairs.push({ a: a[index], b: nb, index, keyed: false });
+      // An unkeyed node pairs only with the unkeyed `a` node in its own slot.
+      // A keyed `a[index]` belongs to a key match even when that key sits at a
+      // different index, so the slot is not a positional partner.
+      const na = a[index];
+      const partner = na !== undefined && na.key === undefined && !used.has(na) ? na : undefined;
+      if (partner) used.add(partner);
+      pairs.push({ a: partner, b: nb, index, keyed: false });
       return;
     }
     const na = byKeyA.get(nb.key);
-    if (na) claimed.add(nb.key);
-    pairs.push({ a: na, b: nb, index, keyed: true });
+    const partner = na !== undefined && !used.has(na) ? na : undefined;
+    if (partner) {
+      used.add(partner);
+      claimed.add(nb.key);
+    }
+    pairs.push({ a: partner, b: nb, index, keyed: true });
   });
-  // Anything in `a` never claimed was removed.
+  // Anything in `a` never consumed was removed.
   a.forEach((na, index) => {
     if (na.key === undefined) {
-      // An unkeyed node beyond `b`'s length is a removal; within it, it was
-      // already paired positionally above.
-      if (index >= b.length) pairs.push({ a: na, index, keyed: false });
+      // Only skip an unkeyed node whose positional slot was actually consumed.
+      // When `b[index]` was keyed, the slot went to a key match and this node
+      // was never paired — reporting it as the removal it is, instead of
+      // silently dropping it, is the whole point of tracking `used`.
+      if (!used.has(na)) pairs.push({ a: na, index, keyed: false });
       return;
     }
     if (!claimed.has(na.key)) pairs.push({ a: na, index, keyed: true });
