@@ -2331,7 +2331,10 @@ export class LayoutEngine {
 
           if (!foundSpot || currentY >= this.maxHeight) break;
 
-          if (currentX === 0 && glyph.char.trim().length === 0) continue;
+          // Don't render invisible leading characters at the START of a line,
+          // unless the caller opted in — same rule as the allocating path.
+          if (currentX === 0 && glyph.char.trim().length === 0 && !this.preserveLeadingSpaces)
+            continue;
 
           // Written in LOGICAL order at a provisional x/y; commitLine assigns
           // the final visual x and the shared-baseline y for the whole line.

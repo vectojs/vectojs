@@ -27,7 +27,7 @@ import {
   type PluginInspector,
   type PluginRow,
 } from './plugin';
-import { auditA11y, inspectA11y } from './a11yInspect';
+import { auditA11y, inspectA11y, type A11yFinding } from './a11yInspect';
 import { entityPath, inspectEntity, layoutControlledProperties } from './inspect';
 import { createEventTrace, type EventTrace } from './eventTrace';
 
@@ -155,6 +155,9 @@ export class DevtoolsPanel {
   private pluginTabs = new Map<string, { inspector: PluginInspector; lines: Text[] }>();
   /** Findings from the last audit that came from plugins, kept for `pluginFindings()`. */
   private pluginFindings: PluginFinding[] = [];
+  /** Every finding row of the last {@link audit}, scene then plugin, in display
+   *  order — the one list both the audit tree and `selectFinding` index. */
+  private auditRows: Array<{ kind: string; message: string; entityId?: string }> = [];
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private perfTimer: ReturnType<typeof setInterval> | null = null;
   private pickArmed = false;
@@ -162,6 +165,9 @@ export class DevtoolsPanel {
   private dockSide: DockSide;
   private destroyed = false;
   private findings: AuditFinding[] = [];
+  /** Host structure version the cached full-scene a11y audit was computed at. */
+  private a11yAuditVersion = -1;
+  private a11yAuditFindings: A11yFinding[] = [];
   private countPill: Pill;
   private interactivePill: Pill;
   private warnPill: Pill;
@@ -793,17 +799,22 @@ export class DevtoolsPanel {
       scene: this.host,
       selection: this.selected ?? null,
     });
-    const rows = [
-      ...this.findings.map((f) => ({ kind: f.kind, message: f.message })),
-      ...this.pluginFindings.map((f) => ({ kind: f.kind, message: f.message })),
+    // One list for display and selection: `selectFinding(i)` must resolve the
+    // same row the tree shows, including plugin rows. Without this, every
+    // plugin row indexed `this.findings` and its click did nothing.
+    this.auditRows = [
+      ...this.findings.map((f) => ({ kind: f.kind, message: f.message, entityId: f.entityId })),
+      ...this.pluginFindings,
     ];
     this.auditTree.setNodes(
-      rows.map((f, i) => ({
+      this.auditRows.map((f, i) => ({
         id: `finding:${i}`,
         label: `⚠ ${f.kind}: ${f.message}`,
       })),
     );
-    this.detailLines[0]?.setText(rows.length === 0 ? 'audit clean' : `${rows.length} finding(s)`);
+    this.detailLines[0]?.setText(
+      this.auditRows.length === 0 ? 'audit clean' : `${this.auditRows.length} finding(s)`,
+    );
     this.writeCounts();
     this.showTab('audit');
     this.panelScene.markDirty();
@@ -812,8 +823,8 @@ export class DevtoolsPanel {
 
   /** Select and highlight the entity behind finding `i` from the last {@link audit} run. */
   public selectFinding(i: number): void {
-    const finding = this.findings[i];
-    const entity = finding ? this.index.get(finding.entityId) : undefined;
+    const finding = this.auditRows[i];
+    const entity = finding?.entityId ? this.index.get(finding.entityId) : undefined;
     if (entity) this.select(entity);
   }
 
@@ -1064,7 +1075,12 @@ export class DevtoolsPanel {
     // and about to conclude the editor is broken.
     if (this.overriddenProp) {
       const owner = entity.parent?.constructor.name ?? 'parent';
-      lines.push(
+      // Inserted at the top, not appended: a full readout already occupies every
+      // INSPECT_ROWS line, and the bounded write loop below would silently drop
+      // an appended line — exactly the one the user is looking for right now.
+      lines.splice(
+        1,
+        0,
         `! ${this.overriddenProp} is owned by ${owner}; this value reverts on the next layout`,
       );
     }
@@ -1117,7 +1133,7 @@ export class DevtoolsPanel {
         if (drift) rows.push(`!${drift}`);
       }
 
-      const findings = auditA11y(this.host);
+      const findings = this.a11yFindings();
       rows.push('');
       rows.push(
         findings.length === 0 ? 'audit: no findings' : `audit: ${findings.length} finding(s)`,
@@ -1135,6 +1151,24 @@ export class DevtoolsPanel {
     for (let i = 0; i < this.a11yLines.length; i++) {
       this.a11yLines[i].setText(rows[i] ?? '');
     }
+  }
+
+  /**
+   * Full-scene a11y audit, cached across refresh ticks.
+   *
+   * `writeA11y` runs on every tick (it is the selected entity's readout), but
+   * the audit walks the whole tree and only changes when the tree does, so it
+   * used to pay a full-scene walk every 500ms for results that were identical.
+   * Recomputed when the host's structure version moves — the same signal
+   * `refresh()` itself keys on.
+   */
+  private a11yFindings(): A11yFinding[] {
+    const version = this.host.structureVersion;
+    if (version !== this.a11yAuditVersion) {
+      this.a11yAuditFindings = auditA11y(this.host);
+      this.a11yAuditVersion = version;
+    }
+    return this.a11yAuditFindings;
   }
 
   private writeTrace(): void {

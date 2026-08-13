@@ -257,10 +257,13 @@ export class MSDFFont {
       // A nonspacing mark must not move the pen (it stacks on the base glyph),
       // even if the atlas reports an advance for it — otherwise `é` (e + U+0301)
       // lays out as two glyphs side by side. Its quad is still emitted above.
+      // It must not replace the kerning base either: `prevCode` stays on the
+      // base glyph, so the kern pair (base → next) still applies across the
+      // mark — kerning is defined between spacing glyphs, never through one.
       if (!isNonspacingMark(code)) {
         penX += def.advance * fontSizePx + letterSpacing;
+        prevCode = code;
       }
-      prevCode = code;
     }
 
     maxAdvance = Math.max(maxAdvance, penX - x);
