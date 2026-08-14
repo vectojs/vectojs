@@ -1,13 +1,14 @@
-// P2-F a11y-order bench: per-frame cost of the a11y DOM-order pass as the
-// interactive tree grows. Before the fusion, enforceA11yDomOrder re-walked the
-// WHOLE tree every synced frame right after syncA11y already walked it (two full
-// traversals). Now syncA11y populates the order accumulators during its own walk
-// and enforceA11yDomOrder only prunes + reorders from them (one traversal).
+// Per-frame cost of the a11y projection + DOM-order pass as the interactive
+// tree grows. After DEC-0020 the order scratch lives on A11yProjectionManager
+// (`scene.a11yOrder`); `enforceA11yDomOrder` always runs its own collect walk
+// (the old fused-into-syncA11y path was retired with the manager extraction).
 //
-// A/B: FUSED = syncA11y (collects) + enforceA11yDomOrder (no re-walk). OLD =
-// syncA11y + force `_a11yOrderCollected = false` so enforceA11yDomOrder does its
-// fallback full-tree collect (the pre-fusion second walk). Posts JSON to
-// /results (hyprland-browser-bench contract).
+// Rows report what a synced frame actually pays:
+//   syncMs     — syncA11y alone (create/update shadow nodes)
+//   enforceMs  — enforceA11yDomOrder alone (collect + prune + reorder)
+//   combinedMs — both, in that order (the loop's real sequence)
+//
+// Posts JSON to /results (hyprland-browser-bench contract).
 import { Scene, Entity } from '@vectojs/core';
 import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 import { median } from '../_shared/stats.ts';
@@ -56,27 +57,24 @@ function makeScene(count: number): Scene {
 
 const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
 
-async function bench(scene: Scene, forceSecondWalk: boolean): Promise<number> {
+type Mode = 'sync' | 'enforce' | 'combined';
+
+async function bench(scene: Scene, mode: Mode): Promise<number> {
   const s = scene as any;
-  s.syncA11y(s.root); // warm: build all shadow elements once
+  // Warm: build all shadow elements once so the timed loop measures the steady
+  // update/reorder path, not first-time DOM creation.
+  s.syncA11y(s.root);
   s.enforceA11yDomOrder();
   const times: number[] = [];
   for (let t = 0; t < TRIALS; t++) {
     const t0 = performance.now();
     for (let f = 0; f < FRAMES; f++) {
-      s.fullViewportElements.length = 0;
-      s.normalElements.length = 0;
-      s.activeIds.clear();
-      s._a11yOrderCollected = true;
-      s.syncA11y(s.root);
-      if (forceSecondWalk) s._a11yOrderCollected = false; // pre-fusion: re-walk
-      s.a11yNeedsReorder = true; // force the reorder body to run each frame
-      s.enforceA11yDomOrder();
+      s.a11yNeedsReorder = true;
+      if (mode === 'sync' || mode === 'combined') s.syncA11y(s.root);
+      if (mode === 'enforce' || mode === 'combined') s.enforceA11yDomOrder();
     }
     times.push((performance.now() - t0) / FRAMES);
-    // Yield to the event loop between trials so a large tree never blocks the
-    // main thread long enough to trip the browser's "page unresponsive" dialog
-    // (which would both stall the run and skew timings).
+    // Yield so a large tree never trips the browser's "page unresponsive" dialog.
     await yieldToPaint();
   }
   return median(times);
@@ -91,15 +89,20 @@ async function main() {
   for (const n of COUNTS) {
     progress.textContent = `benchmarking ${n} nodes…`;
     await yieldToPaint();
-    const oldMs = await bench(makeScene(n), true);
+    const scene = makeScene(n);
+    const syncMs = await bench(scene, 'sync');
     await yieldToPaint();
-    const fusedMs = await bench(makeScene(n), false);
+    const enforceMs = await bench(scene, 'enforce');
+    await yieldToPaint();
+    const combinedMs = await bench(scene, 'combined');
     rows.push({
       nodes: n,
-      oldTwoWalkMsPerFrame: +oldMs.toFixed(4),
-      fusedMsPerFrame: +fusedMs.toFixed(4),
-      speedup: +(oldMs / fusedMs).toFixed(2),
+      syncMsPerFrame: +syncMs.toFixed(4),
+      enforceMsPerFrame: +enforceMs.toFixed(4),
+      combinedMsPerFrame: +combinedMs.toFixed(4),
     });
+    // Drop the canvas so the next count starts clean.
+    scene.canvas.remove();
   }
   const result = await reportResult({
     name: 'a11y-order',

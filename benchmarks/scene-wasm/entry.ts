@@ -116,7 +116,13 @@ async function run(): Promise<void> {
       const scene = sceneWith();
       buildTree(scene, n, topo);
       const wasmOk = await scene.enableWasmTransforms(bytes);
-      const sync = () => (scene as unknown as { _syncWasmStore: () => void })._syncWasmStore();
+      // Post DEC-0019 the transform gather lives on the facade, not Scene.
+      // `syncStore()` is the per-frame gather + kernel compose the old
+      // `_syncWasmStore` used to own.
+      const sync = () =>
+        (
+          scene as unknown as { _wasmBackend: { syncStore: () => unknown } }
+        )._wasmBackend.syncStore();
       const root = (scene as unknown as { root: Entity }).root;
       sync(); // prime the structural rebuild
 
