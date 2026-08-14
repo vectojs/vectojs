@@ -1,10 +1,7 @@
 # @vectojs/desktop
 
-WebOS desktop shell for VectoJS — window manager, app registry, and
-config-first chrome on a single `Scene`.
-
-> **Status: 0.1.0 skeleton.** WindowManager + AppRegistry + DesktopShell +
-> `webos.config` schema. No taskbar, VFS, or `create-webos` yet.
+WebOS desktop shell for VectoJS — Plasma-inspired window manager, taskbar,
+Kickoff start menu, config-first chrome, VFS, and shortcuts on a single `Scene`.
 
 ## Install
 
@@ -17,7 +14,7 @@ bun add @vectojs/desktop @vectojs/core @vectojs/ui @vectojs/styles
 ```ts
 import { Scene } from '@vectojs/core';
 import { Text } from '@vectojs/ui';
-import { DesktopShell } from '@vectojs/desktop';
+import { DesktopShell, MemoryVfs } from '@vectojs/desktop';
 
 const scene = new Scene(canvas, { renderMode: 'onDemand' });
 const shell = new DesktopShell({
@@ -27,40 +24,58 @@ const shell = new DesktopShell({
       {
         id: 'about',
         title: 'About',
+        icon: 'ℹ',
         create: () => new Text('Hello from @vectojs/desktop'),
       },
+      {
+        id: 'notes',
+        title: 'Notes',
+        instances: 'multiple', // KWin: allow many windows
+        create: (ctx) => new Text(`note ${ctx.windowId}`),
+      },
     ],
-    theme: {
-      'desktop-wallpaper': '#0b1220',
-      'desktop-focus-ring': '#38bdf8',
+    desktop: {
+      wallpaper: '#0b1220',
+      // wallpaperImage: '/wall.png',
+      taskbarHeight: 40,
+      taskbarPosition: 'bottom',
+      // displays: [{ id: 'main', x: 0, y: 0, width: 1280, height: 800 }],
     },
+    shortcuts: {
+      'Control+n': { type: 'open-app', appId: 'notes' },
+      'Meta+w': { type: 'close-focused' },
+      'Meta+Space': { type: 'toggle-start' },
+    },
+    vfs: new MemoryVfs(),
   },
 });
 shell.start();
 shell.open('about');
 ```
 
-## Design rules
+## Plasma-aligned behaviour
 
-- **Acyclic deps**: `desktop → {core, ui, styles}` only.
-- **Config-first**: colours, apps, and shortcuts come from `WebosConfig` —
-  never hardcode chrome in the WM.
-- **onDemand a11y**: every window defaults to `a11yProjection: 'onDemand'`;
-  background windows project nothing until focus / pointer / explicit request.
-- **Window = Entity**: chrome is 100% canvas; z-order is overlay sibling order.
+| Surface       | Behaviour                                                                  |
+| ------------- | -------------------------------------------------------------------------- |
+| Window chrome | Titlebar drag, min / max / close (LTR order), edge+corner resize           |
+| Maximize      | Fills display **work area** (display minus taskbar); double-click titlebar |
+| Minimize      | Hides window; taskbar entry restores                                       |
+| Task Manager  | One entry per window; click active → minimize; click other → focus         |
+| Kickoff       | Start button opens app list panel                                          |
+| Multi-display | Logical rectangles in one Scene; per-display work areas                    |
+| Shortcuts     | Document-level chord router (`Control+n`, `Meta+w`, …)                     |
+| VFS           | Pluggable `Vfs` + in-memory `MemoryVfs`                                    |
+| Instances     | `single` (default) focuses existing; `multiple` always spawns              |
+| a11y          | Windows default to `a11yProjection: 'onDemand'`                            |
 
 ## Public surface
 
-| Export          | Role                                      |
-| --------------- | ----------------------------------------- |
-| `DesktopShell`  | Host: wallpaper, registry, window manager |
-| `WindowManager` | open / focus / close / z-order            |
-| `DesktopWindow` | Titlebar + client host                    |
-| `AppRegistry`   | Installable app catalogue                 |
-| `resolveConfig` | Validate + default-merge `WebosConfig`    |
-| `WebosConfig`   | Schema type                               |
+`DesktopShell`, `WindowManager`, `DesktopWindow`, `Taskbar`, `StartMenu`,
+`AppRegistry`, `DisplayLayout`, `ShortcutRouter`, `MemoryVfs` / `Vfs`,
+`resolveConfig`, `WebosConfig`.
 
-## Not in 0.1.0
+## Design rules
 
-Taskbar, start menu, VFS, keyboard shortcut router, editor apps,
-`create-webos` CLI — see vectojs-docs TODO (WebOS flagship phases).
+- **Acyclic deps**: `desktop → {core, ui, styles}` only.
+- **Config-first**: colours, apps, displays, shortcuts, VFS via `WebosConfig`.
+- **Window = Entity**: chrome is 100% canvas; z-order is overlay sibling order.

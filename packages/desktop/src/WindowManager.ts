@@ -1,5 +1,7 @@
 import type { Scene } from '@vectojs/core';
 import type { AppRegistry } from './AppRegistry';
+import type { DisplayLayout } from './DisplayLayout';
+import type { Vfs } from './Vfs';
 import { DesktopWindow, type WindowChrome } from './Window';
 
 export interface OpenWindowOptions {
@@ -8,78 +10,127 @@ export interface OpenWindowOptions {
   height?: number;
   x?: number;
   y?: number;
+  /** Target display id; default primary. */
+  displayId?: string;
+  /**
+   * Force a new instance even when the app policy is `'single'`.
+   * Ignored when policy is already `'multiple'`.
+   */
+  forceNew?: boolean;
 }
 
+export type WindowManagerListener = (event: {
+  type: 'open' | 'close' | 'focus' | 'state';
+  window: DesktopWindow;
+}) => void;
+
 /**
- * Owns open {@link DesktopWindow} instances: open / focus / close / z-order.
- * Windows live on the scene overlay layer so they float above the wallpaper.
+ * Owns open {@link DesktopWindow} instances (KWin-like):
+ * open / focus / close / z-order / multi-instance policy.
  */
 export class WindowManager {
   private readonly scene: Scene;
   private readonly registry: AppRegistry;
   private readonly chrome: WindowChrome;
+  private readonly layout: DisplayLayout;
+  private readonly vfs: Vfs | null;
   private readonly windows: DesktopWindow[] = [];
   private focused: DesktopWindow | null = null;
   private cascade = 0;
+  private seq = 0;
+  private readonly listeners = new Set<WindowManagerListener>();
 
-  constructor(scene: Scene, registry: AppRegistry, chrome: WindowChrome) {
+  constructor(
+    scene: Scene,
+    registry: AppRegistry,
+    chrome: WindowChrome,
+    layout: DisplayLayout,
+    vfs: Vfs | null = null,
+  ) {
     this.scene = scene;
     this.registry = registry;
     this.chrome = chrome;
+    this.layout = layout;
+    this.vfs = vfs;
   }
 
-  /** Currently focused window, if any. */
   get focusedWindow(): DesktopWindow | null {
     return this.focused;
   }
 
-  /** Snapshot of open windows, bottom → top. */
   list(): readonly DesktopWindow[] {
     return this.windows;
   }
 
+  /** Windows for one app id (task manager grouping). */
+  listByApp(appId: string): DesktopWindow[] {
+    return this.windows.filter((w) => w.appId === appId);
+  }
+
+  on(listener: WindowManagerListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   /**
-   * Open an app by id. Throws if the app is not registered.
-   * Returns the existing focused window if the same app is already open
-   * (single-instance default for the skeleton).
+   * Open an app by id.
+   * - `instances: 'single'` (default): focus existing window unless `forceNew`.
+   * - `instances: 'multiple'`: always spawn.
    */
   open(appId: string, opts: OpenWindowOptions = {}): DesktopWindow {
-    const existing = this.windows.find((w) => w.appId === appId);
-    if (existing) {
-      this.focus(existing);
-      return existing;
-    }
-
     const app = this.registry.get(appId);
     if (!app) {
       throw new Error(`WindowManager.open: unknown app id '${appId}'`);
     }
 
+    const policy = app.instances ?? 'single';
+    if (policy === 'single' && !opts.forceNew) {
+      const existing = this.windows.find((w) => w.appId === appId);
+      if (existing) {
+        if (existing.minimized) existing.restoreFromMinimized();
+        this.focus(existing);
+        return existing;
+      }
+    }
+
+    const displayId = opts.displayId ?? this.layout.primary().id;
+    const area = this.layout.workArea(displayId);
     const offset = (this.cascade++ % 8) * 24;
+    const width = opts.width ?? 420;
+    const height = opts.height ?? 300;
+    const x = opts.x ?? area.x + 64 + offset;
+    const y = opts.y ?? area.y + 64 + offset;
+    const clamped = this.layout.clampRect(x, y, width, height, displayId);
+
+    const windowId = `${appId}-${++this.seq}`;
     const win = new DesktopWindow({
       app,
+      windowId,
       title: opts.title,
-      width: opts.width,
-      height: opts.height,
-      x: opts.x ?? 64 + offset,
-      y: opts.y ?? 64 + offset,
+      width: clamped.width,
+      height: clamped.height,
+      x: clamped.x,
+      y: clamped.y,
       chrome: this.chrome,
+      scene: this.scene,
+      vfs: this.vfs,
+      workArea: () => this.layout.workArea(displayId),
       onClose: (w) => this.close(w),
       onFocus: (w) => this.focus(w),
+      onStateChange: (w) => this.emit('state', w),
     });
 
     this.scene.showOverlay(win);
-    win.bindScene(this.scene);
     this.windows.push(win);
     this.focus(win);
+    this.emit('open', win);
     return win;
   }
 
-  /** Bring a window to the front and mark it focused. */
   focus(win: DesktopWindow): void {
     if (!this.windows.includes(win)) return;
+    if (win.minimized) win.restoreFromMinimized();
     if (this.focused === win) {
-      // Still restack in case z-order drifted.
       this.restack(win);
       return;
     }
@@ -89,9 +140,9 @@ export class WindowManager {
     this.restack(win);
     this.scene.requestA11yProjection(win);
     this.scene.markDirty();
+    this.emit('focus', win);
   }
 
-  /** Close and destroy a window. */
   close(win: DesktopWindow): void {
     const idx = this.windows.indexOf(win);
     if (idx < 0) return;
@@ -102,22 +153,41 @@ export class WindowManager {
     }
     this.scene.hideOverlay(win);
     win.destroy();
+    this.emit('close', win);
 
-    const next = this.windows[this.windows.length - 1];
+    const next = [...this.windows].reverse().find((w) => !w.minimized);
     if (next) this.focus(next);
     else this.scene.markDirty();
   }
 
-  /** Close every open window. */
+  closeFocused(): void {
+    if (this.focused) this.close(this.focused);
+  }
+
   closeAll(): void {
     for (const w of [...this.windows]) this.close(w);
   }
 
+  /** Cycle focus through non-minimized windows (Alt+Tab lite). */
+  cycleFocus(backward = false): void {
+    const live = this.windows.filter((w) => !w.minimized);
+    if (live.length === 0) return;
+    const cur = this.focused && live.includes(this.focused) ? this.focused : live[live.length - 1]!;
+    const i = live.indexOf(cur);
+    const next = backward
+      ? live[(i - 1 + live.length) % live.length]!
+      : live[(i + 1) % live.length]!;
+    this.focus(next);
+  }
+
   private restack(win: DesktopWindow): void {
-    // Overlay z-order is sibling order: remove + re-add moves to top.
     const root = this.scene.overlayRoot;
     if (!root.children.includes(win)) return;
     root.remove(win);
     root.add(win);
+  }
+
+  private emit(type: 'open' | 'close' | 'focus' | 'state', window: DesktopWindow): void {
+    for (const l of this.listeners) l({ type, window });
   }
 }

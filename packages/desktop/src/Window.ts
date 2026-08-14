@@ -1,19 +1,7 @@
 import { type A11yAttributes, Entity, type IRenderer, type Scene } from '@vectojs/core';
 import { Button, Card, Text, UIComponent } from '@vectojs/ui';
-import type { AppDefinition } from './types';
-
-export interface WindowOptions {
-  app: AppDefinition;
-  title?: string;
-  width?: number;
-  height?: number;
-  x?: number;
-  y?: number;
-  /** Theme-resolved chrome colours (already concrete, not var()). */
-  chrome: WindowChrome;
-  onClose: (win: DesktopWindow) => void;
-  onFocus: (win: DesktopWindow) => void;
-}
+import type { AppContext, AppDefinition } from './types';
+import type { Vfs } from './Vfs';
 
 export interface WindowChrome {
   windowBg: string;
@@ -25,12 +13,34 @@ export interface WindowChrome {
   closeFg: string;
   focusRing: string;
   radius: number;
+  resizeHandle: number;
+  minWidth: number;
+  minHeight: number;
+}
+
+export interface WindowOptions {
+  app: AppDefinition;
+  windowId: string;
+  title?: string;
+  width?: number;
+  height?: number;
+  x?: number;
+  y?: number;
+  chrome: WindowChrome;
+  scene: Scene;
+  vfs: Vfs | null;
+  /** Work-area clamp (display minus taskbar). */
+  workArea: () => { x: number; y: number; width: number; height: number };
+  onClose: (win: DesktopWindow) => void;
+  onFocus: (win: DesktopWindow) => void;
+  onStateChange?: (win: DesktopWindow) => void;
 }
 
 const DEFAULT_W = 420;
 const DEFAULT_H = 300;
 
-/** Concrete clip host for window client content (Entity is abstract). */
+type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
 class ClientHost extends Entity {
   public override isPointInside(): boolean {
     return false;
@@ -38,39 +48,67 @@ class ClientHost extends Entity {
   public override render(_r: IRenderer): void {}
 }
 
+interface RestoredGeom {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /**
- * One desktop window: titlebar + client host.
+ * One desktop window — KWin-style chrome:
+ * titlebar drag, min / max / close, edge+corner resize, maximize toggle.
  *
- * Defaults to {@link Entity.a11yProjection} `'onDemand'` so background windows
- * carry zero a11y projection until focused, pointed at, or explicitly requested.
+ * Defaults to `a11yProjection: 'onDemand'` (Plasma: only the active window
+ * needs a full a11y tree).
  */
 export class DesktopWindow extends UIComponent {
   public readonly appId: string;
+  public readonly windowId: string;
   public readonly title: string;
   public readonly chrome: WindowChrome;
   public focused = false;
+  public maximized = false;
+  public minimized = false;
 
   private readonly shell: Card;
+  private readonly titlebar: Card;
   private readonly titleLabel: Text;
+  private readonly minBtn: Button;
+  private readonly maxBtn: Button;
   private readonly closeBtn: Button;
   private readonly clientHost: Entity;
   private readonly content: Entity;
   private readonly onClose: (win: DesktopWindow) => void;
   private readonly onFocus: (win: DesktopWindow) => void;
+  private readonly onStateChange?: (win: DesktopWindow) => void;
+  private readonly workArea: () => {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 
   private dragging = false;
   private dragOffsetX = 0;
   private dragOffsetY = 0;
+  private resizing: ResizeEdge | null = null;
+  private resizeStart = { x: 0, y: 0, w: 0, h: 0, px: 0, py: 0 };
+  private restored: RestoredGeom | null = null;
+
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
 
   constructor(opts: WindowOptions) {
     super();
     this.appId = opts.app.id;
+    this.windowId = opts.windowId;
     this.title = opts.title ?? opts.app.title;
     this.chrome = opts.chrome;
     this.onClose = opts.onClose;
     this.onFocus = opts.onFocus;
+    this.onStateChange = opts.onStateChange;
+    this.workArea = opts.workArea;
 
     this.width = opts.width ?? DEFAULT_W;
     this.height = opts.height ?? DEFAULT_H;
@@ -80,6 +118,10 @@ export class DesktopWindow extends UIComponent {
     this.a11yProjection = 'onDemand';
 
     const th = this.chrome.titlebarHeight;
+    const btnW = 28;
+    const btnH = 24;
+    const btnY = Math.max(4, (th - btnH) / 2);
+    const btnGap = 4;
 
     this.shell = new Card({
       width: this.width,
@@ -92,17 +134,16 @@ export class DesktopWindow extends UIComponent {
     this.shell.a11yProjection = 'onDemand';
     this.add(this.shell);
 
-    // Titlebar background strip (drawn by a child card so drag hit area is clear).
-    const titlebar = new Card({
+    this.titlebar = new Card({
       width: this.width,
       height: th,
       bg: this.chrome.titlebarBg,
       radius: 0,
       borderWidth: 0,
     });
-    titlebar.a11yProjection = 'never';
-    titlebar.interactive = false;
-    this.shell.add(titlebar);
+    this.titlebar.a11yProjection = 'never';
+    this.titlebar.interactive = false;
+    this.shell.add(this.titlebar);
 
     this.titleLabel = new Text(this.title, {
       font: '600 13px sans-serif',
@@ -114,20 +155,19 @@ export class DesktopWindow extends UIComponent {
     this.titleLabel.a11yProjection = 'onDemand';
     this.shell.add(this.titleLabel);
 
-    this.closeBtn = new Button('×', {
-      bg: this.chrome.closeBg,
-      hoverBg: this.chrome.closeBg,
-      color: this.chrome.closeFg,
-      font: '600 14px sans-serif',
-      padding: 4,
-      radius: 6,
-      width: 28,
-      height: 24,
-      onClick: () => this.onClose(this),
-    });
-    this.closeBtn.a11yProjection = 'onDemand';
-    this.closeBtn.x = this.width - 36;
-    this.closeBtn.y = Math.max(4, (th - 24) / 2);
+    // KWin order (LTR): … min | max | close
+    this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this));
+    this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize());
+    this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize());
+
+    this.closeBtn.x = this.width - btnW - 8;
+    this.closeBtn.y = btnY;
+    this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
+    this.maxBtn.y = btnY;
+    this.minBtn.x = this.maxBtn.x - btnW - btnGap;
+    this.minBtn.y = btnY;
+    this.shell.add(this.minBtn);
+    this.shell.add(this.maxBtn);
     this.shell.add(this.closeBtn);
 
     this.clientHost = new ClientHost();
@@ -139,21 +179,46 @@ export class DesktopWindow extends UIComponent {
     this.clientHost.a11yProjection = 'onDemand';
     this.shell.add(this.clientHost);
 
-    this.content = opts.app.create({
-      scene: null as unknown as Scene,
+    const ctx: AppContext = {
+      scene: opts.scene,
       appId: opts.app.id,
+      windowId: opts.windowId,
+      vfs: opts.vfs,
       close: () => this.onClose(this),
-    });
+    };
+    this.content = opts.app.create(ctx);
     this.clientHost.add(this.content);
 
     this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerEvent));
+    // Double-click titlebar maximizes (KWin default).
+    this.on('dblclick', (e: unknown) => {
+      const ev = e as PointerEvent;
+      const localY = typeof ev.offsetY === 'number' ? ev.offsetY : 0;
+      if (localY <= this.chrome.titlebarHeight) this.toggleMaximize();
+    });
 
-    this.onPointerMove = (e: PointerEvent) => this.handlePointerMove(e);
-    this.onPointerUp = (e: PointerEvent) => this.handlePointerUp(e);
+    this.onPointerMove = (e) => this.handlePointerMove(e);
+    this.onPointerUp = (e) => this.handlePointerUp(e);
   }
 
-  /** Optional hook after the window is attached to a live scene. */
-  public bindScene(_scene: Scene): void {}
+  private makeChromeBtn(label: string, aria: string, onClick: () => void): Button {
+    const b = new Button(label, {
+      bg: this.chrome.closeBg,
+      hoverBg: this.chrome.closeBg,
+      color: this.chrome.closeFg,
+      font: '600 14px sans-serif',
+      padding: 4,
+      radius: 6,
+      width: 28,
+      height: 24,
+      onClick,
+    });
+    b.a11yProjection = 'onDemand';
+    // Keep accessible name even though the glyph is symbolic.
+    const orig = b.getA11yAttributes.bind(b);
+    b.getA11yAttributes = () => ({ ...orig(), label: aria });
+    return b;
+  }
 
   public override getA11yAttributes(): A11yAttributes {
     return {
@@ -178,36 +243,228 @@ export class DesktopWindow extends UIComponent {
     return this.content;
   }
 
-  private titlebarHit(localX: number, localY: number): boolean {
+  /** KWin maximize: fill the work area; restore returns prior geometry. */
+  public maximize(): void {
+    if (this.maximized) return;
+    if (this.minimized) this.restoreFromMinimized();
+    this.restored = {
+      x: this.x,
+      y: this.y,
+      width: this.width,
+      height: this.height,
+    };
+    const area = this.workArea();
+    this.applyGeom(area.x, area.y, area.width, area.height);
+    this.maximized = true;
+    this.maxBtn.label = '❐';
+    this.notifyState();
+  }
+
+  public restore(): void {
+    if (!this.maximized || !this.restored) return;
+    const r = this.restored;
+    this.restored = null;
+    this.maximized = false;
+    this.applyGeom(r.x, r.y, r.width, r.height);
+    this.maxBtn.label = '□';
+    this.notifyState();
+  }
+
+  public toggleMaximize(): void {
+    if (this.maximized) this.restore();
+    else this.maximize();
+  }
+
+  /** Hide window (opacity 0 + non-interactive); taskbar can restore. */
+  public minimize(): void {
+    if (this.minimized) return;
+    this.minimized = true;
+    this.opacity = 0;
+    this.interactive = false;
+    this.a11yHidden = true;
+    this.scene?.markDirty();
+    this.notifyState();
+  }
+
+  public restoreFromMinimized(): void {
+    if (!this.minimized) return;
+    this.minimized = false;
+    this.opacity = 1;
+    this.interactive = true;
+    this.a11yHidden = false;
+    this.scene?.markDirty();
+    this.notifyState();
+  }
+
+  /** Programmatic move/resize (used by WM cascade and display clamp). */
+  public setGeometry(x: number, y: number, w: number, h: number): void {
+    if (this.maximized) {
+      this.restored = null;
+      this.maximized = false;
+      this.maxBtn.label = '□';
+    }
+    this.applyGeom(x, y, w, h);
+  }
+
+  private applyGeom(x: number, y: number, w: number, h: number): void {
+    const minW = this.chrome.minWidth;
+    const minH = this.chrome.minHeight;
+    this.x = x;
+    this.y = y;
+    this.width = Math.max(minW, w);
+    this.height = Math.max(minH, h);
+    this.shell.width = this.width;
+    this.shell.height = this.height;
+    this.titlebar.width = this.width;
+    this.clientHost.width = this.width;
+    this.clientHost.height = Math.max(0, this.height - this.chrome.titlebarHeight);
+
+    const btnW = 28;
+    const btnGap = 4;
+    this.closeBtn.x = this.width - btnW - 8;
+    this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
+    this.minBtn.x = this.maxBtn.x - btnW - btnGap;
+    this.scene?.markDirty();
+  }
+
+  private notifyState(): void {
+    this.onStateChange?.(this);
+  }
+
+  private chromeBtnStripWidth(): number {
+    // 3 buttons + gaps + right pad
+    return 8 + 28 * 3 + 4 * 2 + 4;
+  }
+
+  private hitResizeEdge(lx: number, ly: number): ResizeEdge | null {
+    if (this.maximized) return null;
+    const h = this.chrome.resizeHandle;
+    const nearL = lx <= h;
+    const nearR = lx >= this.width - h;
+    const nearT = ly <= h;
+    const nearB = ly >= this.height - h;
+    if (nearT && nearL) return 'nw';
+    if (nearT && nearR) return 'ne';
+    if (nearB && nearL) return 'sw';
+    if (nearB && nearR) return 'se';
+    if (nearT) return 'n';
+    if (nearB) return 's';
+    if (nearL) return 'w';
+    if (nearR) return 'e';
+    return null;
+  }
+
+  private titlebarDragHit(lx: number, ly: number): boolean {
     return (
-      localY >= 0 && localY <= this.chrome.titlebarHeight && localX >= 0 && localX < this.width - 40
+      ly >= 0 &&
+      ly <= this.chrome.titlebarHeight &&
+      lx >= 0 &&
+      lx < this.width - this.chromeBtnStripWidth()
     );
   }
 
   private handlePointerDown(e: PointerEvent): void {
     this.onFocus(this);
-    const localX = typeof e.offsetX === 'number' ? e.offsetX : 0;
-    const localY = typeof e.offsetY === 'number' ? e.offsetY : 0;
-    if (!this.titlebarHit(localX, localY)) return;
-    this.dragging = true;
-    this.dragOffsetX = (e.clientX ?? 0) - this.x;
-    this.dragOffsetY = (e.clientY ?? 0) - this.y;
-    window.addEventListener('pointermove', this.onPointerMove);
-    window.addEventListener('pointerup', this.onPointerUp);
+    if (this.minimized) return;
+    const lx = typeof e.offsetX === 'number' ? e.offsetX : 0;
+    const ly = typeof e.offsetY === 'number' ? e.offsetY : 0;
+
+    const edge = this.hitResizeEdge(lx, ly);
+    if (edge) {
+      this.resizing = edge;
+      this.resizeStart = {
+        x: this.x,
+        y: this.y,
+        w: this.width,
+        h: this.height,
+        px: e.clientX ?? 0,
+        py: e.clientY ?? 0,
+      };
+      window.addEventListener('pointermove', this.onPointerMove);
+      window.addEventListener('pointerup', this.onPointerUp);
+      return;
+    }
+
+    if (this.titlebarDragHit(lx, ly)) {
+      // Dragging a maximized window restores then drags (KWin).
+      if (this.maximized) {
+        const ratio = lx / Math.max(1, this.width);
+        this.restore();
+        this.x = (e.clientX ?? 0) - this.width * ratio;
+        this.y = (e.clientY ?? 0) - this.chrome.titlebarHeight / 2;
+      }
+      this.dragging = true;
+      this.dragOffsetX = (e.clientX ?? 0) - this.x;
+      this.dragOffsetY = (e.clientY ?? 0) - this.y;
+      window.addEventListener('pointermove', this.onPointerMove);
+      window.addEventListener('pointerup', this.onPointerUp);
+    }
   }
 
   private handlePointerMove(e: PointerEvent): void {
+    if (this.resizing) {
+      this.applyResize(e.clientX ?? 0, e.clientY ?? 0);
+      return;
+    }
     if (!this.dragging) return;
-    this.x = (e.clientX ?? 0) - this.dragOffsetX;
-    this.y = (e.clientY ?? 0) - this.dragOffsetY;
+    let nx = (e.clientX ?? 0) - this.dragOffsetX;
+    let ny = (e.clientY ?? 0) - this.dragOffsetY;
+    const area = this.workArea();
+    // Keep titlebar reachable.
+    nx = Math.min(Math.max(nx, area.x - this.width + 48), area.x + area.width - 48);
+    ny = Math.min(Math.max(ny, area.y), area.y + area.height - this.chrome.titlebarHeight);
+    this.x = nx;
+    this.y = ny;
     this.scene?.markDirty();
   }
 
+  private applyResize(clientX: number, clientY: number): void {
+    if (!this.resizing) return;
+    const dx = clientX - this.resizeStart.px;
+    const dy = clientY - this.resizeStart.py;
+    const minW = this.chrome.minWidth;
+    const minH = this.chrome.minHeight;
+    let { x, y, w, h } = {
+      x: this.resizeStart.x,
+      y: this.resizeStart.y,
+      w: this.resizeStart.w,
+      h: this.resizeStart.h,
+    };
+    const edge = this.resizing;
+    if (edge.includes('e')) w = Math.max(minW, this.resizeStart.w + dx);
+    if (edge.includes('s')) h = Math.max(minH, this.resizeStart.h + dy);
+    if (edge.includes('w')) {
+      const nw = Math.max(minW, this.resizeStart.w - dx);
+      x = this.resizeStart.x + (this.resizeStart.w - nw);
+      w = nw;
+    }
+    if (edge.includes('n')) {
+      const nh = Math.max(minH, this.resizeStart.h - dy);
+      y = this.resizeStart.y + (this.resizeStart.h - nh);
+      h = nh;
+    }
+    const area = this.workArea();
+    // Clamp into work area.
+    if (x < area.x) {
+      w -= area.x - x;
+      x = area.x;
+    }
+    if (y < area.y) {
+      h -= area.y - y;
+      y = area.y;
+    }
+    if (x + w > area.x + area.width) w = area.x + area.width - x;
+    if (y + h > area.y + area.height) h = area.y + area.height - y;
+    this.applyGeom(x, y, Math.max(minW, w), Math.max(minH, h));
+  }
+
   private handlePointerUp(_e: PointerEvent): void {
-    if (!this.dragging) return;
-    this.dragging = false;
-    window.removeEventListener('pointermove', this.onPointerMove);
-    window.removeEventListener('pointerup', this.onPointerUp);
+    if (this.dragging || this.resizing) {
+      this.dragging = false;
+      this.resizing = null;
+      window.removeEventListener('pointermove', this.onPointerMove);
+      window.removeEventListener('pointerup', this.onPointerUp);
+    }
   }
 
   public override destroy(): void {
@@ -216,7 +473,5 @@ export class DesktopWindow extends UIComponent {
     super.destroy();
   }
 
-  public override render(_r: IRenderer): void {
-    // Children paint themselves.
-  }
+  public override render(_r: IRenderer): void {}
 }
