@@ -10,7 +10,7 @@ import {
 } from '@vectojs/graph3d';
 import * as THREE from 'three';
 import { FixedZLayout } from './FixedZLayout';
-import type { KgDataSource, KgEntity, KgFact, KnowledgeGraphMode } from './types';
+import type { KgDataSource, KgEntity, KgFact, KgGraphData, KnowledgeGraphMode } from './types';
 import { pickLabel, toGraphData } from './types';
 
 export interface KnowledgeGraphSessionOptions {
@@ -86,7 +86,25 @@ export class KnowledgeGraphSession {
       domElement: options.domElement,
       mode: this.mode,
     });
-    this.layout = this.mode === '2d' ? new FixedZLayout() : new VectoForceLayout();
+    // Dense author→work bipartite neighborhoods explode under the generic
+    // VectoForceLayout defaults (repulsion 300 + high velocityDecay → NaN by
+    // ~tick 16 on a ~300-node mystery cut). 2D sessions use a calmer preset;
+    // 3D keeps the stock defaults for parity with bare graph3d demos.
+    this.layout =
+      this.mode === '2d'
+        ? new FixedZLayout({
+            z: 0,
+            // Calmer than stock VectoForceLayout: dense author→work stars
+            // otherwise expand to 1e4+ world units (and used to NaN).
+            repulsion: 25,
+            linkDistance: 28,
+            linkStrength: 0.15,
+            velocityDecay: 0.3,
+            centerStrength: 0.08,
+            alphaDecay: 0.05,
+            theta: 0.95,
+          })
+        : new VectoForceLayout();
 
     this.interaction = new GraphInteraction({
       graph: this.graph,
@@ -144,6 +162,21 @@ export class KnowledgeGraphSession {
       this.rebuildGraph();
       this.camera.fitToPositions(this.layout.positions);
     }
+  }
+
+  /**
+   * Materialise a full in-memory snapshot in one shot (demo / offline export
+   * path). Unlike {@link bootstrap}, this also ingests every fact — the lazy
+   * adapter is bypassed for edges already present in `data`.
+   */
+  loadSnapshot(data: KgGraphData): void {
+    this.assertOpen();
+    this.ingestEntities(data.entities);
+    for (const f of data.facts) this.ingestFact(f);
+    // Mark everyone expanded so a later select does not re-fetch the same hop.
+    for (const e of data.entities) this.expanded.add(e.id);
+    this.rebuildGraph();
+    this.camera.fitToPositions(this.layout.positions);
   }
 
   /** Fetch and merge one hop around `id`. */

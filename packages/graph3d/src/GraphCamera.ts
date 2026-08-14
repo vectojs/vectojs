@@ -37,7 +37,11 @@ export interface GraphCameraOptions {
   zoomSpeed?: number;
   /** Pointer pan sensitivity in world units per pixel at zoom 1. Default 1. */
   panSpeed?: number;
-  /** Min orthographic zoom (larger = closer). Default 0.05. */
+  /**
+   * Min orthographic zoom (larger = closer). Default 0.01 — low enough that
+   * `fitToPositions` can frame a force layout whose span is several thousand
+   * world units (dense bipartite cuts easily reach that).
+   */
   minZoom?: number;
   /** Max orthographic zoom. Default 20. */
   maxZoom?: number;
@@ -114,7 +118,7 @@ export class GraphCamera {
     this.orthoHalfHeight = options.orthoHalfHeight ?? 200;
     this.zoomSpeed = options.zoomSpeed ?? 0.001;
     this.panSpeed = options.panSpeed ?? 1;
-    this.minZoom = options.minZoom ?? 0.05;
+    this.minZoom = options.minZoom ?? 0.01;
     this.maxZoom = options.maxZoom ?? 20;
     this.minDistance = options.minDistance ?? 20;
     this.maxDistance = options.maxDistance ?? 4000;

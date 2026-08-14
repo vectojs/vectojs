@@ -46,6 +46,7 @@ export class FixedZLayout implements GraphLayout {
   step(iterations?: number): boolean {
     const settled = this.inner.step(iterations);
     this.flatten();
+    this.sanitize();
     return settled;
   }
 
@@ -71,5 +72,26 @@ export class FixedZLayout implements GraphLayout {
     const n = this.nodeCount;
     const z = this.z;
     for (let i = 0; i < n; i++) pos[i * 3 + 2] = z;
+  }
+
+  /**
+   * Replace non-finite x/y with a small deterministic seed and zero z-drift.
+   * Barnes-Hut + stiff springs can NaN on dense bipartite cuts; rather than
+   * blank the WebGL buffers we reseed the bad nodes so the frame stays visible.
+   */
+  private sanitize(): void {
+    const pos = this.inner.positions;
+    const n = this.nodeCount;
+    const z = this.z;
+    for (let i = 0; i < n; i++) {
+      const x = pos[i * 3]!;
+      const y = pos[i * 3 + 1]!;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        const r = 10 * Math.cbrt(i + 1);
+        pos[i * 3] = r * Math.cos(i * 2.399);
+        pos[i * 3 + 1] = r * Math.sin(i * 2.399);
+      }
+      pos[i * 3 + 2] = z;
+    }
   }
 }
