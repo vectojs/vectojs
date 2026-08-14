@@ -134,7 +134,12 @@ export class WindowManager {
       this.restack(win);
       return;
     }
-    if (this.focused) this.focused.setFocused(false);
+    if (this.focused) {
+      this.focused.setFocused(false);
+      // Drop the previous window's pinned projection so onDemand background
+      // windows do not keep a permanent a11y mirror after blur.
+      this.scene.releaseA11yProjection(this.focused);
+    }
     this.focused = win;
     win.setFocused(true);
     this.restack(win);
@@ -181,10 +186,16 @@ export class WindowManager {
   }
 
   private restack(win: DesktopWindow): void {
+    // Reorder siblings without Entity.remove() — remove() detaches a11y and
+    // unregisters drivers, which would thrash every focus change.
     const root = this.scene.overlayRoot;
-    if (!root.children.includes(win)) return;
-    root.remove(win);
-    root.add(win);
+    const kids = root.children;
+    const idx = kids.indexOf(win);
+    if (idx < 0 || idx === kids.length - 1) return;
+    kids.splice(idx, 1);
+    kids.push(win);
+    this.scene.markStructureChanged();
+    this.scene.markDirty();
   }
 
   private emit(type: 'open' | 'close' | 'focus' | 'state', window: DesktopWindow): void {

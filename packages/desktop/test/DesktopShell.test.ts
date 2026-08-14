@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
 import { Text } from '@vectojs/ui';
 import { DesktopShell, MemoryVfs, type AppDefinition } from '../src';
@@ -271,5 +271,74 @@ describe('DesktopShell + WindowManager', () => {
     expect(() => shell.open('nope')).toThrow(/unknown app/);
     shell.dispose();
     expect(() => shell.open('nope')).toThrow(/disposed/);
+  });
+});
+
+describe('review fixes (CTX-0368)', () => {
+  it('uses VectoJSEvent local/scene coords for titlebar drag (not offsetX)', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp], desktop: { taskbarHeight: 0 } },
+    });
+    shell.start();
+    const win = shell.open('about');
+    const startX = win.x;
+    const startY = win.y;
+    // Synthetic Vecto-style event: local coords in window space, scene absolute.
+    win.emit('pointerdown', {
+      localX: 20,
+      localY: 10, // inside titlebar
+      sceneX: startX + 20,
+      sceneY: startY + 10,
+      clientX: startX + 20,
+      clientY: startY + 10,
+    });
+    // Document move in client pixels (= scene when canvas origin 0 and scale 1)
+    window.dispatchEvent(
+      new PointerEvent('pointermove', {
+        clientX: startX + 20 + 40,
+        clientY: startY + 10 + 15,
+        bubbles: true,
+      }),
+    );
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    expect(win.x).toBeCloseTo(startX + 40, 0);
+    expect(win.y).toBeCloseTo(startY + 15, 0);
+    shell.dispose();
+  });
+
+  it('releases a11y projection on the previous focused window', () => {
+    const scene = makeScene();
+    const spyRelease = vi.spyOn(scene, 'releaseA11yProjection');
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp, notesApp] },
+    });
+    shell.start();
+    const a = shell.open('about');
+    const n = shell.open('notes');
+    // notes focused; switching back to about should release notes
+    spyRelease.mockClear();
+    shell.windowManager.focus(a);
+    expect(spyRelease).toHaveBeenCalledWith(n);
+    shell.dispose();
+  });
+
+  it('restack does not call Entity.remove (keeps a11y attached)', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp, notesApp] },
+    });
+    shell.start();
+    const a = shell.open('about');
+    const n = shell.open('notes');
+    const removeSpy = vi.spyOn(scene.overlayRoot, 'remove');
+    shell.windowManager.focus(a);
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(scene.overlayRoot.children.at(-1)).toBe(a);
+    expect(scene.overlayRoot.children).toContain(n);
+    shell.dispose();
   });
 });

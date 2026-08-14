@@ -41,6 +41,16 @@ const DEFAULT_H = 300;
 
 type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
+/** Subset of VectoJSEvent pointer fields used by window chrome. */
+interface PointerCoords {
+  localX?: number;
+  localY?: number;
+  sceneX?: number;
+  sceneY?: number;
+  clientX?: number;
+  clientY?: number;
+}
+
 class ClientHost extends Entity {
   public override isPointInside(): boolean {
     return false;
@@ -96,8 +106,9 @@ export class DesktopWindow extends UIComponent {
   private resizeStart = { x: 0, y: 0, w: 0, h: 0, px: 0, py: 0 };
   private restored: RestoredGeom | null = null;
 
-  private readonly onPointerMove: (e: PointerEvent) => void;
-  private readonly onPointerUp: (e: PointerEvent) => void;
+  /** Document-level drag/resize trackers (scene logical coords via clientToScene). */
+  private readonly onDocPointerMove: (e: PointerEvent) => void;
+  private readonly onDocPointerUp: (e: PointerEvent) => void;
 
   constructor(opts: WindowOptions) {
     super();
@@ -189,16 +200,25 @@ export class DesktopWindow extends UIComponent {
     this.content = opts.app.create(ctx);
     this.clientHost.add(this.content);
 
-    this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerEvent));
+    this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerCoords));
     // Double-click titlebar maximizes (KWin default).
     this.on('dblclick', (e: unknown) => {
-      const ev = e as PointerEvent;
-      const localY = typeof ev.offsetY === 'number' ? ev.offsetY : 0;
+      const ev = e as PointerCoords;
+      const localY = ev.localY ?? 0;
       if (localY <= this.chrome.titlebarHeight) this.toggleMaximize();
     });
 
-    this.onPointerMove = (e) => this.handlePointerMove(e);
-    this.onPointerUp = (e) => this.handlePointerUp(e);
+    this.onDocPointerMove = (e) => this.handleDocPointerMove(e);
+    this.onDocPointerUp = () => this.handleDocPointerUp();
+  }
+
+  /** Scene-space point from a document PointerEvent. */
+  private scenePointFromClient(clientX: number, clientY: number): { x: number; y: number } {
+    const scene = this.scene;
+    if (scene && typeof scene.clientToScene === 'function') {
+      return scene.clientToScene(clientX, clientY);
+    }
+    return { x: clientX, y: clientY };
   }
 
   private makeChromeBtn(label: string, aria: string, onClick: () => void): Button {
@@ -363,25 +383,29 @@ export class DesktopWindow extends UIComponent {
     );
   }
 
-  private handlePointerDown(e: PointerEvent): void {
+  private handlePointerDown(e: PointerCoords): void {
     this.onFocus(this);
     if (this.minimized) return;
-    const lx = typeof e.offsetX === 'number' ? e.offsetX : 0;
-    const ly = typeof e.offsetY === 'number' ? e.offsetY : 0;
+    const lx = e.localX ?? 0;
+    const ly = e.localY ?? 0;
 
     const edge = this.hitResizeEdge(lx, ly);
     if (edge) {
       this.resizing = edge;
+      const scenePt =
+        e.sceneX !== undefined && e.sceneY !== undefined
+          ? { x: e.sceneX, y: e.sceneY }
+          : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
       this.resizeStart = {
         x: this.x,
         y: this.y,
         w: this.width,
         h: this.height,
-        px: e.clientX ?? 0,
-        py: e.clientY ?? 0,
+        px: scenePt.x,
+        py: scenePt.y,
       };
-      window.addEventListener('pointermove', this.onPointerMove);
-      window.addEventListener('pointerup', this.onPointerUp);
+      window.addEventListener('pointermove', this.onDocPointerMove);
+      window.addEventListener('pointerup', this.onDocPointerUp);
       return;
     }
 
@@ -390,25 +414,34 @@ export class DesktopWindow extends UIComponent {
       if (this.maximized) {
         const ratio = lx / Math.max(1, this.width);
         this.restore();
-        this.x = (e.clientX ?? 0) - this.width * ratio;
-        this.y = (e.clientY ?? 0) - this.chrome.titlebarHeight / 2;
+        const scenePt =
+          e.sceneX !== undefined && e.sceneY !== undefined
+            ? { x: e.sceneX, y: e.sceneY }
+            : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
+        this.x = scenePt.x - this.width * ratio;
+        this.y = scenePt.y - this.chrome.titlebarHeight / 2;
       }
       this.dragging = true;
-      this.dragOffsetX = (e.clientX ?? 0) - this.x;
-      this.dragOffsetY = (e.clientY ?? 0) - this.y;
-      window.addEventListener('pointermove', this.onPointerMove);
-      window.addEventListener('pointerup', this.onPointerUp);
+      const scenePt =
+        e.sceneX !== undefined && e.sceneY !== undefined
+          ? { x: e.sceneX, y: e.sceneY }
+          : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
+      this.dragOffsetX = scenePt.x - this.x;
+      this.dragOffsetY = scenePt.y - this.y;
+      window.addEventListener('pointermove', this.onDocPointerMove);
+      window.addEventListener('pointerup', this.onDocPointerUp);
     }
   }
 
-  private handlePointerMove(e: PointerEvent): void {
+  private handleDocPointerMove(e: PointerEvent): void {
+    const scenePt = this.scenePointFromClient(e.clientX, e.clientY);
     if (this.resizing) {
-      this.applyResize(e.clientX ?? 0, e.clientY ?? 0);
+      this.applyResize(scenePt.x, scenePt.y);
       return;
     }
     if (!this.dragging) return;
-    let nx = (e.clientX ?? 0) - this.dragOffsetX;
-    let ny = (e.clientY ?? 0) - this.dragOffsetY;
+    let nx = scenePt.x - this.dragOffsetX;
+    let ny = scenePt.y - this.dragOffsetY;
     const area = this.workArea();
     // Keep titlebar reachable.
     nx = Math.min(Math.max(nx, area.x - this.width + 48), area.x + area.width - 48);
@@ -418,10 +451,10 @@ export class DesktopWindow extends UIComponent {
     this.scene?.markDirty();
   }
 
-  private applyResize(clientX: number, clientY: number): void {
+  private applyResize(sceneX: number, sceneY: number): void {
     if (!this.resizing) return;
-    const dx = clientX - this.resizeStart.px;
-    const dy = clientY - this.resizeStart.py;
+    const dx = sceneX - this.resizeStart.px;
+    const dy = sceneY - this.resizeStart.py;
     const minW = this.chrome.minWidth;
     const minH = this.chrome.minHeight;
     let { x, y, w, h } = {
@@ -458,18 +491,18 @@ export class DesktopWindow extends UIComponent {
     this.applyGeom(x, y, Math.max(minW, w), Math.max(minH, h));
   }
 
-  private handlePointerUp(_e: PointerEvent): void {
+  private handleDocPointerUp(): void {
     if (this.dragging || this.resizing) {
       this.dragging = false;
       this.resizing = null;
-      window.removeEventListener('pointermove', this.onPointerMove);
-      window.removeEventListener('pointerup', this.onPointerUp);
+      window.removeEventListener('pointermove', this.onDocPointerMove);
+      window.removeEventListener('pointerup', this.onDocPointerUp);
     }
   }
 
   public override destroy(): void {
-    window.removeEventListener('pointermove', this.onPointerMove);
-    window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointermove', this.onDocPointerMove);
+    window.removeEventListener('pointerup', this.onDocPointerUp);
     super.destroy();
   }
 
