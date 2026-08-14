@@ -95,9 +95,9 @@ export class WindowManager {
 
     const displayId = opts.displayId ?? this.layout.primary().id;
     const area = this.layout.workArea(displayId);
-    const offset = (this.cascade++ % 8) * 24;
-    const width = opts.width ?? 420;
-    const height = opts.height ?? 300;
+    const offset = (this.cascade++ % 8) * 28;
+    const width = opts.width ?? app.defaultWidth ?? 480;
+    const height = opts.height ?? app.defaultHeight ?? 340;
     const x = opts.x ?? area.x + 64 + offset;
     const y = opts.y ?? area.y + 64 + offset;
     const clamped = this.layout.clampRect(x, y, width, height, displayId);

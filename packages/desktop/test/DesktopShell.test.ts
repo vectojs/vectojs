@@ -285,16 +285,17 @@ describe('review fixes (CTX-0368)', () => {
     const win = shell.open('about');
     const startX = win.x;
     const startY = win.y;
-    // Synthetic Vecto-style event: local coords in window space, scene absolute.
-    win.emit('pointerdown', {
+    // Drag is owned by the titlebar handle entity (not the window root).
+    const handle = (win as unknown as { dragHandle: { emit: (t: string, e: object) => void } })
+      .dragHandle;
+    handle.emit('pointerdown', {
       localX: 20,
-      localY: 10, // inside titlebar
+      localY: 10,
       sceneX: startX + 20,
       sceneY: startY + 10,
       clientX: startX + 20,
       clientY: startY + 10,
     });
-    // Document move in client pixels (= scene when canvas origin 0 and scale 1)
     window.dispatchEvent(
       new PointerEvent('pointermove', {
         clientX: startX + 20 + 40,
@@ -351,7 +352,9 @@ describe('review fixes (CTX-0368)', () => {
     shell.start();
     const win = shell.open('about');
     const startX = win.x;
-    win.emit('pointerdown', {
+    const handle = (win as unknown as { dragHandle: { emit: (t: string, e: object) => void } })
+      .dragHandle;
+    handle.emit('pointerdown', {
       localX: 20,
       localY: 10,
       sceneX: startX + 20,
@@ -378,6 +381,38 @@ describe('review fixes (CTX-0368)', () => {
       }),
     );
     expect(win.x).toBe(mid);
+    shell.dispose();
+  });
+
+  it('titlebar drag ignores pointerdown that targeted chrome buttons', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp], desktop: { taskbarHeight: 0 } },
+    });
+    shell.start();
+    const win = shell.open('about');
+    const x0 = win.x;
+    // Access private closeBtn via bracket for the regression.
+    const close = (win as unknown as { closeBtn: object }).closeBtn;
+    win.emit('pointerdown', {
+      target: close,
+      localX: win.width - 20,
+      localY: 10,
+      sceneX: win.x + win.width - 20,
+      sceneY: win.y + 10,
+      clientX: win.x + win.width - 20,
+      clientY: win.y + 10,
+    });
+    window.dispatchEvent(
+      new PointerEvent('pointermove', {
+        clientX: win.x + 200,
+        clientY: win.y + 100,
+        bubbles: true,
+      }),
+    );
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    expect(win.x).toBe(x0);
     shell.dispose();
   });
 });

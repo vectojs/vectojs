@@ -57,7 +57,7 @@ export class Taskbar extends UIComponent {
     this.x = 0;
     this.y = opts.y;
     this.interactive = true;
-    this.a11yProjection = 'onDemand';
+    this.a11yProjection = 'eager';
 
     this.bar = new Card({
       width: this.width,
@@ -65,23 +65,23 @@ export class Taskbar extends UIComponent {
       bg: this.chrome.bg,
       radius: 0,
       borderWidth: 0,
-      label: 'Taskbar',
     });
-    this.bar.a11yProjection = 'onDemand';
+    this.bar.getA11yAttributes = () => ({ pointerEvents: 'none' });
+    this.bar.a11yProjection = 'never';
     this.add(this.bar);
 
-    this.startBtn = new Button('☰', {
+    this.startBtn = new Button('Start', {
       bg: this.chrome.active,
       hoverBg: this.chrome.hover,
       color: this.chrome.fg,
       font: '600 14px sans-serif',
       padding: 6,
       radius: 6,
-      width: 40,
+      width: 54,
       height: Math.max(28, this.height - 8),
       onClick: () => this.onToggleStart(),
     });
-    this.startBtn.a11yProjection = 'onDemand';
+    this.startBtn.a11yProjection = 'eager';
     this.startBtn.x = 8;
     this.startBtn.y = (this.height - this.startBtn.height) / 2;
     const startA11y = this.startBtn.getA11yAttributes.bind(this.startBtn);
@@ -92,11 +92,11 @@ export class Taskbar extends UIComponent {
     this.bar.add(this.startBtn);
 
     this.entriesHost = new EntriesHost();
-    this.entriesHost.x = 56;
+    this.entriesHost.x = 70;
     this.entriesHost.y = 0;
-    this.entriesHost.width = Math.max(0, this.width - 64);
+    this.entriesHost.width = Math.max(0, this.width - 78);
     this.entriesHost.height = this.height;
-    this.entriesHost.a11yProjection = 'onDemand';
+    this.entriesHost.a11yProjection = 'never';
     this.bar.add(this.entriesHost);
 
     this.unsub = this.wm.on(() => this.rebuild());
@@ -104,14 +104,16 @@ export class Taskbar extends UIComponent {
   }
 
   public override getA11yAttributes(): A11yAttributes {
-    return { role: 'toolbar', label: 'Taskbar' };
+    // Structural only — full-bar auto mirror would steal clicks from Start /
+    // task buttons and force cursor:pointer across empty taskbar chrome.
+    return { role: 'toolbar', label: 'Taskbar', pointerEvents: 'none' };
   }
 
   public setGeometry(width: number, y: number): void {
     this.width = width;
     this.y = y;
     this.bar.width = width;
-    this.entriesHost.width = Math.max(0, width - 64);
+    this.entriesHost.width = Math.max(0, width - 78);
     this.rebuild();
   }
 
@@ -144,7 +146,7 @@ export class Taskbar extends UIComponent {
         height: btnH,
         onClick: () => this.onEntryClick(win),
       });
-      btn.a11yProjection = 'onDemand';
+      btn.a11yProjection = 'eager';
       btn.width = Math.min(maxW, Math.max(72, btn.width));
       btn.x = x;
       btn.y = btnY;

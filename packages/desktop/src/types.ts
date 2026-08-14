@@ -21,9 +21,14 @@ export interface AppDefinition {
    * existing window. `'multiple'` always spawns a new window.
    */
   instances?: WindowInstancePolicy;
+  /** Preferred outer window width (chrome included). */
+  defaultWidth?: number;
+  /** Preferred outer window height (chrome included). */
+  defaultHeight?: number;
   /**
    * Build the window client content. Called once per open; the returned entity
    * is parented under the window client area and destroyed with the window.
+   * The shell sets `content.width`/`height` to the client box on open and resize.
    */
   create: (ctx: AppContext) => Entity;
 }

@@ -50,7 +50,7 @@ export class StartMenu extends UIComponent {
     this.x = opts.x;
     this.y = opts.y;
     this.interactive = true;
-    this.a11yProjection = 'onDemand';
+    this.a11yProjection = 'eager';
 
     this.panel = new Card({
       width,
@@ -58,9 +58,10 @@ export class StartMenu extends UIComponent {
       bg: this.chrome.bg,
       border: this.chrome.border,
       radius: this.chrome.radius,
-      label: 'Start menu',
     });
-    this.panel.a11yProjection = 'onDemand';
+    this.panel.interactive = false;
+    this.panel.a11yProjection = 'never';
+    this.panel.getA11yAttributes = () => ({ pointerEvents: 'none' });
     this.add(this.panel);
 
     const header = new Text('Applications', {
@@ -70,7 +71,8 @@ export class StartMenu extends UIComponent {
     });
     header.x = pad;
     header.y = 10;
-    header.a11yProjection = 'onDemand';
+    header.a11yProjection = 'never';
+    header.interactive = false;
     this.panel.add(header);
 
     let y = headerH;
@@ -90,7 +92,7 @@ export class StartMenu extends UIComponent {
           this.onClose();
         },
       });
-      btn.a11yProjection = 'onDemand';
+      btn.a11yProjection = 'eager';
       btn.x = pad;
       btn.y = y;
       this.panel.add(btn);
@@ -100,7 +102,7 @@ export class StartMenu extends UIComponent {
   }
 
   public override getA11yAttributes(): A11yAttributes {
-    return { role: 'menu', label: 'Start menu' };
+    return { role: 'menu', label: 'Start menu', pointerEvents: 'none' };
   }
 
   public override render(_r: IRenderer): void {}
