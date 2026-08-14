@@ -1,5 +1,15 @@
 # @vectojs/graph3d
 
+## 0.4.0
+
+### Minor Changes
+
+- 1bfc6fc: add GraphCamera (2D orthographic pan/zoom + 3D perspective orbit) for hosts that do not bring their own Three.js controls
+
+### Patch Changes
+
+- dd40f36: fix code-review findings: live camera getter + setCamera/setNodeCount on GraphInteraction; disable pan on node press; fitToPositions ignores non-finite points; knowledge-graph tick returns settled; expand warm-starts positions; MemoryDataSource/FixedZLayout stop mutating caller data; dispose clears all tables
+
 ## 0.3.2
 
 ### Patch Changes
