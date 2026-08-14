@@ -37,12 +37,12 @@ describe('FixedZLayout', () => {
     };
     const layout = new FixedZLayout({
       z: 0,
-      repulsion: 25,
-      linkDistance: 28,
-      linkStrength: 0.15,
-      velocityDecay: 0.3,
-      centerStrength: 0.08,
-      alphaDecay: 0.05,
+      repulsion: 120,
+      linkDistance: 55,
+      linkStrength: 0.12,
+      velocityDecay: 0.4,
+      centerStrength: 0.015,
+      alphaDecay: 0.028,
     });
     layout.setGraph(data);
     for (let i = 0; i < 120; i++) layout.step();

@@ -30,6 +30,8 @@ export interface KnowledgeGraphSessionOptions {
   cameraOptions?: Omit<GraphCameraOptions, 'domElement' | 'mode'>;
   /** Called when the user selects a node (or deselects with `null`). */
   onSelect?: (entity: KgEntity | null) => void;
+  /** Called when the hovered node changes (or clears, with `null`). */
+  onHover?: (entity: KgEntity | null) => void;
   /** Called after each successful expand. */
   onExpand?: (entity: KgEntity, added: number) => void;
   /**
@@ -60,6 +62,7 @@ export class KnowledgeGraphSession {
   private readonly lang: string;
   private readonly expandOnSelect: boolean;
   private readonly onSelectCb?: (entity: KgEntity | null) => void;
+  private readonly onHoverCb?: (entity: KgEntity | null) => void;
   private readonly onExpandCb?: (entity: KgEntity, added: number) => void;
 
   private readonly entities = new Map<NodeId, KgEntity>();
@@ -77,6 +80,7 @@ export class KnowledgeGraphSession {
     this.lang = options.lang ?? 'en';
     this.expandOnSelect = options.expandOnSelect ?? true;
     this.onSelectCb = options.onSelect;
+    this.onHoverCb = options.onHover;
     this.onExpandCb = options.onExpand;
     this.mode = options.mode ?? '2d';
 
@@ -94,15 +98,16 @@ export class KnowledgeGraphSession {
       this.mode === '2d'
         ? new FixedZLayout({
             z: 0,
-            // Calmer than stock VectoForceLayout: dense author→work stars
-            // otherwise expand to 1e4+ world units (and used to NaN).
-            repulsion: 25,
-            linkDistance: 28,
-            linkStrength: 0.15,
-            velocityDecay: 0.3,
-            centerStrength: 0.08,
-            alphaDecay: 0.05,
-            theta: 0.95,
+            // Obsidian-like 2D graph: push clusters apart without the old
+            // NaN blow-up (stock repulsion 300 + high decay). Link rest length
+            // keeps sibling works from stacking on the author.
+            repulsion: 120,
+            linkDistance: 55,
+            linkStrength: 0.12,
+            velocityDecay: 0.4,
+            centerStrength: 0.015,
+            alphaDecay: 0.028,
+            theta: 0.9,
           })
         : new VectoForceLayout();
 
@@ -114,6 +119,9 @@ export class KnowledgeGraphSession {
       setControlsEnabled: (on) => this.camera.setEnabled(on),
       onSelect: (index) => {
         void this.handleSelect(index);
+      },
+      onHover: (index) => {
+        this.handleHover(index);
       },
     });
 
@@ -280,18 +288,19 @@ export class KnowledgeGraphSession {
     this.graph.applyPositions(this.layout.positions);
   }
 
+  private entityAt(index: number | null): KgEntity | null {
+    if (index == null) return null;
+    return [...this.entities.values()][index] ?? null;
+  }
+
+  private handleHover(index: number | null): void {
+    this.onHoverCb?.(this.entityAt(index));
+  }
+
   private async handleSelect(index: number | null): Promise<void> {
-    if (index == null) {
-      this.onSelectCb?.(null);
-      return;
-    }
-    const entity = [...this.entities.values()][index];
-    if (!entity) {
-      this.onSelectCb?.(null);
-      return;
-    }
+    const entity = this.entityAt(index);
     this.onSelectCb?.(entity);
-    if (this.expandOnSelect && !this.expanded.has(entity.id)) {
+    if (entity && this.expandOnSelect && !this.expanded.has(entity.id)) {
       await this.expand(entity.id);
     }
   }

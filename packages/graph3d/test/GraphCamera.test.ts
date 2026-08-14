@@ -60,9 +60,44 @@ describe('GraphCamera', () => {
     const o = cam.camera as THREE.OrthographicCamera;
     const z0 = o.zoom;
     const wheel = new Event('wheel', { bubbles: true }) as WheelEvent;
-    Object.assign(wheel, { deltaY: -120, preventDefault: vi.fn() });
+    Object.assign(wheel, {
+      deltaY: -120,
+      clientX: 200,
+      clientY: 150,
+      preventDefault: vi.fn(),
+    });
     (cam['domElement'] as HTMLElement).dispatchEvent(wheel);
     expect(o.zoom).toBeGreaterThan(z0);
+    cam.dispose();
+  });
+
+  it('does not bake zoom into the ortho frustum (no double-zoom)', () => {
+    // Regression: setSize used to divide left/right/top/bottom by zoom while
+    // Three also divides by camera.zoom → visible extent ∝ 1/zoom² and the
+    // graph vanished after a few wheel steps.
+    const cam = new GraphCamera({
+      domElement: makeDom(400, 300),
+      width: 400,
+      height: 300,
+      orthoHalfHeight: 200,
+    });
+    const o = cam.camera as THREE.OrthographicCamera;
+    const baseHalfW = o.right; // unzoomed
+    const wheel = new Event('wheel', { bubbles: true }) as WheelEvent;
+    Object.assign(wheel, {
+      deltaY: -400,
+      clientX: 200,
+      clientY: 150,
+      preventDefault: vi.fn(),
+    });
+    (cam['domElement'] as HTMLElement).dispatchEvent(wheel);
+    // Frustum edges stay at the base half-extent; only camera.zoom changes.
+    expect(o.right).toBeCloseTo(baseHalfW, 5);
+    expect(o.top).toBeCloseTo(200, 5);
+    expect(o.zoom).toBeGreaterThan(1);
+    // Effective visible half-height is base/zoom, not base/zoom².
+    const visibleHalfH = o.top / o.zoom;
+    expect(visibleHalfH).toBeCloseTo(200 / o.zoom, 5);
     cam.dispose();
   });
 

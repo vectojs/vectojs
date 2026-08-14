@@ -188,12 +188,20 @@ export class GraphCamera {
     return this.enabled;
   }
 
-  /** Resize the camera frustum to a new canvas size (CSS px). */
+  /**
+   * Resize the camera frustum to a new canvas size (CSS px).
+   *
+   * Orthographic left/right/top/bottom stay at the **unzoomed** half-extents;
+   * zoom is applied only via `camera.zoom` inside Three's projection matrix.
+   * Baking zoom into the frustum *and* setting `camera.zoom` double-applied
+   * every wheel step (visible extent ∝ 1/zoom²), which snapped the graph out
+   * of view and looked like "nodes disappear on zoom".
+   */
   setSize(width: number, height: number): void {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
     const aspect = this.width / this.height;
-    const halfH = this.orthoHalfHeight / this.ortho.zoom;
+    const halfH = this.orthoHalfHeight;
     const halfW = halfH * aspect;
     this.ortho.left = -halfW;
     this.ortho.right = halfW;
@@ -337,10 +345,32 @@ export class GraphCamera {
     if (!this.enabled) return;
     e.preventDefault();
     if (this.mode === '2d') {
+      const prevZoom = this.ortho.zoom;
       const factor = Math.exp(-e.deltaY * this.zoomSpeed);
-      const next = Math.min(this.maxZoom, Math.max(this.minZoom, this.ortho.zoom * factor));
+      const next = Math.min(this.maxZoom, Math.max(this.minZoom, prevZoom * factor));
+      if (next === prevZoom) return;
+      // Zoom about the cursor: keep the world point under the pointer fixed.
+      const rect = this.domElement.getBoundingClientRect();
+      const ndcX = ((e.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+      const ndcY = -(((e.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+      const aspect = this.width / this.height;
+      const halfH0 = this.orthoHalfHeight / prevZoom;
+      const halfW0 = halfH0 * aspect;
+      const worldX = this.target.x + ndcX * halfW0;
+      const worldY = this.target.y + ndcY * halfH0;
       this.ortho.zoom = next;
-      this.setSize(this.width, this.height);
+      this.ortho.updateProjectionMatrix();
+      const halfH1 = this.orthoHalfHeight / next;
+      const halfW1 = halfH1 * aspect;
+      const newTx = worldX - ndcX * halfW1;
+      const newTy = worldY - ndcY * halfH1;
+      const ddx = newTx - this.target.x;
+      const ddy = newTy - this.target.y;
+      this.target.x = newTx;
+      this.target.y = newTy;
+      this.ortho.position.x += ddx;
+      this.ortho.position.y += ddy;
+      this.ortho.lookAt(this.target);
     } else {
       const factor = Math.exp(e.deltaY * this.zoomSpeed);
       this.spherical.radius = Math.min(
@@ -353,7 +383,8 @@ export class GraphCamera {
 
   private pan(dx: number, dy: number): void {
     if (this.mode === '2d') {
-      // Screen +x → world +x, screen +y → world −y; scale by current frustum.
+      // Screen +x → world −x (content follows the hand); scale by the
+      // *visible* frustum (= base half-extent / zoom).
       const halfH = this.orthoHalfHeight / this.ortho.zoom;
       const halfW = halfH * (this.width / this.height);
       const worldDx = (-dx / this.width) * halfW * 2 * this.panSpeed;
