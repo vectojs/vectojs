@@ -1,0 +1,53 @@
+{
+  "name": "@vectojs/desktop",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "WebOS desktop shell for VectoJS: WindowManager, AppRegistry, config-first desktop on one Scene.",
+  "keywords": [
+    "desktop",
+    "webos",
+    "window-manager",
+    "vectojs",
+    "canvas"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/desktop"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../core && bun run build) && (cd ../ui && bun run build) && (cd ../styles && bun run build) && tsup src/index.ts --format cjs,esm --external @vectojs/core --external @vectojs/ui --external @vectojs/styles --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vectojs/core": "workspace:*",
+    "@vectojs/styles": "workspace:*",
+    "@vectojs/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}
