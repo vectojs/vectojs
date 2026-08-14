@@ -102,7 +102,7 @@ export class StartMenu extends UIComponent {
   }
 
   public override getA11yAttributes(): A11yAttributes {
-    return { role: 'menu', label: 'Start menu' };
+    return { role: 'menu', label: 'Start menu', pointerEvents: 'none' };
   }
 
   public override render(_r: IRenderer): void {}

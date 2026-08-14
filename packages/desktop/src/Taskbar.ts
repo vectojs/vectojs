@@ -104,7 +104,9 @@ export class Taskbar extends UIComponent {
   }
 
   public override getA11yAttributes(): A11yAttributes {
-    return { role: 'toolbar', label: 'Taskbar' };
+    // Structural only — full-bar auto mirror would steal clicks from Start /
+    // task buttons and force cursor:pointer across empty taskbar chrome.
+    return { role: 'toolbar', label: 'Taskbar', pointerEvents: 'none' };
   }
 
   public setGeometry(width: number, y: number): void {
