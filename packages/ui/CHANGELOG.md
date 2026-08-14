@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 2.16.7
+
+### Patch Changes
+
+- a5315da: Desktop review (CTX-0368): VectoJSEvent local/scene coords for window chrome; restack without Entity.remove; release a11y on blur; start-menu height; syncLayoutToScene; pointercancel ends drag. Button.setLabel remeasures content-driven width.
+
 ## 2.16.6
 
 ### Patch Changes
