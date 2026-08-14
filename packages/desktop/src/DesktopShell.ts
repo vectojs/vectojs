@@ -85,6 +85,7 @@ export class DesktopShell {
   private disposed = false;
   private readonly onCustomShortcut?: (id: string, chord: string) => void;
   private readonly onDocPointerDown: (e: PointerEvent) => void;
+  private readonly onDocKeyDown: (e: KeyboardEvent) => void;
 
   constructor(opts: DesktopShellOptions) {
     this.scene = opts.scene;
@@ -125,6 +126,11 @@ export class DesktopShell {
     this.shortcuts.setHandler((action, chord) => this.dispatchShortcut(action, chord));
 
     this.onDocPointerDown = (e) => this.handleOutsidePointer(e);
+    this.onDocKeyDown = (e) => {
+      if (e.key === 'Escape' && this.startMenu) {
+        this.closeStartMenu();
+      }
+    };
   }
 
   /** Mount wallpaper, taskbar, shortcuts. Idempotent. */
@@ -137,6 +143,7 @@ export class DesktopShell {
     this.shortcuts.attach();
     if (typeof document !== 'undefined') {
       document.addEventListener('pointerdown', this.onDocPointerDown, true);
+      document.addEventListener('keydown', this.onDocKeyDown, true);
     }
     this.started = true;
     this.scene.markDirty();
@@ -181,6 +188,7 @@ export class DesktopShell {
     this.shortcuts.detach();
     if (typeof document !== 'undefined') {
       document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+      document.removeEventListener('keydown', this.onDocKeyDown, true);
     }
     this.closeStartMenu();
     this.windowManager.closeAll();
@@ -291,18 +299,17 @@ export class DesktopShell {
     if (!this.startMenu) return;
     // Close Kickoff when pressing outside the menu entity's box.
     const menu = this.startMenu;
-    const cx = e.clientX ?? 0;
-    const cy = e.clientY ?? 0;
-    // Approximate: canvas may be offset; use scene-local if available.
-    const canvas = this.scene.canvas;
-    const rect = canvas?.getBoundingClientRect?.();
-    const lx = rect ? ((cx - rect.left) / rect.width) * (this.scene.width || rect.width) : cx;
-    const ly = rect ? ((cy - rect.top) / rect.height) * (this.scene.height || rect.height) : cy;
+    const pt =
+      typeof this.scene.clientToScene === 'function'
+        ? this.scene.clientToScene(e.clientX ?? 0, e.clientY ?? 0)
+        : { x: e.clientX ?? 0, y: e.clientY ?? 0 };
+    const lx = pt.x;
+    const ly = pt.y;
     if (lx < menu.x || lx > menu.x + menu.width || ly < menu.y || ly > menu.y + menu.height) {
       // Don't close when pressing the start button (toggle handles it).
       if (this.taskbar) {
         const tb = this.taskbar;
-        if (lx >= tb.x && lx <= tb.x + 56 && ly >= tb.y && ly <= tb.y + tb.height) {
+        if (lx >= tb.x && lx <= tb.x + 64 && ly >= tb.y && ly <= tb.y + tb.height) {
           return;
         }
       }

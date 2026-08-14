@@ -310,7 +310,11 @@ export class DesktopWindow extends UIComponent {
   }
 
   public maximize(): void {
-    if (this.maximized) return;
+    if (this.maximized) {
+      const area = this.workArea();
+      this.applyGeom(area.x, area.y, area.width, area.height);
+      return;
+    }
     if (this.minimized) this.restoreFromMinimized();
     this.restored = {
       x: this.x,

@@ -415,4 +415,72 @@ describe('review fixes (CTX-0368)', () => {
     expect(win.x).toBe(x0);
     shell.dispose();
   });
+
+  it('transfers focus to next topmost visible window when focused window is minimized', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp, notesApp] },
+    });
+    shell.start();
+    const a = shell.open('about');
+    const n = shell.open('notes');
+    expect(shell.windowManager.focusedWindow).toBe(n);
+
+    // Minimize notes -> focus transfers to about
+    n.minimize();
+    expect(shell.windowManager.focusedWindow).toBe(a);
+    expect(a.focused).toBe(true);
+    expect(n.focused).toBe(false);
+
+    // closeFocused closes 'about', not the invisible 'notes'
+    shell.windowManager.closeFocused();
+    expect(shell.windowManager.list()).toEqual([n]);
+    expect(shell.windowManager.focusedWindow).toBeNull();
+    shell.dispose();
+  });
+
+  it('re-fills work area when maximize is called on an already-maximized window', () => {
+    const scene = makeScene(800, 600);
+    const shell = new DesktopShell({
+      scene,
+      config: {
+        apps: [aboutApp],
+        desktop: { taskbarHeight: 40, taskbarPosition: 'bottom' },
+      },
+    });
+    shell.start();
+    const win = shell.open('about');
+    win.maximize();
+    expect(win.width).toBe(800);
+    expect(win.height).toBe(560);
+
+    // Simulate display work area resize
+    scene.resize(1200, 900);
+    shell.syncLayoutToScene();
+    win.maximize();
+    expect(win.width).toBe(1200);
+    expect(win.height).toBe(860);
+
+    // Restoring returns to initial geometry before first maximize
+    win.restore();
+    expect(win.maximized).toBe(false);
+    expect(win.width).toBe(480);
+    shell.dispose();
+  });
+
+  it('dismisses start menu on Escape key', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp] },
+    });
+    shell.start();
+    shell.toggleStartMenu();
+    expect(scene.overlayRoot.children.length).toBeGreaterThan(0);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(scene.overlayRoot.children.length).toBe(0);
+    shell.dispose();
+  });
 });
