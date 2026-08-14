@@ -130,6 +130,8 @@ export const DEFAULT_DESKTOP_TOKENS: DesktopThemeTokens = {
   'desktop-taskbar-active': '#1d4ed8',
   'desktop-start-bg': '#1e293b',
   'desktop-start-border': '#334155',
+  'desktop-start-fg': '#e2e8f0',
+  'desktop-start-hover': '#334155',
   'desktop-resize-handle': 6,
   'desktop-min-width': 200,
   'desktop-min-height': 120,
