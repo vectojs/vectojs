@@ -36,8 +36,8 @@ export interface WindowOptions {
   onStateChange?: (win: DesktopWindow) => void;
 }
 
-const DEFAULT_W = 420;
-const DEFAULT_H = 300;
+const DEFAULT_W = 480;
+const DEFAULT_H = 340;
 
 type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
@@ -49,6 +49,8 @@ interface PointerCoords {
   sceneY?: number;
   clientX?: number;
   clientY?: number;
+  target?: Entity;
+  stopPropagation?: () => void;
 }
 
 class ClientHost extends Entity {
@@ -66,11 +68,11 @@ interface RestoredGeom {
 }
 
 /**
- * One desktop window — KWin-style chrome:
+ * One desktop window — KWin/Aero-style chrome:
  * titlebar drag, min / max / close, edge+corner resize, maximize toggle.
  *
- * Defaults to `a11yProjection: 'onDemand'` (Plasma: only the active window
- * needs a full a11y tree).
+ * Defaults to `a11yProjection: 'onDemand'`. The frame Card is non-interactive
+ * so it never steals titlebar or client hits.
  */
 export class DesktopWindow extends UIComponent {
   public readonly appId: string;
@@ -106,7 +108,6 @@ export class DesktopWindow extends UIComponent {
   private resizeStart = { x: 0, y: 0, w: 0, h: 0, px: 0, py: 0 };
   private restored: RestoredGeom | null = null;
 
-  /** Document-level drag/resize trackers (scene logical coords via clientToScene). */
   private readonly onDocPointerMove: (e: PointerEvent) => void;
   private readonly onDocPointerUp: (e: PointerEvent) => void;
 
@@ -134,8 +135,8 @@ export class DesktopWindow extends UIComponent {
     const btnY = Math.max(4, (th - btnH) / 2);
     const btnGap = 4;
 
-    // Frame only — must NOT set `label` (that would make Card interactive and
-    // steal titlebar/client hits via its own a11y mirror).
+    // Frame only — never set `label` (labeled Cards become interactive and
+    // steal the whole window's hit target).
     this.shell = new Card({
       width: this.width,
       height: this.height,
@@ -148,8 +149,8 @@ export class DesktopWindow extends UIComponent {
     this.shell.getA11yAttributes = () => ({ pointerEvents: 'none' });
     this.add(this.shell);
 
-    // Titlebar is visual only; drag is handled on DesktopWindow so localX/Y
-    // stay in window space (not titlebar-local).
+    // Visual titlebar strip; drag is handled on DesktopWindow so localX/Y
+    // stay in window coordinates.
     this.titlebar = new Card({
       width: this.width,
       height: th,
@@ -173,7 +174,6 @@ export class DesktopWindow extends UIComponent {
     this.titleLabel.a11yProjection = 'never';
     this.shell.add(this.titleLabel);
 
-    // KWin order (LTR): … min | max | close
     this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this), true);
     this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize(), false);
     this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize(), false);
@@ -210,7 +210,6 @@ export class DesktopWindow extends UIComponent {
     this.layoutClientContent();
 
     this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerCoords));
-    // Double-click titlebar maximizes (KWin default).
     this.on('dblclick', (e: unknown) => {
       const ev = e as PointerCoords;
       const localY = ev.localY ?? 0;
@@ -221,7 +220,6 @@ export class DesktopWindow extends UIComponent {
     this.onDocPointerUp = () => this.handleDocPointerUp();
   }
 
-  /** Scene-space point from a document PointerEvent. */
   private scenePointFromClient(clientX: number, clientY: number): { x: number; y: number } {
     const scene = this.scene;
     if (scene && typeof scene.clientToScene === 'function') {
@@ -230,7 +228,7 @@ export class DesktopWindow extends UIComponent {
     return { x: clientX, y: clientY };
   }
 
-  private makeChromeBtn(label: string, aria: string, onClick: () => void, danger = false): Button {
+  private makeChromeBtn(label: string, aria: string, onClick: () => void, danger: boolean): Button {
     const bg = danger ? this.chrome.closeBg : this.chrome.titlebarBg;
     const fg = danger ? this.chrome.closeFg : this.chrome.titlebarFg;
     const b = new Button(label, {
@@ -244,14 +242,11 @@ export class DesktopWindow extends UIComponent {
       height: 24,
       onClick,
     });
-    // Keep chrome controls above pointer-transparent frame children.
-    b.pointerEvents = 'auto';
     b.a11yProjection = 'onDemand';
-    // Keep accessible name even though the glyph is symbolic.
     const orig = b.getA11yAttributes.bind(b);
     b.getA11yAttributes = () => ({ ...orig(), label: aria });
-    // Prevent titlebar-drag handler on the window from seeing this press.
-    b.on('pointerdown', (ev: { stopPropagation?: () => void }) => {
+    // Stop the window titlebar-drag handler from seeing this press.
+    b.on('pointerdown', (ev: PointerCoords) => {
       ev.stopPropagation?.();
     });
     return b;
@@ -280,7 +275,6 @@ export class DesktopWindow extends UIComponent {
     return this.content;
   }
 
-  /** KWin maximize: fill the work area; restore returns prior geometry. */
   public maximize(): void {
     if (this.maximized) return;
     if (this.minimized) this.restoreFromMinimized();
@@ -312,7 +306,6 @@ export class DesktopWindow extends UIComponent {
     else this.maximize();
   }
 
-  /** Hide window (opacity 0 + non-interactive); taskbar can restore. */
   public minimize(): void {
     if (this.minimized) return;
     this.minimized = true;
@@ -333,7 +326,6 @@ export class DesktopWindow extends UIComponent {
     this.notifyState();
   }
 
-  /** Programmatic move/resize (used by WM cascade and display clamp). */
   public setGeometry(x: number, y: number, w: number, h: number): void {
     if (this.maximized) {
       this.restored = null;
@@ -377,7 +369,6 @@ export class DesktopWindow extends UIComponent {
   }
 
   private chromeBtnStripWidth(): number {
-    // 3 buttons + gaps + right pad
     return 8 + 28 * 3 + 4 * 2 + 4;
   }
 
@@ -408,10 +399,20 @@ export class DesktopWindow extends UIComponent {
     );
   }
 
-  private handlePointerDown(e: PointerCoords & { target?: Entity }): void {
+  private isChromeButton(node: Entity): boolean {
+    for (let n: Entity | null = node; n; n = n.parent) {
+      if (n === this.closeBtn || n === this.maxBtn || n === this.minBtn) {
+        return true;
+      }
+      if (n === this) return false;
+    }
+    return false;
+  }
+
+  private handlePointerDown(e: PointerCoords): void {
     this.onFocus(this);
     if (this.minimized) return;
-    // Chrome buttons bubble pointerdown to the window — do not start a drag.
+    // Chrome buttons bubble pointerdown — do not start a drag.
     const t = e.target;
     if (t === this.closeBtn || t === this.maxBtn || t === this.minBtn) return;
     if (t && this.isChromeButton(t)) return;
@@ -439,7 +440,6 @@ export class DesktopWindow extends UIComponent {
     }
 
     if (this.titlebarDragHit(lx, ly)) {
-      // Dragging a maximized window restores then drags (KWin).
       if (this.maximized) {
         const ratio = lx / Math.max(1, this.width);
         this.restore();
@@ -483,7 +483,6 @@ export class DesktopWindow extends UIComponent {
     let nx = scenePt.x - this.dragOffsetX;
     let ny = scenePt.y - this.dragOffsetY;
     const area = this.workArea();
-    // Keep titlebar reachable.
     nx = Math.min(Math.max(nx, area.x - this.width + 48), area.x + area.width - 48);
     ny = Math.min(Math.max(ny, area.y), area.y + area.height - this.chrome.titlebarHeight);
     this.x = nx;
@@ -517,7 +516,6 @@ export class DesktopWindow extends UIComponent {
       h = nh;
     }
     const area = this.workArea();
-    // Clamp into work area.
     if (x < area.x) {
       w -= area.x - x;
       x = area.x;
