@@ -134,17 +134,22 @@ export class DesktopWindow extends UIComponent {
     const btnY = Math.max(4, (th - btnH) / 2);
     const btnGap = 4;
 
+    // Frame only — must NOT set `label` (that would make Card interactive and
+    // steal titlebar/client hits via its own a11y mirror).
     this.shell = new Card({
       width: this.width,
       height: this.height,
       bg: this.chrome.windowBg,
       border: this.chrome.windowBorder,
       radius: this.chrome.radius,
-      label: this.title,
     });
-    this.shell.a11yProjection = 'onDemand';
+    this.shell.interactive = false;
+    this.shell.a11yProjection = 'never';
+    this.shell.getA11yAttributes = () => ({ pointerEvents: 'none' });
     this.add(this.shell);
 
+    // Titlebar is visual only; drag is handled on DesktopWindow so localX/Y
+    // stay in window space (not titlebar-local).
     this.titlebar = new Card({
       width: this.width,
       height: th,
@@ -154,22 +159,24 @@ export class DesktopWindow extends UIComponent {
     });
     this.titlebar.a11yProjection = 'never';
     this.titlebar.interactive = false;
+    this.titlebar.getA11yAttributes = () => ({ pointerEvents: 'none' });
     this.shell.add(this.titlebar);
 
     this.titleLabel = new Text(this.title, {
-      font: '600 13px sans-serif',
+      font: '600 13px "Segoe UI",system-ui,sans-serif',
       color: this.chrome.titlebarFg,
       selectable: false,
     });
     this.titleLabel.x = 12;
     this.titleLabel.y = Math.max(0, (th - 16) / 2);
-    this.titleLabel.a11yProjection = 'onDemand';
+    this.titleLabel.interactive = false;
+    this.titleLabel.a11yProjection = 'never';
     this.shell.add(this.titleLabel);
 
     // KWin order (LTR): … min | max | close
-    this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this));
-    this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize());
-    this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize());
+    this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this), true);
+    this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize(), false);
+    this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize(), false);
 
     this.closeBtn.x = this.width - btnW - 8;
     this.closeBtn.y = btnY;
@@ -187,7 +194,8 @@ export class DesktopWindow extends UIComponent {
     this.clientHost.width = this.width;
     this.clientHost.height = Math.max(0, this.height - th);
     this.clientHost.clipChildren = true;
-    this.clientHost.a11yProjection = 'onDemand';
+    this.clientHost.interactive = false;
+    this.clientHost.a11yProjection = 'never';
     this.shell.add(this.clientHost);
 
     const ctx: AppContext = {
@@ -199,6 +207,7 @@ export class DesktopWindow extends UIComponent {
     };
     this.content = opts.app.create(ctx);
     this.clientHost.add(this.content);
+    this.layoutClientContent();
 
     this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerCoords));
     // Double-click titlebar maximizes (KWin default).
@@ -221,22 +230,30 @@ export class DesktopWindow extends UIComponent {
     return { x: clientX, y: clientY };
   }
 
-  private makeChromeBtn(label: string, aria: string, onClick: () => void): Button {
+  private makeChromeBtn(label: string, aria: string, onClick: () => void, danger = false): Button {
+    const bg = danger ? this.chrome.closeBg : this.chrome.titlebarBg;
+    const fg = danger ? this.chrome.closeFg : this.chrome.titlebarFg;
     const b = new Button(label, {
-      bg: this.chrome.closeBg,
-      hoverBg: this.chrome.closeBg,
-      color: this.chrome.closeFg,
-      font: '600 14px sans-serif',
+      bg,
+      hoverBg: danger ? '#e04343' : this.chrome.windowBorder,
+      color: fg,
+      font: '600 14px "Segoe UI",system-ui,sans-serif',
       padding: 4,
-      radius: 6,
+      radius: 3,
       width: 28,
       height: 24,
       onClick,
     });
+    // Keep chrome controls above pointer-transparent frame children.
+    b.pointerEvents = 'auto';
     b.a11yProjection = 'onDemand';
     // Keep accessible name even though the glyph is symbolic.
     const orig = b.getA11yAttributes.bind(b);
     b.getA11yAttributes = () => ({ ...orig(), label: aria });
+    // Prevent titlebar-drag handler on the window from seeing this press.
+    b.on('pointerdown', (ev: { stopPropagation?: () => void }) => {
+      ev.stopPropagation?.();
+    });
     return b;
   }
 
@@ -344,7 +361,15 @@ export class DesktopWindow extends UIComponent {
     this.closeBtn.x = this.width - btnW - 8;
     this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
     this.minBtn.x = this.maxBtn.x - btnW - btnGap;
+    this.layoutClientContent();
     this.scene?.markDirty();
+  }
+
+  /** Stretch the app root to the client host box when it exposes width/height. */
+  private layoutClientContent(): void {
+    const c = this.content as Entity & { width?: number; height?: number };
+    if (typeof c.width === 'number') c.width = this.clientHost.width;
+    if (typeof c.height === 'number') c.height = this.clientHost.height;
   }
 
   private notifyState(): void {
@@ -383,9 +408,14 @@ export class DesktopWindow extends UIComponent {
     );
   }
 
-  private handlePointerDown(e: PointerCoords): void {
+  private handlePointerDown(e: PointerCoords & { target?: Entity }): void {
     this.onFocus(this);
     if (this.minimized) return;
+    // Chrome buttons bubble pointerdown to the window — do not start a drag.
+    const t = e.target;
+    if (t === this.closeBtn || t === this.maxBtn || t === this.minBtn) return;
+    if (t && this.isChromeButton(t)) return;
+
     const lx = e.localX ?? 0;
     const ly = e.localY ?? 0;
 

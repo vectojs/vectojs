@@ -381,3 +381,36 @@ describe('review fixes (CTX-0368)', () => {
     shell.dispose();
   });
 });
+
+it('titlebar drag ignores pointerdown that targeted chrome buttons', () => {
+  const scene = makeScene();
+  const shell = new DesktopShell({
+    scene,
+    config: { apps: [aboutApp], desktop: { taskbarHeight: 0 } },
+  });
+  shell.start();
+  scene.start?.();
+  const win = shell.open('about');
+  const x0 = win.x;
+  const close = (win as unknown as { closeBtn: { emit: Function } }).closeBtn;
+  // Simulate bubble: target is close button, currentTarget path hits window handler
+  win.emit('pointerdown', {
+    target: close,
+    localX: win.width - 20,
+    localY: 10,
+    sceneX: win.x + win.width - 20,
+    sceneY: win.y + 10,
+    clientX: win.x + win.width - 20,
+    clientY: win.y + 10,
+  });
+  window.dispatchEvent(
+    new PointerEvent('pointermove', {
+      clientX: win.x + 200,
+      clientY: win.y + 100,
+      bubbles: true,
+    }),
+  );
+  window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  expect(win.x).toBe(x0);
+  shell.dispose();
+});

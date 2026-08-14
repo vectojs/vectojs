@@ -70,14 +70,14 @@ export class Taskbar extends UIComponent {
     this.bar.a11yProjection = 'onDemand';
     this.add(this.bar);
 
-    this.startBtn = new Button('☰', {
+    this.startBtn = new Button('Start', {
       bg: this.chrome.active,
       hoverBg: this.chrome.hover,
       color: this.chrome.fg,
       font: '600 14px sans-serif',
       padding: 6,
       radius: 6,
-      width: 40,
+      width: 54,
       height: Math.max(28, this.height - 8),
       onClick: () => this.onToggleStart(),
     });
@@ -92,9 +92,9 @@ export class Taskbar extends UIComponent {
     this.bar.add(this.startBtn);
 
     this.entriesHost = new EntriesHost();
-    this.entriesHost.x = 56;
+    this.entriesHost.x = 70;
     this.entriesHost.y = 0;
-    this.entriesHost.width = Math.max(0, this.width - 64);
+    this.entriesHost.width = Math.max(0, this.width - 78);
     this.entriesHost.height = this.height;
     this.entriesHost.a11yProjection = 'onDemand';
     this.bar.add(this.entriesHost);
@@ -111,7 +111,7 @@ export class Taskbar extends UIComponent {
     this.width = width;
     this.y = y;
     this.bar.width = width;
-    this.entriesHost.width = Math.max(0, width - 64);
+    this.entriesHost.width = Math.max(0, width - 78);
     this.rebuild();
   }
 
