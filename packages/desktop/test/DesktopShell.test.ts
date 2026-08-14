@@ -341,4 +341,43 @@ describe('review fixes (CTX-0368)', () => {
     expect(scene.overlayRoot.children).toContain(n);
     shell.dispose();
   });
+
+  it('pointercancel ends an in-flight drag', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp], desktop: { taskbarHeight: 0 } },
+    });
+    shell.start();
+    const win = shell.open('about');
+    const startX = win.x;
+    win.emit('pointerdown', {
+      localX: 20,
+      localY: 10,
+      sceneX: startX + 20,
+      sceneY: win.y + 10,
+      clientX: startX + 20,
+      clientY: win.y + 10,
+    });
+    window.dispatchEvent(
+      new PointerEvent('pointermove', {
+        clientX: startX + 60,
+        clientY: win.y + 10,
+        bubbles: true,
+      }),
+    );
+    expect(win.x).toBeCloseTo(startX + 40, 0);
+    window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+    // Further moves must not drag after cancel.
+    const mid = win.x;
+    window.dispatchEvent(
+      new PointerEvent('pointermove', {
+        clientX: startX + 200,
+        clientY: win.y + 10,
+        bubbles: true,
+      }),
+    );
+    expect(win.x).toBe(mid);
+    shell.dispose();
+  });
 });

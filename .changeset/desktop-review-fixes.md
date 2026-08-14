@@ -1,5 +1,6 @@
 ---
 '@vectojs/desktop': patch
+'@vectojs/ui': patch
 ---
 
-Fix window drag/resize to use VectoJSEvent local/scene coords; restack without Entity.remove; release a11y on blur; start-menu height anchor; syncLayoutToScene for host resize.
+Desktop review (CTX-0368): VectoJSEvent local/scene coords for window chrome; restack without Entity.remove; release a11y on blur; start-menu height; syncLayoutToScene; pointercancel ends drag. Button.setLabel remeasures content-driven width.

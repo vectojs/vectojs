@@ -164,6 +164,22 @@ describe('Button', () => {
     // markDirty on focus + blur (the duplicate focus is a no-op).
     expect(markDirty).toHaveBeenCalledTimes(2);
   });
+
+  it('setLabel remeasures content-driven width and keeps fixed width', () => {
+    const auto = new Button('OK', { padding: 10 });
+    const autoW = auto.width;
+    auto.setLabel('Longer label');
+    expect(auto.textWidth).toBeGreaterThan(0);
+    expect(auto.width).toBeGreaterThan(autoW);
+    expect(auto.label).toBe('Longer label');
+
+    const fixed = new Button('×', { width: 28, height: 24, padding: 4 });
+    fixed.setLabel('❐');
+    expect(fixed.width).toBe(28);
+    expect(fixed.label).toBe('❐');
+    // Centering uses updated textWidth even when the box is fixed.
+    expect(fixed.textWidth).toBeLessThan(28);
+  });
 });
 
 describe('Link', () => {

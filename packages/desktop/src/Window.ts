@@ -276,7 +276,7 @@ export class DesktopWindow extends UIComponent {
     const area = this.workArea();
     this.applyGeom(area.x, area.y, area.width, area.height);
     this.maximized = true;
-    this.maxBtn.label = '❐';
+    this.maxBtn.setLabel('❐');
     this.notifyState();
   }
 
@@ -286,7 +286,7 @@ export class DesktopWindow extends UIComponent {
     this.restored = null;
     this.maximized = false;
     this.applyGeom(r.x, r.y, r.width, r.height);
-    this.maxBtn.label = '□';
+    this.maxBtn.setLabel('□');
     this.notifyState();
   }
 
@@ -321,7 +321,7 @@ export class DesktopWindow extends UIComponent {
     if (this.maximized) {
       this.restored = null;
       this.maximized = false;
-      this.maxBtn.label = '□';
+      this.maxBtn.setLabel('□');
     }
     this.applyGeom(x, y, w, h);
   }
@@ -404,8 +404,7 @@ export class DesktopWindow extends UIComponent {
         px: scenePt.x,
         py: scenePt.y,
       };
-      window.addEventListener('pointermove', this.onDocPointerMove);
-      window.addEventListener('pointerup', this.onDocPointerUp);
+      this.attachDocPointers();
       return;
     }
 
@@ -428,9 +427,20 @@ export class DesktopWindow extends UIComponent {
           : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
       this.dragOffsetX = scenePt.x - this.x;
       this.dragOffsetY = scenePt.y - this.y;
-      window.addEventListener('pointermove', this.onDocPointerMove);
-      window.addEventListener('pointerup', this.onDocPointerUp);
+      this.attachDocPointers();
     }
+  }
+
+  private attachDocPointers(): void {
+    window.addEventListener('pointermove', this.onDocPointerMove);
+    window.addEventListener('pointerup', this.onDocPointerUp);
+    window.addEventListener('pointercancel', this.onDocPointerUp);
+  }
+
+  private detachDocPointers(): void {
+    window.removeEventListener('pointermove', this.onDocPointerMove);
+    window.removeEventListener('pointerup', this.onDocPointerUp);
+    window.removeEventListener('pointercancel', this.onDocPointerUp);
   }
 
   private handleDocPointerMove(e: PointerEvent): void {
@@ -495,14 +505,12 @@ export class DesktopWindow extends UIComponent {
     if (this.dragging || this.resizing) {
       this.dragging = false;
       this.resizing = null;
-      window.removeEventListener('pointermove', this.onDocPointerMove);
-      window.removeEventListener('pointerup', this.onDocPointerUp);
+      this.detachDocPointers();
     }
   }
 
   public override destroy(): void {
-    window.removeEventListener('pointermove', this.onDocPointerMove);
-    window.removeEventListener('pointerup', this.onDocPointerUp);
+    this.detachDocPointers();
     super.destroy();
   }
 
