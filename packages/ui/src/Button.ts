@@ -145,6 +145,24 @@ export class Button extends UIComponent {
     this.scene?.markDirty();
   }
 
+  /**
+   * Update the visible label and remeasure intrinsic width when the button
+   * was not given an explicit constructor `width`. Fixed-size chrome buttons
+   * keep their box; only `textWidth` (centering) updates.
+   */
+  public setLabel(label: string): void {
+    if (this.label === label) return;
+    const prevText = this.textWidth;
+    this.label = label;
+    this.textWidth = measureText(this.label, this.font);
+    // Grow/shrink only when width was content-driven (matches constructor:
+    // width === textWidth + padding*2 at the previous label).
+    if (Math.abs(this.width - (prevText + this.padding * 2)) < 0.5) {
+      this.width = this.textWidth + this.padding * 2;
+    }
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'button',

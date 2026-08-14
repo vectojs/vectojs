@@ -132,7 +132,7 @@ export class DesktopShell {
     this.assertLive();
     if (this.started) return;
     this.scene.add(this.wallpaper);
-    this.syncWallpaperSize();
+    this.syncLayoutToScene();
     this.mountTaskbar();
     this.shortcuts.attach();
     if (typeof document !== 'undefined') {
@@ -140,6 +140,25 @@ export class DesktopShell {
     }
     this.started = true;
     this.scene.markDirty();
+  }
+
+  /**
+   * Re-sync wallpaper / taskbar / primary display after the host Scene is
+   * resized. Call from the app's resize path (Scene has no resize event bus).
+   */
+  syncLayoutToScene(): void {
+    this.assertLive();
+    const sw = this.scene.width || 800;
+    const sh = this.scene.height || 600;
+    this.layout.updateSceneSize(sw, sh);
+    this.syncWallpaperSize();
+    if (this.taskbar) {
+      const bounds = this.layout.bounds();
+      const h = this.config.desktop.taskbarHeight;
+      const y =
+        this.config.desktop.taskbarPosition === 'top' ? bounds.y : bounds.y + bounds.height - h;
+      this.taskbar.setGeometry(bounds.width, y);
+    }
   }
 
   open(appId: string, opts?: Parameters<WindowManager['open']>[1]) {
@@ -208,12 +227,14 @@ export class DesktopShell {
     const bounds = this.layout.bounds();
     const tbH = this.config.desktop.taskbarHeight;
     const menuW = 240;
-    const menuH = 36 + 8 + apps.length * 40 + 8;
+    // Position using a temporary geometry estimate; refine with the live
+    // entity height after construction so shell and StartMenu cannot drift.
+    const estH = 36 + 8 + apps.length * (36 + 4) + 8;
     const x = bounds.x + 8;
-    const y =
+    let y =
       this.config.desktop.taskbarPosition === 'top'
         ? bounds.y + tbH + 4
-        : bounds.y + bounds.height - tbH - menuH - 4;
+        : bounds.y + bounds.height - tbH - estH - 4;
 
     this.startMenu = new StartMenu({
       scene: this.scene,
@@ -231,6 +252,10 @@ export class DesktopShell {
       y,
       width: menuW,
     });
+    if (this.config.desktop.taskbarPosition !== 'top') {
+      y = bounds.y + bounds.height - tbH - this.startMenu.height - 4;
+      this.startMenu.y = y;
+    }
     this.scene.showOverlay(this.startMenu);
     this.scene.requestA11yProjection(this.startMenu);
     this.scene.markDirty();
