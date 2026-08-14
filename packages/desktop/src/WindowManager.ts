@@ -117,7 +117,7 @@ export class WindowManager {
       workArea: () => this.layout.workArea(displayId),
       onClose: (w) => this.close(w),
       onFocus: (w) => this.focus(w),
-      onStateChange: (w) => this.emit('state', w),
+      onStateChange: (w) => this.handleWindowStateChange(w),
     });
 
     this.scene.showOverlay(win);
@@ -196,6 +196,21 @@ export class WindowManager {
     kids.push(win);
     this.scene.markStructureChanged();
     this.scene.markDirty();
+  }
+
+  private handleWindowStateChange(win: DesktopWindow): void {
+    if (win.minimized && this.focused === win) {
+      win.setFocused(false);
+      this.scene.releaseA11yProjection(win);
+      this.focused = null;
+      const next = [...this.windows].reverse().find((w) => !w.minimized);
+      if (next) {
+        this.focus(next);
+      } else {
+        this.scene.markDirty();
+      }
+    }
+    this.emit('state', win);
   }
 
   private emit(type: 'open' | 'close' | 'focus' | 'state', window: DesktopWindow): void {
