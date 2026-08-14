@@ -25,6 +25,17 @@ class Wallpaper extends Entity {
     this.interactive = false;
     this.a11yProjection = 'never';
     if (imageUrl && typeof globalThis.Image !== 'undefined') {
+      this.setImage(imageUrl, onLoad);
+    }
+  }
+
+  public setImage(imageUrl: string | null, onLoad?: () => void): void {
+    if (!imageUrl) {
+      this.bitmap = null;
+      this.loaded = false;
+      return;
+    }
+    if (typeof globalThis.Image !== 'undefined') {
       const bmp = new globalThis.Image();
       bmp.onload = () => {
         this.loaded = true;
@@ -40,18 +51,20 @@ class Wallpaper extends Entity {
   }
 
   public override render(r: IRenderer): void {
+    const w = this.scene?.width || this.width || 800;
+    const h = this.scene?.height || this.height || 600;
     r.beginPath();
-    r.roundRect(0, 0, this.width, this.height, 0);
+    r.roundRect(0, 0, w, h, 0);
     r.fill(this.color);
     if (this.bitmap && this.loaded && this.bitmap.naturalWidth > 0) {
       // object-fit: cover
       const iw = this.bitmap.naturalWidth;
       const ih = this.bitmap.naturalHeight;
-      const scale = Math.max(this.width / iw, this.height / ih);
+      const scale = Math.max(w / iw, h / ih);
       const dw = iw * scale;
       const dh = ih * scale;
-      const dx = (this.width - dw) / 2;
-      const dy = (this.height - dh) / 2;
+      const dx = (w - dw) / 2;
+      const dy = (h - dh) / 2;
       r.drawImage(this.bitmap, dx, dy, dw, dh);
     }
   }
@@ -182,6 +195,40 @@ export class DesktopShell {
     else this.openStartMenu();
   }
 
+  /** Dynamically apply theme tokens and optional wallpaper image to the shell and scene. */
+  setTheme(t: DesktopThemeTokens, wallpaperImage?: string | null): void {
+    this.assertLive();
+    this.config.theme = { ...this.config.theme, ...t };
+    setTheme(tokens(this.config.theme));
+    if (this.wallpaper) {
+      if (typeof t['desktop-wallpaper'] === 'string') {
+        this.wallpaper.color = t['desktop-wallpaper'] as string;
+      }
+      if (wallpaperImage !== undefined) {
+        this.wallpaper.setImage(wallpaperImage, () => this.scene.markDirty());
+      }
+    }
+    const nextChrome = resolveChrome(this.config);
+    this.windowManager.setChrome(nextChrome);
+    if (this.taskbar) {
+      this.taskbar.destroy();
+      this.mountTaskbar();
+    }
+    this.syncWallpaperSize();
+    this.scene.markDirty();
+  }
+
+  /** Update shell layout and reposition taskbar + wallpaper to fit new dimensions. */
+  resize(sceneW: number, sceneH: number): void {
+    this.assertLive();
+    this.layout.resize(sceneW, sceneH);
+    this.syncWallpaperSize();
+    if (this.taskbar) {
+      this.taskbar.resize(sceneW, sceneH);
+    }
+    this.scene.markDirty();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -250,8 +297,8 @@ export class DesktopShell {
       chrome: {
         bg: str(t, 'desktop-start-bg', '#1e293b'),
         border: str(t, 'desktop-start-border', '#334155'),
-        fg: str(t, 'desktop-taskbar-fg', '#e2e8f0'),
-        hover: str(t, 'desktop-taskbar-hover', '#1e293b'),
+        fg: str(t, 'desktop-start-fg', '#e2e8f0'),
+        hover: str(t, 'desktop-start-hover', '#334155'),
         radius: num(t, 'desktop-radius', 10),
       },
       onLaunch: (id) => this.open(id),

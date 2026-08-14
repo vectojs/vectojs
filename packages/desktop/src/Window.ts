@@ -301,6 +301,16 @@ export class DesktopWindow extends UIComponent {
     this.scene?.markDirty();
   }
 
+  public updateChrome(chrome: WindowChrome): void {
+    Object.assign(this.chrome, chrome);
+    this.shell.bg = chrome.windowBg;
+    this.shell.border = this.focused ? chrome.focusRing : chrome.windowBorder;
+    this.shell.radius = chrome.radius;
+    this.titlebar.bg = chrome.titlebarBg;
+    this.titleLabel.color = chrome.titlebarFg;
+    this.scene?.markDirty();
+  }
+
   public get client(): Entity {
     return this.clientHost;
   }

@@ -58,6 +58,13 @@ export class WindowManager {
     return this.focused;
   }
 
+  public setChrome(chrome: WindowChrome): void {
+    Object.assign(this.chrome, chrome);
+    for (const win of this.windows) {
+      win.updateChrome(chrome);
+    }
+  }
+
   list(): readonly DesktopWindow[] {
     return this.windows;
   }

@@ -1,5 +1,5 @@
 import { type A11yAttributes, Entity, type IRenderer, type Scene } from '@vectojs/core';
-import { Button, Card, UIComponent } from '@vectojs/ui';
+import { Button, Card, Text, UIComponent } from '@vectojs/ui';
 import type { AppRegistry } from './AppRegistry';
 import type { DesktopWindow } from './Window';
 import type { WindowManager } from './WindowManager';
@@ -31,7 +31,7 @@ class EntriesHost extends Entity {
 }
 
 /**
- * Plasma-style task manager: Kickoff button + one entry per open window.
+ * Plasma-style task manager: Kickoff button + one entry per open window + clock.
  * Click focuses/restores; click-on-active minimizes (Plasma Task Manager).
  */
 export class Taskbar extends UIComponent {
@@ -41,8 +41,10 @@ export class Taskbar extends UIComponent {
   private readonly onToggleStart: () => void;
   private readonly bar: Card;
   private readonly startBtn: Button;
+  private readonly clockLabel: Text;
   private readonly entriesHost: Entity;
   private readonly unsub: () => void;
+  private timer: number | null = null;
   private entryButtons: Button[] = [];
 
   constructor(opts: TaskbarOptions) {
@@ -91,16 +93,39 @@ export class Taskbar extends UIComponent {
     });
     this.bar.add(this.startBtn);
 
+    this.clockLabel = new Text('', {
+      font: '600 12px sans-serif',
+      color: this.chrome.fg,
+      selectable: false,
+    });
+    this.clockLabel.interactive = false;
+    this.clockLabel.a11yProjection = 'never';
+    this.bar.add(this.clockLabel);
+
     this.entriesHost = new EntriesHost();
     this.entriesHost.x = 70;
     this.entriesHost.y = 0;
-    this.entriesHost.width = Math.max(0, this.width - 78);
+    this.entriesHost.width = Math.max(0, this.width - 150);
     this.entriesHost.height = this.height;
     this.entriesHost.a11yProjection = 'never';
     this.bar.add(this.entriesHost);
 
+    this.updateClock();
+    if (typeof window !== 'undefined') {
+      this.timer = window.setInterval(() => this.updateClock(), 1000);
+    }
+
     this.unsub = this.wm.on(() => this.rebuild());
     this.rebuild();
+  }
+
+  private updateClock(): void {
+    const d = new Date();
+    const s = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.clockLabel.setText(s);
+    this.clockLabel.x = Math.max(0, this.width - 64);
+    this.clockLabel.y = (this.height - 14) / 2;
+    this.scene?.markDirty();
   }
 
   public override getA11yAttributes(): A11yAttributes {
@@ -113,7 +138,8 @@ export class Taskbar extends UIComponent {
     this.width = width;
     this.y = y;
     this.bar.width = width;
-    this.entriesHost.width = Math.max(0, width - 78);
+    this.entriesHost.width = Math.max(0, width - 150);
+    this.updateClock();
     this.rebuild();
   }
 
@@ -172,7 +198,17 @@ export class Taskbar extends UIComponent {
     this.wm.focus(win);
   }
 
+  public resize(sceneW: number, sceneH: number): void {
+    const y = this.chrome.position === 'top' ? 0 : Math.max(0, sceneH - this.chrome.height);
+    this.setGeometry(sceneW, y);
+    this.scene?.markDirty();
+  }
+
   public override destroy(): void {
+    if (this.timer !== null && typeof window !== 'undefined') {
+      window.clearInterval(this.timer);
+      this.timer = null;
+    }
     this.unsub();
     super.destroy();
   }
