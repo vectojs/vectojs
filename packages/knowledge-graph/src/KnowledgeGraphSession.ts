@@ -186,6 +186,18 @@ export class KnowledgeGraphSession {
    */
   loadSnapshot(data: KgGraphData): void {
     this.assertOpen();
+    // Replace, don't merge — hosts use this for filter reloads and offline cuts.
+    this.entities.clear();
+    this.facts.length = 0;
+    this.factKey.clear();
+    this.expanded.clear();
+    this.entityByIndex = [];
+    this.idToIndex.clear();
+    // Keep lastPos for ids that remain so filter toggles don't reshuffle survivors.
+    const keep = new Set(data.entities.map((e) => e.id));
+    for (const id of [...this.lastPos.keys()]) {
+      if (!keep.has(id)) this.lastPos.delete(id);
+    }
     this.ingestEntities(data.entities);
     for (const f of data.facts) this.ingestFact(f);
     for (const e of data.entities) this.expanded.add(e.id);
