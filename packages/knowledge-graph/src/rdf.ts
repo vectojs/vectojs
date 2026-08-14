@@ -16,14 +16,14 @@ export interface ParseRdfOptions {
 /**
  * Parse a Turtle / N-Triples / N-Quads string into {@link KgGraphData} via N3.
  *
- * - Subjects become entities; `rdf:type` sets `type` (last type wins if many).
+ * - Subjects become entities; `rdf:type` sets `type` (**last** type wins if many).
  * - `rdfs:label` / `skos:prefLabel` / `schema:name` fill `labels` (language tag → text).
  * - Other object-IRI triples become {@link KgFact}s; literal-only subjects with
  *   no outgoing object links are still kept as entities.
  *
- * Streaming large files should use a chunked host that calls this per slice or
- * drives `N3.StreamParser` directly; this helper is the sync convenience path
- * for fixtures and modest documents.
+ * **Not for multi-hundred-MB files on the main thread** — `Parser.parse` is
+ * synchronous. For `mystery-full.ttl`-scale input use a Worker +
+ * `N3.StreamParser`, or call this on sliced chunks off the UI thread.
  */
 export function parseRdfTurtle(text: string, options: ParseRdfOptions = {}): KgGraphData {
   const shortName = options.shortName ?? defaultShortName;

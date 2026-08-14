@@ -11,7 +11,7 @@ import {
 import * as THREE from 'three';
 import { FixedZLayout } from './FixedZLayout';
 import type { KgDataSource, KgEntity, KgFact, KgGraphData, KnowledgeGraphMode } from './types';
-import { pickLabel, toGraphData } from './types';
+import { pickLabel } from './types';
 
 export interface KnowledgeGraphSessionOptions {
   /** Target canvas (or any element GraphCamera/Interaction can bind to). */
@@ -20,7 +20,10 @@ export interface KnowledgeGraphSessionOptions {
   source: KgDataSource;
   /** `'2d'` (default) uses {@link FixedZLayout} + ortho camera; `'3d'` free layout. */
   mode?: KnowledgeGraphMode;
-  /** Seed entity ids for the first paint. Required unless the source can list all. */
+  /**
+   * Seed entity ids loaded in the background after construction.
+   * Prefer awaiting {@link bootstrap} yourself so errors surface to the host.
+   */
   focusIds?: readonly NodeId[];
   /** Preferred label language. Default `en`. */
   lang?: string;
@@ -49,8 +52,7 @@ export interface KnowledgeGraphSessionOptions {
  * frame and {@link render} with your renderer.
  *
  * Accessibility: this package does **not** project per-node DOM. Pair with an
- * aggregate announcer in the host (onDemand / `role="status"`) per the
- * knowledge-graph design rule in RESEARCH.md.
+ * aggregate announcer in the host (onDemand / `role="status"`).
  */
 export class KnowledgeGraphSession {
   readonly graph: Graph3D;
@@ -71,9 +73,13 @@ export class KnowledgeGraphSession {
   /** Node ids whose neighbors have already been fetched. */
   private readonly expanded = new Set<NodeId>();
   private readonly idToIndex = new Map<NodeId, number>();
+  /** Index-aligned entity list for O(1) hover/select (mirrors layout order). */
+  private entityByIndex: KgEntity[] = [];
   private readonly mode: KnowledgeGraphMode;
   private scene: THREE.Scene | null = null;
   private disposed = false;
+  /** Last known xyz per id — warm-starts layout across expand rebuilds. */
+  private readonly lastPos = new Map<NodeId, [number, number, number]>();
 
   constructor(options: KnowledgeGraphSessionOptions) {
     this.source = options.source;
@@ -90,17 +96,10 @@ export class KnowledgeGraphSession {
       domElement: options.domElement,
       mode: this.mode,
     });
-    // Dense author→work bipartite neighborhoods explode under the generic
-    // VectoForceLayout defaults (repulsion 300 + high velocityDecay → NaN by
-    // ~tick 16 on a ~300-node mystery cut). 2D sessions use a calmer preset;
-    // 3D keeps the stock defaults for parity with bare graph3d demos.
     this.layout =
       this.mode === '2d'
         ? new FixedZLayout({
             z: 0,
-            // Obsidian-like 2D graph: push clusters apart without the old
-            // NaN blow-up (stock repulsion 300 + high decay). Link rest length
-            // keeps sibling works from stacking on the author.
             repulsion: 120,
             linkDistance: 55,
             linkStrength: 0.12,
@@ -111,9 +110,10 @@ export class KnowledgeGraphSession {
           })
         : new VectoForceLayout();
 
+    // Getter keeps picking on the live camera after GraphCamera.setMode.
     this.interaction = new GraphInteraction({
       graph: this.graph,
-      camera: this.camera.camera,
+      camera: () => this.camera.camera,
       domElement: options.domElement,
       layout: this.layout,
       setControlsEnabled: (on) => this.camera.setEnabled(on),
@@ -125,8 +125,12 @@ export class KnowledgeGraphSession {
       },
     });
 
+    // Optional fire-and-forget seed load — errors go to console; prefer
+    // explicit `await session.bootstrap(...)` in production hosts.
     if (options.focusIds?.length) {
-      void this.bootstrap(options.focusIds);
+      void this.bootstrap(options.focusIds).catch((err) => {
+        console.error('[KnowledgeGraphSession] bootstrap failed:', err);
+      });
     }
   }
 
@@ -151,14 +155,14 @@ export class KnowledgeGraphSession {
     return this.facts.length;
   }
 
-  /** Snapshot of materialised entities (insertion order). */
+  /** Snapshot of materialised entities (layout index order). */
   listEntities(): KgEntity[] {
-    return [...this.entities.values()];
+    return this.entityByIndex.slice();
   }
 
   /**
    * Load seed nodes (and optionally their first-degree neighbors when
-   * `expandSeeds` is true).
+   * `expandSeeds` is true). Await this — do not rely on constructor `focusIds`.
    */
   async bootstrap(focusIds: readonly NodeId[], expandSeeds = true): Promise<void> {
     this.assertOpen();
@@ -174,30 +178,34 @@ export class KnowledgeGraphSession {
 
   /**
    * Materialise a full in-memory snapshot in one shot (demo / offline export
-   * path). Unlike {@link bootstrap}, this also ingests every fact — the lazy
-   * adapter is bypassed for edges already present in `data`.
+   * path). Unlike {@link bootstrap}, this also ingests every fact.
+   *
+   * All entity ids are marked expanded so select does not re-fetch hops already
+   * present in the snapshot. Neighbors *outside* the snapshot are still
+   * expandable only if you clear that mark yourself or omit them here.
    */
   loadSnapshot(data: KgGraphData): void {
     this.assertOpen();
     this.ingestEntities(data.entities);
     for (const f of data.facts) this.ingestFact(f);
-    // Mark everyone expanded so a later select does not re-fetch the same hop.
     for (const e of data.entities) this.expanded.add(e.id);
     this.rebuildGraph();
     this.camera.fitToPositions(this.layout.positions);
   }
 
-  /** Fetch and merge one hop around `id`. */
+  /** Fetch and merge one hop around `id`. Preserves prior node positions. */
   async expand(id: NodeId): Promise<number> {
     this.assertOpen();
     if (this.expanded.has(id)) return 0;
     const hood = await this.source.getNeighbors(id);
-    this.expanded.add(id);
     const before = this.entities.size;
     this.ingestEntities([hood.entity, ...hood.neighbors]);
     for (const f of hood.facts) this.ingestFact(f);
     const added = this.entities.size - before;
+    // rebuildGraph first; only mark expanded after it succeeds so a throw
+    // (e.g. bad link id in setGraphData) leaves the id retryable.
     this.rebuildGraph();
+    this.expanded.add(id);
     this.layout.reheat?.(0.5);
     this.onExpandCb?.(hood.entity, added);
     return added;
@@ -205,14 +213,20 @@ export class KnowledgeGraphSession {
 
   /**
    * Advance the force layout one (or N) ticks and push positions to the
-   * renderer. Returns whether the layout reports settled.
+   * renderer.
+   *
+   * @returns `true` when the layout has **settled** (cooled); `false` while
+   * still hot. Matches “stop the loop when tick() is true”:
+   * `if (!session.tick()) requestAnimationFrame(loop)`.
+   * (Inverts {@link GraphLayout.step}, which returns active/hot.)
    */
   tick(iterations = 1): boolean {
     this.assertOpen();
     if (this.entities.size === 0) return true;
-    const settled = this.layout.step(iterations);
+    const stillHot = this.layout.step(iterations);
     this.graph.applyPositions(this.layout.positions);
-    return settled;
+    this.capturePositions();
+    return !stillHot;
   }
 
   /** Convenience render through a host WebGLRenderer. */
@@ -238,13 +252,15 @@ export class KnowledgeGraphSession {
     this.layout.dispose();
     this.entities.clear();
     this.facts.length = 0;
+    this.factKey.clear();
+    this.expanded.clear();
+    this.idToIndex.clear();
+    this.entityByIndex = [];
+    this.lastPos.clear();
+    this.scene = null;
   }
 
   // ── internals ────────────────────────────────────────────────────────────
-
-  private snapshot() {
-    return { entities: [...this.entities.values()], facts: this.facts.slice() };
-  }
 
   private ingestEntities(list: readonly KgEntity[]): void {
     for (const e of list) {
@@ -268,29 +284,72 @@ export class KnowledgeGraphSession {
     this.facts.push(f);
   }
 
+  private capturePositions(): void {
+    const pos = this.layout.positions;
+    for (let i = 0; i < this.entityByIndex.length; i++) {
+      const e = this.entityByIndex[i]!;
+      const x = pos[i * 3]!;
+      const y = pos[i * 3 + 1]!;
+      const z = pos[i * 3 + 2]!;
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        this.lastPos.set(e.id, [x, y, z]);
+      }
+    }
+  }
+
   private rebuildGraph(): void {
-    const data = this.snapshot();
+    // Preserve current simulation coords before tearing down the layout.
+    if (this.entityByIndex.length > 0 && this.layout.positions.length >= 3) {
+      this.capturePositions();
+    }
+
+    // Stable order: keep previous entities in their prior order, append newcomers.
+    const next: KgEntity[] = [];
+    const seen = new Set<NodeId>();
+    for (const e of this.entityByIndex) {
+      const cur = this.entities.get(e.id);
+      if (cur) {
+        next.push(cur);
+        seen.add(cur.id);
+      }
+    }
+    for (const e of this.entities.values()) {
+      if (!seen.has(e.id)) next.push(e);
+    }
+    this.entityByIndex = next;
     this.idToIndex.clear();
-    let i = 0;
-    for (const e of data.entities) {
-      this.idToIndex.set(e.id, i);
-      i += 1;
-    }
-    const g = toGraphData(data);
-    for (const e of data.entities) {
-      const idx = this.idToIndex.get(e.id);
-      if (idx === undefined) continue;
-      const node = g.nodes[idx];
-      if (node) (node as { name?: string }).name = pickLabel(e.labels, this.lang);
-    }
+    for (let i = 0; i < next.length; i++) this.idToIndex.set(next[i]!.id, i);
+
+    // Warm-start: stamp last known x/y/z onto node seeds so setGraph does not
+    // re-scatter existing nodes (expand must not jump the whole graph).
+    const seeded = next.map((e) => {
+      const prev = this.lastPos.get(e.id);
+      const node = {
+        ...e,
+        name: pickLabel(e.labels, this.lang),
+      } as KgEntity & { x?: number; y?: number; z?: number; name?: string };
+      if (prev) {
+        node.x = prev[0];
+        node.y = prev[1];
+        node.z = prev[2];
+      }
+      return node;
+    });
+
+    const g = {
+      nodes: seeded,
+      links: this.facts as import('@vectojs/graph3d').GraphLink[],
+    };
     this.layout.setGraph(g);
     this.graph.setGraphData(g);
     this.graph.applyPositions(this.layout.positions);
+    this.interaction?.setNodeCount(seeded.length);
+    this.capturePositions();
   }
 
   private entityAt(index: number | null): KgEntity | null {
     if (index == null) return null;
-    return [...this.entities.values()][index] ?? null;
+    return this.entityByIndex[index] ?? null;
   }
 
   private handleHover(index: number | null): void {

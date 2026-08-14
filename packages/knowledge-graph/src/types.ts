@@ -82,5 +82,12 @@ export function toGraphData(data: KgGraphData): GraphData {
 
 /** Pick a display label from a {@link LabelMap}. */
 export function pickLabel(labels: LabelMap, lang = 'en'): string {
-  return labels[lang] ?? labels[''] ?? labels[Object.keys(labels)[0] ?? ''] ?? '';
+  if (labels[lang]) return labels[lang]!;
+  if (labels['']) return labels['']!;
+  // Prefer common UI languages before arbitrary key order.
+  for (const fallback of ['en', 'zh', 'zh-cn', 'ja', 'ko', 'fr', 'es', 'de']) {
+    if (labels[fallback]) return labels[fallback]!;
+  }
+  const keys = Object.keys(labels);
+  return (keys[0] ? labels[keys[0]] : undefined) ?? '';
 }

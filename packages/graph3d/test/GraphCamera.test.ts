@@ -151,3 +151,14 @@ describe('GraphCamera', () => {
     expect(o.zoom).toBe(z0);
   });
 });
+
+it('fitToPositions no-ops when every coordinate is non-finite', () => {
+  const cam = new GraphCamera({ domElement: makeDom() });
+  const o = cam.camera as THREE.OrthographicCamera;
+  const x0 = o.position.x;
+  const y0 = o.position.y;
+  cam.fitToPositions(new Float32Array([NaN, NaN, NaN, Infinity, 0, 0]));
+  expect(o.position.x).toBe(x0);
+  expect(o.position.y).toBe(y0);
+  cam.dispose();
+});

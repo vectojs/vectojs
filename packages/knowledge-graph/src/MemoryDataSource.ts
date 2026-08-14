@@ -17,14 +17,18 @@ export class MemoryDataSource implements KgDataSource {
     this.entities.clear();
     this.out.clear();
     this.inn.clear();
-    for (const e of data.entities) this.entities.set(e.id, e);
+    // Copy so later host mutations to the snapshot cannot corrupt the index.
+    for (const e of data.entities) {
+      this.entities.set(e.id, { ...e, labels: { ...e.labels } });
+    }
     for (const f of data.facts) {
-      const outs = this.out.get(f.source) ?? [];
-      outs.push(f);
-      this.out.set(f.source, outs);
-      const inns = this.inn.get(f.target) ?? [];
-      inns.push(f);
-      this.inn.set(f.target, inns);
+      const fact: KgFact = { ...f };
+      const outs = this.out.get(fact.source) ?? [];
+      outs.push(fact);
+      this.out.set(fact.source, outs);
+      const inns = this.inn.get(fact.target) ?? [];
+      inns.push(fact);
+      this.inn.set(fact.target, inns);
     }
   }
 

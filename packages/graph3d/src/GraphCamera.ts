@@ -63,12 +63,12 @@ export interface GraphCameraOptions {
  * - **3D**: `THREE.PerspectiveCamera` with left-drag orbit, right/middle-drag
  *   pan, wheel dolly. Spherical angles stay clamped off the poles.
  *
- * The host owns the render loop; call {@link update} only if you change
- * `domElement` size via {@link setSize}. Pointer listeners are attached in the
- * constructor and removed by {@link dispose}.
+ * The host owns the render loop; call {@link setSize} when the canvas resizes.
+ * Pointer listeners are attached in the constructor and removed by {@link dispose}.
  *
- * Pair with {@link GraphInteraction} by passing {@link camera} and wiring
- * `setControlsEnabled` so a node drag does not also pan the view.
+ * Pair with {@link GraphInteraction} by passing `() => graphCamera.camera` (a
+ * getter, so {@link setMode} stays live) and wiring `setControlsEnabled` so a
+ * node drag does not also pan the view.
  */
 export class GraphCamera {
   private readonly ortho: THREE.OrthographicCamera;
@@ -214,7 +214,7 @@ export class GraphCamera {
 
   /**
    * Frame the given xyz-triplet positions (same layout as {@link Graph3D.applyPositions})
-   * with a small padding. No-op on empty input.
+   * with a small padding. No-op on empty input or when every coordinate is non-finite.
    */
   fitToPositions(positions: Float32Array, padding = 1.2): void {
     if (positions.length < 3) return;
@@ -224,10 +224,13 @@ export class GraphCamera {
     let maxX = -Infinity,
       maxY = -Infinity,
       maxZ = -Infinity;
+    let finite = 0;
     for (let i = 0; i < positions.length; i += 3) {
       const x = positions[i]!,
         y = positions[i + 1]!,
         z = positions[i + 2]!;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      finite += 1;
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (z < minZ) minZ = z;
@@ -235,6 +238,7 @@ export class GraphCamera {
       if (y > maxY) maxY = y;
       if (z > maxZ) maxZ = z;
     }
+    if (finite === 0) return;
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const cz = (minZ + maxZ) / 2;
@@ -396,6 +400,7 @@ export class GraphCamera {
       this.ortho.lookAt(this.target);
     } else {
       // Pan in the camera's local right/up plane, scaled by distance.
+      this.perspective.updateMatrixWorld(true);
       const right = new THREE.Vector3();
       const up = new THREE.Vector3();
       right.setFromMatrixColumn(this.perspective.matrixWorld, 0).normalize();

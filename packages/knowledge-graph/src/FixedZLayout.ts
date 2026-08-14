@@ -31,15 +31,13 @@ export class FixedZLayout implements GraphLayout {
 
   setGraph(data: GraphData): void {
     this.nodeCount = data.nodes.length;
-    // Seed z so the first step does not start from a random height.
-    for (const node of data.nodes) {
-      if (node.z === undefined && node.fz === undefined) node.z = this.z;
-      if (node.fz === undefined) {
-        // Prefer a soft seed over a hard pin so the host can still lift into 3D
-        // later by swapping layouts; FixedZLayout re-applies z every step anyway.
-      }
-    }
-    this.inner.setGraph(data);
+    // Do not mutate the caller's node objects — seed z only on a shallow copy
+    // of the nodes array so shared snapshots stay pristine.
+    const nodes = data.nodes.map((n) => {
+      if (n.z !== undefined || n.fz !== undefined) return n;
+      return { ...n, z: this.z };
+    });
+    this.inner.setGraph({ nodes, links: data.links });
     this.flatten();
   }
 

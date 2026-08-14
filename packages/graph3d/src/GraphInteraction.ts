@@ -2,11 +2,18 @@ import * as THREE from 'three';
 import type { Graph3D } from './Graph3D';
 import type { GraphLayout } from './layout/GraphLayout';
 
+/** Camera or a getter that always returns the live camera (needed when the
+ *  host swaps ortho/perspective via {@link GraphCamera.setMode}). */
+export type GraphInteractionCamera = THREE.Camera | (() => THREE.Camera);
+
 export interface GraphInteractionOptions {
   /** The renderer whose node cloud is hit-tested. */
   graph: Graph3D;
-  /** Camera the scene is viewed through — used to build picking rays. */
-  camera: THREE.Camera;
+  /**
+   * Camera the scene is viewed through — used to build picking rays.
+   * Pass a getter when the active camera can change (e.g. `() => graphCamera.camera`).
+   */
+  camera: GraphInteractionCamera;
   /**
    * Element pointer events are read from (usually the WebGL canvas). Its
    * bounding rect converts client coordinates to normalized device coords.
@@ -75,11 +82,16 @@ export interface GraphInteractionOptions {
  */
 export class GraphInteraction {
   private readonly graph: Graph3D;
-  private readonly camera: THREE.Camera;
+  private cameraRef: GraphInteractionCamera;
   private readonly domElement: HTMLElement;
   private readonly layout?: GraphLayout;
-  private readonly nodeCount: number;
+  private nodeCount: number;
   private readonly options: GraphInteractionOptions;
+
+  private get camera(): THREE.Camera {
+    const c = this.cameraRef;
+    return typeof c === 'function' ? c() : c;
+  }
 
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
@@ -106,7 +118,7 @@ export class GraphInteraction {
 
   constructor(options: GraphInteractionOptions) {
     this.graph = options.graph;
-    this.camera = options.camera;
+    this.cameraRef = options.camera;
     this.domElement = options.domElement;
     this.layout = options.layout;
     this.nodeCount = options.nodeCount ?? Number.POSITIVE_INFINITY;
@@ -129,11 +141,26 @@ export class GraphInteraction {
     return this.hoveredIndex;
   }
 
+  /**
+   * Replace the picking camera (or getter). Call after the host swaps the
+   * active camera without reconstructing this interaction.
+   */
+  public setCamera(camera: GraphInteractionCamera): void {
+    this.cameraRef = camera;
+  }
+
+  /** Raise/lower the index guard after the graph grows or shrinks. */
+  public setNodeCount(count: number): void {
+    this.nodeCount = count;
+  }
+
   private setPointerFromEvent(event: PointerEvent): void {
     const rect = this.domElement.getBoundingClientRect();
+    const w = Math.max(rect.width, 1);
+    const h = Math.max(rect.height, 1);
     this.pointerNdc.set(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      ((event.clientX - rect.left) / w) * 2 - 1,
+      -((event.clientY - rect.top) / h) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
   }
@@ -182,6 +209,9 @@ export class GraphInteraction {
     this.pressIndex = index;
     this.pressX = event.clientX;
     this.pressY = event.clientY;
+    // Disable host camera/pan immediately so the few pixels before the drag
+    // threshold are not eaten as a canvas pan (Obsidian-like node drag).
+    this.options.setControlsEnabled?.(false);
   };
 
   private readonly onPointerUp = (event: PointerEvent): void => {
@@ -197,6 +227,8 @@ export class GraphInteraction {
     if (this.pressIndex !== null) {
       const clicked = this.pressIndex;
       this.pressIndex = null;
+      // Re-enable camera: beginDrag never ran, so finishDrag won't.
+      this.options.setControlsEnabled?.(true);
       // Only count it as a click if the pointer is still over the same node.
       const stillOver = this.pick(event);
       this.options.onSelect?.(stillOver === clicked ? clicked : null);
@@ -212,6 +244,9 @@ export class GraphInteraction {
     this.pressActive = false;
     if (this.dragging && this.pressIndex !== null) {
       this.finishDrag(this.pressIndex, event);
+    } else if (this.pressIndex !== null) {
+      // Press on a node never became a drag — still re-enable the camera.
+      this.options.setControlsEnabled?.(true);
     }
     this.pressIndex = null;
   };
@@ -262,7 +297,9 @@ export class GraphInteraction {
     // pointer ray crosses it — the node tracks the cursor at its own depth.
     const nodePos = this.graph.getNodePosition(index, this.nodeWorld);
     if (!nodePos) return;
-    this.camera.getWorldDirection(this.planeNormal);
+    const cam = this.camera;
+    cam.updateMatrixWorld?.(true);
+    cam.getWorldDirection(this.planeNormal);
     this.dragPlane.setFromNormalAndCoplanarPoint(this.planeNormal, nodePos);
 
     this.setPointerFromEvent(event);

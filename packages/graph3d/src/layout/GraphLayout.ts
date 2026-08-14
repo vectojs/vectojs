@@ -19,9 +19,11 @@ export interface GraphLayout {
 
   /**
    * Advance the simulation by `iterations` ticks (default 1) and refresh
-   * {@link positions}. Returns `false` once the layout has cooled and further
-   * stepping would not meaningfully move nodes — callers use this to stop
-   * their tick loop.
+   * {@link positions}.
+   *
+   * **Return value (active, not settled):** `true` while the layout is still
+   * hot (further steps will move nodes); `false` once cooled. Callers stop
+   * their loop on `false` — e.g. `while (layout.step()) { … }`.
    */
   step(iterations?: number): boolean;
 
