@@ -4,3 +4,4 @@ export * from './layout/D3ForceLayout';
 export * from './layout/VectoForceLayout';
 export * from './Graph3D';
 export * from './GraphInteraction';
+export * from './GraphCamera';

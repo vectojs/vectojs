@@ -1,0 +1,58 @@
+{
+  "name": "@vectojs/knowledge-graph",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "RDF-driven knowledge-graph domain layer on @vectojs/graph3d: adapter contract, typed entities, 2D/3D mode, onDemand a11y.",
+  "keywords": [
+    "knowledge-graph",
+    "rdf",
+    "graph",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/knowledge-graph"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../graph3d && bun run build) && tsup src/index.ts --format cjs,esm --external @vectojs/graph3d --external three --external n3 --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vectojs/graph3d": "workspace:*",
+    "n3": "^1.26.0"
+  },
+  "peerDependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/n3": "^1.26.1",
+    "@types/three": "^0.185.3",
+    "jsdom": "^30.0.1",
+    "three": "^0.160.0",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}
