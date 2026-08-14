@@ -60,6 +60,23 @@ class ClientHost extends Entity {
   public override render(_r: IRenderer): void {}
 }
 
+/**
+ * Invisible titlebar drag surface. Must be its own interactive entity so the
+ * window root can stay `pointerEvents: 'none'` (otherwise the dialog a11y
+ * mirror covers the whole window, shows a pointer cursor everywhere, and
+ * steals clicks from chrome buttons and client content).
+ */
+class TitlebarDragHandle extends UIComponent {
+  public override getA11yAttributes(): A11yAttributes {
+    return {
+      role: 'button',
+      label: 'Move window',
+      tabIndex: -1,
+    };
+  }
+  public override render(_r: IRenderer): void {}
+}
+
 interface RestoredGeom {
   x: number;
   y: number;
@@ -89,6 +106,7 @@ export class DesktopWindow extends UIComponent {
   private readonly minBtn: Button;
   private readonly maxBtn: Button;
   private readonly closeBtn: Button;
+  private readonly dragHandle: TitlebarDragHandle;
   private readonly clientHost: Entity;
   private readonly content: Entity;
   private readonly onClose: (win: DesktopWindow) => void;
@@ -174,6 +192,19 @@ export class DesktopWindow extends UIComponent {
     this.titleLabel.a11yProjection = 'never';
     this.shell.add(this.titleLabel);
 
+    // Drag surface: titlebar minus chrome buttons. Interactive + eager a11y so
+    // the move hit target is always present without pinning the whole dialog.
+    this.dragHandle = new TitlebarDragHandle();
+    this.dragHandle.x = 0;
+    this.dragHandle.y = 0;
+    this.dragHandle.width = Math.max(0, this.width - this.chromeBtnStripWidth());
+    this.dragHandle.height = th;
+    this.dragHandle.interactive = true;
+    this.dragHandle.a11yProjection = 'eager';
+    this.dragHandle.on('pointerdown', (e: unknown) => this.beginTitlebarDrag(e as PointerCoords));
+    this.dragHandle.on('dblclick', () => this.toggleMaximize());
+    this.shell.add(this.dragHandle);
+
     this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this), true);
     this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize(), false);
     this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize(), false);
@@ -209,12 +240,10 @@ export class DesktopWindow extends UIComponent {
     this.clientHost.add(this.content);
     this.layoutClientContent();
 
-    this.on('pointerdown', (e: unknown) => this.handlePointerDown(e as PointerCoords));
-    this.on('dblclick', (e: unknown) => {
-      const ev = e as PointerCoords;
-      const localY = ev.localY ?? 0;
-      if (localY <= this.chrome.titlebarHeight) this.toggleMaximize();
-    });
+    // Resize edges still start from the window when a press lands on an edge
+    // handle region of the drag surface / frame. Edge hits use the drag handle
+    // plus a thin resize rim on the window via dedicated listeners below.
+    this.on('pointerdown', (e: unknown) => this.handleResizePointerDown(e as PointerCoords));
 
     this.onDocPointerMove = (e) => this.handleDocPointerMove(e);
     this.onDocPointerUp = () => this.handleDocPointerUp();
@@ -242,10 +271,11 @@ export class DesktopWindow extends UIComponent {
       height: 24,
       onClick,
     });
-    b.a11yProjection = 'onDemand';
+    // Eager: onDemand only materializes under the pointer on the *next* a11y
+    // sync, so the first click on a chrome button would miss. Always project.
+    b.a11yProjection = 'eager';
     const orig = b.getA11yAttributes.bind(b);
     b.getA11yAttributes = () => ({ ...orig(), label: aria });
-    // Stop the window titlebar-drag handler from seeing this press.
     b.on('pointerdown', (ev: PointerCoords) => {
       ev.stopPropagation?.();
     });
@@ -253,10 +283,14 @@ export class DesktopWindow extends UIComponent {
   }
 
   public override getA11yAttributes(): A11yAttributes {
+    // pointerEvents:none — the dialog mirror is for AT structure only. A full-
+    // window auto mirror sits above children, forces cursor:pointer everywhere,
+    // and eats clicks meant for chrome buttons and client controls.
     return {
       role: 'dialog',
       label: this.title,
       ariaModal: 'false',
+      pointerEvents: 'none',
     };
   }
 
@@ -353,6 +387,8 @@ export class DesktopWindow extends UIComponent {
     this.closeBtn.x = this.width - btnW - 8;
     this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
     this.minBtn.x = this.maxBtn.x - btnW - btnGap;
+    this.dragHandle.width = Math.max(0, this.width - this.chromeBtnStripWidth());
+    this.dragHandle.height = this.chrome.titlebarHeight;
     this.layoutClientContent();
     this.scene?.markDirty();
   }
@@ -409,56 +445,59 @@ export class DesktopWindow extends UIComponent {
     return false;
   }
 
-  private handlePointerDown(e: PointerCoords): void {
+  private scenePtOf(e: PointerCoords): { x: number; y: number } {
+    if (e.sceneX !== undefined && e.sceneY !== undefined) {
+      return { x: e.sceneX, y: e.sceneY };
+    }
+    return this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
+  }
+
+  /** Titlebar drag — fired on the dedicated drag-handle entity. */
+  private beginTitlebarDrag(e: PointerCoords): void {
     this.onFocus(this);
     if (this.minimized) return;
-    // Chrome buttons bubble pointerdown — do not start a drag.
-    const t = e.target;
-    if (t === this.closeBtn || t === this.maxBtn || t === this.minBtn) return;
-    if (t && this.isChromeButton(t)) return;
+    // local coords are relative to the drag handle (origin = titlebar left).
+    const lx = e.localX ?? 0;
+    if (this.maximized) {
+      const ratio = lx / Math.max(1, this.dragHandle.width);
+      this.restore();
+      const scenePt = this.scenePtOf(e);
+      this.x = scenePt.x - this.width * ratio;
+      this.y = scenePt.y - this.chrome.titlebarHeight / 2;
+    }
+    this.dragging = true;
+    const scenePt = this.scenePtOf(e);
+    this.dragOffsetX = scenePt.x - this.x;
+    this.dragOffsetY = scenePt.y - this.y;
+    this.attachDocPointers();
+  }
 
+  /**
+   * Edge resize from presses that hit the window root. With
+   * `pointerEvents: 'none'` on the dialog mirror this only runs for synthetic
+   * tests / rare canvas paths; edge handles can be added later for full resize UX.
+   */
+  private handleResizePointerDown(e: PointerCoords): void {
+    this.onFocus(this);
+    if (this.minimized) return;
+    const t = e.target;
+    if (t && this.isChromeButton(t)) return;
+    if (t === this.dragHandle) return;
     const lx = e.localX ?? 0;
     const ly = e.localY ?? 0;
-
     const edge = this.hitResizeEdge(lx, ly);
-    if (edge) {
-      this.resizing = edge;
-      const scenePt =
-        e.sceneX !== undefined && e.sceneY !== undefined
-          ? { x: e.sceneX, y: e.sceneY }
-          : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
-      this.resizeStart = {
-        x: this.x,
-        y: this.y,
-        w: this.width,
-        h: this.height,
-        px: scenePt.x,
-        py: scenePt.y,
-      };
-      this.attachDocPointers();
-      return;
-    }
-
-    if (this.titlebarDragHit(lx, ly)) {
-      if (this.maximized) {
-        const ratio = lx / Math.max(1, this.width);
-        this.restore();
-        const scenePt =
-          e.sceneX !== undefined && e.sceneY !== undefined
-            ? { x: e.sceneX, y: e.sceneY }
-            : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
-        this.x = scenePt.x - this.width * ratio;
-        this.y = scenePt.y - this.chrome.titlebarHeight / 2;
-      }
-      this.dragging = true;
-      const scenePt =
-        e.sceneX !== undefined && e.sceneY !== undefined
-          ? { x: e.sceneX, y: e.sceneY }
-          : this.scenePointFromClient(e.clientX ?? 0, e.clientY ?? 0);
-      this.dragOffsetX = scenePt.x - this.x;
-      this.dragOffsetY = scenePt.y - this.y;
-      this.attachDocPointers();
-    }
+    if (!edge) return;
+    this.resizing = edge;
+    const scenePt = this.scenePtOf(e);
+    this.resizeStart = {
+      x: this.x,
+      y: this.y,
+      w: this.width,
+      h: this.height,
+      px: scenePt.x,
+      py: scenePt.y,
+    };
+    this.attachDocPointers();
   }
 
   private attachDocPointers(): void {

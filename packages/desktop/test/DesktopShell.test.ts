@@ -285,16 +285,17 @@ describe('review fixes (CTX-0368)', () => {
     const win = shell.open('about');
     const startX = win.x;
     const startY = win.y;
-    // Synthetic Vecto-style event: local coords in window space, scene absolute.
-    win.emit('pointerdown', {
+    // Drag is owned by the titlebar handle entity (not the window root).
+    const handle = (win as unknown as { dragHandle: { emit: (t: string, e: object) => void } })
+      .dragHandle;
+    handle.emit('pointerdown', {
       localX: 20,
-      localY: 10, // inside titlebar
+      localY: 10,
       sceneX: startX + 20,
       sceneY: startY + 10,
       clientX: startX + 20,
       clientY: startY + 10,
     });
-    // Document move in client pixels (= scene when canvas origin 0 and scale 1)
     window.dispatchEvent(
       new PointerEvent('pointermove', {
         clientX: startX + 20 + 40,
@@ -351,7 +352,9 @@ describe('review fixes (CTX-0368)', () => {
     shell.start();
     const win = shell.open('about');
     const startX = win.x;
-    win.emit('pointerdown', {
+    const handle = (win as unknown as { dragHandle: { emit: (t: string, e: object) => void } })
+      .dragHandle;
+    handle.emit('pointerdown', {
       localX: 20,
       localY: 10,
       sceneX: startX + 20,
