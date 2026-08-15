@@ -23,6 +23,18 @@ export interface StartMenuOptions {
 }
 
 /**
+ * Panel height for a given app count — shared with {@link DesktopShell}
+ * so the shell's pre-positioning estimate can never drift from the real
+ * layout math.
+ */
+export function startMenuHeight(appCount: number): number {
+  const rowH = 36;
+  const pad = 8;
+  const headerH = 36;
+  return headerH + pad + appCount * (rowH + 4) + pad;
+}
+
+/**
  * Plasma Kickoff-lite: vertical app list panel. Opens above/below the Start
  * button; Escape / outside click is handled by the shell.
  */
@@ -43,7 +55,7 @@ export class StartMenu extends UIComponent {
     const rowH = 36;
     const pad = 8;
     const headerH = 36;
-    const height = headerH + pad + opts.apps.length * (rowH + 4) + pad;
+    const height = startMenuHeight(opts.apps.length);
 
     this.width = width;
     this.height = height;

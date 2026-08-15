@@ -42,7 +42,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.35.3",
+      "version": "1.36.0",
       "dependencies": {
         "@vectojs/animation": "^0.1.2",
         "@vectojs/layout": "^0.9.3",

@@ -4,9 +4,9 @@ import { AppRegistry } from './AppRegistry';
 import { DisplayLayout } from './DisplayLayout';
 import { resolveConfig } from './resolveConfig';
 import { ShortcutRouter } from './ShortcutRouter';
-import { StartMenu } from './StartMenu';
+import { StartMenu, startMenuHeight } from './StartMenu';
 import { Taskbar } from './Taskbar';
-import type { ResolvedWebosConfig, ShortcutAction, WebosConfig } from './types';
+import type { DesktopThemeTokens, ResolvedWebosConfig, ShortcutAction, WebosConfig } from './types';
 import type { Vfs } from './Vfs';
 import { type WindowChrome } from './Window';
 import { WindowManager } from './WindowManager';
@@ -51,8 +51,10 @@ class Wallpaper extends Entity {
   }
 
   public override render(r: IRenderer): void {
-    const w = this.scene?.width || this.width || 800;
-    const h = this.scene?.height || this.height || 600;
+    // Fill the entity's own box — the shell sizes it to the display union,
+    // which can differ from the scene size (offset/extra displays).
+    const w = this.width || this.scene?.width || 800;
+    const h = this.height || this.scene?.height || 600;
     r.beginPath();
     r.roundRect(0, 0, w, h, 0);
     r.fill(this.color);
@@ -92,7 +94,7 @@ export class DesktopShell {
   public readonly shortcuts: ShortcutRouter;
 
   private readonly wallpaper: Wallpaper;
-  private taskbar: Taskbar | null = null;
+  public taskbar: Taskbar | null = null;
   private startMenu: StartMenu | null = null;
   private started = false;
   private disposed = false;
@@ -164,21 +166,13 @@ export class DesktopShell {
 
   /**
    * Re-sync wallpaper / taskbar / primary display after the host Scene is
-   * resized. Call from the app's resize path (Scene has no resize event bus).
+   * resized. Reads the live scene size (Scene has no resize event bus).
    */
-  syncLayoutToScene(): void {
+  public syncLayoutToScene(): void {
     this.assertLive();
     const sw = this.scene.width || 800;
     const sh = this.scene.height || 600;
-    this.layout.updateSceneSize(sw, sh);
-    this.syncWallpaperSize();
-    if (this.taskbar) {
-      const bounds = this.layout.bounds();
-      const h = this.config.desktop.taskbarHeight;
-      const y =
-        this.config.desktop.taskbarPosition === 'top' ? bounds.y : bounds.y + bounds.height - h;
-      this.taskbar.setGeometry(bounds.width, y);
-    }
+    this.resize(sw, sh);
   }
 
   open(appId: string, opts?: Parameters<WindowManager['open']>[1]) {
@@ -221,12 +215,22 @@ export class DesktopShell {
   /** Update shell layout and reposition taskbar + wallpaper to fit new dimensions. */
   resize(sceneW: number, sceneH: number): void {
     this.assertLive();
-    this.layout.resize(sceneW, sceneH);
+    this.layout.updateSceneSize(sceneW, sceneH);
     this.syncWallpaperSize();
     if (this.taskbar) {
-      this.taskbar.resize(sceneW, sceneH);
+      const { width, y } = this.taskbarPlacement();
+      this.taskbar.setGeometry(width, y);
     }
     this.scene.markDirty();
+  }
+
+  /** Taskbar geometry from display bounds (single-display and multi-display agree). */
+  private taskbarPlacement(): { width: number; y: number } {
+    const bounds = this.layout.bounds();
+    const h = this.config.desktop.taskbarHeight;
+    const y =
+      this.config.desktop.taskbarPosition === 'top' ? bounds.y : bounds.y + bounds.height - h;
+    return { width: bounds.width, y };
   }
 
   dispose(): void {
@@ -252,9 +256,7 @@ export class DesktopShell {
   private mountTaskbar(): void {
     const h = this.config.desktop.taskbarHeight;
     if (h <= 0) return;
-    const bounds = this.layout.bounds();
-    const y =
-      this.config.desktop.taskbarPosition === 'top' ? bounds.y : bounds.y + bounds.height - h;
+    const { width, y } = this.taskbarPlacement();
     const t = this.config.theme;
     this.taskbar = new Taskbar({
       scene: this.scene,
@@ -269,7 +271,7 @@ export class DesktopShell {
         position: this.config.desktop.taskbarPosition,
       },
       onToggleStart: () => this.toggleStartMenu(),
-      width: bounds.width,
+      width,
       y,
     });
     this.scene.add(this.taskbar);
@@ -284,7 +286,7 @@ export class DesktopShell {
     const menuW = 240;
     // Position using a temporary geometry estimate; refine with the live
     // entity height after construction so shell and StartMenu cannot drift.
-    const estH = 36 + 8 + apps.length * (36 + 4) + 8;
+    const estH = startMenuHeight(apps.length);
     const x = bounds.x + 8;
     let y =
       this.config.desktop.taskbarPosition === 'top'
@@ -356,7 +358,12 @@ export class DesktopShell {
       // Don't close when pressing the start button (toggle handles it).
       if (this.taskbar) {
         const tb = this.taskbar;
-        if (lx >= tb.x && lx <= tb.x + 64 && ly >= tb.y && ly <= tb.y + tb.height) {
+        if (
+          lx >= tb.x &&
+          lx <= tb.x + tb.startButtonRight &&
+          ly >= tb.y &&
+          ly <= tb.y + tb.height
+        ) {
           return;
         }
       }

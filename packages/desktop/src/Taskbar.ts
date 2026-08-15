@@ -45,7 +45,8 @@ export class Taskbar extends UIComponent {
   private readonly entriesHost: Entity;
   private readonly unsub: () => void;
   private timer: number | null = null;
-  private entryButtons: Button[] = [];
+  private clockText = '';
+  private readonly entryButtons = new Map<DesktopWindow, Button>();
 
   constructor(opts: TaskbarOptions) {
     super();
@@ -121,11 +122,20 @@ export class Taskbar extends UIComponent {
 
   private updateClock(): void {
     const d = new Date();
+    // hh:mm only changes once a minute — 59 of 60 interval ticks are no-ops
+    // that must not wake an onDemand scene.
     const s = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (s === this.clockText) return;
+    this.clockText = s;
     this.clockLabel.setText(s);
     this.clockLabel.x = Math.max(0, this.width - 64);
     this.clockLabel.y = (this.height - 14) / 2;
     this.scene?.markDirty();
+  }
+
+  /** Right edge of the Start button in taskbar-local coordinates. */
+  public get startButtonRight(): number {
+    return this.startBtn.x + this.startBtn.width;
   }
 
   public override getA11yAttributes(): A11yAttributes {
@@ -144,48 +154,59 @@ export class Taskbar extends UIComponent {
   }
 
   public rebuild(): void {
-    for (const b of this.entryButtons) {
-      this.entriesHost.remove(b);
-      b.destroy();
-    }
-    this.entryButtons = [];
-
     const windows = this.wm.list();
     const btnH = Math.max(28, this.height - 8);
     const btnY = (this.height - btnH) / 2;
-    let x = 0;
     const maxW = 160;
     const gap = 6;
+    const live = new Set<DesktopWindow>();
 
+    let x = 0;
     for (const win of windows) {
-      const app = this.registry.get(win.appId);
-      const label = app?.icon ? `${app.icon} ${win.title}` : win.title;
       const focused = this.wm.focusedWindow === win && !win.minimized;
       const bg = focused ? this.chrome.active : win.minimized ? this.chrome.hover : this.chrome.bg;
-      const btn = new Button(truncate(label, 18), {
-        bg,
-        hoverBg: this.chrome.hover,
-        color: this.chrome.fg,
-        font: '600 12px sans-serif',
-        padding: 8,
-        radius: 6,
-        height: btnH,
-        onClick: () => this.onEntryClick(win),
-      });
-      btn.a11yProjection = 'eager';
-      btn.width = Math.min(maxW, Math.max(72, btn.width));
+      let btn = this.entryButtons.get(win);
+      if (!btn) {
+        const app = this.registry.get(win.appId);
+        const label = app?.icon ? `${app.icon} ${win.title}` : win.title;
+        btn = new Button(truncate(label, 18), {
+          bg,
+          hoverBg: this.chrome.hover,
+          color: this.chrome.fg,
+          font: '600 12px sans-serif',
+          padding: 8,
+          radius: 6,
+          height: btnH,
+          onClick: () => this.onEntryClick(win),
+        });
+        btn.a11yProjection = 'eager';
+        btn.width = Math.min(maxW, Math.max(72, btn.width));
+        btn.y = btnY;
+        const a11y = btn.getA11yAttributes.bind(btn);
+        btn.getA11yAttributes = () => ({
+          ...a11y(),
+          label: win.title,
+          // Live state: the previous build captured `focused` per rebuild,
+          // which forced a full destroy/recreate on every focus change.
+          selected: this.wm.focusedWindow === win && !win.minimized,
+        });
+        this.entriesHost.add(btn);
+        this.entryButtons.set(win, btn);
+      } else {
+        btn.bg = bg;
+        btn.y = btnY;
+      }
       btn.x = x;
-      btn.y = btnY;
-      const a11y = btn.getA11yAttributes.bind(btn);
-      btn.getA11yAttributes = () => ({
-        ...a11y(),
-        label: win.title,
-        selected: focused,
-      });
-      this.entriesHost.add(btn);
-      this.entryButtons.push(btn);
+      live.add(win);
       x += btn.width + gap;
       if (x > this.entriesHost.width) break;
+    }
+
+    for (const [win, btn] of this.entryButtons) {
+      if (live.has(win)) continue;
+      this.entriesHost.remove(btn);
+      btn.destroy();
+      this.entryButtons.delete(win);
     }
     this.scene?.markDirty();
   }
@@ -196,12 +217,6 @@ export class Taskbar extends UIComponent {
       return;
     }
     this.wm.focus(win);
-  }
-
-  public resize(sceneW: number, sceneH: number): void {
-    const y = this.chrome.position === 'top' ? 0 : Math.max(0, sceneH - this.chrome.height);
-    this.setGeometry(sceneW, y);
-    this.scene?.markDirty();
   }
 
   public override destroy(): void {

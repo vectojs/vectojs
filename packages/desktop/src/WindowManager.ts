@@ -2,7 +2,12 @@ import type { Scene } from '@vectojs/core';
 import type { AppRegistry } from './AppRegistry';
 import type { DisplayLayout } from './DisplayLayout';
 import type { Vfs } from './Vfs';
-import { DesktopWindow, type WindowChrome } from './Window';
+import {
+  DesktopWindow,
+  DEFAULT_WINDOW_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
+  type WindowChrome,
+} from './Window';
 
 export interface OpenWindowOptions {
   title?: string;
@@ -103,8 +108,8 @@ export class WindowManager {
     const displayId = opts.displayId ?? this.layout.primary().id;
     const area = this.layout.workArea(displayId);
     const offset = (this.cascade++ % 8) * 28;
-    const width = opts.width ?? app.defaultWidth ?? 480;
-    const height = opts.height ?? app.defaultHeight ?? 340;
+    const width = opts.width ?? app.defaultWidth ?? DEFAULT_WINDOW_WIDTH;
+    const height = opts.height ?? app.defaultHeight ?? DEFAULT_WINDOW_HEIGHT;
     const x = opts.x ?? area.x + 64 + offset;
     const y = opts.y ?? area.y + 64 + offset;
     const clamped = this.layout.clampRect(x, y, width, height, displayId);
