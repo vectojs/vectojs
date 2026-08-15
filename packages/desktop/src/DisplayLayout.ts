@@ -40,13 +40,6 @@ export class DisplayLayout {
     return this.displays[0]!;
   }
 
-  resize(sceneW: number, sceneH: number): void {
-    if (this.displays.length === 1 && this.displays[0]!.id === 'primary') {
-      this.displays[0]!.width = sceneW;
-      this.displays[0]!.height = sceneH;
-    }
-  }
-
   get(id: string): DisplaySpec | undefined {
     return this.displays.find((d) => d.id === id);
   }

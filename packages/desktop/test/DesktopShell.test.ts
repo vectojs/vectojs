@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
-import { Text } from '@vectojs/ui';
-import { DesktopShell, MemoryVfs, type AppDefinition } from '../src';
+import { Button, Text } from '@vectojs/ui';
+import { DesktopShell, MemoryVfs, StartMenu, startMenuHeight, type AppDefinition } from '../src';
 
 function fakeCtx(): CanvasRenderingContext2D {
   return new Proxy(
@@ -482,5 +482,128 @@ describe('review fixes (CTX-0368)', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(scene.overlayRoot.children.length).toBe(0);
     shell.dispose();
+  });
+});
+
+describe('polish pass (CTX-0376)', () => {
+  it('taskbar entries update in place across focus changes', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp, notesApp] },
+    });
+    shell.start();
+    const a = shell.open('about');
+    const n = shell.open('notes');
+
+    const destroySpy = vi.spyOn(Button.prototype, 'destroy');
+    shell.windowManager.focus(a);
+    expect(destroySpy).not.toHaveBeenCalled();
+    destroySpy.mockRestore();
+
+    // Closing a window removes its taskbar entry; the survivor stays.
+    // (Buttons include the Start button — count only window entries.)
+    const taskButtons = (): Button[] => {
+      const out: Button[] = [];
+      const walk = (e: Entity | null | undefined): void => {
+        if (!e) return;
+        if (e instanceof Button && (e.label.includes(a.title) || e.label.includes(n.title))) {
+          out.push(e);
+        }
+        for (const c of e.children) walk(c);
+      };
+      walk(shell.taskbar);
+      return out;
+    };
+    expect(taskButtons()).toHaveLength(2);
+    shell.windowManager.close(n);
+    expect(taskButtons()).toHaveLength(1);
+    expect(taskButtons()[0]!.label).toContain(a.title);
+    shell.dispose();
+  });
+
+  it('taskbar clock repaints only when the minute changes', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00'));
+    try {
+      const scene = makeScene();
+      const shell = new DesktopShell({
+        scene,
+        config: { apps: [aboutApp] },
+      });
+      shell.start();
+      const spy = vi.spyOn(scene, 'markDirty');
+
+      // Same displayed minute — the 1s interval must be a no-op.
+      vi.setSystemTime(new Date('2026-06-01T12:00:30'));
+      vi.advanceTimersByTime(1000);
+      expect(spy).not.toHaveBeenCalled();
+
+      // Minute flips — one repaint.
+      vi.setSystemTime(new Date('2026-06-01T12:01:00'));
+      vi.advanceTimersByTime(1000);
+      expect(spy).toHaveBeenCalled();
+      shell.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves the window with arrow keys on the titlebar handle', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp], desktop: { taskbarHeight: 0 } },
+    });
+    shell.start();
+    const win = shell.open('about');
+    const x0 = win.x;
+    const y0 = win.y;
+    const handle = (win as unknown as { dragHandle: { emit: (t: string, e: object) => void } })
+      .dragHandle;
+    const preventDefault = vi.fn();
+
+    handle.emit('keydown', { key: 'ArrowRight', preventDefault });
+    expect(win.x).toBeCloseTo(x0 + 16, 0);
+    expect(preventDefault).toHaveBeenCalled();
+
+    handle.emit('keydown', { key: 'ArrowDown', shiftKey: true, preventDefault });
+    expect(win.y).toBeCloseTo(y0 + 1, 0);
+
+    // Non-move keys are ignored.
+    handle.emit('keydown', { key: 'Enter', preventDefault });
+    expect(win.x).toBeCloseTo(x0 + 16, 0);
+    shell.dispose();
+  });
+
+  it('resize path repurposes the taskbar to the new scene size', () => {
+    const scene = makeScene(800, 600);
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [aboutApp], desktop: { taskbarHeight: 40 } },
+    });
+    shell.start();
+    expect(shell.taskbar?.width).toBe(800);
+
+    scene.resize(1200, 900);
+    shell.resize(1200, 900);
+    expect(shell.taskbar?.width).toBe(1200);
+    expect(shell.taskbar?.y).toBe(860);
+    shell.dispose();
+  });
+
+  it('startMenuHeight matches the real panel height', () => {
+    const scene = makeScene();
+    const menu = new StartMenu({
+      scene,
+      apps: [aboutApp, notesApp],
+      chrome: { bg: '#111', border: '#222', fg: '#eee', hover: '#333', radius: 8 },
+      onLaunch: () => {},
+      onClose: () => {},
+      x: 0,
+      y: 0,
+    });
+    expect(menu.height).toBe(startMenuHeight(2));
+    menu.destroy();
   });
 });

@@ -36,8 +36,9 @@ export interface WindowOptions {
   onStateChange?: (win: DesktopWindow) => void;
 }
 
-const DEFAULT_W = 480;
-const DEFAULT_H = 340;
+/** Default outer window size when neither the app nor the opener specifies one. */
+export const DEFAULT_WINDOW_WIDTH = 480;
+export const DEFAULT_WINDOW_HEIGHT = 340;
 
 type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
@@ -53,11 +54,60 @@ interface PointerCoords {
   stopPropagation?: () => void;
 }
 
+/** Subset of VectoJSEvent keyboard fields used by the titlebar drag handle. */
+interface KeyboardMoveEvent {
+  key?: string;
+  shiftKey?: boolean;
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+}
+
 class ClientHost extends Entity {
   public override isPointInside(): boolean {
     return false;
   }
   public override render(_r: IRenderer): void {}
+}
+
+/**
+ * Corner grip marks drawn while a window is focused and restorable so the
+ * edge/corner resize targets (a 6px rim on the window root) are discoverable.
+ */
+class ResizeGrips extends Entity {
+  constructor(
+    private readonly visible: () => boolean,
+    private readonly color: () => string,
+  ) {
+    super();
+    this.interactive = false;
+    this.a11yProjection = 'never';
+  }
+
+  public override isPointInside(): boolean {
+    return false;
+  }
+
+  public override render(r: IRenderer): void {
+    if (!this.visible()) return;
+    const g = 6;
+    const len = 12;
+    const w = this.width;
+    const h = this.height;
+    const color = this.color();
+    const corners = [
+      { x: g, y: g, sx: -1, sy: -1 },
+      { x: w - g, y: g, sx: 1, sy: -1 },
+      { x: g, y: h - g, sx: -1, sy: 1 },
+      { x: w - g, y: h - g, sx: 1, sy: 1 },
+    ];
+    for (const c of corners) {
+      r.beginPath();
+      r.moveTo(c.x + c.sx * len, c.y);
+      r.lineTo(c.x, c.y);
+      r.lineTo(c.x, c.y + c.sy * len);
+      r.stroke(color, 1.5);
+    }
+  }
 }
 
 /**
@@ -71,7 +121,7 @@ class TitlebarDragHandle extends UIComponent {
     return {
       role: 'button',
       label: 'Move window',
-      tabIndex: -1,
+      tabIndex: 0,
     };
   }
   public override render(_r: IRenderer): void {}
@@ -107,6 +157,7 @@ export class DesktopWindow extends UIComponent {
   private readonly maxBtn: Button;
   private readonly closeBtn: Button;
   private readonly dragHandle: TitlebarDragHandle;
+  private readonly grips: ResizeGrips;
   private readonly clientHost: Entity;
   private readonly content: Entity;
   private readonly onClose: (win: DesktopWindow) => void;
@@ -140,8 +191,8 @@ export class DesktopWindow extends UIComponent {
     this.onStateChange = opts.onStateChange;
     this.workArea = opts.workArea;
 
-    this.width = opts.width ?? DEFAULT_W;
-    this.height = opts.height ?? DEFAULT_H;
+    this.width = opts.width ?? DEFAULT_WINDOW_WIDTH;
+    this.height = opts.height ?? DEFAULT_WINDOW_HEIGHT;
     this.x = opts.x ?? 48;
     this.y = opts.y ?? 48;
     this.interactive = true;
@@ -203,6 +254,7 @@ export class DesktopWindow extends UIComponent {
     this.dragHandle.a11yProjection = 'eager';
     this.dragHandle.on('pointerdown', (e: unknown) => this.beginTitlebarDrag(e as PointerCoords));
     this.dragHandle.on('dblclick', () => this.toggleMaximize());
+    this.dragHandle.on('keydown', (e: unknown) => this.handleMoveKey(e as KeyboardMoveEvent));
     this.shell.add(this.dragHandle);
 
     this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this), true);
@@ -218,6 +270,14 @@ export class DesktopWindow extends UIComponent {
     this.shell.add(this.minBtn);
     this.shell.add(this.maxBtn);
     this.shell.add(this.closeBtn);
+
+    this.grips = new ResizeGrips(
+      () => this.focused && !this.maximized && !this.minimized,
+      () => this.chrome.focusRing,
+    );
+    this.grips.a11yProjection = 'never';
+    this.shell.add(this.grips);
+    this.sizeGrips();
 
     this.clientHost = new ClientHost();
     this.clientHost.x = 0;
@@ -403,8 +463,14 @@ export class DesktopWindow extends UIComponent {
     this.minBtn.x = this.maxBtn.x - btnW - btnGap;
     this.dragHandle.width = Math.max(0, this.width - this.chromeBtnStripWidth());
     this.dragHandle.height = this.chrome.titlebarHeight;
+    this.sizeGrips();
     this.layoutClientContent();
     this.scene?.markDirty();
+  }
+
+  private sizeGrips(): void {
+    this.grips.width = this.width;
+    this.grips.height = this.height;
   }
 
   /** Stretch the app root to the client host box when it exposes width/height. */
@@ -438,15 +504,6 @@ export class DesktopWindow extends UIComponent {
     if (nearL) return 'w';
     if (nearR) return 'e';
     return null;
-  }
-
-  private titlebarDragHit(lx: number, ly: number): boolean {
-    return (
-      ly >= 0 &&
-      ly <= this.chrome.titlebarHeight &&
-      lx >= 0 &&
-      lx < this.width - this.chromeBtnStripWidth()
-    );
   }
 
   private isChromeButton(node: Entity): boolean {
@@ -487,9 +544,11 @@ export class DesktopWindow extends UIComponent {
   }
 
   /**
-   * Edge resize from presses that hit the window root. With
-   * `pointerEvents: 'none'` on the dialog mirror this only runs for synthetic
-   * tests / rare canvas paths; edge handles can be added later for full resize UX.
+   * Edge resize from presses that hit the window root. Children own their
+   * points first — the titlebar handle and chrome buttons absorb their own
+   * hits, and `ClientHost.isPointInside()` is false so client-area presses
+   * fall through to the root — so only the 6px rim around the frame lands
+   * here. `maximized` windows have no rim (hitResizeEdge returns null).
    */
   private handleResizePointerDown(e: PointerCoords): void {
     this.onFocus(this);
@@ -533,14 +592,54 @@ export class DesktopWindow extends UIComponent {
       return;
     }
     if (!this.dragging) return;
-    let nx = scenePt.x - this.dragOffsetX;
-    let ny = scenePt.y - this.dragOffsetY;
+    const { x, y } = this.clampMovePosition(
+      scenePt.x - this.dragOffsetX,
+      scenePt.y - this.dragOffsetY,
+    );
+    this.x = x;
+    this.y = y;
+    this.scene?.markDirty();
+  }
+
+  /**
+   * Keyboard move — the titlebar drag handle is tabbable (tabIndex 0), so an
+   * AT or power user can arrow the window around (Shift = 1px fine move).
+   */
+  private handleMoveKey(e: KeyboardMoveEvent): void {
+    const step = e.shiftKey ? 1 : 16;
+    let dx = 0;
+    let dy = 0;
+    switch (e.key) {
+      case 'ArrowLeft':
+        dx = -step;
+        break;
+      case 'ArrowRight':
+        dx = step;
+        break;
+      case 'ArrowUp':
+        dy = -step;
+        break;
+      case 'ArrowDown':
+        dy = step;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault?.();
+    e.stopPropagation?.();
+    if (this.maximized || this.minimized) return;
+    const { x, y } = this.clampMovePosition(this.x + dx, this.y + dy);
+    this.x = x;
+    this.y = y;
+    this.scene?.markDirty();
+  }
+
+  /** Clamp a move so the titlebar (and 48px of frame) stays inside the work area. */
+  private clampMovePosition(nx: number, ny: number): { x: number; y: number } {
     const area = this.workArea();
     nx = Math.min(Math.max(nx, area.x - this.width + 48), area.x + area.width - 48);
     ny = Math.min(Math.max(ny, area.y), area.y + area.height - this.chrome.titlebarHeight);
-    this.x = nx;
-    this.y = ny;
-    this.scene?.markDirty();
+    return { x: nx, y: ny };
   }
 
   private applyResize(sceneX: number, sceneY: number): void {

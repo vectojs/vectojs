@@ -50,4 +50,18 @@ describe('ShortcutRouter', () => {
     expect(ev.defaultPrevented).toBe(true);
     r.detach();
   });
+
+  it('ignores key-repeat events', () => {
+    const handler = vi.fn();
+    const r = new ShortcutRouter({
+      'Control+n': { type: 'open-app', appId: 'notes' },
+    });
+    r.setHandler(handler);
+    r.attach();
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true, repeat: true }),
+    );
+    expect(handler).not.toHaveBeenCalled();
+    r.detach();
+  });
 });

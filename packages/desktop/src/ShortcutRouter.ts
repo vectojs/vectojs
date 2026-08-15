@@ -100,6 +100,10 @@ export class ShortcutRouter {
 
   private handleEvent(e: KeyboardEvent): void {
     if (e.defaultPrevented) return;
+    // Holding a chord must not fire the action repeatedly — `'single'` apps
+    // focus the existing window anyway, but `'multiple'` apps would spawn one
+    // window per repeat event.
+    if (e.repeat) return;
     const target = e.target as HTMLElement | null;
     const tag = target?.tagName;
     const editable =

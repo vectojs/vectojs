@@ -58,6 +58,8 @@ shell.open('about');
 | Surface       | Behaviour                                                                  |
 | ------------- | -------------------------------------------------------------------------- |
 | Window chrome | Titlebar drag, min / max / close (LTR order), edge+corner resize           |
+| Keyboard move | Tab to the titlebar handle, arrow keys move the window (Shift = 1px steps) |
+| Resize        | 6px rim hit zone on the frame; corner grips drawn while focused            |
 | Maximize      | Fills display **work area** (display minus taskbar); double-click titlebar |
 | Minimize      | Hides window; taskbar entry restores                                       |
 | Task Manager  | One entry per window; click active → minimize; click other → focus         |
