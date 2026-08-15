@@ -29,6 +29,8 @@
   <a href="https://www.npmjs.com/package/@vectojs/devtools"><img alt="devtools" src="https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/graph3d"><img alt="graph3d" src="https://img.shields.io/npm/v/@vectojs/graph3d?label=graph3d&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/video-exporter"><img alt="video-exporter" src="https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/desktop"><img alt="desktop" src="https://img.shields.io/npm/v/@vectojs/desktop?label=desktop&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/knowledge-graph"><img alt="knowledge-graph" src="https://img.shields.io/npm/v/@vectojs/knowledge-graph?label=knowledge-graph&color=22d3ee"></a>
 </p>
 
 > Render only what is visible, materialize only what is usable, retain only what is necessary.
@@ -63,20 +65,22 @@ shape, glyph, point, or row.
 
 ## Packages
 
-| Package                                                | Purpose                                                                                                                        |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| [`@vectojs/core`](./packages/core)                     | Scene/Entity runtime, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support; re-exports the engines below |
-| [`@vectojs/text`](./packages/text)                     | Standalone text-shaping primitives: BiDi, Arabic shaping, CSS-parity typography, MSDF fonts, prepared content grids            |
-| [`@vectojs/layout`](./packages/layout)                 | Standalone layout engine: line breaking, BiDi-aware inline layout, exclusion flow, off-thread layout worker                    |
-| [`@vectojs/math`](./packages/math)                     | Standalone spatial/physics math: spatial hash grid broad-phase and spring physics                                              |
-| [`@vectojs/animation`](./packages/animation)           | Standalone easing library plus tween and spring value drivers                                                                  |
-| [`@vectojs/tex`](./packages/tex)                       | Zero-DOM TeX math typesetting: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer                       |
-| [`@vectojs/ui`](./packages/ui)                         | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
-| [`@vectojs/markdown`](./packages/markdown)             | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + `@vectojs/tex`          |
-| [`@vectojs/three`](./packages/three)                   | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
-| [`@vectojs/devtools`](./packages/devtools)             | In-page Virtual Math Tree inspector plus a headless audit/snapshot layer for tests and CI                                      |
-| [`@vectojs/graph3d`](./packages/graph3d)               | 3D force-directed graph rendering on instanced Three.js, with an in-house dependency-free Barnes-Hut layout                    |
-| [`@vectojs/video-exporter`](./packages/video-exporter) | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
+| Package                                                  | Purpose                                                                                                                        |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| [`@vectojs/core`](./packages/core)                       | Scene/Entity runtime, events, hit-testing, accessibility projection, Canvas/WebGL/WebGPU support; re-exports the engines below |
+| [`@vectojs/text`](./packages/text)                       | Standalone text-shaping primitives: BiDi, Arabic shaping, CSS-parity typography, MSDF fonts, prepared content grids            |
+| [`@vectojs/layout`](./packages/layout)                   | Standalone layout engine: line breaking, BiDi-aware inline layout, exclusion flow, off-thread layout worker                    |
+| [`@vectojs/math`](./packages/math)                       | Standalone spatial/physics math: spatial hash grid broad-phase and spring physics                                              |
+| [`@vectojs/animation`](./packages/animation)             | Standalone easing library plus tween and spring value drivers                                                                  |
+| [`@vectojs/tex`](./packages/tex)                         | Zero-DOM TeX math typesetting: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer                       |
+| [`@vectojs/ui`](./packages/ui)                           | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
+| [`@vectojs/markdown`](./packages/markdown)               | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + `@vectojs/tex`          |
+| [`@vectojs/three`](./packages/three)                     | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
+| [`@vectojs/devtools`](./packages/devtools)               | In-page Virtual Math Tree inspector plus a headless audit/snapshot layer for tests and CI                                      |
+| [`@vectojs/graph3d`](./packages/graph3d)                 | 3D force-directed graph rendering on instanced Three.js, with an in-house dependency-free Barnes-Hut layout                    |
+| [`@vectojs/video-exporter`](./packages/video-exporter)   | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
+| [`@vectojs/desktop`](./packages/desktop)                 | Desktop-environment runtime: window manager, taskbar, start menu, shortcut router, display layout, app registry, memory VFS    |
+| [`@vectojs/knowledge-graph`](./packages/knowledge-graph) | 2D interactive knowledge-graph viewport: d3-force layout, camera pan/zoom, minimap, hover/filter, on-demand rendering          |
 
 ## Install
 
@@ -169,8 +173,11 @@ static forms, or applications that do not benefit from a retained scene graph.
 1. Add `Entity` instances to a `Scene`.
 2. Layout resolves local boxes and transforms.
 3. Dirty scenes render through the selected backend.
-4. Pointer input is mapped into scene coordinates, spatially queried, then dispatched through
-   capture and bubble phases.
+4. Pointer input arrives through the semantic layer: the projected shadow elements carry
+   `pointerdown/move/up`, `click`, and `dblclick` into capture/bubble dispatch on the entity tree
+   (the canvas itself only tracks the pointer position). Entities without a materialized shadow
+   node (`a11yProjection: 'never'`, or `'onDemand'` before engagement) receive no pointer events;
+   canvas hit-testing (`scene.findEntityAt`) is a query API, not a dispatch path.
 5. Interactive entities synchronize role/name/state and native input through the semantic layer.
 
 Read the [core guide](https://vectojs.org/learn/core-scene/) for lifecycle and rendering, and
@@ -202,12 +209,13 @@ skills that teach coding agents the VectoJS paradigm — most importantly
 `vectojs-paradigm`, which replaces HTML/CSS instincts with scene-graph thinking and a
 state-space debugging ladder (inspect numbers and `getA11yTree()` before reaching for
 screenshots). Skills also cover the core runtime, responsive layout, UI/animation, performance,
-Three.js embedding, the devtools inspector, 3D force-directed graphs, and the video exporter.
+Three.js embedding, the devtools inspector, 3D force-directed graphs, 2D knowledge graphs, and
+the video exporter.
 Install them into `.claude/skills` or `.agents/skills` of any project that uses VectoJS.
 
 ## Demos
 
-Two separate repositories host live, source-available demos.
+Three separate repositories host live, source-available demos.
 [vectojs-gallery](https://github.com/vectojs/vectojs-gallery) — itself rendered entirely on one
 canvas — is the showcase at [gallery.vectojs.org](https://gallery.vectojs.org):
 
@@ -222,6 +230,11 @@ canvas — is the showcase at [gallery.vectojs.org](https://gallery.vectojs.org)
 [vectojs-website](https://github.com/vectojs/vectojs-website) hosts the documentation plus the
 danmaku stress test (thousands of individually interactive, accessible comments) and a
 canvas-rendered Pool CAPTCHA.
+
+[vectojs-webos](https://github.com/vectojs/webos) is a full desktop environment — windows,
+taskbar, start menu, ten built-in apps — built on `@vectojs/desktop`, live at
+[webos.vectojs.org](https://webos.vectojs.org) and intended as the seed for a
+`create-webos` scaffold.
 
 Performance depends on renderer, entity shape, text, hardware, and workload. Use the checked-in
 benchmarks instead of treating demo counts as universal guarantees.
