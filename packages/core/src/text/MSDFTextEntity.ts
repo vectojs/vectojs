@@ -96,8 +96,8 @@ export class MSDFTextEntity extends Entity {
    *
    * Measured on Chromium and Firefox (2026-07-31) with a 600 ms atlas: the
    * scene's own rAF loop never uploaded a decoded atlas in EITHER render mode.
-   * `onDemand` skips idle frames outright; `always` throttles to 2 FPS when
-   * idle, so whether it recovers is down to whether a throttled tick happens to
+   * `onDemand` skips idle frames outright; `always` throttles to the idle FPS
+   * floor when idle, so whether it recovers is down to whether a throttled tick happens to
    * land after the decode — Chromium got one, Firefox did not. Neither is a
    * mechanism, which is why this listener exists rather than relying on the
    * frame loop to come back around.

@@ -241,7 +241,7 @@ describe('dev warnings — Scene.devMode', () => {
   it('warns on an unknown SceneOptions key and names the closest real one', () => {
     const canvas = document.createElement('canvas');
     // `renderMode` is a field, not an option — the exact mistake that shipped
-    // four motif demos repainting at core's 2fps idle floor while their source
+    // four motif demos repainting at core's idle FPS floor while their source
     // read `renderMode: 'onDemand'`.
     new Scene(canvas, {
       disableWindowResize: true,
@@ -296,6 +296,7 @@ describe('dev warnings — Scene.devMode', () => {
       contentSemanticMargin: 20,
       debugA11y: false,
       disableWindowResize: true,
+      idleFPS: 2,
       maxDPR: 2,
       maxFPS: 30,
       particleBackend: 'cpu',

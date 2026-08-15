@@ -237,10 +237,22 @@ export interface SceneOptions {
    */
   maxDPR?: number;
   /**
-   * Enable automatic throttling to 2 FPS when the scene is static (no active transitions
-   * and not marked dirty) to save power/CPU. Default is `true`.
+   * Enable automatic throttling of the `'always'` loop when the scene is
+   * static (no active transitions and not marked dirty) to save power/CPU.
+   * The idle floor is 60 FPS by default; raise or lower it with
+   * {@link SceneOptions.idleFPS}. Default is `true`.
    */
   autoThrottle?: boolean;
+  /**
+   * Frame-rate floor for an idle `'always'` scene when
+   * {@link SceneOptions.autoThrottle} is on. Default `60` — an idle scene
+   * keeps animating smoothly instead of stuttering at the old 2 FPS floor.
+   * Set e.g. `2` to restore the aggressive deep sleep for battery-critical
+   * scenes (the developer's explicit choice); `0` means "keep the scene's
+   * `maxFPS` cadence while idle". Ignored when `autoThrottle` is `false` or
+   * `renderMode` is `'onDemand'` (onDemand already renders zero idle frames).
+   */
+  idleFPS?: number;
   /**
    * Emit User Timing marks and measures for render phases. Default `false`.
    * Intended for short profiler captures; enable only while collecting one.
@@ -335,8 +347,9 @@ export interface SceneOptions {
   readingDirection?: 'ltr' | 'rtl';
   /**
    * When to repaint:
-   * - `'always'` (default): drive a continuous rAF loop, throttling to 2 FPS
-   *   while the scene is idle if {@link SceneOptions.autoThrottle} is on.
+   * - `'always'` (default): drive a continuous rAF loop, throttling to the
+   *   {@link SceneOptions.idleFPS} floor (default 60) while the scene is idle
+   *   if {@link SceneOptions.autoThrottle} is on.
    * - `'onDemand'`: paint only after {@link Scene.markDirty} (or an active
    *   transition), so a genuinely static scene costs zero frames.
    *
@@ -357,7 +370,7 @@ export interface SceneOptions {
  * plain untranspiled JS, gets no diagnostic at all. `renderMode` was a public
  * field with no matching option for several releases, and four `@vectojs` demos
  * shipped `new Scene(canvas, { renderMode: 'onDemand' })` — reading correctly,
- * doing nothing, and sitting on the 2 FPS idle floor.
+ * doing nothing, and sitting on the idle FPS floor.
  *
  * Kept as a literal rather than derived from a type: `keyof SceneOptions` does
  * not survive to runtime, so this list is the only form a constructor can check
@@ -373,6 +386,7 @@ export const SCENE_OPTION_KEYS = [
   'contentSemanticMargin',
   'debugA11y',
   'disableWindowResize',
+  'idleFPS',
   'maxDPR',
   'maxFPS',
   'particleBackend',
@@ -1171,8 +1185,17 @@ export class Scene {
     if (value) this._dirty.mark(undefined, this.currentFrame);
     else this._dirty.clear();
   }
-  /** Whether to throttle rendering to 2 FPS when the scene is static to save power. */
+  /**
+   * Whether to throttle the `'always'` loop when the scene is static to save
+   * power. The idle floor is {@link Scene.idleFPS} (default 60).
+   */
   public autoThrottle: boolean = true;
+  /**
+   * Frame-rate floor for an idle `'always'` scene when {@link Scene.autoThrottle}
+   * is on. Default `60`. Set `2` for the legacy aggressive idle sleep, `0` to
+   * keep the scene's `maxFPS` cadence while idle.
+   */
+  public idleFPS: number = 60;
 
   // --- Frame telemetry (read via `frameStats`) ---------------------------
   /** Wall-clock ms spent inside the last `render()` call. */
@@ -2205,6 +2228,7 @@ export class Scene {
     this.maxFPS = options.maxFPS ?? (isTest ? 0 : 60);
     this.respectReducedMotion = options.respectReducedMotion ?? true;
     this.autoThrottle = options.autoThrottle ?? true;
+    this.idleFPS = options.idleFPS ?? 60;
     this.phases.userTiming = options.userTiming ?? false;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
@@ -5187,9 +5211,10 @@ export class Scene {
 
     // Idle = nothing marked dirty and no animation in flight. This drives two
     // independent behaviors: the onDemand frame skip (always active in that
-    // mode) and the `always`-mode 2 FPS auto-throttle (opt-out via
-    // `autoThrottle` — it must NOT gate the onDemand skip, or disabling the
-    // throttle would silently turn onDemand into per-frame rendering).
+    // mode) and the `always`-mode idle auto-throttle down to `idleFPS`
+    // (opt-out via `autoThrottle` — it must NOT gate the onDemand skip, or
+    // disabling the throttle would silently turn onDemand into per-frame
+    // rendering).
     // Flags come from the last rendered frame (collected during the render
     // walk). Skipped frames change no state, so they stay valid while idle;
     // anything that starts motion marks the scene dirty, which wakes the loop
@@ -5197,14 +5222,15 @@ export class Scene {
     // A sync that deferred resident blocks is NOT idle: the document is still
     // materializing and needs further frames to finish. Without this, `onDemand`
     // would skip the frame outright and `autoThrottle` would drop an `always`
-    // scene to 2 FPS — at a 64-block budget, 1000 blocks would then take 16 syncs
-    // across 8 seconds, so text would sit unfindable long after it looked done.
+    // scene to `idleFPS` — at a 64-block budget, 1000 blocks would then need
+    // many syncs spread across seconds, so text would sit unfindable long
+    // after it looked done.
     // Deliberately NOT `markDirty()`: materializing off-viewport DOM changes no
     // pixel, so requesting a canvas repaint would be a lie about the frame.
     const isIdle = !this.dirty && !this.frameHadAnimation && !this.contentSemanticDeferred;
 
     if (isIdle && this.autoThrottle && this.renderMode === 'always' && this.maxFPS > 0) {
-      cap = Math.min(cap, 2);
+      cap = Math.min(cap, this.idleFPS);
     }
 
     // Frame-rate cap (power saving / prefers-reduced-motion): if this frame
@@ -5612,7 +5638,7 @@ export class Scene {
           this._devWarn(
             `Entity "${node.id}" overrides update() but not hasPendingAnimations(). ` +
               'Custom motion in update() without overriding hasPendingAnimations() causes ' +
-              'the idle throttle to drop the animation to ~2fps. ' +
+              'the idle throttle to slow the animation. ' +
               'Override hasPendingAnimations() to return true while motion is in flight.',
           );
         }
