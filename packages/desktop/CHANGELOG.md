@@ -1,5 +1,11 @@
 # @vectojs/desktop
 
+## 0.3.1
+
+### Patch Changes
+
+- Fix the published package manifest: framework deps were shipped in `dependencies` as `workspace:*`, making every published tarball uninstallable for external consumers. They now live in `peerDependencies` with real semver ranges (`core >=1.36.0 <2.0.0`, `styles >=0.3.2 <1.0.0`, `ui >=2.16.7 <3.0.0`), with `workspace:*` dev-time entries in `devDependencies` only.
+
 ## 0.3.0
 
 ### Minor Changes

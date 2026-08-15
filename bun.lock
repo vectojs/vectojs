@@ -61,16 +61,19 @@
     },
     "packages/desktop": {
       "name": "@vectojs/desktop",
-      "version": "0.2.0",
-      "dependencies": {
+      "version": "0.3.0",
+      "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/styles": "workspace:*",
         "@vectojs/ui": "workspace:*",
-      },
-      "devDependencies": {
         "jsdom": "^30.0.1",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=1.36.0 <2.0.0",
+        "@vectojs/styles": ">=0.3.2 <1.0.0",
+        "@vectojs/ui": ">=2.16.7 <3.0.0",
       },
     },
     "packages/devtools": {
