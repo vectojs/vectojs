@@ -202,8 +202,8 @@ export class ComputeParticleEntity extends Entity {
    * render-tree walk, but this entity is still a normal tree member that
    * walk visits — without this override, the base `Entity.hasPendingAnimations()`
    * (always `false`) is what Scene sees, so `renderMode: 'always'`'s idle
-   * auto-throttle drops the WHOLE scene to ~2fps the instant nothing else in
-   * the tree is animating, even while thousands of particles are visibly
+   * auto-throttle drops the WHOLE scene to the idle FPS floor the instant
+   * nothing else in the tree is animating, even while thousands of particles are visibly
    * drifting or spring-settling. A spring+damping system asymptotically
    * approaches zero velocity but never reaches it exactly, so this checks
    * against a small epsilon rather than `!== 0` — otherwise this would

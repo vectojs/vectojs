@@ -583,7 +583,8 @@ export class VirtualList<T = unknown> extends UIComponent {
       // Required, and not redundant with `hasPendingAnimations()`: the loop's
       // `isIdle` check reads `frameHadAnimation`, which is only refreshed during
       // a RENDERED frame's tree walk. Once the scene has gone idle it skips the
-      // walk entirely (`onDemand`) or drops to 2 FPS (`always` + autoThrottle),
+      // walk entirely (`onDemand`) or drops to the idle FPS floor
+      // (`always` + autoThrottle),
       // so nothing would ever observe the new `_targetY` and re-arm the loop.
       // markDirty() is what wakes that first frame; every other path that moves
       // `_targetY` (pointermove, scrollTo, setItems) does the same.
@@ -639,7 +640,7 @@ export class VirtualList<T = unknown> extends UIComponent {
    * The scroll integrator lives in update(), not a property driver, so without
    * this override it is invisible to the Scene's idle checks: markDirty() from
    * inside update() is wiped by the loop's own end-of-tick `dirty = false`, and
-   * the animation then advances at the 2 FPS idle throttle (or stalls entirely
+   * the animation then advances at the idle FPS throttle (or stalls entirely
    * in onDemand mode). Same class of bug as the ScrollView 0.2.x fix.
    */
   public override hasPendingAnimations(): boolean {

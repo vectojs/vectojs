@@ -1174,6 +1174,57 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(e.renders).toBe(2);
   });
 
+  it('always-mode idle floor defaults to 60 FPS, not the legacy 2 FPS', () => {
+    // Regression: the idle auto-throttle used to cap a static 'always' scene
+    // at 2 FPS. Ambient animation (and, worse, imperative draw apps that never
+    // mark dirty) then crawled while looking otherwise healthy. The floor is
+    // now idleFPS (default 60); 2 must be an explicit developer choice.
+    const scene = makeScene();
+    scene.maxFPS = 60;
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+    const loop = (scene as any).loop.bind(scene);
+
+    loop(100000); // first frame (dirty)
+    expect(e.renders).toBe(1);
+
+    loop(100020); // 20ms later: inside the 60 FPS floor, outside the old 2 FPS one
+    expect(e.renders).toBe(2);
+  });
+
+  it('idleFPS: 2 restores the legacy aggressive idle sleep', () => {
+    const scene = makeScene();
+    scene.maxFPS = 60;
+    scene.idleFPS = 2;
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+    const loop = (scene as any).loop.bind(scene);
+
+    loop(100000); // first frame (dirty)
+    expect(e.renders).toBe(1);
+
+    loop(100020); // 20ms later: still below the 500ms floor
+    expect(e.renders).toBe(1);
+
+    loop(100500); // 500ms later: past the floor
+    expect(e.renders).toBe(2);
+  });
+
+  it('autoThrottle: false keeps the maxFPS cadence while idle', () => {
+    const scene = makeScene();
+    scene.maxFPS = 60;
+    scene.autoThrottle = false;
+    const e = new SpyEntity('e', null) as SpyEntity;
+    scene.add(e);
+    const loop = (scene as any).loop.bind(scene);
+
+    loop(100000);
+    expect(e.renders).toBe(1);
+
+    loop(100020); // 20ms later: within the 60 FPS cap
+    expect(e.renders).toBe(2);
+  });
+
   it('markDirty() called inside update() survives to the next frame', () => {
     // The naive self-animating pattern: update() marks the scene dirty each
     // frame. The dirty flag must be consumed *before* the update/render pass,
@@ -1213,8 +1264,8 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
 
   describe('renderMode as a constructor option', () => {
     // Regression: `renderMode` was a public field with no matching SceneOptions
-    // key, so this call silently kept 'always' and the scene sat on core's 2fps
-    // idle auto-throttle. Four @vectojs demos shipped that way.
+    // key, so this call silently kept 'always' and the scene sat on core's
+    // idle auto-throttle floor. Four @vectojs demos shipped that way.
     it('honours renderMode passed at construction', () => {
       const canvas = document.createElement('canvas');
       const scene = new Scene(canvas, { renderMode: 'onDemand' });
