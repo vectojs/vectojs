@@ -1,5 +1,13 @@
 # @vectojs/desktop
 
+## 0.4.0
+
+### Minor Changes
+
+- a64b410: Expose `windowManager` on `AppContext` so apps can enumerate, focus, and close
+  windows (enables a task-manager-style window list and snap/tiling demos in
+  forge apps).
+
 ## 0.3.1
 
 ### Patch Changes
