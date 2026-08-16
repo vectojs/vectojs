@@ -1,57 +1,478 @@
-// P2-I graph-layout bench: per-tick cost of the in-house VectoForceLayout
-// (Barnes-Hut O(N log N) + springs + centering, dependency-free) vs the
-// third-party D3ForceLayout (d3-force-3d) it's an alternative to, over a
-// scale-free-ish graph swept by node count. Posts JSON to /results
-// (hyprland-browser-bench contract). Both run the SAME graph; we report ms per
-// tick (median), so it's a like-for-like per-frame layout cost comparison.
-import { VectoForceLayout, D3ForceLayout, type GraphData } from '@vectojs/graph3d';
+// Issue #540: real-browser per-tick and incremental-topology costs for the two
+// existing Graph3D layouts and the standalone 2D graph-layout package.
+import { ForceLayout2D } from '@vectojs/graph-layout';
+import { D3ForceLayout, VectoForceLayout, type GraphData } from '@vectojs/graph3d';
 import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
-import { median } from '../_shared/stats.ts';
+import { median, percentile } from '../_shared/stats.ts';
 
-const p = new URLSearchParams(location.search);
-const COUNTS = (p.get('counts') ?? '500,1000,2000,5000').split(',').map(Number);
-const TICKS = Number(p.get('ticks') ?? 30);
-const TRIALS = Number(p.get('trials') ?? 6);
+const params = new URLSearchParams(location.search);
+const COUNTS = (params.get('counts') ?? '100,500,1000,3000').split(',').map(Number);
+const TICKS = Number(params.get('ticks') ?? 30);
+const TRIALS = Number(params.get('trials') ?? 6);
+const SETTLE_CAP = Number(params.get('settleCap') ?? 500);
+const parsedUaMemoryTimeoutMs = Number(params.get('uaMemoryTimeoutMs') ?? 1250);
+const UA_MEMORY_TIMEOUT_MS =
+  Number.isFinite(parsedUaMemoryTimeoutMs) && parsedUaMemoryTimeoutMs > 0
+    ? parsedUaMemoryTimeoutMs
+    : 1250;
+const APPEND_NODES = 50;
+const WARMUP_TICKS = 5;
+const POST_TOPOLOGY_ALPHA = 1;
 
-function rng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => ((s = (s * 1664525 + 1013904223) >>> 0), s / 0x100000000);
+type Workload = 'star-hub' | 'mixed-sparse';
+
+interface Layout {
+  setGraph(graph: GraphData): void;
+  step(iterations?: number): boolean;
+  reheat(alpha?: number): void;
+  dispose(): void;
 }
 
-// A connected graph: a spanning path + extra random edges (~1.5 edges/node),
-// the kind of density a real force graph faces.
-function makeGraph(n: number): GraphData {
-  const rand = rng(0x6c1a);
-  const nodes = Array.from({ length: n }, (_, i) => ({ id: i }));
+interface AppendPayloads {
+  added: GraphData;
+  complete: GraphData;
+}
+
+interface LayoutArm {
+  name: 'd3-force-3d' | 'vecto-force' | 'force-layout-2d';
+  dimensions: 2 | 3;
+  appendMode: 'setGraph-rebuild' | 'appendGraph';
+  make(): Layout;
+  append(layout: Layout, payloads: AppendPayloads): void;
+}
+
+interface Samples {
+  medianMs: number;
+  p95Ms: number;
+  maxMs: number;
+  samples: number;
+}
+
+interface AppendStats {
+  append: Samples;
+  firstTick: Samples;
+  settleTotal: Samples;
+  settleTicksMedian: number;
+  settleTicksP95: number;
+  settleCappedTrials: number;
+  maxStepMs: number;
+}
+
+interface MemoryObservation {
+  status: 'supported' | 'unsupported';
+  source: string;
+  deltaBytes: number | 'unsupported';
+  caveat: string;
+  fallbackReason: string;
+}
+
+interface MemoryApi {
+  measureUserAgentSpecificMemory?: () => Promise<{ bytes: number }>;
+  memory?: { usedJSHeapSize?: number };
+}
+
+interface LongTaskCapture {
+  supported: boolean;
+  include(started: number, ended: number): void;
+  maxDurationMs(): number | 'unsupported';
+  stop(): Promise<void>;
+}
+
+let uaMemoryDisabledReason: string | null = null;
+
+function rng(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => ((state = (state * 1664525 + 1013904223) >>> 0), state / 0x100000000);
+}
+
+function makeGraph(workload: Workload, count: number): GraphData {
+  const nodes = Array.from({ length: count }, (_, id) => ({ id }));
   const links: GraphData['links'] = [];
-  for (let i = 1; i < n; i++) links.push({ source: i, target: Math.floor(rand() * i) });
-  const extra = Math.floor(n * 0.5);
-  for (let e = 0; e < extra; e++) {
-    const a = Math.floor(rand() * n);
-    const b = Math.floor(rand() * n);
-    if (a !== b) links.push({ source: a, target: b });
+  if (workload === 'star-hub') {
+    for (let id = 1; id < count; id++) links.push({ source: 0, target: id });
+    return { nodes, links };
+  }
+
+  const random = rng(0x6c1a);
+  for (let id = 1; id < count; id++) {
+    links.push({ source: id, target: Math.floor(random() * id) });
+  }
+  for (let edge = 0; edge < Math.floor(count * 0.5); edge++) {
+    const source = Math.floor(random() * count);
+    const target = Math.floor(random() * count);
+    if (source !== target) links.push({ source, target });
   }
   return { nodes, links };
 }
 
-const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
-
-async function benchTickMs(
-  make: () => VectoForceLayout | D3ForceLayout,
-  graph: GraphData,
-): Promise<number> {
-  const times: number[] = [];
-  for (let t = 0; t < TRIALS; t++) {
-    const layout = make();
-    layout.setGraph(graph);
-    layout.reheat?.(1); // keep it hot so every tick does real work
-    const t0 = performance.now();
-    layout.step(TICKS);
-    times.push((performance.now() - t0) / TICKS);
-    layout.dispose();
-    await yieldToPaint(); // stay responsive between trials
+function makeAppend(workload: Workload, count: number): GraphData {
+  const nodes = Array.from({ length: APPEND_NODES }, (_, offset) => ({ id: count + offset }));
+  const links: GraphData['links'] = [];
+  if (workload === 'star-hub') {
+    for (const node of nodes) links.push({ source: 0, target: node.id });
+    return { nodes, links };
   }
-  return median(times);
+
+  const random = rng(0xa77e0000 ^ count);
+  for (const node of nodes) {
+    links.push({ source: node.id, target: Math.floor(random() * node.id) });
+  }
+  for (let edge = 0; edge < Math.floor(APPEND_NODES * 0.5); edge++) {
+    const source = nodes[Math.floor(random() * nodes.length)]!.id;
+    const target = Math.floor(random() * (count + APPEND_NODES));
+    if (source !== target) links.push({ source, target });
+  }
+  return { nodes, links };
+}
+
+function cloneGraph(graph: GraphData): GraphData {
+  return {
+    nodes: graph.nodes.map((node) => ({ ...node })),
+    links: graph.links.map((link) => ({ source: link.source, target: link.target })),
+  };
+}
+
+function combineGraphs(base: GraphData, added: GraphData): GraphData {
+  return {
+    nodes: [...base.nodes, ...added.nodes],
+    links: [...base.links, ...added.links],
+  };
+}
+
+function summarize(times: readonly number[]): Samples {
+  return {
+    samples: times.length,
+    medianMs: median(times),
+    p95Ms: percentile(times, 0.95),
+    maxMs: Math.max(...times),
+  };
+}
+
+const yieldToPaint = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function captureLongTasks(): LongTaskCapture {
+  const supported =
+    typeof PerformanceObserver !== 'undefined' &&
+    (PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false);
+  if (!supported) {
+    return {
+      supported: false,
+      include: () => {},
+      maxDurationMs: () => 'unsupported',
+      stop: async () => {},
+    };
+  }
+
+  const entries: PerformanceEntry[] = [];
+  const measuredOperations: Array<{ started: number; ended: number }> = [];
+  const observer = new PerformanceObserver((list) => {
+    entries.push(...list.getEntries());
+  });
+  observer.observe({ type: 'longtask', buffered: false });
+  return {
+    supported: true,
+    include: (started, ended) => measuredOperations.push({ started, ended }),
+    maxDurationMs: () => {
+      const durations = entries
+        .filter((entry) =>
+          measuredOperations.some(
+            ({ started, ended }) =>
+              entry.startTime <= started && entry.startTime + entry.duration >= ended,
+          ),
+        )
+        .map((entry) => entry.duration);
+      return durations.length === 0 ? 0 : Math.max(...durations);
+    },
+    async stop() {
+      // Long-task entries are queued after the blocking task, so cross one task
+      // boundary before taking the final records and disconnecting this arm only.
+      await yieldToPaint();
+      entries.push(...observer.takeRecords());
+      observer.disconnect();
+    },
+  };
+}
+
+function prepareAppendPayloads(graph: GraphData, added: GraphData): AppendPayloads {
+  return {
+    added: cloneGraph(added),
+    complete: cloneGraph(combineGraphs(graph, added)),
+  };
+}
+
+function readUaMemoryWithTimeout(
+  measure: () => Promise<{ bytes: number }>,
+  phase: 'before' | 'after',
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(
+        new Error(
+          `${phase} measureUserAgentSpecificMemory read timed out after ${UA_MEMORY_TIMEOUT_MS}ms`,
+        ),
+      );
+    }, UA_MEMORY_TIMEOUT_MS);
+
+    // Attach both handlers to the browser promise immediately. If the timeout
+    // wins, a later browser rejection is still consumed rather than becoming an
+    // unhandled rejection.
+    let pending: Promise<{ bytes: number }>;
+    try {
+      pending = measure();
+    } catch (error) {
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+      return;
+    }
+    pending.then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result.bytes);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function observeLiveAppendMemory(
+  arm: LayoutArm,
+  graph: GraphData,
+  added: GraphData,
+): Promise<MemoryObservation> {
+  const api = performance as unknown as MemoryApi;
+  const windowApi = window as unknown as MemoryApi;
+  const measureUserAgentMemory =
+    api.measureUserAgentSpecificMemory ?? windowApi.measureUserAgentSpecificMemory;
+
+  const observe = async (
+    readBytes: (phase: 'before' | 'after') => Promise<number>,
+    source: string,
+    caveat: string,
+    fallbackReason: string,
+  ): Promise<MemoryObservation> => {
+    // Keep the graph, append payloads, and live layout reachable across both
+    // readings. Only the topology mutation occurs between the readings.
+    const basePayload = cloneGraph(graph);
+    const appendPayloads = prepareAppendPayloads(graph, added);
+    const layout = arm.make();
+    layout.setGraph(basePayload);
+    layout.reheat(POST_TOPOLOGY_ALPHA);
+    layout.step(WARMUP_TICKS);
+    await yieldToPaint();
+    try {
+      const before = await readBytes('before');
+      arm.append(layout, appendPayloads);
+      const after = await readBytes('after');
+      return {
+        status: 'supported',
+        source,
+        deltaBytes: after - before,
+        caveat,
+        fallbackReason,
+      };
+    } finally {
+      // Disposal is deliberately after both readings and outside the delta.
+      layout.dispose();
+    }
+  };
+
+  if (
+    uaMemoryDisabledReason === null &&
+    typeof measureUserAgentMemory === 'function' &&
+    crossOriginIsolated
+  ) {
+    try {
+      return await observe(
+        (phase) => readUaMemoryWithTimeout(() => measureUserAgentMemory.call(performance), phase),
+        'performance.measureUserAgentSpecificMemory',
+        'Whole-agent memory observation; GC, unrelated agent activity, and measurement noise remain. This is not retained-memory or backend-selection evidence.',
+        'none',
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      uaMemoryDisabledReason = `disabled after UA-specific memory failure: ${message}`;
+      // Retry the complete observation with a fresh layout and the heap fallback.
+    }
+  }
+
+  const fallbackReason =
+    uaMemoryDisabledReason ??
+    (typeof measureUserAgentMemory !== 'function'
+      ? 'measureUserAgentSpecificMemory unavailable'
+      : 'measureUserAgentSpecificMemory requires cross-origin isolation');
+
+  const readHeap = (): number | null => {
+    const bytes = api.memory?.usedJSHeapSize;
+    return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : null;
+  };
+  if (readHeap() !== null) {
+    return observe(
+      async () => readHeap()!,
+      'performance.memory.usedJSHeapSize',
+      `Uncontrolled JS-heap fallback observation that may be quantized and affected by GC. Fallback reason: ${fallbackReason}. This is not retained-memory or backend-selection evidence.`,
+      fallbackReason,
+    );
+  }
+
+  return {
+    status: 'unsupported',
+    source: 'unsupported',
+    deltaBytes: 'unsupported',
+    caveat: `No usable browser memory observation API is available. UA-specific status: ${fallbackReason}.`,
+    fallbackReason,
+  };
+}
+
+async function warmup(arm: LayoutArm, graph: GraphData, added: GraphData): Promise<void> {
+  const basePayload = cloneGraph(graph);
+  const appendPayloads = prepareAppendPayloads(graph, added);
+  const layout = arm.make();
+  layout.setGraph(basePayload);
+  layout.reheat(POST_TOPOLOGY_ALPHA);
+  layout.step(WARMUP_TICKS);
+  arm.append(layout, appendPayloads);
+  layout.reheat(POST_TOPOLOGY_ALPHA);
+  layout.step();
+  layout.dispose();
+  await yieldToPaint();
+}
+
+async function benchTicks(
+  arm: LayoutArm,
+  graph: GraphData,
+  longTasks: LongTaskCapture,
+): Promise<Samples> {
+  const times: number[] = [];
+  for (let trial = 0; trial < TRIALS; trial++) {
+    const basePayload = cloneGraph(graph);
+    const layout = arm.make();
+    layout.setGraph(basePayload);
+    layout.reheat(POST_TOPOLOGY_ALPHA);
+    await yieldToPaint();
+    for (let tick = 0; tick < TICKS; tick++) {
+      const started = performance.now();
+      layout.step();
+      const ended = performance.now();
+      times.push(ended - started);
+      longTasks.include(started, ended);
+      await yieldToPaint();
+    }
+    layout.dispose();
+  }
+  return summarize(times);
+}
+
+async function benchAppend(
+  arm: LayoutArm,
+  graph: GraphData,
+  added: GraphData,
+  longTasks: LongTaskCapture,
+): Promise<AppendStats> {
+  const appendTimes: number[] = [];
+  const firstTickTimes: number[] = [];
+  const settleStepTimes: number[] = [];
+  const settleTimes: number[] = [];
+  const settleTicks: number[] = [];
+  let cappedTrials = 0;
+
+  for (let trial = 0; trial < TRIALS; trial++) {
+    // Both candidate payloads are fully cloned before timing. Each arm receives
+    // only its declared payload, so cloning cost cannot favor appendGraph.
+    const basePayload = cloneGraph(graph);
+    const appendPayloads = prepareAppendPayloads(graph, added);
+    const layout = arm.make();
+    layout.setGraph(basePayload);
+    layout.reheat(POST_TOPOLOGY_ALPHA);
+    layout.step(WARMUP_TICKS);
+    await yieldToPaint();
+
+    let started = performance.now();
+    arm.append(layout, appendPayloads);
+    let ended = performance.now();
+    appendTimes.push(ended - started);
+    longTasks.include(started, ended);
+    await yieldToPaint();
+
+    // Topology-call timing above excludes reheating. Every arm starts the
+    // post-topology tick and settling phases from the same explicit alpha.
+    layout.reheat(POST_TOPOLOGY_ALPHA);
+    started = performance.now();
+    let active = layout.step();
+    ended = performance.now();
+    const firstTickMs = ended - started;
+    firstTickTimes.push(firstTickMs);
+    longTasks.include(started, ended);
+    await yieldToPaint();
+
+    let totalMs = firstTickMs;
+    let ticks = 1;
+    while (active && ticks < SETTLE_CAP) {
+      started = performance.now();
+      active = layout.step();
+      ended = performance.now();
+      const stepMs = ended - started;
+      settleStepTimes.push(stepMs);
+      longTasks.include(started, ended);
+      totalMs += stepMs;
+      ticks++;
+      await yieldToPaint();
+    }
+    if (active) cappedTrials++;
+    settleTimes.push(totalMs);
+    settleTicks.push(ticks);
+    layout.dispose();
+    await yieldToPaint();
+  }
+
+  return {
+    append: summarize(appendTimes),
+    firstTick: summarize(firstTickTimes),
+    settleTotal: summarize(settleTimes),
+    settleTicksMedian: median(settleTicks),
+    settleTicksP95: percentile(settleTicks, 0.95),
+    settleCappedTrials: cappedTrials,
+    maxStepMs: Math.max(...firstTickTimes, ...settleStepTimes),
+  };
+}
+
+const arms: LayoutArm[] = [
+  {
+    name: 'd3-force-3d',
+    dimensions: 3,
+    appendMode: 'setGraph-rebuild',
+    make: () => new D3ForceLayout(),
+    append: (layout, payloads) => layout.setGraph(payloads.complete),
+  },
+  {
+    name: 'vecto-force',
+    dimensions: 3,
+    appendMode: 'setGraph-rebuild',
+    make: () => new VectoForceLayout(),
+    append: (layout, payloads) => layout.setGraph(payloads.complete),
+  },
+  {
+    name: 'force-layout-2d',
+    dimensions: 2,
+    appendMode: 'appendGraph',
+    make: () => new ForceLayout2D(),
+    append: (layout, payloads) => (layout as ForceLayout2D).appendGraph(payloads.added),
+  },
+];
+
+function rotatedArms(workloadIndex: number, countIndex: number): LayoutArm[] {
+  const offset = (workloadIndex * COUNTS.length + countIndex) % arms.length;
+  return [...arms.slice(offset), ...arms.slice(0, offset)];
 }
 
 async function main() {
@@ -59,32 +480,105 @@ async function main() {
   const startedAt = performance.now();
   const progress = document.createElement('pre');
   document.body.appendChild(progress);
-  const rows: Array<Record<string, number>> = [];
-  for (const n of COUNTS) {
-    progress.textContent = `benchmarking ${n} nodes…`;
-    await yieldToPaint();
-    const graph = makeGraph(n);
-    const d3Ms = await benchTickMs(() => new D3ForceLayout(), graph);
-    await yieldToPaint();
-    const vectoMs = await benchTickMs(() => new VectoForceLayout(), graph);
-    rows.push({
-      nodes: n,
-      links: graph.links.length,
-      d3ForceMsPerTick: +d3Ms.toFixed(4),
-      vectoBarnesHutMsPerTick: +vectoMs.toFixed(4),
-      speedup: +(d3Ms / vectoMs).toFixed(2),
-    });
+  const rows: Array<Record<string, string | number | boolean>> = [];
+  const workloads = ['star-hub', 'mixed-sparse'] as const;
+
+  for (let workloadIndex = 0; workloadIndex < workloads.length; workloadIndex++) {
+    const workload = workloads[workloadIndex]!;
+    for (let countIndex = 0; countIndex < COUNTS.length; countIndex++) {
+      const count = COUNTS[countIndex]!;
+      const graph = makeGraph(workload, count);
+      const added = makeAppend(workload, count);
+      const order = rotatedArms(workloadIndex, countIndex);
+      for (let armIndex = 0; armIndex < order.length; armIndex++) {
+        const arm = order[armIndex]!;
+        progress.textContent = `${workload}: ${arm.name}, ${count} nodes`;
+        await yieldToPaint();
+        await warmup(arm, graph, added);
+
+        const longTasks = captureLongTasks();
+        const tick = await benchTicks(arm, graph, longTasks);
+        const append = await benchAppend(arm, graph, added, longTasks);
+        await longTasks.stop();
+        const memory = await observeLiveAppendMemory(arm, graph, added);
+        const longTaskMax = longTasks.maxDurationMs();
+        const maxStepMs = Math.max(tick.maxMs, append.maxStepMs);
+
+        rows.push({
+          workload,
+          layout: arm.name,
+          dimensions: arm.dimensions,
+          armOrder: armIndex,
+          nodes: count,
+          links: graph.links.length,
+          tickSamples: tick.samples,
+          tickMedianMs: +tick.medianMs.toFixed(4),
+          tickP95Ms: +tick.p95Ms.toFixed(4),
+          maxStepMs: +maxStepMs.toFixed(4),
+          appendNodes: APPEND_NODES,
+          appendLinks: added.links.length,
+          appendMode: arm.appendMode,
+          appendSamples: append.append.samples,
+          appendMedianMs: +append.append.medianMs.toFixed(4),
+          appendP95Ms: +append.append.p95Ms.toFixed(4),
+          firstPostAppendTickMedianMs: +append.firstTick.medianMs.toFixed(4),
+          firstPostAppendTickP95Ms: +append.firstTick.p95Ms.toFixed(4),
+          settleTotalMedianMs: +append.settleTotal.medianMs.toFixed(4),
+          settleTotalP95Ms: +append.settleTotal.p95Ms.toFixed(4),
+          settleTicksMedian: +append.settleTicksMedian.toFixed(2),
+          settleTicksP95: +append.settleTicksP95.toFixed(2),
+          settleCappedTrials: append.settleCappedTrials,
+          liveAppendMemoryObservationStatus: memory.status,
+          liveAppendMemoryObservationSource: memory.source,
+          liveAppendMemoryObservationDeltaBytes: memory.deltaBytes,
+          liveAppendMemoryObservationCaveat: memory.caveat,
+          liveAppendMemoryObservationFallbackReason: memory.fallbackReason,
+          longTaskStatus: longTasks.supported ? 'supported' : 'unsupported',
+          longTaskMaxDurationMs:
+            typeof longTaskMax === 'number' ? +longTaskMax.toFixed(4) : longTaskMax,
+        });
+      }
+    }
   }
+
   const result = await reportResult({
     name: 'graph-layout',
-    params: { COUNTS, TICKS, TRIALS },
+    params: {
+      COUNTS,
+      TICKS,
+      TRIALS,
+      SETTLE_CAP,
+      UA_MEMORY_TIMEOUT_MS,
+      APPEND_NODES,
+      WARMUP_TICKS,
+      POST_TOPOLOGY_ALPHA,
+      workloads,
+      armOrder: 'deterministic rotation per workload/count',
+      appendTiming:
+        'Measures appendGraph or setGraph topology mutation only; payload preparation and explicit post-topology reheat are excluded.',
+      trialState:
+        'Every append trial starts from a fresh deterministic layout reheated to POST_TOPOLOGY_ALPHA and stepped WARMUP_TICKS times; every first post-append tick and settling run is explicitly reheated to POST_TOPOLOGY_ALPHA after topology mutation.',
+      stepTaskBoundaries:
+        'Warmup is excluded. Every measured topology mutation and synchronous step is followed by an event-loop yield so long-task entries are not merged across operations.',
+      maxStepDefinition:
+        'Maximum raw duration of one synchronous step() call across regular ticks, first post-append ticks, and settling steps.',
+      liveAppendMemoryObservation:
+        'One dedicated warmed live layout per arm/workload/count is retained across immediate before/after topology-mutation readings, with payload creation and disposal outside the observation. measureUserAgentSpecificMemory is preferred and each read is bounded by UA_MEMORY_TIMEOUT_MS. Its first timeout or failure disables further UA-specific reads for the run; the failed observation is discarded and repeated with a fresh layout using performance.memory.usedJSHeapSize. Both sources are noisy observations, not retained-memory or backend-selection evidence.',
+      baselineAvailability: {
+        d3Force2D: 'unavailable: not a root or workspace dependency',
+        d3Force3D: 'used via @vectojs/graph3d D3ForceLayout',
+      },
+      comparisonCaveat:
+        'ForceLayout2D is 2D; D3ForceLayout and VectoForceLayout are 3D. Cross-dimensional results are directional implementation measurements, not direct algorithmic or WASM evidence.',
+    },
     rows,
     durationMs: +(performance.now() - startedAt).toFixed(1),
+    syntheticFrames: true,
   });
   progress.textContent = 'done';
-  const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(result, null, 2);
-  document.body.appendChild(pre);
+  const output = document.createElement('pre');
+  output.textContent = JSON.stringify(result, null, 2);
+  document.body.appendChild(output);
 }
 
 main().catch((error) => reportFailure('graph-layout', error));

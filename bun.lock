@@ -97,6 +97,14 @@
         "@vectojs/ui",
       ],
     },
+    "packages/graph-layout": {
+      "name": "@vectojs/graph-layout",
+      "version": "0.0.0",
+      "devDependencies": {
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+    },
     "packages/graph3d": {
       "name": "@vectojs/graph3d",
       "version": "0.4.0",
@@ -899,6 +907,8 @@
     "@vectojs/desktop": ["@vectojs/desktop@workspace:packages/desktop"],
 
     "@vectojs/devtools": ["@vectojs/devtools@workspace:packages/devtools"],
+
+    "@vectojs/graph-layout": ["@vectojs/graph-layout@workspace:packages/graph-layout"],
 
     "@vectojs/graph3d": ["@vectojs/graph3d@workspace:packages/graph3d"],
 

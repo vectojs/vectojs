@@ -1,0 +1,48 @@
+{
+  "name": "@vectojs/graph-layout",
+  "version": "0.0.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Renderer-agnostic force-directed graph layouts for VectoJS",
+  "keywords": [
+    "force-directed-graph",
+    "graph-layout",
+    "barnes-hut",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/graph-layout"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "demo:build": "bun build demo/main.ts --outdir demo/dist --target browser",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}
