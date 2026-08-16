@@ -37,6 +37,31 @@ export function formatBrowserLaunchCommand(spec: BrowserLaunchSpec): string {
   return command.map(quoteShellArgument).join(' ');
 }
 
+export function formatHyprlandLaunchDispatcher(workspace: number, command: string): string {
+  assertWorkspace(workspace);
+  return `hl.dsp.exec_cmd(${JSON.stringify(command)}, { workspace = ${JSON.stringify(`${workspace} silent`)} })`;
+}
+
+export function formatHyprlandWorkspaceDispatcher(workspace: number): string {
+  assertWorkspace(workspace);
+  return `hl.dsp.focus({ workspace = ${JSON.stringify(String(workspace))} })`;
+}
+
+export function formatHyprlandWindowDispatcher(action: 'focus' | 'close', address: string): string {
+  if (!/^0x[0-9a-f]+$/i.test(address))
+    throw new Error(`invalid Hyprland window address: ${address}`);
+  const selector = JSON.stringify(`address:${address}`);
+  return action === 'focus'
+    ? `hl.dsp.focus({ window = ${selector} })`
+    : `hl.dsp.window.close({ window = ${selector} })`;
+}
+
+function assertWorkspace(workspace: number): void {
+  if (!Number.isInteger(workspace) || workspace < 1) {
+    throw new Error(`invalid benchmark workspace: ${workspace}`);
+  }
+}
+
 export function selectWindow(
   clients: readonly HyprlandClient[],
   workspace: number,
@@ -143,7 +168,11 @@ export class HyprlandWindowController implements WindowController {
 
   public async launch(workspace: number, spec: BrowserLaunchSpec): Promise<void> {
     const browserCommand = formatBrowserLaunchCommand(spec);
-    await command(['hyprctl', 'dispatch', 'exec', `[workspace ${workspace}] ${browserCommand}`]);
+    await command([
+      'hyprctl',
+      'dispatch',
+      formatHyprlandLaunchDispatcher(workspace, browserCommand),
+    ]);
   }
 
   public async find(
@@ -161,14 +190,14 @@ export class HyprlandWindowController implements WindowController {
   }
 
   public async focusWorkspace(workspace: number): Promise<void> {
-    await command(['hyprctl', 'dispatch', 'workspace', String(workspace)]);
+    await command(['hyprctl', 'dispatch', formatHyprlandWorkspaceDispatcher(workspace)]);
   }
 
   public async focusWindow(address: string): Promise<void> {
-    await command(['hyprctl', 'dispatch', 'focuswindow', `address:${address}`]);
+    await command(['hyprctl', 'dispatch', formatHyprlandWindowDispatcher('focus', address)]);
   }
 
   public async closeWindow(address: string): Promise<void> {
-    await command(['hyprctl', 'dispatch', 'closewindow', `address:${address}`]);
+    await command(['hyprctl', 'dispatch', formatHyprlandWindowDispatcher('close', address)]);
   }
 }

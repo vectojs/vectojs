@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ['**']
   pull_request:
     branches: [main]
 
@@ -47,7 +47,7 @@ jobs:
         run: cd packages/graph3d && bunx vitest run
       - name: Run video exporter tests
         env:
-          VECTO_CHROMIUM_NO_SANDBOX: "1"
+          VECTO_CHROMIUM_NO_SANDBOX: '1'
         run: cd packages/video-exporter && bunx vitest run
       - name: Format check (oxfmt)
         run: bun run format:check
@@ -70,6 +70,7 @@ jobs:
         run: |
           cd packages/math && bun run build
           cd ../text && bun run build
+          cd ../graph-layout && bun run build
           cd ../layout && bun run build
           cd ../animation && bun run build
           cd ../core && bun run build
@@ -152,7 +153,7 @@ jobs:
       # artifact is compiled with. --deny-warnings mirrors the oxlint gate.
       - name: Rust clippy (wasm32)
         env:
-          RUSTFLAGS: "-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld"
+          RUSTFLAGS: '-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld'
         run: >-
           cargo clippy --manifest-path crates/vectojs-core-rs/Cargo.toml
           --release --target wasm32-unknown-unknown -- -D warnings

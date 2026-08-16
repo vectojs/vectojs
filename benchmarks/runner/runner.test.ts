@@ -28,7 +28,14 @@ import type {
   RunnerConfig,
   WindowController,
 } from './types';
-import { formatBrowserLaunchCommand, quoteShellArgument, selectWindow } from './window/hyprland';
+import {
+  formatBrowserLaunchCommand,
+  formatHyprlandLaunchDispatcher,
+  formatHyprlandWindowDispatcher,
+  formatHyprlandWorkspaceDispatcher,
+  quoteShellArgument,
+  selectWindow,
+} from './window/hyprland';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoot = join(repositoryRoot, 'tmp', 'benchmark-runner-tests');
@@ -217,6 +224,28 @@ describe('benchmark query passthrough', () => {
 });
 
 describe('browser launch contracts', () => {
+  test('uses the Hyprland Lua dispatcher with a silent workspace rule', () => {
+    expect(formatHyprlandLaunchDispatcher(5, `'browser' 'a\\b' 'c"d'`)).toBe(
+      "hl.dsp.exec_cmd(\"'browser' 'a\\\\b' 'c\\\"d'\", { workspace = \"5 silent\" })",
+    );
+    expect(() => formatHyprlandLaunchDispatcher(0, 'browser')).toThrow(
+      'invalid benchmark workspace',
+    );
+  });
+
+  test('uses Hyprland Lua dispatchers for workspace and window lifecycle', () => {
+    expect(formatHyprlandWorkspaceDispatcher(6)).toBe('hl.dsp.focus({ workspace = "6" })');
+    expect(formatHyprlandWindowDispatcher('focus', '0xCAFE')).toBe(
+      'hl.dsp.focus({ window = "address:0xCAFE" })',
+    );
+    expect(formatHyprlandWindowDispatcher('close', '0xcafe')).toBe(
+      'hl.dsp.window.close({ window = "address:0xcafe" })',
+    );
+    expect(() => formatHyprlandWindowDispatcher('focus', '0x1" })')).toThrow(
+      'invalid Hyprland window address',
+    );
+  });
+
   test('keeps Chromium URL and profile as distinct quoted launch arguments', () => {
     const spec = new ChromeAdapter('/usr/bin/chromium').launchSpec(
       '/repo/tmp/profile with space',
