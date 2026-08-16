@@ -99,7 +99,7 @@
     },
     "packages/graph-layout": {
       "name": "@vectojs/graph-layout",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
