@@ -126,6 +126,7 @@ export class WindowManager {
       chrome: this.chrome,
       scene: this.scene,
       vfs: this.vfs,
+      windowManager: this,
       workArea: () => this.layout.workArea(displayId),
       onClose: (w) => this.close(w),
       onFocus: (w) => this.focus(w),

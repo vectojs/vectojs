@@ -2,6 +2,7 @@ import { type A11yAttributes, Entity, type IRenderer, type Scene } from '@vectoj
 import { Button, Card, Text, UIComponent } from '@vectojs/ui';
 import type { AppContext, AppDefinition } from './types';
 import type { Vfs } from './Vfs';
+import type { WindowManager } from './WindowManager';
 
 export interface WindowChrome {
   windowBg: string;
@@ -29,6 +30,7 @@ export interface WindowOptions {
   chrome: WindowChrome;
   scene: Scene;
   vfs: Vfs | null;
+  windowManager: WindowManager;
   /** Work-area clamp (display minus taskbar). */
   workArea: () => { x: number; y: number; width: number; height: number };
   onClose: (win: DesktopWindow) => void;
@@ -294,6 +296,7 @@ export class DesktopWindow extends UIComponent {
       appId: opts.app.id,
       windowId: opts.windowId,
       vfs: opts.vfs,
+      windowManager: opts.windowManager,
       close: () => this.onClose(this),
     };
     this.content = opts.app.create(ctx);

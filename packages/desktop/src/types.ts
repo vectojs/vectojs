@@ -1,6 +1,7 @@
 import type { Entity, Scene } from '@vectojs/core';
 import type { ThemeTokenSet } from '@vectojs/styles';
 import type { Vfs } from './Vfs';
+import type { WindowManager } from './WindowManager';
 
 /** Flat theme tokens for the desktop shell (no `--` prefix). */
 export type DesktopThemeTokens = ThemeTokenSet;
@@ -41,6 +42,8 @@ export interface AppContext {
   windowId: string;
   /** Optional VFS handle when the shell was configured with one. */
   vfs: Vfs | null;
+  /** The owning window manager — enumerate, focus, or close windows. */
+  windowManager: WindowManager;
   /** Close the hosting window (if still open). */
   close: () => void;
 }
