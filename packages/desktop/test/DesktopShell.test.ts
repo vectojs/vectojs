@@ -265,6 +265,26 @@ describe('DesktopShell + WindowManager', () => {
     shell.dispose();
   });
 
+  it('exposes windowManager on app context', () => {
+    let seenWm: unknown = null;
+    const app: AppDefinition = {
+      id: 'wm',
+      title: 'WM',
+      create: (ctx) => {
+        seenWm = ctx.windowManager;
+        return new Box(10, 10);
+      },
+    };
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [app] },
+    });
+    shell.start();
+    shell.open('wm');
+    expect(seenWm).toBe(shell.windowManager);
+    shell.dispose();
+  });
+
   it('throws on unknown app id and after dispose', () => {
     const shell = new DesktopShell({ scene, config: { apps: [] } });
     shell.start();
