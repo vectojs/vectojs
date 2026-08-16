@@ -929,9 +929,20 @@ export abstract class Entity {
    * and promotes it.
    *
    * `'never'` suppresses the node entirely. Prefer `interactive = false` unless
-   * the entity genuinely needs pointer events without any semantic presence;
-   * this exists so a purely decorative interactive surface can opt out without
-   * losing canvas hit-testing.
+   * the entity genuinely needs to stay hit-testable without any semantic
+   * presence — this exists so a purely decorative interactive surface can opt
+   * out of the a11y tree.
+   *
+   * **Pointer input is routed through the projected mirror.** The engine binds
+   * `pointerdown`/`pointermove`/`pointerup`/`click`/`dblclick` to each shadow
+   * element (the canvas itself only tracks `mouseX`/`mouseY`), so an entity
+   * with no materialized node receives **no pointer events at all** — neither
+   * in `'never'` mode nor in `'onDemand'` before it is engaged (focused,
+   * pointer target, or `requestA11yProjection`). Canvas hit-testing exists
+   * (`Scene.findEntityAt`) but is a query API, not a dispatch path. For a
+   * pointer-reactive region with no role (e.g. a desktop click-catcher), use
+   * `'eager'` + `a11yFullViewport` + `tabIndex: -1` with a role-less
+   * `getA11yAttributes()`: the mirror is AT-invisible but pointer-visible.
    *
    * **This does not replace an aggregate description.** A thousand `'onDemand'`
    * danmaku are individually reachable but say nothing collectively. The proven
