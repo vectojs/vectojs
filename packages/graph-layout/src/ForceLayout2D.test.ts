@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ForceLayout2D, type GraphData } from './index';
+import { ForceLayout2D, type GraphData, type NodeId } from './index';
 
 const graph: GraphData = {
   nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
@@ -63,6 +63,34 @@ describe('ForceLayout2D', () => {
     appended.step();
     control.step();
     expect([...appended.positions]).toEqual([...control.positions]);
+  });
+
+  it('exposes stable ID/index mappings in position order', () => {
+    const layout = new ForceLayout2D();
+    layout.setGraph({ nodes: [{ id: 'a' }, { id: 2 }], links: [] });
+
+    expect(layout.getNodeIds()).toEqual(['a', 2]);
+    expect(layout.getNodeIndex('a')).toBe(0);
+    expect(layout.getNodeIndex(2)).toBe(1);
+    expect(layout.getNodeId(0)).toBe('a');
+    expect(layout.getNodeId(1)).toBe(2);
+    expect(layout.getNodeIndex('missing')).toBeUndefined();
+    expect(layout.getNodeId(-1)).toBeUndefined();
+    expect(layout.getNodeId(2)).toBeUndefined();
+
+    const ids = layout.getNodeIds() as NodeId[];
+    ids[0] = 'changed';
+    expect(layout.getNodeIds()).toEqual(['a', 2]);
+
+    layout.appendGraph({ nodes: [{ id: 'c' }], links: [] });
+    expect(layout.getNodeIds()).toEqual(['a', 2, 'c']);
+    expect(layout.getNodeIndex('c')).toBe(2);
+
+    layout.removeNodes(['a']);
+    expect(layout.getNodeIds()).toEqual([2, 'c']);
+    expect(layout.getNodeIndex(2)).toBe(0);
+    expect(layout.getNodeId(1)).toBe('c');
+    expect(layout.getNodeIndex('a')).toBeUndefined();
   });
 
   it('makes link page replay dynamically idempotent', () => {
@@ -660,6 +688,9 @@ describe('ForceLayout2D', () => {
     expect(() => layout.pinNode(0, 0, 0)).toThrow(/disposed/);
     expect(() => layout.unpinNode(0)).toThrow(/disposed/);
     expect(() => layout.reheat()).toThrow(/disposed/);
+    expect(() => layout.getNodeIndex('a')).toThrow(/disposed/);
+    expect(() => layout.getNodeId(0)).toThrow(/disposed/);
+    expect(() => layout.getNodeIds()).toThrow(/disposed/);
   });
 });
 
