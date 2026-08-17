@@ -226,6 +226,106 @@ describe('ForceLayout2D', () => {
     expect(layout.positions[3]).toBe(-7);
   });
 
+  it('supports partial runtime pins and clearing one axis', () => {
+    const layout = new ForceLayout2D({
+      repulsion: 0,
+      centerStrength: 0.1,
+      velocityDecay: 0.9,
+      alphaDecay: 0,
+    });
+    layout.setGraph({ nodes: [{ id: 'node', x: 5, y: 20 }], links: [] });
+
+    layout.setNodePin(0, { x: 5 });
+    layout.step(5);
+    expect(layout.positions[0]).toBe(5);
+    expect(layout.positions[1]).not.toBe(20);
+
+    layout.setNodePin(0, { y: 12 });
+    layout.clearNodePin(0, { x: true });
+    layout.step();
+    expect(layout.positions[1]).toBe(12);
+    expect(layout.positions[0]).not.toBe(5);
+
+    layout.clearNodePin(0, { y: true });
+    layout.step();
+    expect([...layout.positions].every(Number.isFinite)).toBe(true);
+  });
+
+  it('clears the corresponding velocity when changing runtime pins', () => {
+    const layout = new ForceLayout2D({ repulsion: 0, centerStrength: 0, alphaDecay: 0 });
+    layout.setGraph({ nodes: [{ id: 'node', x: 0, y: 0 }], links: [] });
+    const state = layout as unknown as { velocityX: Float32Array; velocityY: Float32Array };
+    state.velocityX[0] = 7;
+    state.velocityY[0] = -9;
+
+    layout.setNodePin(0, { x: Infinity, y: NaN });
+
+    expect(state.velocityX[0]).toBe(0);
+    expect(state.velocityY[0]).toBe(0);
+    expect([...layout.positions].every(Number.isFinite)).toBe(true);
+  });
+
+  it('limits many-body repulsion without affecting links or collisions', () => {
+    const make = (repulsionDistanceMax: number, repulsion = 100, withLink = false) => {
+      const layout = new ForceLayout2D({
+        repulsion,
+        repulsionDistanceMax,
+        centerStrength: 0,
+        collisionRadius: withLink ? 10 : 0,
+        linkDistance: 20,
+        linkStrength: 1,
+        velocityDecay: 0.999999,
+        alphaDecay: 0,
+      });
+      layout.setGraph({
+        nodes: [
+          { id: 'a', x: 0, y: 0 },
+          { id: 'b', x: 100, y: 0 },
+        ],
+        links: withLink ? [{ source: 'a', target: 'b' }] : [],
+      });
+      layout.step();
+      return [...layout.positions];
+    };
+
+    const cutoff = make(10);
+    const unlimited = make(Infinity);
+    expect(cutoff[0]).toBeGreaterThan(unlimited[0]);
+    expect(cutoff[2]).toBeLessThan(unlimited[2]);
+
+    expect(make(10, 0, true)).toEqual(make(Infinity, 0, true));
+
+    const zero = new ForceLayout2D({ repulsion: 100, repulsionDistanceMax: 0, centerStrength: 0 });
+    zero.setGraph({
+      nodes: [
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 100, y: 0 },
+      ],
+      links: [],
+    });
+    zero.step();
+    expect([...zero.positions]).toEqual([0, 0, 100, 0]);
+
+    const collision = new ForceLayout2D({
+      repulsion: 100,
+      repulsionDistanceMax: 0,
+      centerStrength: 0,
+      collisionRadius: 10,
+      velocityDecay: 0.999999,
+      alphaDecay: 0,
+    });
+    collision.setGraph({
+      nodes: [
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 1, y: 0 },
+      ],
+      links: [],
+    });
+    collision.step();
+    expect(collision.positions[0]).toBeLessThan(0);
+    expect(collision.positions[2]).toBeGreaterThan(1);
+  });
+
   it('applies collision correction only along free axes', () => {
     const layout = new ForceLayout2D({
       repulsion: 0,
