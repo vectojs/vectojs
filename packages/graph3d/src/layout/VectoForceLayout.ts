@@ -1,5 +1,10 @@
 import type { GraphData } from '../types';
 import type { GraphLayout } from './GraphLayout';
+import {
+  instantiateForceBackend,
+  type ForceBackend,
+  type ForceModuleSource,
+} from '../wasm/force-backend';
 
 /** Tuning for {@link VectoForceLayout}. All optional; defaults give a stable,
  *  3d-force-graph-like feel without depending on d3-force-3d. */
@@ -96,6 +101,11 @@ export class VectoForceLayout implements GraphLayout {
   // Barnes-Hut octree scratch (grown as needed, reused across ticks).
   private tree = new BarnesHutOctree();
 
+  // Optional WASM force backend; when set, tick() gathers positions, runs the
+  // kernel's build + accumulate, and applies the f64 accelerations — otherwise
+  // (or when the kernel rejects a call) the JS octree above is the oracle.
+  private forceBackend: ForceBackend | null = null;
+
   constructor(options: VectoForceLayoutOptions = {}) {
     this.linkDistance = options.linkDistance ?? 30;
     this.linkStrength = options.linkStrength ?? 0.3;
@@ -157,6 +167,24 @@ export class VectoForceLayout implements GraphLayout {
     }
     this.linkA = Int32Array.from(a);
     this.linkB = Int32Array.from(b);
+    this.forceBackend?.ensure(n);
+  }
+
+  /**
+   * Opt into the WASM force kernel. On success the repulsion phase runs in
+   * `crates/vectojs-force-rs`; on ANY failure (bad bytes, CSP rejection, 404,
+   * corrupt module) the layout silently keeps the identical-output JS Barnes-Hut
+   * and this returns `false`. Pass raw bytes (synchronous, Node/tests) or a URL
+   * (streaming, browser) — `forceWasmUrl` from `@vectojs/graph3d/wasm` is the
+   * packaged URL. The JS path is the permanent fallback and differential oracle.
+   */
+  public async enableWasmForce(source: ForceModuleSource): Promise<boolean> {
+    this.assertUsable();
+    const backend = await instantiateForceBackend(source);
+    if (!backend) return false;
+    this.forceBackend = backend;
+    if (this.count > 0) backend.ensure(this.count);
+    return true;
   }
 
   public step(iterations = 1): boolean {
@@ -178,21 +206,35 @@ export class VectoForceLayout implements GraphLayout {
     const timed = this.measurePhases;
     const t0 = timed ? performance.now() : 0;
 
-    // 1. Repulsion via Barnes-Hut octree (O(N log N)).
-    this.tree.build(pos, n);
-    const t1 = timed ? performance.now() : 0;
+    // 1. Repulsion via Barnes-Hut octree (O(N log N)). The WASM backend, when
+    // enabled, does the build + accumulate in one kernel call; otherwise the JS
+    // octree below is the oracle. `rep` is independent of the build, so it is
+    // hoisted without changing the JS path's timing or result.
     const rep = f(this.repulsion * alpha);
-    for (let i = 0; i < n; i++) {
-      const [ax, ay, az] = this.tree.force(
-        pos[i * 3],
-        pos[i * 3 + 1],
-        pos[i * 3 + 2],
-        this.theta,
-        i,
-      );
-      this.vx[i] = f(this.vx[i] + f(ax * rep));
-      this.vy[i] = f(this.vy[i] + f(ay * rep));
-      this.vz[i] = f(this.vz[i] + f(az * rep));
+    const accel = this.forceBackend ? this.forceBackend.step(pos, n, this.theta) : null;
+    if (accel) {
+      for (let i = 0; i < n; i++) {
+        this.vx[i] = f(this.vx[i] + f(accel[i * 3] * rep));
+        this.vy[i] = f(this.vy[i] + f(accel[i * 3 + 1] * rep));
+        this.vz[i] = f(this.vz[i] + f(accel[i * 3 + 2] * rep));
+      }
+    } else {
+      this.tree.build(pos, n);
+    }
+    const t1 = timed ? performance.now() : 0;
+    if (!accel) {
+      for (let i = 0; i < n; i++) {
+        const [ax, ay, az] = this.tree.force(
+          pos[i * 3],
+          pos[i * 3 + 1],
+          pos[i * 3 + 2],
+          this.theta,
+          i,
+        );
+        this.vx[i] = f(this.vx[i] + f(ax * rep));
+        this.vy[i] = f(this.vy[i] + f(ay * rep));
+        this.vz[i] = f(this.vz[i] + f(az * rep));
+      }
     }
     const t2 = timed ? performance.now() : 0;
 
@@ -536,7 +578,11 @@ class BarnesHutOctree {
     const x = next() - 0.5;
     const y = next() - 0.5;
     const z = next() - 0.5;
-    const len = Math.hypot(x, y, z) || 1;
+    // `Math.sqrt` of the summed squares, NOT `Math.hypot`: hypot is an
+    // engine-approximated f64 (allowed to differ by ~1 ulp), which would break
+    // bit-parity with the Rust force kernel (`jitter_for`), while IEEE sqrt is
+    // correctly rounded and identical everywhere.
+    const len = Math.sqrt(x * x + y * y + z * z) || 1;
     const scale = 1e-4 / len;
     return [x * scale, y * scale, z * scale];
   }

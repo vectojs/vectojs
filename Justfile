@@ -49,20 +49,29 @@ build-pkg pkg:
 
 # --- WASM ----------------------------------------------------------------
 
-# Build the Rust wasm core via build.sh (sets RUSTFLAGS so a global cargo config can't leak host flags).
+# Build the Rust wasm kernels via their build.sh scripts (each sets RUSTFLAGS so a
+# global cargo config can't leak host flags). core = transform/anim/hit/particle;
+# force-rs = the graph3d Barnes-Hut force kernel.
 wasm:
     @crates/vectojs-core-rs/build.sh
+    @crates/vectojs-force-rs/build.sh
 
 # rustfmt + clippy on the wasm target, warnings as errors (matches CI).
 wasm-check:
     @cargo fmt --manifest-path crates/vectojs-core-rs/Cargo.toml --check
+    @cargo fmt --manifest-path crates/vectojs-force-rs/Cargo.toml --check
     @RUSTFLAGS="-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld" \
         cargo clippy --manifest-path crates/vectojs-core-rs/Cargo.toml \
         --release --target wasm32-unknown-unknown -- -D warnings
+    @RUSTFLAGS="-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld" \
+        cargo clippy --manifest-path crates/vectojs-force-rs/Cargo.toml \
+        --release --target wasm32-unknown-unknown -- -D warnings
 
-# Build the wasm, then run the core differential suite against it (skips itself if .wasm absent, so build first).
+# Build the wasm, then run both differential suites against it (each skips itself
+# if its .wasm is absent, so build first).
 wasm-test: wasm
     @cd packages/core && bunx vitest run test/wasm
+    @cd packages/graph3d && bunx vitest run test/VectoForceLayout.wasm.test.ts
 
 # --- e2e -----------------------------------------------------------------
 

@@ -13,13 +13,19 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
-    }
+    },
+    "./wasm": {
+      "types": "./dist/wasm/asset.d.ts",
+      "import": "./dist/wasm/asset.mjs",
+      "require": "./dist/wasm/asset.js"
+    },
+    "./vectojs_force.wasm": "./dist/wasm/vectojs_force.wasm"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
   "dependencies": {

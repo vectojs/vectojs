@@ -113,7 +113,7 @@ jobs:
         run: cd packages/ui && bun run test:e2e
 
   wasm:
-    name: WASM core (build + differential tests)
+    name: WASM kernels (build + differential tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -144,10 +144,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             crates/vectojs-core-rs/target
-          key: wasm-cargo-${{ runner.os }}-${{ hashFiles('crates/vectojs-core-rs/Cargo.lock') }}
+            crates/vectojs-force-rs/target
+          key: wasm-cargo-${{ runner.os }}-${{ hashFiles('crates/vectojs-core-rs/Cargo.lock', 'crates/vectojs-force-rs/Cargo.lock') }}
           restore-keys: wasm-cargo-${{ runner.os }}-
       - name: Rust format check
-        run: cargo fmt --manifest-path crates/vectojs-core-rs/Cargo.toml --check
+        run: |
+          cargo fmt --manifest-path crates/vectojs-core-rs/Cargo.toml --check
+          cargo fmt --manifest-path crates/vectojs-force-rs/Cargo.toml --check
       # clippy runs against the real wasm target and with the same RUSTFLAGS the
       # build uses, so lint sees exactly the cfg/target-feature the shipped
       # artifact is compiled with. --deny-warnings mirrors the oxlint gate.
@@ -157,12 +160,21 @@ jobs:
         run: >-
           cargo clippy --manifest-path crates/vectojs-core-rs/Cargo.toml
           --release --target wasm32-unknown-unknown -- -D warnings
+      - name: Rust clippy force (wasm32)
+        env:
+          RUSTFLAGS: '-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld'
+        run: >-
+          cargo clippy --manifest-path crates/vectojs-force-rs/Cargo.toml
+          --release --target wasm32-unknown-unknown -- -D warnings
       # The one sanctioned build path (see the script's header): env RUSTFLAGS
       # REPLACES config rustflags, so a global ~/.cargo/config.toml can't leak
       # host CPU flags / mold into the wasm link. Emits
       # packages/core/src/wasm/vectojs_core.wasm (gitignored).
       - name: Build WASM core
         run: crates/vectojs-core-rs/build.sh
+      # The graph3d force kernel, emitted to packages/graph3d/src/wasm/ (gitignored).
+      - name: Build WASM force kernel
+        run: crates/vectojs-force-rs/build.sh
       - name: Install dependencies
         run: bun install
       # With the .wasm now present, the 10 core WASM test files that otherwise
@@ -172,3 +184,5 @@ jobs:
       # those differential tests silently pass by being skipped.
       - name: Run core WASM differential tests
         run: cd packages/core && bunx vitest run test/wasm
+      - name: Run graph3d force WASM differential tests
+        run: cd packages/graph3d && bunx vitest run test/VectoForceLayout.wasm.test.ts
