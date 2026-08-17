@@ -58,19 +58,30 @@ export class BarnesHutQuadtree {
     theta: number,
     pointIndex: number,
     out: Float64Array<ArrayBufferLike>,
+    maxDistance = Infinity,
   ): void {
-    if (this.nodeCount === 0) {
+    if (this.nodeCount === 0 || maxDistance <= 0) {
       out[0] = 0;
       out[1] = 0;
       return;
     }
     let forceX = 0;
     let forceY = 0;
+    const maxDistanceSquared = maxDistance * maxDistance;
+    const cutoffTolerance = Math.max(1e-12, maxDistanceSquared * 1e-12);
     let stackSize = 0;
     this.ensureStack(this.nodeCount);
     this.stack[stackSize++] = 0;
     while (stackSize > 0) {
       const node = this.stack[--stackSize];
+      const nearestDistanceSquared = distanceToCellSquared(
+        qx,
+        qy,
+        this.cellX[node],
+        this.cellY[node],
+        this.halfSize[node],
+      );
+      if (nearestDistanceSquared > maxDistanceSquared + cutoffTolerance) continue;
       const charge = this.charge[node];
       if (charge <= 0) continue;
       const leaf = this.internal[node] === 0;
@@ -83,6 +94,13 @@ export class BarnesHutQuadtree {
       if (
         !leaf &&
         !containsQuery &&
+        distanceToCellFarthestSquared(
+          qx,
+          qy,
+          this.cellX[node],
+          this.cellY[node],
+          this.halfSize[node],
+        ) <= maxDistanceSquared &&
         4 * this.halfSize[node] * this.halfSize[node] < theta * theta * distanceSquared
       ) {
         let contributionX = dx;
@@ -108,6 +126,7 @@ export class BarnesHutQuadtree {
           let contributionY = this.positions[point * 2 + 1] - qy;
           let contributionDistanceSquared =
             contributionX * contributionX + contributionY * contributionY;
+          if (contributionDistanceSquared > maxDistanceSquared + cutoffTolerance) continue;
           if (contributionDistanceSquared < 1e-12) {
             const angle = pairAngle(pointIndex, point);
             const direction = pointIndex < point ? 1 : -1;
@@ -305,6 +324,30 @@ function pairAngle(a: number, b: number): number {
   let value = Math.imul(low, 0x9e3779b9) ^ Math.imul(high, 0x85ebca6b);
   value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
   return ((value >>> 0) / 4294967296) * Math.PI * 2;
+}
+
+function distanceToCellSquared(
+  qx: number,
+  qy: number,
+  x: number,
+  y: number,
+  halfSize: number,
+): number {
+  const dx = Math.max(Math.abs(qx - x) - halfSize, 0);
+  const dy = Math.max(Math.abs(qy - y) - halfSize, 0);
+  return dx * dx + dy * dy;
+}
+
+function distanceToCellFarthestSquared(
+  qx: number,
+  qy: number,
+  x: number,
+  y: number,
+  halfSize: number,
+): number {
+  const dx = Math.abs(qx - x) + halfSize;
+  const dy = Math.abs(qy - y) + halfSize;
+  return dx * dx + dy * dy;
 }
 
 function resize<T extends Float64Array | Int32Array | Uint8Array>(

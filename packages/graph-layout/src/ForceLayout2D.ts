@@ -33,6 +33,7 @@ export class ForceLayout2D {
   private readonly centerStrength: number;
   private readonly velocityDecay: number;
   private readonly theta: number;
+  private readonly repulsionDistanceMax: number;
   private readonly alphaDecay: number;
   private readonly alphaMin: number;
   private readonly seed: number;
@@ -76,6 +77,7 @@ export class ForceLayout2D {
     this.centerStrength = finiteOr(options.centerStrength, 0.02, 0);
     this.velocityDecay = finiteOr(options.velocityDecay, 0.6, 0, 0.999999);
     this.theta = finiteOr(options.theta, 0.9, 0);
+    this.repulsionDistanceMax = finiteOr(options.repulsionDistanceMax, Infinity, 0);
     this.alphaDecay = finiteOr(options.alphaDecay, 0.0228, 0, 1);
     this.alphaMin = finiteOr(options.alphaMin, 0.001, 0);
     this.seed = Number.isFinite(options.seed) ? Number(options.seed) : 1;
@@ -186,21 +188,49 @@ export class ForceLayout2D {
   public pinNode(nodeIndex: number, x: number, y: number): void {
     this.assertUsable();
     if (!this.validNodeIndex(nodeIndex)) return;
-    this.fixedX[nodeIndex] = toF32(x);
-    this.fixedY[nodeIndex] = toF32(y);
-    this.pinnedX[nodeIndex] = 1;
-    this.pinnedY[nodeIndex] = 1;
-    this.positionStorage[nodeIndex * 2] = this.fixedX[nodeIndex];
-    this.positionStorage[nodeIndex * 2 + 1] = this.fixedY[nodeIndex];
-    this.velocityX[nodeIndex] = 0;
-    this.velocityY[nodeIndex] = 0;
+    this.setNodePin(nodeIndex, { x, y });
   }
 
   public unpinNode(nodeIndex: number): void {
     this.assertUsable();
     if (!this.validNodeIndex(nodeIndex)) return;
-    this.pinnedX[nodeIndex] = 0;
-    this.pinnedY[nodeIndex] = 0;
+    this.clearNodePin(nodeIndex, { x: true, y: true });
+  }
+
+  /** Pin either axis without changing the other axis's pin state. */
+  public setNodePin(nodeIndex: number, pin: { x?: number; y?: number }): void {
+    this.assertUsable();
+    if (!this.validNodeIndex(nodeIndex)) return;
+    const offset = nodeIndex * 2;
+    if (pin.x !== undefined) {
+      this.fixedX[nodeIndex] = toF32(pin.x, toF32(this.positionStorage[offset]));
+      this.pinnedX[nodeIndex] = 1;
+      this.positionStorage[offset] = this.fixedX[nodeIndex];
+      this.velocityX[nodeIndex] = 0;
+    }
+    if (pin.y !== undefined) {
+      this.fixedY[nodeIndex] = toF32(pin.y, toF32(this.positionStorage[offset + 1]));
+      this.pinnedY[nodeIndex] = 1;
+      this.positionStorage[offset + 1] = this.fixedY[nodeIndex];
+      this.velocityY[nodeIndex] = 0;
+    }
+  }
+
+  /** Clear selected axis pins while preserving any axis omitted from `axes`. */
+  public clearNodePin(
+    nodeIndex: number,
+    axes: { x?: boolean; y?: boolean } = { x: true, y: true },
+  ): void {
+    this.assertUsable();
+    if (!this.validNodeIndex(nodeIndex)) return;
+    if (axes.x) {
+      this.pinnedX[nodeIndex] = 0;
+      this.velocityX[nodeIndex] = 0;
+    }
+    if (axes.y) {
+      this.pinnedY[nodeIndex] = 0;
+      this.velocityY[nodeIndex] = 0;
+    }
   }
 
   public reheat(alpha = 0.3): void {
@@ -243,6 +273,7 @@ export class ForceLayout2D {
         this.theta,
         node,
         this.forceOutput,
+        this.repulsionDistanceMax,
       );
       if (!this.pinnedX[node])
         this.velocityX[node] = toF32(this.velocityX[node] + this.forceOutput[0] * this.alpha);
