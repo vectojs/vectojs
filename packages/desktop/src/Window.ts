@@ -171,6 +171,8 @@ export class DesktopWindow extends UIComponent {
     width: number;
     height: number;
   };
+  private readonly appMinWidth: number;
+  private readonly appMinHeight: number;
 
   private dragging = false;
   private dragOffsetX = 0;
@@ -192,9 +194,11 @@ export class DesktopWindow extends UIComponent {
     this.onFocus = opts.onFocus;
     this.onStateChange = opts.onStateChange;
     this.workArea = opts.workArea;
+    this.appMinWidth = opts.app.minWidth ?? 0;
+    this.appMinHeight = opts.app.minHeight ?? 0;
 
-    this.width = opts.width ?? DEFAULT_WINDOW_WIDTH;
-    this.height = opts.height ?? DEFAULT_WINDOW_HEIGHT;
+    this.width = Math.max(this.minWidth(), opts.width ?? DEFAULT_WINDOW_WIDTH);
+    this.height = Math.max(this.minHeight(), opts.height ?? DEFAULT_WINDOW_HEIGHT);
     this.x = opts.x ?? 48;
     this.y = opts.y ?? 48;
     this.interactive = true;
@@ -446,9 +450,19 @@ export class DesktopWindow extends UIComponent {
     this.applyGeom(x, y, w, h);
   }
 
+  /** Effective min width: the app's floor layered over the theme's global floor. */
+  private minWidth(): number {
+    return Math.max(this.chrome.minWidth, this.appMinWidth);
+  }
+
+  /** Effective min height: the app's floor layered over the theme's global floor. */
+  private minHeight(): number {
+    return Math.max(this.chrome.minHeight, this.appMinHeight);
+  }
+
   private applyGeom(x: number, y: number, w: number, h: number): void {
-    const minW = this.chrome.minWidth;
-    const minH = this.chrome.minHeight;
+    const minW = this.minWidth();
+    const minH = this.minHeight();
     this.x = x;
     this.y = y;
     this.width = Math.max(minW, w);
@@ -649,8 +663,8 @@ export class DesktopWindow extends UIComponent {
     if (!this.resizing) return;
     const dx = sceneX - this.resizeStart.px;
     const dy = sceneY - this.resizeStart.py;
-    const minW = this.chrome.minWidth;
-    const minH = this.chrome.minHeight;
+    const minW = this.minWidth();
+    const minH = this.minHeight();
     let { x, y, w, h } = {
       x: this.resizeStart.x,
       y: this.resizeStart.y,

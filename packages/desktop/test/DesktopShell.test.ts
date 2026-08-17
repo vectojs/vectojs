@@ -658,4 +658,25 @@ describe('polish pass (CTX-0376)', () => {
     expect(menu.height).toBe(startMenuHeight(2));
     menu.destroy();
   });
+
+  it('floors window size to the app minWidth/minHeight on open and setGeometry', () => {
+    const scene = makeScene();
+    const minApp: AppDefinition = {
+      id: 'minapp',
+      title: 'Min App',
+      minWidth: 360,
+      minHeight: 300,
+      create: () => new Box(100, 40),
+    };
+    const shell = new DesktopShell({ scene, config: { apps: [minApp] } });
+    shell.start();
+    const win = shell.open('minapp', { width: 120, height: 100 });
+    expect(win.width).toBe(360);
+    expect(win.height).toBe(300);
+
+    win.setGeometry(0, 0, 50, 60);
+    expect(win.width).toBe(360);
+    expect(win.height).toBe(300);
+    shell.dispose();
+  });
 });
