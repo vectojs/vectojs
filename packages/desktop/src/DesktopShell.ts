@@ -260,7 +260,6 @@ export class DesktopShell {
     const t = this.config.theme;
     this.taskbar = new Taskbar({
       scene: this.scene,
-      registry: this.registry,
       windowManager: this.windowManager,
       chrome: {
         bg: str(t, 'desktop-taskbar-bg', '#0f172a'),

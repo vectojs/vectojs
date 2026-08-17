@@ -1,6 +1,5 @@
 import { type A11yAttributes, Entity, type IRenderer, type Scene } from '@vectojs/core';
 import { Button, Card, Text, UIComponent } from '@vectojs/ui';
-import type { AppRegistry } from './AppRegistry';
 import type { DesktopWindow } from './Window';
 import type { WindowManager } from './WindowManager';
 
@@ -15,7 +14,6 @@ export interface TaskbarChrome {
 
 export interface TaskbarOptions {
   scene: Scene;
-  registry: AppRegistry;
   windowManager: WindowManager;
   chrome: TaskbarChrome;
   onToggleStart: () => void;
@@ -35,7 +33,6 @@ class EntriesHost extends Entity {
  * Click focuses/restores; click-on-active minimizes (Plasma Task Manager).
  */
 export class Taskbar extends UIComponent {
-  private readonly registry: AppRegistry;
   private readonly wm: WindowManager;
   private readonly chrome: TaskbarChrome;
   private readonly onToggleStart: () => void;
@@ -50,7 +47,6 @@ export class Taskbar extends UIComponent {
 
   constructor(opts: TaskbarOptions) {
     super();
-    this.registry = opts.registry;
     this.wm = opts.windowManager;
     this.chrome = opts.chrome;
     this.onToggleStart = opts.onToggleStart;
@@ -167,20 +163,19 @@ export class Taskbar extends UIComponent {
       const bg = focused ? this.chrome.active : win.minimized ? this.chrome.hover : this.chrome.bg;
       let btn = this.entryButtons.get(win);
       if (!btn) {
-        const app = this.registry.get(win.appId);
-        const label = app?.icon ? `${app.icon} ${win.title}` : win.title;
-        btn = new Button(truncate(label, 18), {
+        const label = win.title;
+        btn = new Button(truncate(label, 20), {
           bg,
           hoverBg: this.chrome.hover,
           color: this.chrome.fg,
-          font: '600 12px sans-serif',
-          padding: 8,
-          radius: 6,
+          font: '600 12px "Segoe UI", system-ui, sans-serif',
+          padding: 10,
+          radius: 4,
           height: btnH,
           onClick: () => this.onEntryClick(win),
         });
         btn.a11yProjection = 'eager';
-        btn.width = Math.min(maxW, Math.max(72, btn.width));
+        btn.width = Math.min(maxW, Math.max(88, btn.width));
         btn.y = btnY;
         const a11y = btn.getA11yAttributes.bind(btn);
         btn.getA11yAttributes = () => ({
