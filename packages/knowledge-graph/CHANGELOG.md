@@ -1,5 +1,11 @@
 # @vectojs/knowledge-graph
 
+## 0.3.0
+
+### Minor Changes
+
+- 05def6b: Add a renderer-neutral paginated knowledge-graph model with expansion state, cancellation, and snapshots.
+
 ## 0.2.0
 
 ### Minor Changes

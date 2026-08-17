@@ -114,7 +114,7 @@ jobs:
       - name: Publish to npm
         env:
           PKG: ${{ steps.parse.outputs.package }}
-        run: cd "packages/$PKG" && npm publish --access public --ignore-scripts || true
+        run: cd "packages/$PKG" && npm publish --access public --ignore-scripts
 
       - name: Pack tarball for the GitHub Release
         id: pack
