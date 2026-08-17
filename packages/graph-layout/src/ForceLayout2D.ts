@@ -4,6 +4,7 @@ import type {
   GraphData,
   GraphLink,
   GraphNode,
+  LinkId,
   LinkValue,
   NodeId,
   NodeValue,
@@ -57,6 +58,7 @@ export class ForceLayout2D {
   private linkTargetShare = new Float32Array(0);
   private degree = new Int32Array(0);
   private linkKeys: string[] = [];
+  private linkIdKeys: string[] = [];
   private linkKeySet = new Set<string>();
   private linkCount = 0;
   private nodeCapacity = 0;
@@ -181,13 +183,114 @@ export class ForceLayout2D {
       this.linkDistance[nextLink] = this.linkDistance[link];
       this.linkStrength[nextLink] = this.linkStrength[link];
       this.linkKeys[nextLink] = this.linkKeys[link];
+      this.linkIdKeys[nextLink] = this.linkIdKeys[link];
       nextLink++;
     }
     this.linkCount = nextLink;
     this.linkKeys.length = nextLink;
+    this.linkIdKeys.length = nextLink;
     this.linkKeySet = new Set(this.linkKeys);
     this.recomputeLinkBias();
     this.reheat();
+  }
+
+  /**
+   * Remove links while keeping every node's position, velocity, pin state, and
+   * index untouched. Surviving links retain their order and accessor values.
+   *
+   * Each item is either a full {@link GraphLink} (matched by its directed
+   * `source`/`target` pair plus optional `id`) or a bare {@link LinkId}
+   * (matched against links that carry that `id`). Removal is idempotent:
+   * replaying an already-removed identity is a no-op. Degree-biased spring
+   * shares are recomputed once and the simulation is reheated once per batch.
+   */
+  public removeLinks(items: Iterable<GraphLink | LinkId>): void {
+    this.assertUsable();
+    const removeKeys = new Set<string>();
+    for (const item of items) {
+      if (isNodeId(item)) {
+        const idKeyValue = idKey(item);
+        for (let link = 0; link < this.linkCount; link++) {
+          if (this.linkIdKeys[link] === idKeyValue) removeKeys.add(this.linkKeys[link]!);
+        }
+      } else {
+        removeKeys.add(linkIdentity(item));
+      }
+    }
+    if (removeKeys.size === 0) return;
+
+    let nextLink = 0;
+    for (let link = 0; link < this.linkCount; link++) {
+      if (removeKeys.has(this.linkKeys[link]!)) continue;
+      if (nextLink !== link) {
+        this.linkSource[nextLink] = this.linkSource[link];
+        this.linkTarget[nextLink] = this.linkTarget[link];
+        this.linkDistance[nextLink] = this.linkDistance[link];
+        this.linkStrength[nextLink] = this.linkStrength[link];
+        this.linkKeys[nextLink] = this.linkKeys[link]!;
+        this.linkIdKeys[nextLink] = this.linkIdKeys[link]!;
+      }
+      nextLink++;
+    }
+    this.linkCount = nextLink;
+    this.linkKeys.length = nextLink;
+    this.linkIdKeys.length = nextLink;
+    this.linkKeySet = new Set(this.linkKeys);
+    this.recomputeLinkBias();
+    this.reheat();
+  }
+
+  /**
+   * Update the resolved distance/strength of existing links, matched by their
+   * identity. Accessors are re-resolved against each supplied link object, so a
+   * host can mutate a link's custom `distance`/`strength` fields and re-apply
+   * them without rebuilding the layout.
+   *
+   * The whole batch is validated before any mutation: a link whose endpoints
+   * are unknown or identical throws and leaves the layout unchanged. Links that
+   * do not match an existing identity (including re-routed endpoints, which
+   * change identity) are ignored — use {@link removeLinks} + {@link appendGraph}
+   * to re-route. Unaffected links keep their order and accessor values, and the
+   * simulation is reheated once only when a value actually changed.
+   */
+  public updateLinks(links: readonly GraphLink[]): void {
+    this.assertUsable();
+    if (links.length === 0) return;
+    const updates = new Map<string, GraphLink>();
+    for (const link of links) {
+      const source = this.nodeIndex.get(link.source);
+      const target = this.nodeIndex.get(link.target);
+      if (source === undefined || target === undefined || source === target) {
+        throw new Error(
+          'ForceLayout2D.updateLinks: link endpoints must reference two distinct existing nodes',
+        );
+      }
+      const key = linkIdentity(link);
+      if (this.linkKeySet.has(key)) updates.set(key, link);
+    }
+    if (updates.size === 0) return;
+
+    let changed = false;
+    for (let link = 0; link < this.linkCount; link++) {
+      const replacement = updates.get(this.linkKeys[link]!);
+      if (!replacement) continue;
+      const distance = toF32(
+        resolveLinkValue(this.linkDistanceOption, replacement, link, 30),
+        30,
+        0,
+      );
+      const strength = toF32(
+        resolveLinkValue(this.linkStrengthOption, replacement, link, 0.3),
+        0.3,
+        0,
+      );
+      if (distance !== this.linkDistance[link] || strength !== this.linkStrength[link]) {
+        this.linkDistance[link] = distance;
+        this.linkStrength[link] = strength;
+        changed = true;
+      }
+    }
+    if (changed) this.reheat();
   }
 
   /**
@@ -246,6 +349,7 @@ export class ForceLayout2D {
     this.linkSourceShare = this.linkTargetShare = new Float32Array(0);
     this.degree = new Int32Array(0);
     this.linkKeys = [];
+    this.linkIdKeys = [];
     this.linkKeySet.clear();
     this.forceOutput = new Float64Array(0);
     this.nodeCapacity = 0;
@@ -429,7 +533,7 @@ export class ForceLayout2D {
   }
 
   private appendLinks(links: readonly GraphLink[]): number {
-    const valid: Array<[number, number, number, number, string]> = [];
+    const valid: Array<[number, number, number, number, string, string]> = [];
     const pendingKeys = new Set<string>();
     for (const link of links) {
       const source = this.nodeIndex.get(link.source);
@@ -445,15 +549,17 @@ export class ForceLayout2D {
         resolveLinkValue(this.linkDistanceOption, link, globalIndex, 30),
         resolveLinkValue(this.linkStrengthOption, link, globalIndex, 0.3),
         key,
+        linkIdKeyOf(link),
       ]);
     }
     this.ensureLinkCapacity(this.linkCount + valid.length);
-    for (const [source, target, distance, strength, key] of valid) {
+    for (const [source, target, distance, strength, key, idKeyValue] of valid) {
       this.linkSource[this.linkCount] = source;
       this.linkTarget[this.linkCount] = target;
       this.linkDistance[this.linkCount] = toF32(distance, 30, 0);
       this.linkStrength[this.linkCount] = toF32(strength, 0.3, 0);
       this.linkKeys[this.linkCount] = key;
+      this.linkIdKeys[this.linkCount] = idKeyValue;
       this.linkKeySet.add(key);
       this.linkCount++;
     }
@@ -530,6 +636,7 @@ export class ForceLayout2D {
     this.nodeCount = 0;
     this.linkCount = 0;
     this.linkKeys = [];
+    this.linkIdKeys = [];
     this.linkKeySet.clear();
     this.placementIndex = 0;
     this.alpha = 1;
@@ -617,6 +724,10 @@ function isNodeId(value: unknown): value is NodeId {
 function linkIdentity(link: GraphLink): string {
   const id = isNodeId(link.id) ? idKey(link.id) : '';
   return JSON.stringify([idKey(link.source), idKey(link.target), id]);
+}
+
+function linkIdKeyOf(link: GraphLink): string {
+  return isNodeId(link.id) ? idKey(link.id) : '';
 }
 
 function idKey(id: NodeId): string {
