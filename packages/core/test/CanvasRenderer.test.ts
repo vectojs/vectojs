@@ -167,6 +167,19 @@ describe('CanvasRenderer', () => {
     expect(mockCtx.clip).toHaveBeenCalled();
   });
 
+  it('clip() with radii uses roundRect instead of rect', () => {
+    mockCtx.rect.mockClear();
+    mockCtx.roundRect.mockClear();
+    mockCtx.clip.mockClear();
+    mockCtx.beginPath.mockClear();
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.clip(10, 20, 100, 40, 8);
+    expect(mockCtx.beginPath).toHaveBeenCalled();
+    expect(mockCtx.rect).not.toHaveBeenCalled();
+    expect(mockCtx.roundRect).toHaveBeenCalledWith(10, 20, 100, 40, 8);
+    expect(mockCtx.clip).toHaveBeenCalled();
+  });
+
   it('drawing path methods delegate to context', () => {
     const renderer = new CanvasRenderer(mockCanvas as any);
 
