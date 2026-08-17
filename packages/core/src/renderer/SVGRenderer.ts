@@ -493,11 +493,27 @@ export class SVGRenderer implements IRenderer {
     };
   }
 
-  public clip(x: number, y: number, width: number, height: number): void {
+  public clip(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radii?: number | number[],
+  ): void {
     this.flush();
     const id = `clip-${this.clipCounter++}`;
     const transformStr = `matrix(${this.ma},${this.mb},${this.mc},${this.md},${this.me},${this.mf})`;
-    const clipXML = `<clipPath id="${id}"><rect x="${x}" y="${y}" width="${width}" height="${height}" transform="${transformStr}" /></clipPath>`;
+    let clipShape: string;
+    if (radii !== undefined) {
+      const savedPath = this.currentPath;
+      this.currentPath = [];
+      this.roundRect(x, y, width, height, radii);
+      clipShape = `<path d="${this.currentPath.join(' ')}" transform="${transformStr}" />`;
+      this.currentPath = savedPath;
+    } else {
+      clipShape = `<rect x="${x}" y="${y}" width="${width}" height="${height}" transform="${transformStr}" />`;
+    }
+    const clipXML = `<clipPath id="${id}">${clipShape}</clipPath>`;
     this.defsBuffer.push(clipXML);
     this.buffer.push(`<g clip-path="url(#${id})">`);
     this.clipDepth++;
