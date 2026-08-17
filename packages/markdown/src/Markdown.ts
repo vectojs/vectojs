@@ -267,7 +267,16 @@ marked.use({
   ],
 });
 
-import { type ButtonOptions, RichText, Stack, Table, Text, Image, UIComponent } from '@vectojs/ui';
+import {
+  type ButtonOptions,
+  RichText,
+  RowHeights,
+  Stack,
+  Table,
+  Text,
+  Image,
+  UIComponent,
+} from '@vectojs/ui';
 import {
   BlockAffordanceButton,
   type BlockAffordanceConfig,
@@ -493,6 +502,21 @@ export interface MarkdownOptions {
    * download behaviour to observe.
    */
   saveFile?: (filename: string, content: string, mimeType: string) => void;
+  /**
+   * Materialize only the top-level blocks near the viewport of a very large
+   * document, representing off-screen height as numeric offsets rather than
+   * entities. Off by default; pass `true` or `{ overscan }` to opt in.
+   *
+   * The host must drive it with {@link Markdown.setVisibleRange} each scroll
+   * frame (a `ScrollView` whose content is this `Markdown` does so
+   * automatically). Off-screen height is estimated from the token source and
+   * refined to the exact measured height when a block first mounts, so the
+   * scrollbar stays correct while only a window of blocks exists as entities.
+   *
+   * Not supported together with streaming (`createStream` / `appendMarkdown`):
+   * a document that virtualizes must be rendered whole.
+   */
+  virtualize?: boolean | { overscan?: number };
 }
 
 interface BlockMetrics {
@@ -556,6 +580,19 @@ export class Markdown extends UIComponent {
   /** File saver used by the download controls. */
   public saveFile: (filename: string, content: string, mimeType: string) => void;
   private activeBlockMetrics: BlockMetrics | null = null;
+  /** Whether `opts.virtualize` enabled viewport-culled block materialization. */
+  private readonly virtualizeBlocks: boolean;
+  /** Overscan margin (px) added above/below the visible window before mounting. */
+  private readonly virtualOverscan: number;
+  /** Top-level tokens that produce a child entity, in document order. */
+  private virtualTokens: Token[] | null = null;
+  /** Fenwick tree over per-block strides (height + blockGap) when virtualizing. */
+  private virtualHeights: RowHeights | null = null;
+  /** token index → mounted entity, for blocks currently inside `content`. */
+  private readonly virtualMounted = new Map<number, Entity>();
+  /** Visible window top (scroll offset) and height, last set via setVisibleRange. */
+  private virtualScrollY = 0;
+  private virtualViewportH = 0;
   /**
    * Called after this entity's own `width`/`height` changed because the document
    * was re-laid-out. **This is the hook to wire up when a host has to move or
@@ -846,6 +883,13 @@ export class Markdown extends UIComponent {
     this.writeClipboard = opts.writeClipboard ?? defaultWriteClipboard;
     this.saveFile = opts.saveFile ?? defaultSaveFile;
 
+    const virt = opts.virtualize;
+    this.virtualizeBlocks = virt === true || (typeof virt === 'object' && virt !== null);
+    this.virtualOverscan =
+      typeof virt === 'object' && virt !== null && typeof virt.overscan === 'number'
+        ? virt.overscan
+        : 800;
+
     this.content = new Stack({
       direction: 'vertical',
       gap: this.theme.blockGap,
@@ -986,6 +1030,22 @@ export class Markdown extends UIComponent {
     // shape footnotes allow), so a term used in an early paragraph must still
     // resolve against a definition written later in the same document.
     this.abbreviations = collectAbbreviations(tokens);
+    if (this.virtualizeBlocks) {
+      this.virtualTokens = tokens.filter((token) => this.producesEntity(token));
+      const n = this.virtualTokens.length;
+      // Seed with a zero stride, then replace each with the real estimate: the
+      // uniform seed is irrelevant because every row is set before any query.
+      this.virtualHeights = new RowHeights(n, 0);
+      for (let i = 0; i < n; i++) {
+        this.virtualHeights.set(
+          i,
+          this.estimateBlockHeight(this.virtualTokens[i]) + this.theme.blockGap,
+        );
+      }
+      this.virtualMounted.clear();
+      this.reconcileVirtual();
+      return;
+    }
     for (const token of tokens) {
       const el = this.renderToken(token);
       if (el) {
@@ -997,8 +1057,138 @@ export class Markdown extends UIComponent {
     this.height = this.content.height;
   }
 
+  /**
+   * Drive the virtualized window from the host's scroll state.
+   *
+   * Only the blocks intersecting `[scrollY − overscan, scrollY + viewportHeight +
+   * overscan]` stay materialized; every other block is a numeric offset in the
+   * height tree, so the scrollbar still reports the full document height while
+   * only a window of blocks exists as entities. A no-op when `virtualize` was
+   * not enabled.
+   */
+  public setVisibleRange(scrollY: number, viewportHeight: number): void {
+    if (!this.virtualizeBlocks) return;
+    this.virtualScrollY = Math.max(0, scrollY);
+    this.virtualViewportH = Math.max(0, viewportHeight);
+    this.reconcileVirtual();
+  }
+
+  /**
+   * Cheap per-block height estimate from the token source, refined to the exact
+   * measured height when the block first mounts. Coarse by design: the estimate
+   * only has to keep the scrollbar plausible before a block is first seen; the
+   * Fenwick tree corrects the rest.
+   */
+  private estimateBlockHeight(token: Token): number {
+    const t = this.theme;
+    switch (token.type) {
+      case 'heading': {
+        const size = headingSize(t, (token as Tokens.Heading).depth);
+        return Math.ceil(size * 1.5) + 8;
+      }
+      case 'paragraph':
+        return this.estimateTextHeight((token as Tokens.Paragraph).text, t.bodyLineHeight);
+      case 'code': {
+        const raw = (token as Tokens.Code).text;
+        const lines = Math.max(1, raw.split('\n').length - (raw.endsWith('\n') ? 1 : 0));
+        let h = lines * t.codeLineHeight + t.codePadding * 2;
+        if (this.showCodeLanguage) h += t.codeLangFontSize + 8;
+        return h;
+      }
+      case 'hr':
+        return 24;
+      case 'blockquote':
+      case 'container': {
+        const inner = (token as Tokens.Blockquote).tokens ?? [];
+        let sum = 0;
+        for (const tk of inner) sum += this.estimateBlockHeight(tk) + t.blockGap;
+        return sum + t.quoteInnerGap * 2 + 8;
+      }
+      case 'list': {
+        const items = (token as Tokens.List).items ?? [];
+        let sum = 0;
+        for (const item of items) {
+          for (const tk of item.tokens ?? []) sum += this.estimateBlockHeight(tk) + t.listItemGap;
+        }
+        return sum + t.listGap;
+      }
+      case 'table': {
+        const table = token as Tokens.Table;
+        const rows = (table.rows?.length ?? 0) + (table.header?.length ?? 0);
+        return rows * (t.tableFontSize + 16) + 16;
+      }
+      case 'footnoteDef':
+        return this.estimateTextHeight((token as { text?: string }).text ?? '', t.bodyLineHeight);
+      case 'html':
+        // Inline SVG rasterizes at an unknown aspect ratio; a generous flat box
+        // is corrected the moment the block mounts.
+        return 200;
+      default:
+        return t.bodyLineHeight;
+    }
+  }
+
+  /** Estimate a wrapped line count from raw character length against the max width. */
+  private estimateTextHeight(text: string, lineHeight: number): number {
+    const charsPerLine = Math.max(20, Math.floor(this.maxWidth / (this.theme.fontSize * 0.5)));
+    const lines = Math.max(1, Math.ceil(text.length / charsPerLine));
+    return lines * lineHeight;
+  }
+
+  /**
+   * Mount the blocks in the current window and unmount the rest. The `content`
+   * Stack lays the mounted window contiguously from y = 0; `content.y` is then
+   * set to the skipped prefix sum so the first mounted block lands at its true
+   * y — a numeric spacer, not a wrapper entity.
+   */
+  private reconcileVirtual(): void {
+    const tree = this.virtualHeights;
+    const tokens = this.virtualTokens;
+    if (!tree || !tokens) return;
+
+    const first = tree.indexAt(Math.max(0, this.virtualScrollY - this.virtualOverscan));
+    const last = tree.indexAt(
+      Math.max(0, this.virtualScrollY + this.virtualViewportH + this.virtualOverscan),
+    );
+
+    let changed = false;
+
+    for (const [idx, el] of this.virtualMounted) {
+      if (idx < first || idx > last) {
+        // destroy() detaches via Stack.remove (marks the Stack dirty) and frees
+        // the whole subtree in one step.
+        el.destroy();
+        this.virtualMounted.delete(idx);
+        changed = true;
+      }
+    }
+
+    for (let i = first; i <= last; i++) {
+      if (this.virtualMounted.has(i)) continue;
+      const el = this.renderToken(tokens[i]);
+      if (!el) continue;
+      this.content.add(el);
+      tree.set(i, el.height + this.theme.blockGap);
+      this.virtualMounted.set(i, el);
+      changed = true;
+    }
+
+    if (changed) this.content.layout();
+
+    this.content.y = tree.prefix(first);
+
+    const nextHeight = Math.max(0, tree.total() - this.theme.blockGap);
+    const heightChanged = nextHeight !== this.height;
+    this.width = this.content.width;
+    this.height = nextHeight;
+    if (heightChanged) this.notifyLayoutUpdated();
+  }
+
   /** Create a frame-coalesced stream bound to this Markdown instance. */
   public createStream(options: StreamControllerOptions = {}): StreamController {
+    if (this.virtualizeBlocks) {
+      throw new Error('Markdown.createStream is not supported when virtualize is enabled');
+    }
     if (this.streamController) {
       throw new Error('Markdown already has an active StreamController');
     }
@@ -1085,6 +1275,21 @@ export class Markdown extends UIComponent {
     const next = Math.max(0, maxWidth);
     if (next === this.maxWidth) return this;
     this.maxWidth = next;
+
+    if (this.virtualizeBlocks && this.virtualTokens && this.virtualHeights) {
+      // A width change re-wraps every block, so re-estimate all heights and
+      // re-mount the window from scratch rather than reflow the mounted set.
+      const tokens = this.virtualTokens;
+      const tree = this.virtualHeights;
+      for (const el of this.virtualMounted.values()) el.destroy();
+      this.virtualMounted.clear();
+      for (let i = 0; i < tokens.length; i++) {
+        tree.set(i, this.estimateBlockHeight(tokens[i]) + this.theme.blockGap);
+      }
+      this.reconcileVirtual();
+      this.scene?.markDirty();
+      return this;
+    }
 
     // Same pairing `updateTokens` relies on: `producesEntity` decides which tokens
     // own a child, in order. Walking both together is what lets a reflow know a
@@ -1766,6 +1971,9 @@ export class Markdown extends UIComponent {
   }
 
   private appendMarkdownCore(chunk: string): this {
+    if (this.virtualizeBlocks) {
+      throw new Error('Markdown.appendMarkdown is not supported when virtualize is enabled');
+    }
     const before = this.rawMarkdown.length;
     this.consumeFrontMatter(chunk);
     this.streamStats.appends++;

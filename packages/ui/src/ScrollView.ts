@@ -39,6 +39,19 @@ export const DOCUMENT_SCROLL_PHYSICS: MotionConfig = {
 };
 
 /**
+ * Optional contract a content child may implement so a `ScrollView` drives its
+ * viewport-culled materialization each frame. A child exposing
+ * `setVisibleRange(scrollY, viewportHeight)` is told the current scroll offset
+ * (relative to the child's own top) and the viewport height; it is then expected
+ * to materialize only what falls inside that window (see `@vectojs/markdown`'s
+ * `virtualize` option). Detected by duck typing — no import required on the
+ * content side.
+ */
+export interface ScrollVirtualizable {
+  setVisibleRange(scrollY: number, viewportHeight: number): void;
+}
+
+/**
  * A scrollable viewport that clips its content and handles wheel/touch scrolling
  * with spring physics.
  */
@@ -207,6 +220,23 @@ export class ScrollView extends UIComponent {
     const before = this.targetY;
     this.clampTarget();
     if (this.targetY !== before) this.content.y = this.targetY;
+    this.driveVirtualizableContent();
+  }
+
+  /**
+   * Push the live scroll window to any child that opts into viewport-culled
+   * materialization via {@link ScrollVirtualizable}. Runs every frame; the
+   * per-child dispatch is a single duck-typed method call, so a ScrollView with
+   * ordinary (non-virtualizable) content pays nothing beyond one `typeof` check.
+   */
+  private driveVirtualizableContent(): void {
+    const scrollTop = -this.content.y;
+    for (const child of this.content.children) {
+      const virtualizable = child as Partial<ScrollVirtualizable>;
+      if (typeof virtualizable.setVisibleRange === 'function') {
+        virtualizable.setVisibleRange(scrollTop - child.y, this.height);
+      }
+    }
   }
 
   /**
