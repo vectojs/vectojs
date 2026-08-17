@@ -542,6 +542,38 @@ describe('polish pass (CTX-0376)', () => {
     shell.dispose();
   });
 
+  it('taskbar entry labels are title-only, truncated at 20 chars', () => {
+    const scene = makeScene();
+    const longTitleApp: AppDefinition = {
+      id: 'longtitle',
+      title: 'An Extremely Long Window Title That Must Be Truncated For The Taskbar',
+      create: () => new Box(100, 40),
+    };
+    const shell = new DesktopShell({
+      scene,
+      config: { apps: [longTitleApp] },
+    });
+    shell.start();
+    shell.open('longtitle');
+
+    const entry = (() => {
+      const out: Button[] = [];
+      const walk = (e: Entity | null | undefined): void => {
+        if (!e) return;
+        if (e instanceof Button && e.label.startsWith('An Extremely Long')) out.push(e);
+        for (const c of e.children) walk(c);
+      };
+      walk(shell.taskbar);
+      return out[0];
+    })();
+    expect(entry).toBeDefined();
+    // No app-icon prefix: the label starts directly with the title.
+    expect(entry!.label.startsWith('An Extremely Long')).toBe(true);
+    // truncate(label, 20) caps the entry at 20 chars.
+    expect(entry!.label.length).toBe(20);
+    shell.dispose();
+  });
+
   it('taskbar clock repaints only when the minute changes', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-01T12:00:00'));
