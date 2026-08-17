@@ -502,8 +502,9 @@ export class ForceLayout2D {
         ? this.fixedY[node]
         : toF32(positions[node * 2 + 1] + this.velocityY[node]);
     }
-    this.quadtree.build(this.predicted, this.repulsion, this.nodeCount, this.collisionRadius);
     this.quadtree.applyGridCollisions(
+      this.predicted,
+      this.nodeCount,
       this.collisionRadius,
       this.velocityX,
       this.velocityY,

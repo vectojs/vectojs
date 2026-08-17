@@ -8,35 +8,32 @@ export class BarnesHutQuadtree {
   private centerY = new Float64Array(0);
   private halfSize = new Float64Array(0);
   private charge = new Float64Array(0);
-  private maximumRadius = new Float64Array(0);
   private child = new Int32Array(0);
   private pointHead = new Int32Array(0);
   private internal = new Uint8Array(0);
   private pointNext = new Int32Array(0);
   private stack = new Int32Array(64);
   private collisionUsed = new Uint8Array(0);
-  private collisionCellX = new Int32Array(0);
-  private collisionCellY = new Int32Array(0);
+  private collisionCellX = new Float64Array(0);
+  private collisionCellY = new Float64Array(0);
   private collisionHead = new Int32Array(0);
   private collisionNext = new Int32Array(0);
+  private collisionProbeSlots = new Int32Array(9);
   private positions: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private charges: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private capacity = 0;
   private pointCapacity = 0;
   private nodeCount = 0;
-  private pointCount = 0;
 
   public build(
     positions: Float32Array<ArrayBufferLike>,
     charges: Float32Array<ArrayBufferLike>,
     count: number,
-    radii?: Float32Array<ArrayBufferLike>,
   ): void {
     this.positions = positions;
     this.charges = charges;
     if (count === 0) {
       this.nodeCount = 0;
-      this.pointCount = 0;
       return;
     }
     let minX = Infinity;
@@ -55,12 +52,10 @@ export class BarnesHutQuadtree {
     this.ensureNodes(Math.max(64, count * 4 + 4));
     this.ensurePoints(count);
     this.pointNext.fill(-1, 0, count);
-    this.maximumRadius.fill(0, 0, this.nodeCount);
-    this.pointCount = count;
     this.nodeCount = 1;
     this.resetNode(0, (minX + maxX) * 0.5, (minY + maxY) * 0.5, size * 0.5 + 1e-6);
     for (let point = 0; point < count; point++) this.insert(point);
-    this.finalize(radii);
+    this.finalize();
   }
 
   public force(
@@ -105,7 +100,7 @@ export class BarnesHutQuadtree {
       if (
         !leaf &&
         !containsQuery &&
-        distanceSquared <= maxDistanceSquared + cutoffTolerance &&
+        distanceSquared < maxDistanceSquared &&
         4 * this.halfSize[node] * this.halfSize[node] < theta * theta * distanceSquared
       ) {
         let contributionX = dx;
@@ -131,7 +126,7 @@ export class BarnesHutQuadtree {
           let contributionY = this.positions[point * 2 + 1] - qy;
           let contributionDistanceSquared =
             contributionX * contributionX + contributionY * contributionY;
-          if (contributionDistanceSquared > maxDistanceSquared + cutoffTolerance) continue;
+          if (contributionDistanceSquared >= maxDistanceSquared) continue;
           if (contributionDistanceSquared < 1e-12) {
             const angle = pairAngle(pointIndex, point);
             const direction = pointIndex < point ? 1 : -1;
@@ -160,7 +155,7 @@ export class BarnesHutQuadtree {
   public forEachNearby(
     qx: number,
     qy: number,
-    sourceRadius: number,
+    radius: number,
     visit: (pointIndex: number) => void,
   ): void {
     if (this.nodeCount === 0) return;
@@ -169,7 +164,6 @@ export class BarnesHutQuadtree {
     this.stack[stackSize++] = 0;
     while (stackSize > 0) {
       const node = this.stack[--stackSize];
-      const radius = sourceRadius + this.maximumRadius[node];
       const dx = Math.max(Math.abs(qx - this.cellX[node]) - this.halfSize[node], 0);
       const dy = Math.max(Math.abs(qy - this.cellY[node]) - this.halfSize[node], 0);
       if (dx * dx + dy * dy > radius * radius) continue;
@@ -187,6 +181,8 @@ export class BarnesHutQuadtree {
   }
 
   public applyGridCollisions(
+    positions: Float32Array<ArrayBufferLike>,
+    pointCount: number,
     radii: Float32Array<ArrayBufferLike>,
     velocitiesX: Float32Array<ArrayBufferLike>,
     velocitiesY: Float32Array<ArrayBufferLike>,
@@ -196,31 +192,46 @@ export class BarnesHutQuadtree {
     seed: number,
   ): void {
     let maximumRadius = 0;
-    for (let point = 0; point < this.pointCount; point++)
+    for (let point = 0; point < pointCount; point++)
       maximumRadius = Math.max(maximumRadius, radii[point]);
     if (maximumRadius <= 0) return;
-    this.ensureCollisionGrid(this.pointCount * 2);
+    this.ensureCollisionGrid(pointCount * 2);
     const cellSize = Math.max(maximumRadius * 2, 1);
     this.collisionUsed.fill(0);
     this.collisionHead.fill(-1);
-    this.collisionNext.fill(-1, 0, this.pointCount);
-    for (let point = 0; point < this.pointCount; point++) {
-      const cellX = Math.floor(this.positions[point * 2] / cellSize);
-      const cellY = Math.floor(this.positions[point * 2 + 1] / cellSize);
+    this.collisionNext.fill(-1, 0, pointCount);
+    for (let point = 0; point < pointCount; point++) {
+      const cellX = Math.floor(positions[point * 2] / cellSize);
+      const cellY = Math.floor(positions[point * 2 + 1] / cellSize);
       const slot = this.collisionSlot(cellX, cellY, true);
       this.collisionNext[point] = this.collisionHead[slot]!;
       this.collisionHead[slot] = point;
     }
-    for (let source = 0; source < this.pointCount; source++) {
-      const sourceX = this.positions[source * 2];
-      const sourceY = this.positions[source * 2 + 1];
+    for (let source = 0; source < pointCount; source++) {
+      const sourceX = positions[source * 2];
+      const sourceY = positions[source * 2 + 1];
       const sourceRadius = radii[source];
       const cellX = Math.floor(sourceX / cellSize);
       const cellY = Math.floor(sourceY / cellSize);
+      let probeCount = 0;
       for (let offsetX = -1; offsetX <= 1; offsetX++) {
         for (let offsetY = -1; offsetY <= 1; offsetY++) {
           const slot = this.collisionSlot(cellX + offsetX, cellY + offsetY, false);
           if (slot < 0) continue;
+          let duplicate = false;
+          for (let probe = 0; probe < probeCount; probe++) {
+            const previous = this.collisionProbeSlots[probe];
+            if (
+              previous === slot ||
+              (this.collisionCellX[previous] === this.collisionCellX[slot] &&
+                this.collisionCellY[previous] === this.collisionCellY[slot])
+            ) {
+              duplicate = true;
+              break;
+            }
+          }
+          if (duplicate) continue;
+          this.collisionProbeSlots[probeCount++] = slot;
           for (
             let target = this.collisionHead[slot]!;
             target >= 0;
@@ -228,8 +239,8 @@ export class BarnesHutQuadtree {
           ) {
             if (target <= source) continue;
             const minimumDistance = sourceRadius + radii[target];
-            let dx = this.positions[target * 2] - sourceX;
-            let dy = this.positions[target * 2 + 1] - sourceY;
+            let dx = positions[target * 2] - sourceX;
+            let dy = positions[target * 2 + 1] - sourceY;
             const distanceSquared = dx * dx + dy * dy;
             if (distanceSquared >= minimumDistance * minimumDistance) continue;
             let distance = Math.sqrt(distanceSquared);
@@ -259,21 +270,17 @@ export class BarnesHutQuadtree {
   public dispose(): void {
     this.cellX = this.cellY = new Float64Array(0);
     this.centerX = this.centerY = this.halfSize = this.charge = new Float64Array(0);
-    this.maximumRadius = new Float64Array(0);
     this.child = this.pointHead = this.pointNext = new Int32Array(0);
     this.internal = new Uint8Array(0);
     this.stack = new Int32Array(0);
     this.collisionUsed = new Uint8Array(0);
-    this.collisionCellX =
-      this.collisionCellY =
-      this.collisionHead =
-      this.collisionNext =
-        new Int32Array(0);
+    this.collisionCellX = this.collisionCellY = new Float64Array(0);
+    this.collisionHead = this.collisionNext = new Int32Array(0);
+    this.collisionProbeSlots = new Int32Array(9);
     this.positions = this.charges = new Float32Array(0);
     this.capacity = 0;
     this.pointCapacity = 0;
     this.nodeCount = 0;
-    this.pointCount = 0;
   }
 
   private insert(point: number): void {
@@ -324,19 +331,17 @@ export class BarnesHutQuadtree {
     return child;
   }
 
-  private finalize(radii?: Float32Array<ArrayBufferLike>): void {
+  private finalize(): void {
     for (let node = this.nodeCount - 1; node >= 0; node--) {
       let total = 0;
       let weightedX = 0;
       let weightedY = 0;
-      let maximumRadius = 0;
       if (this.internal[node] === 0) {
         for (let point = this.pointHead[node]; point >= 0; point = this.pointNext[point]) {
           const charge = this.charges[point];
           total += charge;
           weightedX += this.positions[point * 2] * charge;
           weightedY += this.positions[point * 2 + 1] * charge;
-          if (radii) maximumRadius = Math.max(maximumRadius, radii[point]);
         }
       } else {
         for (let quadrant = 0; quadrant < 4; quadrant++) {
@@ -345,11 +350,9 @@ export class BarnesHutQuadtree {
           total += this.charge[child];
           weightedX += this.centerX[child] * this.charge[child];
           weightedY += this.centerY[child] * this.charge[child];
-          maximumRadius = Math.max(maximumRadius, this.maximumRadius[child]);
         }
       }
       this.charge[node] = total;
-      this.maximumRadius[node] = maximumRadius;
       if (total > 0) {
         this.centerX[node] = weightedX / total;
         this.centerY[node] = weightedY / total;
@@ -369,7 +372,6 @@ export class BarnesHutQuadtree {
     this.cellY[node] = this.centerY[node] = y;
     this.halfSize[node] = halfSize;
     this.charge[node] = 0;
-    this.maximumRadius[node] = 0;
     this.pointHead[node] = -1;
     this.internal[node] = 0;
     this.child.fill(-1, node * 4, node * 4 + 4);
@@ -385,7 +387,6 @@ export class BarnesHutQuadtree {
     this.centerY = resize(this.centerY, next);
     this.halfSize = resize(this.halfSize, next);
     this.charge = resize(this.charge, next);
-    this.maximumRadius = resize(this.maximumRadius, next);
     this.child = resize(this.child, next * 4, -1);
     this.pointHead = resize(this.pointHead, next, -1);
     this.internal = resize(this.internal, next);
@@ -412,8 +413,8 @@ export class BarnesHutQuadtree {
     while (capacity < required) capacity *= 2;
     if (capacity === this.collisionUsed.length) return;
     this.collisionUsed = new Uint8Array(capacity);
-    this.collisionCellX = new Int32Array(capacity);
-    this.collisionCellY = new Int32Array(capacity);
+    this.collisionCellX = new Float64Array(capacity);
+    this.collisionCellY = new Float64Array(capacity);
     this.collisionHead = new Int32Array(capacity);
     this.collisionNext = new Int32Array(Math.max(this.pointCapacity, required));
   }

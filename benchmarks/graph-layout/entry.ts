@@ -9,7 +9,9 @@ import {
   forceSimulation,
   forceX,
   forceY,
+  type ForceLink,
   type Simulation,
+  type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from 'd3-force';
 import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
@@ -44,11 +46,16 @@ interface ForceNode extends SimulationNodeDatum {
   charge: number;
 }
 
+interface ForceLinkDatum extends SimulationLinkDatum<ForceNode> {}
+
 class D3Force2DLayout implements Layout {
   private simulation: Simulation<ForceNode, undefined> | null = null;
+  private linkForce: ForceLink<ForceNode, ForceLinkDatum> | null = null;
+  private nodes: ForceNode[] = [];
+  private links: ForceLinkDatum[] = [];
 
   public setGraph(graph: GraphData): void {
-    const nodes = graph.nodes.map((node) => ({
+    this.nodes = graph.nodes.map((node) => ({
       id: Number(node.id),
       radius: Number(node.radius ?? 10),
       charge: Number(node.charge ?? 300),
@@ -57,11 +64,17 @@ class D3Force2DLayout implements Layout {
       vx: 0,
       vy: 0,
     }));
-    const links = graph.links.map((link) => ({
+    this.links = graph.links.map((link) => ({
       source: Number(link.source),
       target: Number(link.target),
     }));
-    const simulation = forceSimulation<ForceNode>(nodes)
+    this.linkForce = forceLink<ForceNode, ForceLinkDatum>(this.links)
+      .id((node) => node.id)
+      .distance(
+        (link) => 40 + (Number(link.source.radius ?? 10) + Number(link.target.radius ?? 10)) * 1.5,
+      )
+      .strength(0.42);
+    const simulation = forceSimulation<ForceNode>(this.nodes)
       .alpha(1)
       .alphaDecay(0.024)
       .velocityDecay(0.36)
@@ -72,16 +85,7 @@ class D3Force2DLayout implements Layout {
           .distanceMax(450)
           .theta(0.9),
       )
-      .force(
-        'link',
-        forceLink<ForceNode, { source: number; target: number }>(links)
-          .id((node) => node.id)
-          .distance(
-            (link) =>
-              40 + (Number(link.source.radius ?? 10) + Number(link.target.radius ?? 10)) * 1.5,
-          )
-          .strength(0.42),
-      )
+      .force('link', this.linkForce)
       .force(
         'collision',
         forceCollide<ForceNode>()
@@ -92,6 +96,28 @@ class D3Force2DLayout implements Layout {
       .force('y', forceY<ForceNode>(0).strength(0.016))
       .stop();
     this.simulation = simulation;
+  }
+
+  public appendGraph(graph: GraphData): void {
+    if (!this.simulation || !this.linkForce)
+      throw new Error('setGraph must run before appendGraph');
+    for (const node of graph.nodes) {
+      this.nodes.push({
+        id: Number(node.id),
+        radius: Number(node.radius ?? 10),
+        charge: Number(node.charge ?? 300),
+        x: node.x,
+        y: node.y,
+        vx: 0,
+        vy: 0,
+      });
+    }
+    for (const link of graph.links) {
+      this.links.push({ source: Number(link.source), target: Number(link.target) });
+    }
+    // The link force retains the same array object, so nodes() reinitializes it
+    // once against the appended links while preserving existing node dynamics.
+    this.simulation.nodes(this.nodes);
   }
 
   public step(iterations = 1): boolean {
@@ -107,6 +133,9 @@ class D3Force2DLayout implements Layout {
   public dispose(): void {
     this.simulation?.stop();
     this.simulation = null;
+    this.linkForce = null;
+    this.nodes = [];
+    this.links = [];
   }
 }
 
@@ -558,9 +587,9 @@ const arms: LayoutArm[] = [
   {
     name: 'd3-force-2d',
     dimensions: 2,
-    appendMode: 'setGraph-rebuild',
+    appendMode: 'appendGraph',
     make: () => new D3Force2DLayout(),
-    append: (layout, payloads) => layout.setGraph(payloads.complete),
+    append: (layout, payloads) => (layout as D3Force2DLayout).appendGraph(payloads.added),
   },
   {
     name: 'force-layout-2d',
@@ -687,7 +716,7 @@ async function main() {
         d3Force3D: 'used via @vectojs/graph3d D3ForceLayout',
       },
       comparisonCaveat:
-        'The d3-force-2d and force-layout-2d rows are the like-for-like comparator. The 3D rows are directional implementation measurements only.',
+        'The 2D rows control dimensions, initial state, topology, and parameter scale, but compare different force laws: ForceLayout2D uses inverse-square repulsion and equal free/free collision shares; d3-force uses inverse-distance repulsion and radius-squared collision shares. Treat ratios as implementation-level workload comparisons, not equation-equivalent kernel measurements. The 3D rows are directional only.',
     },
     rows,
     durationMs: +(performance.now() - startedAt).toFixed(1),

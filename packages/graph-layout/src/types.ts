@@ -56,7 +56,11 @@ export interface ForceLayout2DOptions {
   velocityDecay?: number;
   /** Barnes-Hut opening angle. Default 0.9. */
   theta?: number;
-  /** Maximum distance for many-body repulsion. Non-finite disables the cutoff. */
+  /**
+   * Maximum distance for many-body repulsion. Barnes-Hut aggregates test their
+   * center of charge, matching d3-force; `theta: 0` applies the cutoff exactly
+   * per point. Non-finite disables the cutoff.
+   */
   repulsionDistanceMax?: number;
   /** Temperature decay per tick. Default 0.0228. */
   alphaDecay?: number;
