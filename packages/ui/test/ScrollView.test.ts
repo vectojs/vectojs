@@ -318,4 +318,38 @@ describe('ScrollView', () => {
     expect(sv.content.children).toHaveLength(0);
     expect(box.parent).toBeNull();
   });
+
+  it('drives setVisibleRange on a virtualizable content child each frame', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    const calls: Array<[number, number]> = [];
+    class Virtualizable extends Box {
+      constructor() {
+        super(200, 5000);
+      }
+      setVisibleRange(scrollY: number, viewportHeight: number): void {
+        calls.push([scrollY, viewportHeight]);
+      }
+    }
+    const child = new Virtualizable();
+    sv.add(child);
+    sv.updateContentSize(); // content.height = 5000, so scrolling is possible
+
+    sv.scrollTo(300); // targetY = -300
+    sv.update(16, 0);
+
+    expect(calls.length).toBeGreaterThan(0);
+    const [scrollY, viewportHeight] = calls[calls.length - 1]!;
+    expect(viewportHeight).toBe(100);
+    // Live spring position may not equal the target immediately, but the pushed
+    // range is measured from the live offset and stays non-negative.
+    expect(scrollY).toBeGreaterThanOrEqual(0);
+  });
+
+  it('leaves ordinary (non-virtualizable) content untouched', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    sv.add(new Box(50, 300));
+    sv.updateContentSize();
+    sv.scrollTo(50);
+    expect(() => sv.update(16, 0)).not.toThrow();
+  });
 });
