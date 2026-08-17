@@ -1,5 +1,12 @@
 # @vectojs/graph3d
 
+## 0.5.0
+
+### Minor Changes
+
+- 88e7490: Add an opt-in WASM force kernel: `VectoForceLayout.enableWasmForce()` (plus a `@vectojs/graph3d/wasm` subpath exporting `forceWasmUrl`) runs the Barnes-Hut octree build + repulsion accumulation in a new `crates/vectojs-force-rs` crate, and silently falls back to the bit-identical JS Barnes-Hut on any load/instantiate failure.
+- 755549f: Add opt-in `measurePhases` option and `tickPhases` field to `VectoForceLayout`, reporting each tick's wall-clock time split across octree build, force accumulation, link springs, and integration for benchmarks and diagnostics.
+
 ## 0.4.0
 
 ### Minor Changes

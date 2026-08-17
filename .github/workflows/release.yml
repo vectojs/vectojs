@@ -70,13 +70,13 @@ jobs:
         if: steps.parse.outputs.package == 'video-exporter'
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
 
-      # @vectojs/core ships a prebuilt WASM accelerator. It must exist BEFORE
-      # this package's tests (its differential JS-vs-WASM suite skips itself
-      # when the binary is absent) and BEFORE the build (tsup copies it into
-      # dist/wasm/ so `@vectojs/core/wasm`'s coreWasmUrl resolves to a real
-      # file in the tarball). rust-toolchain.toml pins the channel + target.
-      - name: Provision Rust toolchain for the WASM core
-        if: steps.parse.outputs.package == 'core'
+      # @vectojs/core and @vectojs/graph3d ship prebuilt WASM accelerators. Each
+      # must exist BEFORE its package's tests (the differential JS-vs-WASM suite
+      # skips itself when the binary is absent) and BEFORE the build (tsup copies
+      # it into dist/wasm/ so the `/wasm` subpath resolves to a real file in the
+      # tarball). rust-toolchain.toml pins the channel + target.
+      - name: Provision Rust toolchain for WASM packages
+        if: steps.parse.outputs.package == 'core' || steps.parse.outputs.package == 'graph3d'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -84,6 +84,9 @@ jobs:
       - name: Build WASM core
         if: steps.parse.outputs.package == 'core'
         run: crates/vectojs-core-rs/build.sh
+      - name: Build WASM force kernel
+        if: steps.parse.outputs.package == 'graph3d'
+        run: crates/vectojs-force-rs/build.sh
 
       - name: Run package tests
         env:

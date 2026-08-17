@@ -43,7 +43,7 @@
     },
     "packages/core": {
       "name": "@vectojs/core",
-      "version": "1.36.0",
+      "version": "1.37.0",
       "dependencies": {
         "@vectojs/animation": "^0.1.2",
         "@vectojs/layout": "^0.9.3",
@@ -108,7 +108,7 @@
     },
     "packages/graph3d": {
       "name": "@vectojs/graph3d",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "d3-force-3d": "^3.0.6",
       },
@@ -124,7 +124,7 @@
     },
     "packages/knowledge-graph": {
       "name": "@vectojs/knowledge-graph",
-      "version": "0.2.0",
+      "version": "0.3.1",
       "dependencies": {
         "@vectojs/graph3d": "workspace:*",
         "n3": "^1.26.0",
@@ -156,7 +156,7 @@
     },
     "packages/markdown": {
       "name": "@vectojs/markdown",
-      "version": "0.20.3",
+      "version": "0.21.0",
       "dependencies": {
         "@vectojs/tex": "^0.1.1",
         "marked": "^18.0.7",
@@ -231,7 +231,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.16.7",
+      "version": "2.18.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.13.0",
