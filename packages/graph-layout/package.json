@@ -38,7 +38,6 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
-    "demo:build": "bun build demo/main.ts --outdir demo/dist --target browser",
     "test": "vitest run"
   },
   "devDependencies": {
