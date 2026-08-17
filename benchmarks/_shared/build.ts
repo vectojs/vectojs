@@ -64,6 +64,13 @@ function sourcePlugin() {
       b.onResolve({ filter: /^marked$/ }, () => ({
         path: Bun.resolveSync('marked', join(PKGS, 'markdown')),
       }));
+
+      // `three` is a peer dependency of @vectojs/graph3d, not of benchmarks/, so a
+      // bare specifier does not resolve from here either. Benchmarks that drive
+      // the Graph3D renderer directly import it, hence the explicit resolution.
+      b.onResolve({ filter: /^three$/ }, () => ({
+        path: Bun.resolveSync('three', join(PKGS, 'graph3d')),
+      }));
     },
   };
 }
