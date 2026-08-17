@@ -137,4 +137,26 @@ describe('SVGRenderer', () => {
       expect((r.toXMLString().match(/A 10 10/g) || []).length).toBe(2);
     });
   });
+
+  test('clip() without radii keeps the rectangular clipPath', () => {
+    const r = new SVGRenderer(100, 100);
+    r.save();
+    r.clip(0, 0, 100, 100);
+    r.restore();
+    const xml = r.toXMLString();
+    expect(xml).toContain('<clipPath');
+    expect(xml).toContain('<rect x="0" y="0" width="100" height="100"');
+    expect(xml).not.toContain('<path d=');
+  });
+
+  test('clip() with radii emits a rounded clipPath path', () => {
+    const r = new SVGRenderer(100, 100);
+    r.save();
+    r.clip(0, 0, 100, 100, 8);
+    r.restore();
+    const xml = r.toXMLString();
+    expect(xml).toContain('<clipPath');
+    expect(xml).toContain('<path d="M ');
+    expect(xml).not.toContain('<rect x="0" y="0" width="100" height="100"');
+  });
 });

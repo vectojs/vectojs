@@ -320,11 +320,15 @@ export class CanvasRenderer implements IRenderer {
   }
 
   /** @inheritdoc */
-  clip(x: number, y: number, width: number, height: number): void {
+  clip(x: number, y: number, width: number, height: number, radii?: number | number[]): void {
     this.flush();
     if (this.counters) this.counters.clips++;
     this.ctx.beginPath();
-    this.ctx.rect(x, y, width, height);
+    if (radii !== undefined) {
+      this.ctx.roundRect(x, y, width, height, radii as any);
+    } else {
+      this.ctx.rect(x, y, width, height);
+    }
     this.ctx.clip();
   }
 

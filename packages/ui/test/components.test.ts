@@ -11,6 +11,7 @@ import {
   Input,
   Checkbox,
   Toggle,
+  computeImageFit,
 } from '../src/index';
 import { LayoutEngine, type IRenderer } from '@vectojs/core';
 
@@ -19,13 +20,15 @@ import { LayoutEngine, type IRenderer } from '@vectojs/core';
 HTMLCanvasElement.prototype.getContext = (() => null) as never;
 
 /** A renderer that records the drawing op names, for asserting render output. */
-function recorder(): { ops: string[]; r: IRenderer } {
+function recorder(): { ops: string[]; args: (op: string) => unknown[][]; r: IRenderer } {
+  const calls: Record<string, unknown[][]> = {};
   const ops: string[] = [];
   const rec =
     (op: string) =>
     (...args: unknown[]) => {
       ops.push(op);
-      void args;
+      if (!calls[op]) calls[op] = [];
+      calls[op].push(args);
     };
   const r = {
     clear: rec('clear'),
@@ -51,7 +54,7 @@ function recorder(): { ops: string[]; r: IRenderer } {
     clip: rec('clip'),
     createLinearGradient: vi.fn(() => ({})),
   } as unknown as IRenderer;
-  return { ops, r };
+  return { ops, args: (op: string) => calls[op] ?? [], r };
 }
 
 describe('Text', () => {
@@ -231,6 +234,133 @@ describe('Image', () => {
     const after = recorder();
     img.render(after.r);
     expect(after.ops).toContain('drawImage');
+  });
+
+  function loadedImage(opts: ImageOptions, src: { w: number; h: number }): Image {
+    const img = new Image('x.png', opts);
+    (img as unknown as { loaded: boolean }).loaded = true;
+    (img as unknown as { bitmap: unknown }).bitmap = {
+      naturalWidth: src.w,
+      naturalHeight: src.h,
+    };
+    return img;
+  }
+
+  it('defaults to fill: stretches the bitmap without clipping', () => {
+    const img = loadedImage({ width: 100, height: 100 }, { w: 200, h: 100 });
+    const rec = recorder();
+    img.render(rec.r);
+    expect(rec.ops).toEqual(['drawImage']);
+    expect(rec.args('drawImage')).toEqual([[expect.anything(), 0, 0, 100, 100]]);
+  });
+
+  it('clips the loaded bitmap to the rounded silhouette when radius > 0', () => {
+    const img = loadedImage({ width: 100, height: 100, radius: 10 }, { w: 50, h: 50 });
+    const rec = recorder();
+    img.render(rec.r);
+    expect(rec.ops).toEqual(['save', 'clip', 'drawImage', 'restore']);
+    expect(rec.args('clip')).toEqual([[0, 0, 100, 100, 10]]);
+    expect(rec.args('drawImage')).toEqual([[expect.anything(), 0, 0, 100, 100]]);
+  });
+
+  it('cover fills the box preserving aspect ratio and clips the overflow', () => {
+    const img = loadedImage({ width: 100, height: 100, fit: 'cover' }, { w: 200, h: 100 });
+    const rec = recorder();
+    img.render(rec.r);
+    expect(rec.ops).toEqual(['save', 'clip', 'drawImage', 'restore']);
+    expect(rec.args('clip')).toEqual([[0, 0, 100, 100]]);
+    expect(rec.args('drawImage')).toEqual([[expect.anything(), -50, 0, 200, 100]]);
+  });
+
+  it('contain fits the whole bitmap inside the box without clipping', () => {
+    const img = loadedImage({ width: 100, height: 100, fit: 'contain' }, { w: 200, h: 100 });
+    const rec = recorder();
+    img.render(rec.r);
+    expect(rec.ops).toEqual(['drawImage']);
+    expect(rec.args('drawImage')).toEqual([[expect.anything(), 0, 25, 100, 50]]);
+  });
+
+  it('clamps the focal point to [0, 1] at the API boundary', () => {
+    const img = new Image('x.png', {
+      width: 100,
+      height: 100,
+      fit: 'cover',
+      focalPoint: { x: -0.5, y: 2 },
+    });
+    expect(img.focalPoint).toEqual({ x: 0, y: 1 });
+  });
+
+  it('keeps the <img> shadow projection unchanged with fit and focalPoint', () => {
+    const img = new Image('x.png', {
+      width: 64,
+      height: 32,
+      alt: 'Logo',
+      fit: 'cover',
+      focalPoint: { x: 0.25, y: 0.75 },
+    });
+    expect(img.getA11yAttributes()).toEqual({
+      tag: 'img',
+      src: 'x.png',
+      alt: 'Logo',
+      label: 'Logo',
+    });
+  });
+});
+
+describe('computeImageFit', () => {
+  it('covers wider, taller, and equal-aspect sources', () => {
+    expect(computeImageFit(200, 100, 100, 100, 'cover')).toEqual({
+      dx: -50,
+      dy: 0,
+      dw: 200,
+      dh: 100,
+    });
+    expect(computeImageFit(100, 200, 100, 100, 'cover')).toEqual({
+      dx: 0,
+      dy: -50,
+      dw: 100,
+      dh: 200,
+    });
+    expect(computeImageFit(100, 100, 100, 100, 'cover')).toEqual({
+      dx: 0,
+      dy: 0,
+      dw: 100,
+      dh: 100,
+    });
+  });
+
+  it('contains wider and taller sources inside the box', () => {
+    expect(computeImageFit(200, 100, 100, 100, 'contain')).toEqual({
+      dx: 0,
+      dy: 25,
+      dw: 100,
+      dh: 50,
+    });
+    expect(computeImageFit(100, 200, 100, 100, 'contain')).toEqual({
+      dx: 25,
+      dy: 0,
+      dw: 50,
+      dh: 100,
+    });
+  });
+
+  it('shifts cover crops by the focal point', () => {
+    expect(computeImageFit(400, 100, 100, 100, 'cover', { x: 0, y: 0 })).toEqual({
+      dx: 0,
+      dy: 0,
+      dw: 400,
+      dh: 100,
+    });
+    expect(computeImageFit(400, 100, 100, 100, 'cover', { x: 1, y: 0.5 })).toEqual({
+      dx: -300,
+      dy: 0,
+      dw: 400,
+      dh: 100,
+    });
+  });
+
+  it('degenerates to fill when the source size is unknown', () => {
+    expect(computeImageFit(0, 0, 100, 100, 'cover')).toEqual({ dx: 0, dy: 0, dw: 100, dh: 100 });
   });
 });
 

@@ -134,12 +134,19 @@ export interface IRenderer {
    * Intersect the current clip region with a rectangle. Affects all subsequent
    * draws until the next {@link restore}; wrap in {@link save}/{@link restore}.
    *
+   * When `radii` is provided the clip is a rounded rectangle instead of a sharp
+   * one. Backends that can only express a rectangular clip (e.g. a scissor-test
+   * GPU path) may ignore `radii`, so it must be treated as a progressive
+   * enhancement rather than a guarantee.
+   *
    * @param x - Left edge.
    * @param y - Top edge.
    * @param width - Rectangle width.
    * @param height - Rectangle height.
+   * @param radii - Optional corner radius (uniform) or per-corner array, matching
+   *   {@link roundRect}. Omit for a sharp rectangle.
    */
-  clip(x: number, y: number, width: number, height: number): void;
+  clip(x: number, y: number, width: number, height: number, radii?: number | number[]): void;
 
   /** Begin a new sub-path, discarding the current path. */
   beginPath(): void;
