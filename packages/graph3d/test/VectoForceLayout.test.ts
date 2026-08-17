@@ -336,4 +336,24 @@ describe('VectoForceLayout — in-house model specifics', () => {
     }
     layout.dispose();
   });
+
+  it('leaves tickPhases null unless measurePhases is enabled', () => {
+    const layout = new VectoForceLayout();
+    layout.setGraph(ring(6));
+    layout.step(3);
+    expect(layout.tickPhases).toBeNull();
+    layout.dispose();
+  });
+
+  it('reports a four-phase timing when measurePhases is enabled', () => {
+    const layout = new VectoForceLayout({ measurePhases: true });
+    layout.setGraph(ring(6));
+    expect(layout.tickPhases).toBeNull(); // nothing stepped yet
+    layout.step(3);
+    const phases = layout.tickPhases;
+    expect(phases).not.toBeNull();
+    expect(phases).toHaveLength(4);
+    for (const ms of phases as readonly number[]) expect(ms).toBeGreaterThanOrEqual(0);
+    layout.dispose();
+  });
 });

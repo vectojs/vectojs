@@ -31,6 +31,12 @@ export interface VectoForceLayoutOptions {
   alphaMin?: number;
   /** Deterministic seed for initial placement of un-seeded nodes. Default 1. */
   seed?: number;
+  /** Opt-in per-tick phase profiling for benchmarks and diagnostics. When true,
+   *  {@link VectoForceLayout.tickPhases} is refreshed after each tick with the
+   *  wall-clock milliseconds spent in
+   *  `[octree build, force accumulate, link springs, integrate]`. Default false —
+   *  the timing calls are elided so the hot path pays nothing. */
+  measurePhases?: boolean;
 }
 
 const f = Math.fround;
@@ -56,6 +62,11 @@ const f = Math.fround;
 export class VectoForceLayout implements GraphLayout {
   public positions: Float32Array = new Float32Array(0);
 
+  /** Wall-clock ms of the last tick's four phases — `[octree build, force
+   *  accumulate, link springs, integrate]` — or `null` when `measurePhases` was
+   *  not enabled on construction. */
+  public tickPhases: readonly [number, number, number, number] | null = null;
+
   private readonly linkDistance: number;
   private readonly linkStrength: number;
   private readonly repulsion: number;
@@ -65,6 +76,7 @@ export class VectoForceLayout implements GraphLayout {
   private readonly alphaDecay: number;
   private readonly alphaMin: number;
   private readonly seed: number;
+  private readonly measurePhases: boolean;
 
   // SoA simulation state (f32), index-aligned with the input node array.
   private vx = new Float32Array(0);
@@ -94,6 +106,7 @@ export class VectoForceLayout implements GraphLayout {
     this.alphaDecay = options.alphaDecay ?? 0.0228;
     this.alphaMin = options.alphaMin ?? 0.001;
     this.seed = options.seed ?? 1;
+    this.measurePhases = options.measurePhases ?? false;
   }
 
   public setGraph(data: GraphData): void {
@@ -162,9 +175,12 @@ export class VectoForceLayout implements GraphLayout {
     if (n === 0) return;
     const pos = this.positions;
     const alpha = this.alpha;
+    const timed = this.measurePhases;
+    const t0 = timed ? performance.now() : 0;
 
     // 1. Repulsion via Barnes-Hut octree (O(N log N)).
     this.tree.build(pos, n);
+    const t1 = timed ? performance.now() : 0;
     const rep = f(this.repulsion * alpha);
     for (let i = 0; i < n; i++) {
       const [ax, ay, az] = this.tree.force(
@@ -178,6 +194,7 @@ export class VectoForceLayout implements GraphLayout {
       this.vy[i] = f(this.vy[i] + f(ay * rep));
       this.vz[i] = f(this.vz[i] + f(az * rep));
     }
+    const t2 = timed ? performance.now() : 0;
 
     // 2. Link springs: pull each endpoint toward the resting length.
     const k = f(this.linkStrength * alpha);
@@ -200,6 +217,7 @@ export class VectoForceLayout implements GraphLayout {
       this.vy[ib] = f(this.vy[ib] - hy);
       this.vz[ib] = f(this.vz[ib] - hz);
     }
+    const t3 = timed ? performance.now() : 0;
 
     // 3. Centering pull toward the origin + 4. integrate with velocity decay +
     // 5. honor pins.
@@ -236,6 +254,10 @@ export class VectoForceLayout implements GraphLayout {
 
     // 6. Cool.
     this.alpha = this.alpha + (0 - this.alpha) * this.alphaDecay;
+    if (timed) {
+      const t4 = performance.now();
+      this.tickPhases = [t1 - t0, t2 - t1, t3 - t2, t4 - t3];
+    }
   }
 
   public pinNode(nodeIndex: number, x: number, y: number, z: number): void {

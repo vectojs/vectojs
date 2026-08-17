@@ -66,6 +66,10 @@ interface FrameSample {
   apply: number[];
   render: number[];
   total: number[];
+  build: number[];
+  force: number[];
+  links: number[];
+  integrate: number[];
   activeFrames: number;
 }
 
@@ -75,6 +79,8 @@ interface FrameSample {
  * collected only for frames where the simulation was still active (a cooled
  * `step()` is a no-op, not a tick). The full-window alpha decay is ~0.9772^frames,
  * so with the default 120 frames every frame stays active (~0.06 alpha at the end).
+ * The layout's own `tickPhases` (enabled via `measurePhases`) splits the `step`
+ * time into octree build / force accumulate / link springs / integrate.
  */
 function measureWindow(
   layout: VectoForceLayout,
@@ -89,6 +95,10 @@ function measureWindow(
     const apply: number[] = [];
     const render: number[] = [];
     const total: number[] = [];
+    const build: number[] = [];
+    const force: number[] = [];
+    const links: number[] = [];
+    const integrate: number[] = [];
     let activeFrames = 0;
     let frame = 0;
     layout.reheat(1);
@@ -103,13 +113,20 @@ function measureWindow(
       if (active) {
         activeFrames += 1;
         step.push(t1 - t0);
+        const phases = layout.tickPhases;
+        if (phases) {
+          build.push(phases[0]);
+          force.push(phases[1]);
+          links.push(phases[2]);
+          integrate.push(phases[3]);
+        }
       }
       apply.push(t2 - t1);
       render.push(t3 - t2);
       total.push(t3 - t0);
       frame += 1;
       if (frame >= frames) {
-        resolve({ step, apply, render, total, activeFrames });
+        resolve({ step, apply, render, total, build, force, links, integrate, activeFrames });
         return;
       }
       requestAnimationFrame(loop);
@@ -141,7 +158,7 @@ async function main(): Promise<void> {
 
   for (const count of COUNTS) {
     const data = makeGraph(count, WORKLOAD);
-    const layout = new VectoForceLayout();
+    const layout = new VectoForceLayout({ measurePhases: true });
     layout.setGraph(data);
     const graph = new Graph3D({ nodeRadius: 4 });
     graph.setGraphData(data);
@@ -172,6 +189,10 @@ async function main(): Promise<void> {
     const apply: number[] = [];
     const render: number[] = [];
     const total: number[] = [];
+    const build: number[] = [];
+    const force: number[] = [];
+    const links: number[] = [];
+    const integrate: number[] = [];
     let activeFrames = 0;
     for (let trial = 0; trial < TRIALS; trial++) {
       const sample = await measureWindow(layout, graph, renderer, camera, scene, FRAMES);
@@ -179,6 +200,10 @@ async function main(): Promise<void> {
       apply.push(...sample.apply);
       render.push(...sample.render);
       total.push(...sample.total);
+      build.push(...sample.build);
+      force.push(...sample.force);
+      links.push(...sample.links);
+      integrate.push(...sample.integrate);
       activeFrames += sample.activeFrames;
     }
 
@@ -186,6 +211,10 @@ async function main(): Promise<void> {
     const applyStats = summarize(apply);
     const renderStats = summarize(render);
     const totalStats = summarize(total);
+    const buildStats = summarize(build);
+    const forceStats = summarize(force);
+    const linksStats = summarize(links);
+    const integrateStats = summarize(integrate);
     rows.push({
       workload: WORKLOAD,
       nodes: count,
@@ -203,6 +232,14 @@ async function main(): Promise<void> {
       totalMedianMs: +totalStats.median.toFixed(4),
       totalP95Ms: +totalStats.p95.toFixed(4),
       totalMaxMs: +totalStats.max.toFixed(4),
+      buildMedianMs: +buildStats.median.toFixed(4),
+      forceMedianMs: +forceStats.median.toFixed(4),
+      linksMedianMs: +linksStats.median.toFixed(4),
+      integrateMedianMs: +integrateStats.median.toFixed(4),
+      buildSharePct: +((buildStats.median / stepStats.median) * 100).toFixed(1),
+      forceSharePct: +((forceStats.median / stepStats.median) * 100).toFixed(1),
+      linksSharePct: +((linksStats.median / stepStats.median) * 100).toFixed(1),
+      integrateSharePct: +((integrateStats.median / stepStats.median) * 100).toFixed(1),
       budgetMs: +budgetMs.toFixed(4),
       stepShareOfBudgetPct: +((stepStats.median / budgetMs) * 100).toFixed(1),
       totalShareOfBudgetPct: +((totalStats.median / budgetMs) * 100).toFixed(1),
@@ -227,7 +264,9 @@ async function main(): Promise<void> {
       budgetMs: +budgetMs.toFixed(4),
       refreshHz: +refreshHz.toFixed(2),
       measurement:
-        'One VectoForceLayout.step() + Graph3D.applyPositions() + WebGLRenderer.render() per rAF callback, timed with performance.now(). step is collected only for active (non-cooled) frames; apply/render/total over every measured frame.',
+        'One VectoForceLayout.step() + Graph3D.applyPositions() + WebGLRenderer.render() per rAF callback, timed with performance.now(). step is collected only for active (non-cooled) frames; apply/render/total over every measured frame. The layout is constructed with measurePhases:true, so tickPhases splits step into octree build / force accumulate / link springs / integrate.',
+      phaseShare:
+        'build/force/links/integrate share percentages are each phase median divided by the step median (they sum to ~100%, differing only by the un-timed cool line and the 4 performance.now() calls inside the measured tick).',
       trialState:
         'Each trial reheats alpha to 1 and steps FRAMES times (default 120 < ~300 cool-down ticks, so every frame is active). Trials run sequentially on one layout per count, after an unmeasured warm-up.',
       camera:
@@ -236,6 +275,10 @@ async function main(): Promise<void> {
     summary: rows.map((row) => ({
       nodes: row.nodes,
       stepMedianMs: row.stepMedianMs,
+      buildSharePct: row.buildSharePct,
+      forceSharePct: row.forceSharePct,
+      linksSharePct: row.linksSharePct,
+      integrateSharePct: row.integrateSharePct,
       totalMedianMs: row.totalMedianMs,
       budgetMs: row.budgetMs,
       totalShareOfBudgetPct: row.totalShareOfBudgetPct,
