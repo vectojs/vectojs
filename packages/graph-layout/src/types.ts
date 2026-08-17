@@ -1,6 +1,9 @@
 /** Identifier used to reference a graph node. */
 export type NodeId = string | number;
 
+/** Identifier used to reference a link via its optional `id` field. */
+export type LinkId = NodeId;
+
 /** Renderer-independent input node. Additional application data is preserved. */
 export interface GraphNode {
   id: NodeId;
