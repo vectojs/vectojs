@@ -58,4 +58,15 @@ describe('BarnesHutQuadtree', () => {
       expect(actual[1]).toBeCloseTo(expectedY, 12);
     }
   });
+
+  it('includes only points within the maximum force distance', () => {
+    const tree = new BarnesHutQuadtree();
+    tree.build(new Float32Array([0, 0, 3, 4, 6, 8]), new Float32Array([1, 1, 1]), 3);
+    const force = new Float64Array(2);
+
+    tree.force(0, 0, 0.9, 0, force, 5);
+
+    expect(force[0]).toBeCloseTo(-3 / 125, 12);
+    expect(force[1]).toBeCloseTo(-4 / 125, 12);
+  });
 });
