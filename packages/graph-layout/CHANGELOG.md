@@ -1,5 +1,11 @@
 # @vectojs/graph-layout
 
+## 0.2.1
+
+### Patch Changes
+
+- 2173665: Optimize Barnes-Hut cutoff and collision traversal for large 2D graphs.
+
 ## 0.2.0
 
 ### Minor Changes
