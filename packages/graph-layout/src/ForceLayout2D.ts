@@ -488,10 +488,11 @@ export class ForceLayout2D {
   }
 
   private applyCollisions(): void {
+    if (this.collisionStrength <= 0) return;
     let maximumRadius = 0;
-    for (let i = 0; i < this.nodeCount; i++)
-      maximumRadius = Math.max(maximumRadius, this.collisionRadius[i]);
-    if (maximumRadius <= 0 || this.collisionStrength <= 0) return;
+    for (let node = 0; node < this.nodeCount; node++)
+      maximumRadius = Math.max(maximumRadius, this.collisionRadius[node]);
+    if (maximumRadius <= 0) return;
     const positions = this.positionStorage;
     for (let node = 0; node < this.nodeCount; node++) {
       this.predicted[node * 2] = this.pinnedX[node]
@@ -501,38 +502,16 @@ export class ForceLayout2D {
         ? this.fixedY[node]
         : toF32(positions[node * 2 + 1] + this.velocityY[node]);
     }
-    this.quadtree.build(this.predicted, this.repulsion, this.nodeCount);
-    for (let source = 0; source < this.nodeCount; source++) {
-      const sourceRadius = this.collisionRadius[source];
-      const sourceX = this.predicted[source * 2];
-      const sourceY = this.predicted[source * 2 + 1];
-      this.quadtree.forEachNearby(sourceX, sourceY, sourceRadius + maximumRadius, (target) => {
-        if (target <= source) return;
-        const minimumDistance = sourceRadius + this.collisionRadius[target];
-        if (minimumDistance <= 0) return;
-        let dx = this.predicted[target * 2] - sourceX;
-        let dy = this.predicted[target * 2 + 1] - sourceY;
-        let distance = Math.hypot(dx, dy);
-        if (distance >= minimumDistance) return;
-        if (distance < 1e-6) {
-          const angle = deterministicAngle(source, target, this.seed);
-          dx = Math.cos(angle) * 1e-6;
-          dy = Math.sin(angle) * 1e-6;
-          distance = 1e-6;
-        }
-        const overlap = ((minimumDistance - distance) / distance) * this.collisionStrength;
-        const forceX = dx * overlap;
-        const forceY = dy * overlap;
-        const sourceShareX = collisionShare(this.pinnedX[source], this.pinnedX[target]);
-        const targetShareX = collisionShare(this.pinnedX[target], this.pinnedX[source]);
-        const sourceShareY = collisionShare(this.pinnedY[source], this.pinnedY[target]);
-        const targetShareY = collisionShare(this.pinnedY[target], this.pinnedY[source]);
-        this.velocityX[source] = toF32(this.velocityX[source] - forceX * sourceShareX);
-        this.velocityY[source] = toF32(this.velocityY[source] - forceY * sourceShareY);
-        this.velocityX[target] = toF32(this.velocityX[target] + forceX * targetShareX);
-        this.velocityY[target] = toF32(this.velocityY[target] + forceY * targetShareY);
-      });
-    }
+    this.quadtree.build(this.predicted, this.repulsion, this.nodeCount, this.collisionRadius);
+    this.quadtree.applyGridCollisions(
+      this.collisionRadius,
+      this.velocityX,
+      this.velocityY,
+      this.pinnedX,
+      this.pinnedY,
+      this.collisionStrength,
+      this.seed,
+    );
   }
 
   private addNode(node: GraphNode): void {
@@ -764,11 +743,6 @@ function linkIdKeyOf(link: GraphLink): string {
 function idKey(id: NodeId): string {
   const value = String(id);
   return `${typeof id}:${value.length}:${value}`;
-}
-
-function collisionShare(axisPinned: number, otherAxisPinned: number): number {
-  if (axisPinned) return 0;
-  return otherAxisPinned ? 1 : 0.5;
 }
 
 function springShare(share: number, axisPinned: number, otherAxisPinned: number): number {

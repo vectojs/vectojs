@@ -2,6 +2,16 @@
 // existing Graph3D layouts and the standalone 2D graph-layout package.
 import { ForceLayout2D } from '@vectojs/graph-layout';
 import { D3ForceLayout, VectoForceLayout, type GraphData } from '@vectojs/graph3d';
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type Simulation,
+  type SimulationNodeDatum,
+} from 'd3-force';
 import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 import { median, percentile } from '../_shared/stats.ts';
 
@@ -28,13 +38,85 @@ interface Layout {
   dispose(): void;
 }
 
+interface ForceNode extends SimulationNodeDatum {
+  id: number;
+  radius: number;
+  charge: number;
+}
+
+class D3Force2DLayout implements Layout {
+  private simulation: Simulation<ForceNode, undefined> | null = null;
+
+  public setGraph(graph: GraphData): void {
+    const nodes = graph.nodes.map((node) => ({
+      id: Number(node.id),
+      radius: Number(node.radius ?? 10),
+      charge: Number(node.charge ?? 300),
+      x: node.x,
+      y: node.y,
+      vx: 0,
+      vy: 0,
+    }));
+    const links = graph.links.map((link) => ({
+      source: Number(link.source),
+      target: Number(link.target),
+    }));
+    const simulation = forceSimulation<ForceNode>(nodes)
+      .alpha(1)
+      .alphaDecay(0.024)
+      .velocityDecay(0.36)
+      .force(
+        'charge',
+        forceManyBody<ForceNode>()
+          .strength((node) => -Number(node.charge ?? 300))
+          .distanceMax(450)
+          .theta(0.9),
+      )
+      .force(
+        'link',
+        forceLink<ForceNode, { source: number; target: number }>(links)
+          .id((node) => node.id)
+          .distance(
+            (link) =>
+              40 + (Number(link.source.radius ?? 10) + Number(link.target.radius ?? 10)) * 1.5,
+          )
+          .strength(0.42),
+      )
+      .force(
+        'collision',
+        forceCollide<ForceNode>()
+          .radius((node) => node.radius + 14)
+          .strength(0.7),
+      )
+      .force('x', forceX<ForceNode>(0).strength(0.016))
+      .force('y', forceY<ForceNode>(0).strength(0.016))
+      .stop();
+    this.simulation = simulation;
+  }
+
+  public step(iterations = 1): boolean {
+    if (!this.simulation) return false;
+    this.simulation.tick(iterations);
+    return this.simulation.alpha() >= 0.001;
+  }
+
+  public reheat(alpha = 0.3): void {
+    this.simulation?.alpha(Math.max(this.simulation.alpha(), alpha));
+  }
+
+  public dispose(): void {
+    this.simulation?.stop();
+    this.simulation = null;
+  }
+}
+
 interface AppendPayloads {
   added: GraphData;
   complete: GraphData;
 }
 
 interface LayoutArm {
-  name: 'd3-force-3d' | 'vecto-force' | 'force-layout-2d';
+  name: 'd3-force-3d' | 'vecto-force' | 'd3-force-2d' | 'force-layout-2d';
   dimensions: 2 | 3;
   appendMode: 'setGraph-rebuild' | 'appendGraph';
   make(): Layout;
@@ -86,7 +168,13 @@ function rng(seed: number): () => number {
 }
 
 function makeGraph(workload: Workload, count: number): GraphData {
-  const nodes = Array.from({ length: count }, (_, id) => ({ id }));
+  const nodes = Array.from({ length: count }, (_, id) => ({
+    id,
+    x: Math.cos(id * 2.399) * Math.sqrt(id + 1) * 10,
+    y: Math.sin(id * 2.399) * Math.sqrt(id + 1) * 10,
+    radius: 8 + (id % 5),
+    charge: (8 + (id % 5)) * 11 + 95,
+  }));
   const links: GraphData['links'] = [];
   if (workload === 'star-hub') {
     for (let id = 1; id < count; id++) links.push({ source: 0, target: id });
@@ -106,7 +194,13 @@ function makeGraph(workload: Workload, count: number): GraphData {
 }
 
 function makeAppend(workload: Workload, count: number): GraphData {
-  const nodes = Array.from({ length: APPEND_NODES }, (_, offset) => ({ id: count + offset }));
+  const nodes = Array.from({ length: APPEND_NODES }, (_, offset) => ({
+    id: count + offset,
+    x: Math.cos((count + offset) * 2.399) * Math.sqrt(count + offset + 1) * 10,
+    y: Math.sin((count + offset) * 2.399) * Math.sqrt(count + offset + 1) * 10,
+    radius: 8 + ((count + offset) % 5),
+    charge: (8 + ((count + offset) % 5)) * 11 + 95,
+  }));
   const links: GraphData['links'] = [];
   if (workload === 'star-hub') {
     for (const node of nodes) links.push({ source: 0, target: node.id });
@@ -462,10 +556,34 @@ const arms: LayoutArm[] = [
     append: (layout, payloads) => layout.setGraph(payloads.complete),
   },
   {
+    name: 'd3-force-2d',
+    dimensions: 2,
+    appendMode: 'setGraph-rebuild',
+    make: () => new D3Force2DLayout(),
+    append: (layout, payloads) => layout.setGraph(payloads.complete),
+  },
+  {
     name: 'force-layout-2d',
     dimensions: 2,
     appendMode: 'appendGraph',
-    make: () => new ForceLayout2D(),
+    make: () =>
+      new ForceLayout2D({
+        repulsion: (node) => Number(node.charge ?? 300),
+        collisionRadius: (node) => Number(node.radius ?? 0) + 14,
+        collisionStrength: 0.7,
+        linkDistance: (link) => {
+          const source = Number(link.source);
+          const target = Number(link.target);
+          return 40 + (8 + (source % 5) + (8 + (target % 5))) * 1.5;
+        },
+        linkStrength: 0.42,
+        centerStrength: 0.016,
+        velocityDecay: 0.64,
+        alphaDecay: 0.024,
+        repulsionDistanceMax: 450,
+        theta: 0.9,
+        seed: 7,
+      }),
     append: (layout, payloads) => (layout as ForceLayout2D).appendGraph(payloads.added),
   },
 ];
@@ -565,11 +683,11 @@ async function main() {
       liveAppendMemoryObservation:
         'One dedicated warmed live layout per arm/workload/count is retained across immediate before/after topology-mutation readings, with payload creation and disposal outside the observation. measureUserAgentSpecificMemory is preferred and each read is bounded by UA_MEMORY_TIMEOUT_MS. Its first timeout or failure disables further UA-specific reads for the run; the failed observation is discarded and repeated with a fresh layout using performance.memory.usedJSHeapSize. Both sources are noisy observations, not retained-memory or backend-selection evidence.',
       baselineAvailability: {
-        d3Force2D: 'unavailable: not a root or workspace dependency',
+        d3Force2D: 'direct d3-force@3.0.0 benchmark arm with explicit initial positions',
         d3Force3D: 'used via @vectojs/graph3d D3ForceLayout',
       },
       comparisonCaveat:
-        'ForceLayout2D is 2D; D3ForceLayout and VectoForceLayout are 3D. Cross-dimensional results are directional implementation measurements, not direct algorithmic or WASM evidence.',
+        'The d3-force-2d and force-layout-2d rows are the like-for-like comparator. The 3D rows are directional implementation measurements only.',
     },
     rows,
     durationMs: +(performance.now() - startedAt).toFixed(1),

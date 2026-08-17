@@ -69,4 +69,40 @@ describe('BarnesHutQuadtree', () => {
     expect(force[0]).toBeCloseTo(-3 / 125, 12);
     expect(force[1]).toBeCloseTo(-4 / 125, 12);
   });
+
+  it('uses subtree maximum radii for nearby collision candidates', () => {
+    const tree = new BarnesHutQuadtree();
+    tree.build(
+      new Float32Array([0, 0, 9, 0]),
+      new Float32Array([0, 0]),
+      2,
+      new Float32Array([1, 10]),
+    );
+    const nearby: number[] = [];
+    tree.forEachNearby(0, 0, 1, (point) => nearby.push(point));
+
+    expect(nearby).toContain(1);
+  });
+
+  it('separates varied-radius coincident points through the grid collision path', () => {
+    const tree = new BarnesHutQuadtree();
+    const positions = new Float32Array([0, 0, 0, 0, 18, 0]);
+    const radii = new Float32Array([10, 5, 2]);
+    tree.build(positions, new Float32Array([0, 0, 0]), 3, radii);
+    const velocityX = new Float32Array(3);
+    const velocityY = new Float32Array(3);
+    tree.applyGridCollisions(
+      radii,
+      velocityX,
+      velocityY,
+      new Uint8Array(3),
+      new Uint8Array(3),
+      1,
+      7,
+    );
+
+    expect(velocityX[0]).toBeLessThan(0);
+    expect(velocityX[1]).toBeGreaterThan(0);
+    expect(velocityX[2]).toBe(0);
+  });
 });
