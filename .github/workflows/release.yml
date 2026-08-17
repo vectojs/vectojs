@@ -75,9 +75,8 @@ jobs:
       # skips itself when the binary is absent) and BEFORE the build (tsup copies
       # it into dist/wasm/ so the `/wasm` subpath resolves to a real file in the
       # tarball). rust-toolchain.toml pins the channel + target. The two
-      # toolchain-provisioning steps are mutually exclusive by their `if:`; do
-      # not merge them into one `if:` with `||` — that expression form has been
-      # observed to make GitHub Actions reject the whole workflow file.
+      # toolchain-provisioning steps are mutually exclusive by their `if:`,
+      # mirroring ci.yml's per-crate pattern.
       - name: Provision Rust toolchain for the WASM core
         if: steps.parse.outputs.package == 'core'
         uses: dtolnay/rust-toolchain@stable
