@@ -55,12 +55,16 @@ export interface KgDataSource {
   /** Seed entities for the initial view (e.g. a search hit, a focus node). */
   getNodes(ids?: readonly NodeId[]): MaybeAsync<readonly KgEntity[]>;
   /** Outbound (and optionally inbound) facts + their far-end entities. */
-  getNeighbors(
-    id: NodeId,
-    options?: { limit?: number; direction?: 'out' | 'in' | 'both' },
-  ): MaybeAsync<KgNeighborhood>;
+  getNeighbors(id: NodeId, options?: KgNeighborOptions): MaybeAsync<KgNeighborhood>;
   /** Resolve labels for entities already known by id (language negotiation). */
   getLabels?(ids: readonly NodeId[], lang?: string): MaybeAsync<ReadonlyMap<NodeId, string>>;
+}
+
+export interface KgNeighborOptions {
+  limit?: number;
+  cursor?: string;
+  direction?: 'out' | 'in' | 'both';
+  signal?: AbortSignal;
 }
 
 export interface KgNeighborhood {
@@ -68,6 +72,12 @@ export interface KgNeighborhood {
   facts: readonly KgFact[];
   /** Far-end entities referenced by `facts` (may be a subset if truncated). */
   neighbors: readonly KgEntity[];
+  /** Total facts available for this expansion, when known. */
+  total?: number;
+  /** Opaque cursor for the next page. */
+  nextCursor?: string;
+  /** Whether another page is available. */
+  hasMore?: boolean;
 }
 
 export type MaybeAsync<T> = T | Promise<T>;

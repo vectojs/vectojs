@@ -10,6 +10,7 @@ import {
 } from '@vectojs/graph3d';
 import * as THREE from 'three';
 import { FixedZLayout } from './FixedZLayout';
+import { KnowledgeGraphModel } from './KnowledgeGraphModel';
 import type { KgDataSource, KgEntity, KgFact, KgGraphData, KnowledgeGraphMode } from './types';
 import { pickLabel } from './types';
 
@@ -55,6 +56,8 @@ export interface KnowledgeGraphSessionOptions {
  * aggregate announcer in the host (onDemand / `role="status"`).
  */
 export class KnowledgeGraphSession {
+  /** Renderer-neutral graph state used by this Three.js adapter. */
+  readonly model: KnowledgeGraphModel;
   readonly graph: Graph3D;
   readonly camera: GraphCamera;
   readonly layout: GraphLayout;
@@ -109,6 +112,11 @@ export class KnowledgeGraphSession {
             theta: 0.9,
           })
         : new VectoForceLayout();
+    this.model = new KnowledgeGraphModel({
+      source: this.source,
+      layout: this.layout,
+      lang: this.lang,
+    });
 
     // Getter keeps picking on the live camera after GraphCamera.setMode.
     this.interaction = new GraphInteraction({
@@ -166,14 +174,9 @@ export class KnowledgeGraphSession {
    */
   async bootstrap(focusIds: readonly NodeId[], expandSeeds = true): Promise<void> {
     this.assertOpen();
-    const nodes = await this.source.getNodes(focusIds);
-    this.ingestEntities(nodes);
-    if (expandSeeds) {
-      for (const id of focusIds) await this.expand(id);
-    } else {
-      this.rebuildGraph();
-      this.camera.fitToPositions(this.layout.positions);
-    }
+    await this.model.bootstrap(focusIds, expandSeeds);
+    this.syncFromModel();
+    this.camera.fitToPositions(this.layout.positions);
   }
 
   /**
@@ -186,41 +189,28 @@ export class KnowledgeGraphSession {
    */
   loadSnapshot(data: KgGraphData): void {
     this.assertOpen();
-    // Replace, don't merge — hosts use this for filter reloads and offline cuts.
-    this.entities.clear();
-    this.facts.length = 0;
-    this.factKey.clear();
-    this.expanded.clear();
-    this.entityByIndex = [];
-    this.idToIndex.clear();
-    // Keep lastPos for ids that remain so filter toggles don't reshuffle survivors.
-    const keep = new Set(data.entities.map((e) => e.id));
-    for (const id of [...this.lastPos.keys()]) {
-      if (!keep.has(id)) this.lastPos.delete(id);
-    }
-    this.ingestEntities(data.entities);
-    for (const f of data.facts) this.ingestFact(f);
-    for (const e of data.entities) this.expanded.add(e.id);
-    this.rebuildGraph();
+    this.model.importSnapshot({
+      version: 1,
+      entities: data.entities,
+      facts: data.facts,
+      expansions: data.entities.map((e) => ({
+        id: e.id,
+        status: 'complete',
+        loaded: data.facts.length,
+      })),
+    });
+    this.syncFromModel();
     this.camera.fitToPositions(this.layout.positions);
   }
 
   /** Fetch and merge one hop around `id`. Preserves prior node positions. */
   async expand(id: NodeId): Promise<number> {
     this.assertOpen();
-    if (this.expanded.has(id)) return 0;
-    const hood = await this.source.getNeighbors(id);
-    const before = this.entities.size;
-    this.ingestEntities([hood.entity, ...hood.neighbors]);
-    for (const f of hood.facts) this.ingestFact(f);
-    const added = this.entities.size - before;
-    // rebuildGraph first; only mark expanded after it succeeds so a throw
-    // (e.g. bad link id in setGraphData) leaves the id retryable.
-    this.rebuildGraph();
-    this.expanded.add(id);
+    const result = await this.model.expand(id);
+    this.syncFromModel();
     this.layout.reheat?.(0.5);
-    this.onExpandCb?.(hood.entity, added);
-    return added;
+    if (result.entity) this.onExpandCb?.(result.entity, result.addedEntities);
+    return result.addedEntities;
   }
 
   /**
@@ -261,7 +251,7 @@ export class KnowledgeGraphSession {
     this.camera.dispose();
     if (this.scene) this.scene.remove(this.graph.group);
     this.graph.dispose();
-    this.layout.dispose();
+    this.model.dispose();
     this.entities.clear();
     this.facts.length = 0;
     this.factKey.clear();
@@ -273,6 +263,24 @@ export class KnowledgeGraphSession {
   }
 
   // ── internals ────────────────────────────────────────────────────────────
+
+  private syncFromModel(): void {
+    const data = this.model.getGraphData();
+    this.entities.clear();
+    this.facts.length = 0;
+    this.factKey.clear();
+    this.expanded.clear();
+    this.entityByIndex = [];
+    this.idToIndex.clear();
+    this.ingestEntities(data.nodes as KgEntity[]);
+    for (const fact of data.links as KgFact[]) this.ingestFact(fact);
+    for (const entity of this.entityByIndex) {
+      if (this.model.getExpansionState(entity.id).status === 'complete') {
+        this.expanded.add(entity.id);
+      }
+    }
+    this.rebuildGraph();
+  }
 
   private ingestEntities(list: readonly KgEntity[]): void {
     for (const e of list) {

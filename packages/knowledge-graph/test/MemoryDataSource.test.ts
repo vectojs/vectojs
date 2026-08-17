@@ -33,5 +33,9 @@ describe('MemoryDataSource', () => {
     const out = src.getNeighbors('a', { direction: 'out', limit: 1 });
     expect(out.facts).toHaveLength(1);
     expect(out.facts[0]!.source).toBe('a');
+    expect(out).toMatchObject({ total: 2, nextCursor: '1', hasMore: true });
+    const next = src.getNeighbors('a', { direction: 'out', limit: 1, cursor: out.nextCursor });
+    expect(next).toMatchObject({ total: 2, hasMore: false });
+    expect(next.facts[0]!.predicate).toBe('worksAt');
   });
 });
