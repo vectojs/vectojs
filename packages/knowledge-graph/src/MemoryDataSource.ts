@@ -1,4 +1,12 @@
-import type { KgDataSource, KgEntity, KgFact, KgGraphData, KgNeighborhood, NodeId } from './types';
+import type {
+  KgDataSource,
+  KgEntity,
+  KgFact,
+  KgGraphData,
+  KgNeighborhood,
+  KgNeighborOptions,
+  NodeId,
+} from './types';
 
 /**
  * In-memory {@link KgDataSource} for tests and small graphs. Indexes facts by
@@ -42,10 +50,8 @@ export class MemoryDataSource implements KgDataSource {
     return out;
   }
 
-  getNeighbors(
-    id: NodeId,
-    options: { limit?: number; direction?: 'out' | 'in' | 'both' } = {},
-  ): KgNeighborhood {
+  getNeighbors(id: NodeId, options: KgNeighborOptions = {}): KgNeighborhood {
+    options.signal?.throwIfAborted();
     const entity = this.entities.get(id);
     if (!entity) {
       return {
@@ -63,7 +69,11 @@ export class MemoryDataSource implements KgDataSource {
     if (direction === 'in' || direction === 'both') {
       for (const f of this.inn.get(id) ?? []) facts.push(f);
     }
-    const sliced = facts.slice(0, limit);
+    const offset = options.cursor === undefined ? 0 : Number.parseInt(options.cursor, 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error(`Invalid MemoryDataSource cursor: ${options.cursor}`);
+    }
+    const sliced = facts.slice(offset, offset + limit);
     const neighborIds = new Set<NodeId>();
     for (const f of sliced) {
       neighborIds.add(f.source === id ? f.target : f.source);
@@ -73,6 +83,15 @@ export class MemoryDataSource implements KgDataSource {
       const n = this.entities.get(nid);
       if (n) neighbors.push(n);
     }
-    return { entity, facts: sliced, neighbors };
+    const nextOffset = offset + sliced.length;
+    const hasMore = nextOffset < facts.length;
+    return {
+      entity,
+      facts: sliced,
+      neighbors,
+      total: facts.length,
+      nextCursor: hasMore ? String(nextOffset) : undefined,
+      hasMore,
+    };
   }
 }
