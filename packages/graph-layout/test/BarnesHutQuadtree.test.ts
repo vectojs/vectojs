@@ -59,14 +59,87 @@ describe('BarnesHutQuadtree', () => {
     }
   });
 
-  it('includes only points within the maximum force distance', () => {
+  it('excludes points at and beyond the maximum force distance', () => {
     const tree = new BarnesHutQuadtree();
     tree.build(new Float32Array([0, 0, 3, 4, 6, 8]), new Float32Array([1, 1, 1]), 3);
     const force = new Float64Array(2);
 
     tree.force(0, 0, 0.9, 0, force, 5);
 
-    expect(force[0]).toBeCloseTo(-3 / 125, 12);
-    expect(force[1]).toBeCloseTo(-4 / 125, 12);
+    expect(force[0]).toBe(0);
+    expect(force[1]).toBe(0);
+  });
+
+  it('keeps collision cells distinct beyond signed 32-bit coordinates', () => {
+    const tree = new BarnesHutQuadtree();
+    const positions = new Float32Array([1e10, -1e10, 1e10, -1e10]);
+    const radii = new Float32Array([1, 1]);
+    tree.build(positions, new Float32Array(2), 2);
+    const velocityX = new Float32Array(2);
+    const velocityY = new Float32Array(2);
+    tree.applyGridCollisions(
+      positions,
+      2,
+      radii,
+      velocityX,
+      velocityY,
+      new Uint8Array(2),
+      new Uint8Array(2),
+      1,
+      7,
+    );
+
+    expect(Math.hypot(velocityX[0], velocityY[0])).toBeGreaterThan(0);
+    expect(velocityX[0]).toBe(-velocityX[1]);
+    expect(velocityY[0]).toBe(-velocityY[1]);
+  });
+
+  it('applies each collision pair once beyond safe integer cell coordinates', () => {
+    const collide = (coordinate: number): number => {
+      const tree = new BarnesHutQuadtree();
+      const positions = new Float32Array([coordinate, coordinate, coordinate, coordinate]);
+      const radii = new Float32Array([1, 1]);
+      tree.build(positions, new Float32Array(2), 2);
+      const velocityX = new Float32Array(2);
+      const velocityY = new Float32Array(2);
+      tree.applyGridCollisions(
+        positions,
+        2,
+        radii,
+        velocityX,
+        velocityY,
+        new Uint8Array(2),
+        new Uint8Array(2),
+        1,
+        7,
+      );
+      return Math.hypot(velocityX[0], velocityY[0]);
+    };
+
+    expect(collide(1e20)).toBeCloseTo(collide(0), 5);
+  });
+
+  it('separates varied-radius coincident points through the grid collision path', () => {
+    const tree = new BarnesHutQuadtree();
+    const positions = new Float32Array([0, 0, 0, 0, 18, 0]);
+    const radii = new Float32Array([10, 5, 2]);
+    tree.build(positions, new Float32Array([0, 0, 0]), 3);
+    const velocityX = new Float32Array(3);
+    const velocityY = new Float32Array(3);
+    tree.applyGridCollisions(
+      positions,
+      3,
+      radii,
+      velocityX,
+      velocityY,
+      new Uint8Array(3),
+      new Uint8Array(3),
+      1,
+      7,
+    );
+
+    expect(velocityX[0]).toBeLessThan(0);
+    expect(velocityX[1]).toBeGreaterThan(0);
+    expect(velocityX[2]).toBe(0);
   });
 });

@@ -13,6 +13,12 @@ export class BarnesHutQuadtree {
   private internal = new Uint8Array(0);
   private pointNext = new Int32Array(0);
   private stack = new Int32Array(64);
+  private collisionUsed = new Uint8Array(0);
+  private collisionCellX = new Float64Array(0);
+  private collisionCellY = new Float64Array(0);
+  private collisionHead = new Int32Array(0);
+  private collisionNext = new Int32Array(0);
+  private collisionProbeSlots = new Int32Array(9);
   private positions: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private charges: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private capacity = 0;
@@ -94,13 +100,7 @@ export class BarnesHutQuadtree {
       if (
         !leaf &&
         !containsQuery &&
-        distanceToCellFarthestSquared(
-          qx,
-          qy,
-          this.cellX[node],
-          this.cellY[node],
-          this.halfSize[node],
-        ) <= maxDistanceSquared &&
+        distanceSquared < maxDistanceSquared &&
         4 * this.halfSize[node] * this.halfSize[node] < theta * theta * distanceSquared
       ) {
         let contributionX = dx;
@@ -126,7 +126,7 @@ export class BarnesHutQuadtree {
           let contributionY = this.positions[point * 2 + 1] - qy;
           let contributionDistanceSquared =
             contributionX * contributionX + contributionY * contributionY;
-          if (contributionDistanceSquared > maxDistanceSquared + cutoffTolerance) continue;
+          if (contributionDistanceSquared >= maxDistanceSquared) continue;
           if (contributionDistanceSquared < 1e-12) {
             const angle = pairAngle(pointIndex, point);
             const direction = pointIndex < point ? 1 : -1;
@@ -180,12 +180,103 @@ export class BarnesHutQuadtree {
     }
   }
 
+  public applyGridCollisions(
+    positions: Float32Array<ArrayBufferLike>,
+    pointCount: number,
+    radii: Float32Array<ArrayBufferLike>,
+    velocitiesX: Float32Array<ArrayBufferLike>,
+    velocitiesY: Float32Array<ArrayBufferLike>,
+    pinnedX: Uint8Array<ArrayBufferLike>,
+    pinnedY: Uint8Array<ArrayBufferLike>,
+    strength: number,
+    seed: number,
+  ): void {
+    let maximumRadius = 0;
+    for (let point = 0; point < pointCount; point++)
+      maximumRadius = Math.max(maximumRadius, radii[point]);
+    if (maximumRadius <= 0) return;
+    this.ensureCollisionGrid(pointCount * 2);
+    const cellSize = Math.max(maximumRadius * 2, 1);
+    this.collisionUsed.fill(0);
+    this.collisionHead.fill(-1);
+    this.collisionNext.fill(-1, 0, pointCount);
+    for (let point = 0; point < pointCount; point++) {
+      const cellX = Math.floor(positions[point * 2] / cellSize);
+      const cellY = Math.floor(positions[point * 2 + 1] / cellSize);
+      const slot = this.collisionSlot(cellX, cellY, true);
+      this.collisionNext[point] = this.collisionHead[slot]!;
+      this.collisionHead[slot] = point;
+    }
+    for (let source = 0; source < pointCount; source++) {
+      const sourceX = positions[source * 2];
+      const sourceY = positions[source * 2 + 1];
+      const sourceRadius = radii[source];
+      const cellX = Math.floor(sourceX / cellSize);
+      const cellY = Math.floor(sourceY / cellSize);
+      let probeCount = 0;
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        for (let offsetY = -1; offsetY <= 1; offsetY++) {
+          const slot = this.collisionSlot(cellX + offsetX, cellY + offsetY, false);
+          if (slot < 0) continue;
+          let duplicate = false;
+          for (let probe = 0; probe < probeCount; probe++) {
+            const previous = this.collisionProbeSlots[probe];
+            if (
+              previous === slot ||
+              (this.collisionCellX[previous] === this.collisionCellX[slot] &&
+                this.collisionCellY[previous] === this.collisionCellY[slot])
+            ) {
+              duplicate = true;
+              break;
+            }
+          }
+          if (duplicate) continue;
+          this.collisionProbeSlots[probeCount++] = slot;
+          for (
+            let target = this.collisionHead[slot]!;
+            target >= 0;
+            target = this.collisionNext[target]!
+          ) {
+            if (target <= source) continue;
+            const minimumDistance = sourceRadius + radii[target];
+            let dx = positions[target * 2] - sourceX;
+            let dy = positions[target * 2 + 1] - sourceY;
+            const distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared >= minimumDistance * minimumDistance) continue;
+            let distance = Math.sqrt(distanceSquared);
+            if (distance < 1e-6) {
+              const angle = collisionPairAngle(source, target, seed);
+              dx = Math.cos(angle) * 1e-6;
+              dy = Math.sin(angle) * 1e-6;
+              distance = 1e-6;
+            }
+            const overlap = ((minimumDistance - distance) / distance) * strength;
+            const forceX = dx * overlap;
+            const forceY = dy * overlap;
+            const sourceShareX = pinnedX[source] ? 0 : pinnedX[target] ? 1 : 0.5;
+            const targetShareX = pinnedX[target] ? 0 : pinnedX[source] ? 1 : 0.5;
+            const sourceShareY = pinnedY[source] ? 0 : pinnedY[target] ? 1 : 0.5;
+            const targetShareY = pinnedY[target] ? 0 : pinnedY[source] ? 1 : 0.5;
+            velocitiesX[source] = toF32(velocitiesX[source] - forceX * sourceShareX);
+            velocitiesY[source] = toF32(velocitiesY[source] - forceY * sourceShareY);
+            velocitiesX[target] = toF32(velocitiesX[target] + forceX * targetShareX);
+            velocitiesY[target] = toF32(velocitiesY[target] + forceY * targetShareY);
+          }
+        }
+      }
+    }
+  }
+
   public dispose(): void {
     this.cellX = this.cellY = new Float64Array(0);
     this.centerX = this.centerY = this.halfSize = this.charge = new Float64Array(0);
     this.child = this.pointHead = this.pointNext = new Int32Array(0);
     this.internal = new Uint8Array(0);
     this.stack = new Int32Array(0);
+    this.collisionUsed = new Uint8Array(0);
+    this.collisionCellX = this.collisionCellY = new Float64Array(0);
+    this.collisionHead = this.collisionNext = new Int32Array(0);
+    this.collisionProbeSlots = new Int32Array(9);
     this.positions = this.charges = new Float32Array(0);
     this.capacity = 0;
     this.pointCapacity = 0;
@@ -316,6 +407,31 @@ export class BarnesHutQuadtree {
     while (next < required) next *= 2;
     this.stack = resize(this.stack, next);
   }
+
+  private ensureCollisionGrid(required: number): void {
+    let capacity = this.collisionUsed.length || 64;
+    while (capacity < required) capacity *= 2;
+    if (capacity === this.collisionUsed.length) return;
+    this.collisionUsed = new Uint8Array(capacity);
+    this.collisionCellX = new Float64Array(capacity);
+    this.collisionCellY = new Float64Array(capacity);
+    this.collisionHead = new Int32Array(capacity);
+    this.collisionNext = new Int32Array(Math.max(this.pointCapacity, required));
+  }
+
+  private collisionSlot(cellX: number, cellY: number, create: boolean): number {
+    const mask = this.collisionUsed.length - 1;
+    let slot = (Math.imul(cellX, 73856093) ^ Math.imul(cellY, 19349663)) & mask;
+    while (this.collisionUsed[slot]) {
+      if (this.collisionCellX[slot] === cellX && this.collisionCellY[slot] === cellY) return slot;
+      slot = (slot + 1) & mask;
+    }
+    if (!create) return -1;
+    this.collisionUsed[slot] = 1;
+    this.collisionCellX[slot] = cellX;
+    this.collisionCellY[slot] = cellY;
+    return slot;
+  }
 }
 
 function pairAngle(a: number, b: number): number {
@@ -324,6 +440,20 @@ function pairAngle(a: number, b: number): number {
   let value = Math.imul(low, 0x9e3779b9) ^ Math.imul(high, 0x85ebca6b);
   value = Math.imul(value ^ (value >>> 16), 0x7feb352d);
   return ((value >>> 0) / 4294967296) * Math.PI * 2;
+}
+
+function collisionPairAngle(source: number, target: number, seed: number): number {
+  const low = Math.min(source, target) + 1;
+  const high = Math.max(source, target) + 1;
+  let state = (seed ^ Math.imul(low, 0x9e3779b9) ^ Math.imul(high, 0x85ebca6b)) >>> 0;
+  state = (state + 0x6d2b79f5) | 0;
+  let value = Math.imul(state ^ (state >>> 15), 1 | state);
+  value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+  return (((value ^ (value >>> 14)) >>> 0) / 4294967296) * Math.PI * 2;
+}
+
+function toF32(value: number): number {
+  return Math.fround(value);
 }
 
 function distanceToCellSquared(
@@ -335,18 +465,6 @@ function distanceToCellSquared(
 ): number {
   const dx = Math.max(Math.abs(qx - x) - halfSize, 0);
   const dy = Math.max(Math.abs(qy - y) - halfSize, 0);
-  return dx * dx + dy * dy;
-}
-
-function distanceToCellFarthestSquared(
-  qx: number,
-  qy: number,
-  x: number,
-  y: number,
-  halfSize: number,
-): number {
-  const dx = Math.abs(qx - x) + halfSize;
-  const dy = Math.abs(qy - y) + halfSize;
   return dx * dx + dy * dy;
 }
 
