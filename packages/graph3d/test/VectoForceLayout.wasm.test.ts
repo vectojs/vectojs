@@ -82,7 +82,7 @@ describe.skipIf(!haveWasm)('VectoForceLayout — WASM force-kernel differential'
     wasm.setGraph(data);
     const backend = instantiateSync(readFileSync(wasmPath));
     expect(backend).not.toBeNull();
-    expect(await wasm.enableWasmForce(readFileSync(wasmPath))).toBe(true);
+    expect(wasm.enableWasmForceSync(readFileSync(wasmPath))).toBe(true);
     assertIdentical(js, wasm, 300);
     js.dispose();
     wasm.dispose();
@@ -94,7 +94,7 @@ describe.skipIf(!haveWasm)('VectoForceLayout — WASM force-kernel differential'
     const wasm = new VectoForceLayout({ seed: 3 });
     js.setGraph(data);
     wasm.setGraph(data);
-    expect(await wasm.enableWasmForce(readFileSync(wasmPath))).toBe(true);
+    expect(wasm.enableWasmForceSync(readFileSync(wasmPath))).toBe(true);
     assertIdentical(js, wasm, 200);
     js.dispose();
     wasm.dispose();
@@ -105,7 +105,7 @@ describe.skipIf(!haveWasm)('VectoForceLayout — WASM force-kernel differential'
     const layout = new VectoForceLayout({ seed: 1 });
     layout.setGraph(data);
     // Corrupt bytes must be rejected and leave the JS path active.
-    const enabled = await layout.enableWasmForce(new Uint8Array([1, 2, 3, 4]));
+    const enabled = layout.enableWasmForceSync(new Uint8Array([1, 2, 3, 4]));
     expect(enabled).toBe(false);
     // The JS path still steps and settles normally.
     expect(layout.step()).toBe(true);

@@ -92,15 +92,16 @@ export function instantiateSync(bytes: BufferSource): ForceBackend | null {
   }
 }
 
-/** Anything the force module can be loaded from. */
-export type ForceModuleSource = BufferSource | string | URL | Response | Promise<Response>;
+/** URL / streaming sources the force module can be loaded from. Raw bytes are
+ *  deliberately NOT part of this type: they load via `instantiateSync` (the
+ *  synchronous path) and must never reach the `fetch` below, so file-loaded
+ *  bytes can never drive an outbound request. */
+export type ForceUrlSource = string | URL | Response | Promise<Response>;
 
 /** Instantiate from a URL/Response with streaming compilation when available,
  *  falling back to fetch -> arrayBuffer -> instantiate. Returns `null` on any
  *  failure so the caller keeps the JS path. */
-async function instantiateStreaming(
-  source: string | URL | Response | Promise<Response>,
-): Promise<ForceBackend | null> {
+export async function instantiateStreaming(source: ForceUrlSource): Promise<ForceBackend | null> {
   try {
     const resp =
       typeof source === 'string' || source instanceof URL
@@ -121,15 +122,4 @@ async function instantiateStreaming(
   } catch {
     return null;
   }
-}
-
-/** Instantiate a force backend from bytes (sync) or a URL/Response (async).
- *  Returns `null` on any failure so the caller keeps the JS Barnes-Hut. */
-export async function instantiateForceBackend(
-  source: ForceModuleSource,
-): Promise<ForceBackend | null> {
-  if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
-    return instantiateSync(source);
-  }
-  return instantiateStreaming(source);
 }
