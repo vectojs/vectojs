@@ -1,9 +1,10 @@
 import type { GraphData } from '../types';
 import type { GraphLayout } from './GraphLayout';
 import {
-  instantiateForceBackend,
+  instantiateStreaming,
+  instantiateSync,
   type ForceBackend,
-  type ForceModuleSource,
+  type ForceUrlSource,
 } from '../wasm/force-backend';
 
 /** Tuning for {@link VectoForceLayout}. All optional; defaults give a stable,
@@ -171,20 +172,38 @@ export class VectoForceLayout implements GraphLayout {
   }
 
   /**
-   * Opt into the WASM force kernel. On success the repulsion phase runs in
-   * `crates/vectojs-force-rs`; on ANY failure (bad bytes, CSP rejection, 404,
-   * corrupt module) the layout silently keeps the identical-output JS Barnes-Hut
-   * and this returns `false`. Pass raw bytes (synchronous, Node/tests) or a URL
-   * (streaming, browser) — `forceWasmUrl` from `@vectojs/graph3d/wasm` is the
-   * packaged URL. The JS path is the permanent fallback and differential oracle.
+   * Opt into the WASM force kernel from a URL/Response source (streaming,
+   * browser). On success the repulsion phase runs in `crates/vectojs-force-rs`;
+   * on ANY failure (CSP rejection, 404, corrupt module) the layout silently
+   * keeps the identical-output JS Barnes-Hut and this returns `false`.
+   * `forceWasmUrl` from `@vectojs/graph3d/wasm` is the packaged URL. For raw
+   * bytes (Node/tests) use {@link VectoForceLayout.enableWasmForceSync}. The JS
+   * path is the permanent fallback and differential oracle.
    */
-  public async enableWasmForce(source: ForceModuleSource): Promise<boolean> {
+  public async enableWasmForce(source: ForceUrlSource): Promise<boolean> {
     this.assertUsable();
-    const backend = await instantiateForceBackend(source);
+    const backend = await instantiateStreaming(source);
     if (!backend) return false;
+    this.attachForceBackend(backend);
+    return true;
+  }
+
+  /**
+   * Opt into the WASM force kernel from raw bytes (synchronous, Node/tests).
+   * Mirrors {@link VectoForceLayout.enableWasmForce} but never fetches — the
+   * bytes are compiled directly — and returns `false` on any failure.
+   */
+  public enableWasmForceSync(bytes: BufferSource): boolean {
+    this.assertUsable();
+    const backend = instantiateSync(bytes);
+    if (!backend) return false;
+    this.attachForceBackend(backend);
+    return true;
+  }
+
+  private attachForceBackend(backend: ForceBackend): void {
     this.forceBackend = backend;
     if (this.count > 0) backend.ensure(this.count);
-    return true;
   }
 
   public step(iterations = 1): boolean {
