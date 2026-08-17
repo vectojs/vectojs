@@ -1,0 +1,16 @@
+[package]
+name = "vectojs-force-rs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "WASM Barnes-Hut octree force kernel for @vectojs/graph3d (invisible backend; the TypeScript path is the permanent fallback and differential oracle)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

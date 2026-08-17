@@ -24,6 +24,7 @@ scripts/.compare-results.json
 # have no Rust toolchain, and the JS path is a permanent fallback.
 crates/**/target/
 packages/core/src/wasm/*.wasm
+packages/graph3d/src/wasm/*.wasm
 
 # Logs
 *.log
