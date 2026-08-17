@@ -81,6 +81,27 @@ export class ForceLayout2D {
     this.seed = Number.isFinite(options.seed) ? Number(options.seed) : 1;
   }
 
+  /** Return the current index for an ID, or `undefined` when it is not present. */
+  public getNodeIndex(id: NodeId): number | undefined {
+    this.assertUsable();
+    return this.nodeIndex.get(id);
+  }
+
+  /** Return the ID at an index, or `undefined` when the index is invalid. */
+  public getNodeId(index: number): NodeId | undefined {
+    this.assertUsable();
+    return this.validNodeIndex(index) ? this.nodes[index].id : undefined;
+  }
+
+  /**
+   * Return node IDs in current position order. The returned array is a snapshot;
+   * append and replacement preserve existing order, while removal compacts it.
+   */
+  public getNodeIds(): readonly NodeId[] {
+    this.assertUsable();
+    return this.nodes.map((node) => node.id);
+  }
+
   /** Replace all simulation state with a newly seeded graph. */
   public setGraph(data: GraphData): void {
     this.assertUsable();
