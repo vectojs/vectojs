@@ -1,5 +1,12 @@
 # @vectojs/desktop
 
+## 0.5.0
+
+### Minor Changes
+
+- f23709d: `AppDefinition` gains optional `minWidth`/`minHeight`: the effective window floor becomes `max(theme-min, app-min)`, applied on open, `setGeometry`, and edge resize — so tiling and snapping never shrink a window below its content.
+- 54f060d: Taskbar window entries now show title-only labels (the app-icon prefix is dropped), use the `Segoe UI` font stack, truncate at 20 characters, and use tighter padding/radius with a wider minimum width.
+
 ## 0.4.0
 
 ### Minor Changes

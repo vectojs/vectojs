@@ -61,7 +61,7 @@
     },
     "packages/desktop": {
       "name": "@vectojs/desktop",
-      "version": "0.3.0",
+      "version": "0.5.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/styles": "workspace:*",
