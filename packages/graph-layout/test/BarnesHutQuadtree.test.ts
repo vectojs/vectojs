@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BarnesHutQuadtree } from './BarnesHutQuadtree';
+import { BarnesHutQuadtree } from '../src/internal/BarnesHutQuadtree';
 
 describe('BarnesHutQuadtree', () => {
   it('retains every coincident point with a far outlier', () => {

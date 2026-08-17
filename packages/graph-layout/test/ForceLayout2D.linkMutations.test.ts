@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ForceLayout2D } from './index';
+import { ForceLayout2D } from '../src';
 
 type InternalState = {
   degree: Int32Array;

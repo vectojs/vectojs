@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ForceLayout2D, type GraphData, type NodeId } from './index';
+import { ForceLayout2D, type GraphData, type NodeId } from '../src';
 
 const graph: GraphData = {
   nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
