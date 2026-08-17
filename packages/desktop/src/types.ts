@@ -27,6 +27,18 @@ export interface AppDefinition {
   /** Preferred outer window height (chrome included). */
   defaultHeight?: number;
   /**
+   * Minimum outer window width (chrome included). Floors `setGeometry`, edge
+   * resize, and tiling so a window is never shrunk below its content. Layers
+   * on top of the global `desktop-min-width` theme token.
+   */
+  minWidth?: number;
+  /**
+   * Minimum outer window height (chrome included). Floors `setGeometry`, edge
+   * resize, and tiling so a window is never shrunk below its content. Layers
+   * on top of the global `desktop-min-height` theme token.
+   */
+  minHeight?: number;
+  /**
    * Build the window client content. Called once per open; the returned entity
    * is parented under the window client area and destroyed with the window.
    * The shell sets `content.width`/`height` to the client box on open and resize.
