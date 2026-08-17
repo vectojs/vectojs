@@ -74,9 +74,18 @@ jobs:
       # must exist BEFORE its package's tests (the differential JS-vs-WASM suite
       # skips itself when the binary is absent) and BEFORE the build (tsup copies
       # it into dist/wasm/ so the `/wasm` subpath resolves to a real file in the
-      # tarball). rust-toolchain.toml pins the channel + target.
-      - name: Provision Rust toolchain for WASM packages
-        if: steps.parse.outputs.package == 'core' || steps.parse.outputs.package == 'graph3d'
+      # tarball). rust-toolchain.toml pins the channel + target. The two
+      # toolchain-provisioning steps are mutually exclusive by their `if:`; do
+      # not merge them into one `if:` with `||` — that expression form has been
+      # observed to make GitHub Actions reject the whole workflow file.
+      - name: Provision Rust toolchain for the WASM core
+        if: steps.parse.outputs.package == 'core'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - name: Provision Rust toolchain for the WASM force kernel
+        if: steps.parse.outputs.package == 'graph3d'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
