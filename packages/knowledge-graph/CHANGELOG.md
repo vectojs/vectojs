@@ -1,5 +1,12 @@
 # @vectojs/knowledge-graph
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [3be9df8]
+  - @vectojs/graph3d@0.6.0
+
 ## 0.3.1
 
 ### Patch Changes

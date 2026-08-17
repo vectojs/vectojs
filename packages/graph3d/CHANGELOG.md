@@ -1,5 +1,11 @@
 # @vectojs/graph3d
 
+## 0.6.0
+
+### Minor Changes
+
+- 3be9df8: Split the WASM opt-in on `VectoForceLayout` into `enableWasmForce(url | Response)` (streaming, browser) and `enableWasmForceSync(bytes)` (Node/tests), so raw bytes are compiled directly and can never reach the fetch path.
+
 ## 0.5.0
 
 ### Minor Changes
