@@ -1,4 +1,10 @@
-import { Entity, IRenderer, type LayoutControlledProperty } from '@vectojs/core';
+import {
+  Entity,
+  IRenderer,
+  type Bounds,
+  type LayoutControlledProperty,
+  type RenderChildRange,
+} from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 /** Construction options for {@link Stack}. */
@@ -14,6 +20,12 @@ export interface StackOptions {
   /** Maximum size along the main axis before wrapping (requires wrap: true). */
   maxWidth?: number;
   maxHeight?: number;
+  /**
+   * Skip drawing vertical children outside the viewport while retaining the
+   * complete entity tree. Enable only when each direct child's box contains its
+   * entire painted subtree. Defaults to false.
+   */
+  cullOffscreenChildren?: boolean;
 }
 
 /**
@@ -37,6 +49,7 @@ export class Stack extends UIComponent {
   public wrap: boolean;
   public maxWidth: number;
   public maxHeight: number;
+  public cullOffscreenChildren: boolean;
 
   // Set by `remove()` (or anything else that can invalidate the incremental
   // append assumptions below) so the next `add()` falls back to a full
@@ -66,6 +79,37 @@ export class Stack extends UIComponent {
     this.wrap = opts.wrap ?? false;
     this.maxWidth = opts.maxWidth ?? Infinity;
     this.maxHeight = opts.maxHeight ?? Infinity;
+    this.cullOffscreenChildren = opts.cullOffscreenChildren ?? false;
+    this.viewportCullChildren = this.cullOffscreenChildren;
+  }
+
+  public override getRenderChildRange(localViewport: Bounds): RenderChildRange | null {
+    if (!this.cullOffscreenChildren || this.direction !== 'vertical' || this.wrap) return null;
+
+    const children = this.children;
+    const count = children.length;
+    if (count === 0) return { start: 0, end: 0 };
+    const minY = localViewport.y;
+    const maxY = minY + localViewport.height;
+
+    let low = 0;
+    let high = count;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      const child = children[mid];
+      if (child.y + child.height < minY) low = mid + 1;
+      else high = mid;
+    }
+    const start = low;
+
+    low = start;
+    high = count;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (children[mid].y <= maxY) low = mid + 1;
+      else high = mid;
+    }
+    return { start, end: low };
   }
 
   /**

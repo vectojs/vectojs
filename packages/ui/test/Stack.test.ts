@@ -163,6 +163,35 @@ describe('Stack fast-append path', () => {
   });
 });
 
+describe('Stack offscreen-child culling', () => {
+  it('returns a bounded half-open range without removing vertical children', () => {
+    const stack = new Stack({
+      direction: 'vertical',
+      gap: 5,
+      cullOffscreenChildren: true,
+    });
+    for (let i = 0; i < 100; i++) stack.add(new Box(100, 20));
+
+    const range = stack.getRenderChildRange({ x: 0, y: 1000, width: 100, height: 100 });
+
+    expect(range).not.toBeNull();
+    expect(range!.start).toBeGreaterThan(35);
+    expect(range!.end - range!.start).toBeLessThan(10);
+    expect(stack.children).toHaveLength(100);
+  });
+
+  it('declines culling when layout can wrap across the main axis', () => {
+    const stack = new Stack({
+      direction: 'horizontal',
+      wrap: true,
+      cullOffscreenChildren: true,
+    });
+    stack.add(new Box(20, 20));
+
+    expect(stack.getRenderChildRange({ x: 0, y: 0, width: 100, height: 100 })).toBeNull();
+  });
+});
+
 describe('Stack.resizeLastChild', () => {
   it('grows the container along the main axis without moving earlier siblings (vertical)', () => {
     const stack = new Stack({ direction: 'vertical', gap: 5 });
