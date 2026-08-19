@@ -22,6 +22,11 @@ function assertApp(app: AppDefinition, index: number): void {
   if (typeof app.create !== 'function') {
     throw new TypeError(`WebosConfig.apps[${index}] (${app.id}): create must be a function`);
   }
+  if (app.iconSvg !== undefined && !isNonEmptyString(app.iconSvg)) {
+    throw new TypeError(
+      `WebosConfig.apps[${index}] (${app.id}): iconSvg must be a non-empty string`,
+    );
+  }
   if (app.instances !== undefined && app.instances !== 'single' && app.instances !== 'multiple') {
     throw new TypeError(
       `WebosConfig.apps[${index}] (${app.id}): instances must be 'single' | 'multiple'`,

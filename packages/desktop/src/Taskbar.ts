@@ -2,6 +2,7 @@ import { type A11yAttributes, Entity, type IRenderer, type Scene } from '@vectoj
 import { Button, Card, Text, UIComponent } from '@vectojs/ui';
 import type { DesktopWindow } from './Window';
 import type { WindowManager } from './WindowManager';
+import { addButtonIcon } from './icon';
 
 export interface TaskbarChrome {
   bg: string;
@@ -174,6 +175,10 @@ export class Taskbar extends UIComponent {
           height: btnH,
           onClick: () => this.onEntryClick(win),
         });
+        if (win.appIconSvg) {
+          btn.width = Math.min(maxW, Math.max(88, btn.width + 24));
+          addButtonIcon(btn, win.appIconSvg, 16, this.chrome.fg);
+        }
         btn.a11yProjection = 'eager';
         btn.width = Math.min(maxW, Math.max(88, btn.width));
         btn.y = btnY;
