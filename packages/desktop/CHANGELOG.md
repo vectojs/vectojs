@@ -1,5 +1,11 @@
 # @vectojs/desktop
 
+## 0.6.0
+
+### Minor Changes
+
+- bd67ec0: Add optional SVG app icons and stable vector icons for Start menu, taskbar, and window commands.
+
 ## 0.5.0
 
 ### Minor Changes
