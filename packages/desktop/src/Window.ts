@@ -3,6 +3,7 @@ import { Button, Card, Text, UIComponent } from '@vectojs/ui';
 import type { AppContext, AppDefinition } from './types';
 import type { Vfs } from './Vfs';
 import type { WindowManager } from './WindowManager';
+import { addButtonIcon, WINDOW_ICONS } from './icon';
 
 export interface WindowChrome {
   windowBg: string;
@@ -147,6 +148,7 @@ export class DesktopWindow extends UIComponent {
   public readonly appId: string;
   public readonly windowId: string;
   public readonly title: string;
+  public readonly appIconSvg: string | undefined;
   public readonly chrome: WindowChrome;
   public focused = false;
   public maximized = false;
@@ -189,6 +191,7 @@ export class DesktopWindow extends UIComponent {
     this.appId = opts.app.id;
     this.windowId = opts.windowId;
     this.title = opts.title ?? opts.app.title;
+    this.appIconSvg = opts.app.iconSvg;
     this.chrome = opts.chrome;
     this.onClose = opts.onClose;
     this.onFocus = opts.onFocus;
@@ -263,9 +266,19 @@ export class DesktopWindow extends UIComponent {
     this.dragHandle.on('keydown', (e: unknown) => this.handleMoveKey(e as KeyboardMoveEvent));
     this.shell.add(this.dragHandle);
 
-    this.closeBtn = this.makeChromeBtn('×', 'Close', () => this.onClose(this), true);
-    this.maxBtn = this.makeChromeBtn('□', 'Maximize', () => this.toggleMaximize(), false);
-    this.minBtn = this.makeChromeBtn('–', 'Minimize', () => this.minimize(), false);
+    this.closeBtn = this.makeChromeBtn(WINDOW_ICONS.close, 'Close', () => this.onClose(this), true);
+    this.maxBtn = this.makeChromeBtn(
+      WINDOW_ICONS.maximize,
+      'Maximize',
+      () => this.toggleMaximize(),
+      false,
+    );
+    this.minBtn = this.makeChromeBtn(
+      WINDOW_ICONS.minimize,
+      'Minimize',
+      () => this.minimize(),
+      false,
+    );
 
     this.closeBtn.x = this.width - btnW - 8;
     this.closeBtn.y = btnY;
@@ -324,10 +337,15 @@ export class DesktopWindow extends UIComponent {
     return { x: clientX, y: clientY };
   }
 
-  private makeChromeBtn(label: string, aria: string, onClick: () => void, danger: boolean): Button {
+  private makeChromeBtn(
+    iconSvg: string,
+    aria: string,
+    onClick: () => void,
+    danger: boolean,
+  ): Button {
     const bg = danger ? this.chrome.closeBg : this.chrome.titlebarBg;
     const fg = danger ? this.chrome.closeFg : this.chrome.titlebarFg;
-    const b = new Button(label, {
+    const b = new Button('', {
       bg,
       hoverBg: danger ? '#e04343' : this.chrome.windowBorder,
       color: fg,
@@ -338,6 +356,7 @@ export class DesktopWindow extends UIComponent {
       height: 24,
       onClick,
     });
+    addButtonIcon(b, iconSvg, 14, fg);
     // Eager: onDemand only materializes under the pointer on the *next* a11y
     // sync, so the first click on a chrome button would miss. Always project.
     b.a11yProjection = 'eager';

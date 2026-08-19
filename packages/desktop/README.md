@@ -25,6 +25,8 @@ const shell = new DesktopShell({
         id: 'about',
         title: 'About',
         icon: 'ℹ',
+        // Prefer iconSvg for stable canvas rendering across platforms.
+        iconSvg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#38bdf8"/></svg>',
         create: () => new Text('Hello from @vectojs/desktop'),
       },
       {
@@ -81,3 +83,5 @@ shell.open('about');
 - **Acyclic deps**: `desktop → {core, ui, styles}` only.
 - **Config-first**: colours, apps, displays, shortcuts, VFS via `WebosConfig`.
 - **Window = Entity**: chrome is 100% canvas; z-order is overlay sibling order.
+- **Stable icons**: `AppDefinition.iconSvg` renders SVG icons in the Start menu,
+  taskbar, and window chrome; `icon` remains a text fallback for legacy apps.

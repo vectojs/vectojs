@@ -17,6 +17,8 @@ export interface AppDefinition {
   title: string;
   /** Optional short glyph/label for the taskbar pin. */
   icon?: string;
+  /** Optional SVG icon source for stable canvas-native chrome rendering. */
+  iconSvg?: string;
   /**
    * Window multiplicity. Default `'single'`: a second open focuses the
    * existing window. `'multiple'` always spawns a new window.

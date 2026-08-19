@@ -43,6 +43,19 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ apps: [app, { ...app }] })).toThrow(/duplicate/);
   });
 
+  it('preserves optional SVG app icons', () => {
+    const iconSvg = '<svg viewBox="0 0 1 1"></svg>';
+    const cfg = resolveConfig({
+      apps: [{ id: 'about', title: 'About', iconSvg, create: () => new Leaf() }],
+    });
+    expect(cfg.apps[0]!.iconSvg).toBe(iconSvg);
+    expect(() =>
+      resolveConfig({
+        apps: [{ id: 'bad', title: 'Bad', iconSvg: 42 as never, create: () => new Leaf() }],
+      }),
+    ).toThrow(/iconSvg/);
+  });
+
   it('validates displays and shortcuts', () => {
     const cfg = resolveConfig({
       desktop: {

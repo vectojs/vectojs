@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { Entity, Scene } from '@vectojs/core';
+import { Entity, Scene, SVGEntity } from '@vectojs/core';
 import { Button, Text } from '@vectojs/ui';
 import { DesktopShell, MemoryVfs, StartMenu, startMenuHeight, type AppDefinition } from '../src';
 
@@ -50,6 +50,8 @@ const aboutApp: AppDefinition = {
   id: 'about',
   title: 'About',
   icon: 'ℹ',
+  iconSvg:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#38bdf8"/></svg>',
   create: () => new Text('About VectoJS Desktop', { selectable: false }),
 };
 
@@ -657,6 +659,71 @@ describe('polish pass (CTX-0376)', () => {
     });
     expect(menu.height).toBe(startMenuHeight(2));
     menu.destroy();
+  });
+
+  it('renders stable SVG app icons in the Start menu and taskbar', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({ scene, config: { apps: [aboutApp] } });
+    shell.start();
+    shell.toggleStartMenu();
+
+    const descendants = (root: Entity | null): Entity[] => {
+      const out: Entity[] = [];
+      const walk = (entity: Entity | null): void => {
+        if (!entity) return;
+        out.push(entity);
+        for (const child of entity.children) walk(child);
+      };
+      walk(root);
+      return out;
+    };
+    expect(
+      descendants(scene.overlayRoot).filter((entity) => entity instanceof SVGEntity),
+    ).toHaveLength(1);
+    const menuButton = descendants(scene.overlayRoot).find(
+      (entity): entity is Button => entity instanceof Button && entity.label === 'About',
+    );
+    expect(menuButton).toBeDefined();
+    const menuIcon = menuButton!.children.find(
+      (entity): entity is SVGEntity => entity instanceof SVGEntity,
+    );
+    expect(menuIcon!.x + menuIcon!.width).toBeLessThanOrEqual(
+      (menuButton!.width - menuButton!.textWidth) / 2,
+    );
+
+    shell.open('about');
+    expect(descendants(shell.taskbar).filter((entity) => entity instanceof SVGEntity)).toHaveLength(
+      1,
+    );
+    const taskButton = descendants(shell.taskbar).find(
+      (entity): entity is Button => entity instanceof Button && entity.label === 'About',
+    );
+    expect(taskButton?.getA11yAttributes().label).toBe('About');
+    shell.dispose();
+  });
+
+  it('renders window command icons as SVG instead of font glyphs', () => {
+    const scene = makeScene();
+    const shell = new DesktopShell({ scene, config: { apps: [aboutApp] } });
+    shell.start();
+    const win = shell.open('about');
+    const buttons = win.children
+      .flatMap((child) => child.children)
+      .filter((e) => e instanceof Button);
+    const chrome = buttons.filter((button) =>
+      ['Minimize', 'Maximize', 'Close'].includes(String(button.getA11yAttributes().label)),
+    );
+
+    expect(chrome).toHaveLength(3);
+    expect(chrome.every((button) => button.label === '')).toBe(true);
+    expect(
+      chrome.every((button) => button.children.some((child) => child instanceof SVGEntity)),
+    ).toBe(true);
+    for (const button of chrome) {
+      const icon = button.children.find((child): child is SVGEntity => child instanceof SVGEntity)!;
+      expect(icon.x).toBe((button.width - icon.width) / 2);
+    }
+    shell.dispose();
   });
 
   it('floors window size to the app minWidth/minHeight on open and setGeometry', () => {

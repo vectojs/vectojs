@@ -1,6 +1,7 @@
 import { type A11yAttributes, type IRenderer, type Scene } from '@vectojs/core';
 import { Button, Card, Text, UIComponent } from '@vectojs/ui';
 import type { AppDefinition } from './types';
+import { addButtonIcon } from './icon';
 
 export interface StartMenuChrome {
   bg: string;
@@ -89,7 +90,7 @@ export class StartMenu extends UIComponent {
 
     let y = headerH;
     for (const app of opts.apps) {
-      const label = app.icon ? `${app.icon}  ${app.title}` : app.title;
+      const label = app.iconSvg ? app.title : app.icon ? `${app.icon}  ${app.title}` : app.title;
       const btn = new Button(label, {
         bg: this.chrome.bg,
         hoverBg: this.chrome.hover,
@@ -104,6 +105,12 @@ export class StartMenu extends UIComponent {
           this.onClose();
         },
       });
+      if (app.iconSvg) {
+        addButtonIcon(btn, app.iconSvg, 18, this.chrome.fg);
+        btn.width = width - pad * 2;
+        const original = btn.getA11yAttributes.bind(btn);
+        btn.getA11yAttributes = () => ({ ...original(), label: app.title });
+      }
       btn.a11yProjection = 'eager';
       btn.x = pad;
       btn.y = y;
