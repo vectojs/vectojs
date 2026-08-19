@@ -1577,7 +1577,11 @@ async function verifyCase(browserCase: BrowserCase, url: string): Promise<void> 
       `${browserCase.name} justified RTL copy lost its RTL run: ${JSON.stringify(justifiedRtlCopy.textContent)}`,
     );
 
-    assert.match(result.textarea.font, /16px/);
+    const textareaFontSize = Number.parseFloat(result.textarea.font);
+    assert.ok(
+      Math.abs(textareaFontSize - 16) <= 0.05,
+      `${browserCase.name} textarea font ${result.textarea.font}`,
+    );
     const textareaLineHeight = Number.parseFloat(result.textarea.lineHeight);
     assert.ok(
       Math.min(Math.abs(textareaLineHeight - 22.4), Math.abs(textareaLineHeight - 20.16)) <= 0.05,
