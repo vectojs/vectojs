@@ -1,5 +1,11 @@
 # @vectojs/markdown
 
+## 0.21.1
+
+### Patch Changes
+
+- c595773: Add an opt-in contiguous child-render range contract, expose safe vertical Stack viewport culling, and enable it for retained Markdown blocks so large streamed documents keep complete semantic and reconciliation trees without drawing every offscreen subtree.
+
 ## 0.21.0
 
 ### Minor Changes
