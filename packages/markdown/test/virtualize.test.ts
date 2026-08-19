@@ -75,6 +75,22 @@ describe('Markdown virtualize', () => {
     expect(() => md.createStream()).toThrow(/virtualize/);
   });
 
+  it('retains streamed blocks while bounding the default content draw range', () => {
+    const md = new Markdown('', { maxWidth: 600 });
+    md.appendMarkdown(paragraphs(300));
+
+    const range = md.content.getRenderChildRange({
+      x: 0,
+      y: 4000,
+      width: 600,
+      height: 400,
+    });
+
+    expect(md.content.children).toHaveLength(300);
+    expect(range).not.toBeNull();
+    expect(range!.end - range!.start).toBeLessThan(30);
+  });
+
   it('setMaxWidth re-estimates and re-mounts the window', () => {
     const doc = paragraphs(300);
     const virtual = new Markdown(doc, { maxWidth: 600, virtualize: { overscan: 100 } });

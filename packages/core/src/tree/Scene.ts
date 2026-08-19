@@ -5907,8 +5907,43 @@ export class Scene {
         renderer.clip(0, 0, node.width, node.height);
       }
 
-      for (const child of node.children) {
-        renderNode(child, a, b, c, d, te, tf, worldOpacity);
+      const children = node.children;
+      let childStart = 0;
+      let childEnd = children.length;
+      if (childEnd > 0 && node.viewportCullChildren) {
+        const det = a * d - b * c;
+        if (Number.isFinite(det) && Math.abs(det) > 1e-12) {
+          const invDet = 1 / det;
+          let minLocalX = Infinity;
+          let minLocalY = Infinity;
+          let maxLocalX = -Infinity;
+          let maxLocalY = -Infinity;
+          for (let i = 0; i < 4; i++) {
+            const worldX = i & 1 ? vw : 0;
+            const worldY = i & 2 ? vh : 0;
+            const dx = worldX - te;
+            const dy = worldY - tf;
+            const localX = (d * dx - c * dy) * invDet;
+            const localY = (-b * dx + a * dy) * invDet;
+            if (localX < minLocalX) minLocalX = localX;
+            if (localX > maxLocalX) maxLocalX = localX;
+            if (localY < minLocalY) minLocalY = localY;
+            if (localY > maxLocalY) maxLocalY = localY;
+          }
+          const range = node.getRenderChildRange({
+            x: minLocalX,
+            y: minLocalY,
+            width: maxLocalX - minLocalX,
+            height: maxLocalY - minLocalY,
+          });
+          if (range) {
+            childStart = Math.max(0, Math.min(childEnd, Math.floor(range.start)));
+            childEnd = Math.max(childStart, Math.min(childEnd, Math.ceil(range.end)));
+          }
+        }
+      }
+      for (let i = childStart; i < childEnd; i++) {
+        renderNode(children[i], a, b, c, d, te, tf, worldOpacity);
       }
       // Commit any batched leaf children before popping this node's transform.
       renderer.flush();

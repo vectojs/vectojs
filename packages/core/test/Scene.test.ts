@@ -910,6 +910,49 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     expect(noBounds.renders).toBe(1);
   });
 
+  it('renders only the child range selected by an explicitly culling container', () => {
+    class RangeEntity extends SpyEntity {
+      public override viewportCullChildren = true;
+
+      public override getRenderChildRange() {
+        return { start: 1, end: 3 };
+      }
+    }
+
+    const scene = makeScene();
+    const parent = new RangeEntity('range', null);
+    const children = Array.from({ length: 4 }, (_, index) => new SpyEntity(`child-${index}`, null));
+    for (const child of children) parent.add(child);
+    scene.add(parent);
+
+    tick(scene);
+
+    expect(children.map((child) => child.renders)).toEqual([0, 1, 1, 0]);
+    expect(parent.children).toEqual(children);
+  });
+
+  it('does not query child ranges unless the container opts in', () => {
+    class UnclaimedRangeEntity extends SpyEntity {
+      public rangeQueries = 0;
+
+      public override getRenderChildRange() {
+        this.rangeQueries++;
+        return { start: 1, end: 2 };
+      }
+    }
+
+    const scene = makeScene();
+    const parent = new UnclaimedRangeEntity('unclaimed', null);
+    const children = [new SpyEntity('child-a', null), new SpyEntity('child-b', null)];
+    for (const child of children) parent.add(child);
+    scene.add(parent);
+
+    tick(scene);
+
+    expect(parent.rangeQueries).toBe(0);
+    expect(children.map((child) => child.renders)).toEqual([1, 1]);
+  });
+
   it('onDemand mode skips render on idle non-dirty frames', () => {
     const scene = makeScene();
     scene.renderMode = 'onDemand';

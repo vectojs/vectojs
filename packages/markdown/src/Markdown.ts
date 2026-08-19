@@ -893,6 +893,7 @@ export class Markdown extends UIComponent {
     this.content = new Stack({
       direction: 'vertical',
       gap: this.theme.blockGap,
+      cullOffscreenChildren: true,
     });
     this.add(this.content);
 

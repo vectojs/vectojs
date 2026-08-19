@@ -51,6 +51,14 @@ export interface Bounds {
   height: number;
 }
 
+/** Half-open child index range selected for the current render traversal. */
+export interface RenderChildRange {
+  /** Index of the first child to visit. */
+  start: number;
+  /** Index after the last child to visit. */
+  end: number;
+}
+
 /**
  * Describes an entity that renders as a single filled circle at its local
  * origin, returned from {@link Entity.getBatchCircle} to opt into the renderer's
@@ -772,6 +780,12 @@ export class VectoJSEvent<N = unknown> {
  * }
  */
 export abstract class Entity {
+  /**
+   * Whether Scene may ask {@link getRenderChildRange} to prune this entity's
+   * visual child traversal. Off by default so ordinary containers pay no
+   * viewport-inversion cost.
+   */
+  public viewportCullChildren = false;
   public id: string;
   public children: Entity[] = [];
   public parent: Entity | null = null;
@@ -1882,6 +1896,26 @@ export abstract class Entity {
    * @returns The local bounds, or `null` to opt out of culling.
    */
   public getBounds(): Bounds | null {
+    return null;
+  }
+
+  /**
+   * Select a contiguous subset of direct children for visual rendering.
+   *
+   * Return `null` (the default) to visit every child. Containers may override
+   * this only when child order and geometry prove that every skipped child's
+   * entire painted subtree lies outside `localViewport`. The Scene still keeps
+   * all children resident, and hit testing, accessibility, and content
+   * projection continue to see the complete tree. Skipped subtrees do not run
+   * `update()` or `render()` in the visual pass, so opt in only for children that
+   * are static while offscreen or whose state advances outside those methods.
+   *
+   * The returned range is half-open and is clamped to `children.length`.
+   * `localViewport` is a conservative axis-aligned box obtained by mapping the
+   * Scene viewport into this entity's local coordinate space.
+   */
+  public getRenderChildRange(localViewport: Bounds): RenderChildRange | null {
+    void localViewport;
     return null;
   }
 
