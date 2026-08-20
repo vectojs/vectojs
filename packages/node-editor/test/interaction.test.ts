@@ -101,4 +101,26 @@ describe('node editor interaction', () => {
     expect(editor.document.links).toHaveLength(0);
     expect(editor.canUndo).toBe(false);
   });
+  it('applies auto-layout as one undoable command', () => {
+    const editor = new NodeEditor({
+      document: {
+        nodes: [
+          { id: 'target', type: 'target', title: 'Target', position: { x: 300, y: 300 } },
+          { id: 'source', type: 'source', title: 'Source', position: { x: 300, y: 300 } },
+        ],
+        links: [{ id: 'link', source: 'source', target: 'target' }],
+      },
+    });
+    editor.applyAutoLayout({ originX: 10, originY: 20 });
+    expect(editor.document.nodes.map((node) => node.position)).toEqual([
+      { x: 270, y: 20 },
+      { x: 10, y: 20 },
+    ]);
+    expect(editor.canUndo).toBe(true);
+    editor.undo();
+    expect(editor.document.nodes.map((node) => node.position)).toEqual([
+      { x: 300, y: 300 },
+      { x: 300, y: 300 },
+    ]);
+  });
 });
