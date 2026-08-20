@@ -136,6 +136,8 @@ export function parseRunnerArgs(
         index += 1;
         break;
       case '--viewport':
+        // Browser launch flags request the native outer window. The page records
+        // its resulting CSS content viewport in the shared result envelope.
         configuredViewport = viewport(optionValue(args, index, option));
         index += 2;
         break;

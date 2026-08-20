@@ -75,6 +75,9 @@ export class FirefoxAdapter implements BrowserAdapter {
     const executable = this.resolveExecutable();
     if (!executable) throw new Error('firefox is not installed');
     const args = ['--new-instance', '--profile', profileDir];
+    // Firefox's launch dimensions are native window geometry. Browser chrome and
+    // compositor decorations can leave a different CSS content viewport; the page
+    // records window.innerWidth/innerHeight in the result envelope.
     if (viewport) args.push(`--width=${viewport.width}`, `--height=${viewport.height}`);
     args.push('--private-window', url);
     return { executable, args, windowClass: 'firefox' };

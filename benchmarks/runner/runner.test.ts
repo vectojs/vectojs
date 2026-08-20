@@ -298,6 +298,24 @@ describe('browser launch contracts', () => {
     expect(spec.args).toContain('--height=700');
   });
 
+  test('--viewport is a native window request for both browser engines', () => {
+    const requested = { width: 1280, height: 720 };
+    const chrome = new ChromeAdapter('/usr/bin/chromium').launchSpec(
+      '/repo/tmp/chrome-profile',
+      'http://127.0.0.1:8178/',
+      requested,
+    );
+    const firefox = new FirefoxAdapter('/usr/bin/firefox').launchSpec(
+      '/repo/tmp/firefox-profile',
+      'http://127.0.0.1:8178/',
+      requested,
+    );
+
+    expect(chrome.args).toContain('--window-size=1280,720');
+    expect(firefox.args).toContain('--width=1280');
+    expect(firefox.args).toContain('--height=720');
+  });
+
   test('quotes each Firefox profiler environment assignment as one shell token', () => {
     const command = formatBrowserLaunchCommand({
       executable: '/usr/bin/firefox',

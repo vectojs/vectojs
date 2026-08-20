@@ -47,6 +47,9 @@ export class ChromeAdapter implements BrowserAdapter {
     if (mode === 'profile') {
       args.push('--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0');
     }
+    // Chromium interprets --window-size as outer window geometry. It does not
+    // guarantee window.innerWidth/innerHeight; the page records those actual
+    // content dimensions in the result envelope.
     if (viewport) args.push(`--window-size=${viewport.width},${viewport.height}`);
     args.push(url);
     return { executable, args, windowClass };
