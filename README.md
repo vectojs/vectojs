@@ -268,6 +268,15 @@ bun run compare:dom               # CDP layout/style/heap comparison (headless)
 bun run compare                   # text-layout comparison (headless)
 ```
 
+`--viewport WxH` on `benchmarks/run-browsers.sh` requests the browser's native
+outer-window size. It is passed to Chromium as `--window-size` and to Firefox as
+`--width`/`--height`; it is not a CSS content-viewport setter. Browser chrome and
+Hyprland decorations therefore consume engine-specific space. For example, a
+`--viewport 1280x720` request can produce different `window.innerWidth` and
+`window.innerHeight` values in Chrome and Firefox. The actual CSS content viewport
+used by the benchmark is recorded in each result's top-level `viewport` object,
+alongside `dpr` and `rasterPixels`; use that object when comparing the workload.
+
 Only the two headed runners produce figures that may be quoted. `bun run
 benchmark` is headless with `--disable-gpu`, so it measures software
 rasterization in a throttled tab: it is a same-environment regression tripwire,

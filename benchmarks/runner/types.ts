@@ -17,6 +17,10 @@ export interface RunnerConfig {
    */
   workspace: number | null;
   keepGoing: boolean;
+  /**
+   * Requested outer browser-window dimensions. The benchmark result's
+   * `viewport` is the actual CSS content viewport measured by the page.
+   */
   viewport: Viewport | null;
   iterations: number;
   profileState: ProfileState;
@@ -86,6 +90,7 @@ export interface BrowserAdapter {
   launchSpec(
     profileDir: string,
     url: string,
+    /** Native outer-window dimensions, not CSS content viewport dimensions. */
     viewport: Viewport | null,
     mode?: BenchmarkMode,
   ): BrowserLaunchSpec;
