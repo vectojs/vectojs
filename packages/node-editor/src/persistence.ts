@@ -146,8 +146,8 @@ export function exportDocument(document: NodeDocument): string {
   validateDocument(document);
   const persisted: PersistedNodeDocument = {
     schemaVersion: NODE_EDITOR_SCHEMA_VERSION,
-    nodes: cloneJson(document.nodes),
-    links: cloneJson(document.links),
+    nodes: cloneJson([...document.nodes]),
+    links: cloneJson([...document.links]),
   };
   return JSON.stringify(persisted);
 }
