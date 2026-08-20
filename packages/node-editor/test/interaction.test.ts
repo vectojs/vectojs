@@ -101,7 +101,6 @@ describe('node editor interaction', () => {
     expect(editor.document.links).toHaveLength(0);
     expect(editor.canUndo).toBe(false);
   });
-
   it('applies auto-layout as one undoable command', () => {
     const editor = new NodeEditor({
       document: {

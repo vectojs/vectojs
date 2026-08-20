@@ -27,8 +27,8 @@ history unchanged. `deleteLink()` is also undoable.
 Port hotspots are projected as accessible buttons with direction and node
 labels. Rendering remains canvas-native and the editor works with
 `renderMode = 'onDemand'`; applications should call `scene.markDirty()` after
-external document changes. Persistence, collaboration, table/markdown apps,
-and layout engine integration remain outside this package.
+external document changes. Persistence and collaboration remain outside this
+package.
 
 ## Deterministic auto-layout
 
