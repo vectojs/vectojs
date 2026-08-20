@@ -52,8 +52,9 @@ const table = new Table({
 table.appendRows(nextRows);
 ```
 
-The implementation is shared with `@vectojs/ui` for compatibility. Existing
-`@vectojs/ui` imports continue to work unchanged.
+The component is also available from `@vectojs/ui` for compatibility. Existing
+`@vectojs/ui` imports continue to work unchanged; new consumers can depend on
+this focused package instead.
 
 ## License
 
