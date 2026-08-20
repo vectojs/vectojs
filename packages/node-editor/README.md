@@ -32,17 +32,20 @@ external document changes.
 ## Persistence
 
 Persistence is explicit and JSON-only; it never reads browser storage. Use
-`serializeDocument()` and `deserializeDocument()` for a versioned, validated
+`exportDocument()` and `importDocument()` for a versioned, validated
 document format:
 
 ```ts
-const saved = serializeDocument(editor.document);
-const restored = deserializeDocument(saved);
+const saved = exportDocument(editor.document);
+const restored = importDocument(saved);
 ```
 
 Malformed documents, unsupported schema versions, invalid port references, and
-non-JSON data are rejected. Serialization and deserialization use deep clones.
-These helpers do not access browser storage or mutate a `NodeEditor`.
+non-JSON data are rejected. Import and export use deep clones, so the restored
+document is independent of the source. `serializeDocument()` and
+`deserializeDocument()` remain aliases for the new names. These helpers do not
+mutate a `NodeEditor`; applications replacing an external document should call
+`scene.markDirty()` when using `renderMode = 'onDemand'`.
 Collaboration and table/markdown app integration remain outside this package.
 
 ## Deterministic auto-layout

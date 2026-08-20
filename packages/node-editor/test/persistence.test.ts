@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  deserializeDocument,
+  exportDocument,
+  importDocument,
   NODE_EDITOR_SCHEMA_VERSION,
   serializeDocument,
+  NodeEditorPersistenceError,
 } from '../src/persistence';
 
 const document = {
@@ -37,27 +39,34 @@ const document = {
 
 describe('node editor persistence', () => {
   it('round trips versioned documents with typed ports and links', () => {
-    const serialized = serializeDocument(document);
+    const serialized = exportDocument(document);
     expect(JSON.parse(serialized).schemaVersion).toBe(NODE_EDITOR_SCHEMA_VERSION);
-    expect(deserializeDocument(serialized)).toEqual(document);
+    expect(importDocument(serialized)).toEqual(document);
+    expect(serialized).toBe(serializeDocument(document));
   });
 
   it('rejects malformed JSON, versions, data, and references', () => {
-    expect(() => deserializeDocument('{')).toThrow();
-    expect(() => deserializeDocument(JSON.stringify({ ...document, schemaVersion: 2 }))).toThrow();
+    expect(() => importDocument('{')).toThrow(NodeEditorPersistenceError);
+    expect(() => importDocument(JSON.stringify({ ...document, schemaVersion: 2 }))).toThrow(
+      NodeEditorPersistenceError,
+    );
     expect(() =>
-      deserializeDocument(
+      importDocument(
         JSON.stringify({
           ...document,
           links: [{ ...document.links[0], targetPort: 'missing' }],
         }),
       ),
-    ).toThrow();
+    ).toThrow(NodeEditorPersistenceError);
+    expect(() => importDocument(JSON.stringify(null))).toThrow(NodeEditorPersistenceError);
+    expect(() =>
+      importDocument(JSON.stringify({ schemaVersion: 1, nodes: {}, links: [] })),
+    ).toThrow(NodeEditorPersistenceError);
   });
 
   it('deep clones nested data on both sides of the round trip', () => {
-    const serialized = serializeDocument(document);
-    const restored = deserializeDocument(serialized);
+    const serialized = exportDocument(document);
+    const restored = importDocument(serialized);
     const sourceData = document.nodes[0].data as { config: { value: number } };
     const restoredData = restored.nodes[0].data as { config: { value: number } };
     sourceData.config.value = 7;
@@ -65,6 +74,7 @@ describe('node editor persistence', () => {
     expect(sourceData.config.value).toBe(7);
     expect(restoredData.config.value).toBe(8);
     expect(JSON.parse(serialized).nodes[0].data.config.value).toBe(42);
+    sourceData.config.value = 42;
   });
 
   it('rejects non-JSON-safe values before JSON serialization', () => {
@@ -87,5 +97,22 @@ describe('node editor persistence', () => {
         nodes: [{ ...document.nodes[0], data: { [symbol]: true } }],
       }),
     ).toThrow();
+  });
+  it('returns an independent imported document', () => {
+    const restored = importDocument(exportDocument(document));
+    const restoredNode = restored.nodes[0];
+    const restoredLink = restored.links[0];
+    const originalNode = document.nodes[0];
+    const originalLink = document.links[0];
+
+    (restoredNode.position as { x: number }).x = 99;
+    (restoredNode.data as { config: { value: number } }).config.value = 99;
+    (restoredNode.ports as { dataType?: string }[])[0].dataType = 'string';
+    (restoredLink.data as { weight: number }).weight = 99;
+
+    expect(originalNode.position.x).toBe(10);
+    expect((originalNode.data as { config: { value: number } }).config.value).toBe(42);
+    expect(originalNode.ports?.[0].dataType).toBe('number');
+    expect((originalLink.data as { weight: number }).weight).toBe(1);
   });
 });
