@@ -3,3 +3,4 @@ export * from './history';
 export * from './selection';
 export * from './editor';
 export * from './layout';
+export * from './persistence';
