@@ -9,6 +9,8 @@ export interface PersistedNodeDocument {
 }
 
 export interface NodeEditorPersistence {
+  exportDocument(document: NodeDocument): string;
+  importDocument(serialized: string): NodeDocument;
   serializeDocument(document: NodeDocument): string;
   deserializeDocument(serialized: string): NodeDocument;
 }
@@ -140,7 +142,7 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export function serializeDocument(document: NodeDocument): string {
+export function exportDocument(document: NodeDocument): string {
   validateDocument(document);
   const persisted: PersistedNodeDocument = {
     schemaVersion: NODE_EDITOR_SCHEMA_VERSION,
@@ -150,7 +152,7 @@ export function serializeDocument(document: NodeDocument): string {
   return JSON.stringify(persisted);
 }
 
-export function deserializeDocument(serialized: string): NodeDocument {
+export function importDocument(serialized: string): NodeDocument {
   if (typeof serialized !== 'string') fail('serialized document must be a string');
   let parsed: unknown;
   try {
@@ -164,7 +166,15 @@ export function deserializeDocument(serialized: string): NodeDocument {
   return cloneJson({ nodes: parsed.nodes, links: parsed.links });
 }
 
+/** @deprecated Use exportDocument instead. */
+export const serializeDocument = exportDocument;
+
+/** @deprecated Use importDocument instead. */
+export const deserializeDocument = importDocument;
+
 export const nodeEditorPersistence: NodeEditorPersistence = {
+  exportDocument,
+  importDocument,
   serializeDocument,
   deserializeDocument,
 };
