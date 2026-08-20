@@ -18,7 +18,14 @@ const editor = new NodeEditor({
 scene.add(editor);
 ```
 
-The first phase intentionally renders concise node labels only. Long-text
-editing, ports, persistence, layout, and collaboration remain application or
-future-package concerns. Interactive nodes and the editor region are projected
-through VectoJS accessibility semantics; there is no sibling DOM or CSS UI.
+Nodes can declare typed input and output ports. Drag from an output port to an
+input port to create a link; the connection is committed as one undoable
+command only when the target is valid. Escape/cancel, incompatible types,
+duplicate links, occupied inputs, and non-port targets leave the document and
+history unchanged. `deleteLink()` is also undoable.
+
+Port hotspots are projected as accessible buttons with direction and node
+labels. Rendering remains canvas-native and the editor works with
+`renderMode = 'onDemand'`; applications should call `scene.markDirty()` after
+external document changes. Persistence, collaboration, table/markdown apps,
+and layout engine integration remain outside this package.

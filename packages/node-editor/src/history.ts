@@ -33,6 +33,10 @@ export class CommandHistory {
     return this.document;
   }
 
+  public get currentDocument(): NodeDocument {
+    return this.document;
+  }
+
   public undo(): NodeDocument {
     const command = this.undoStack.pop();
     if (!command) return this.document;

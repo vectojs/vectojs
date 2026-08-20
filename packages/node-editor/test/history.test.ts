@@ -19,4 +19,17 @@ describe('command history', () => {
     history.execute('Move again', initial);
     expect(history.canRedo).toBe(false);
   });
+
+  it('stores link creation and deletion as commands', () => {
+    const history = new CommandHistory(initial);
+    const linked = {
+      ...initial,
+      links: [{ id: 'l1', source: 'a', target: 'b', sourcePort: 'out', targetPort: 'in' }],
+    };
+    history.execute('Create link', linked);
+    expect(history.document.links).toHaveLength(1);
+    history.execute('Delete link', initial);
+    expect(history.undo().links).toHaveLength(1);
+    expect(history.redo().links).toHaveLength(0);
+  });
 });

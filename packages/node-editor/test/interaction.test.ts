@@ -47,4 +47,58 @@ describe('node editor interaction', () => {
     editor.cancelDrag();
     expect(editor.document.nodes[0].position).toEqual({ x: 0, y: 0 });
   });
+
+  it('creates valid links and rejects invalid pointer targets', () => {
+    const editor = new NodeEditor({
+      document: {
+        nodes: [
+          {
+            id: 'source',
+            type: 'source',
+            title: 'Source',
+            position: { x: 0, y: 0 },
+            ports: [{ id: 'out', direction: 'output', dataType: 'number' }],
+          },
+          {
+            id: 'target',
+            type: 'target',
+            title: 'Target',
+            position: { x: 200, y: 0 },
+            ports: [{ id: 'in', direction: 'input', dataType: 'number' }],
+          },
+        ],
+        links: [],
+      },
+    });
+    editor.beginConnection('source', 'out', event(editor, 'pointerdown', 180, 30));
+    editor.endConnection(event(editor, 'pointerup', 190, 30));
+    expect(editor.document.links).toHaveLength(0);
+    editor.beginConnection('source', 'out', event(editor, 'pointerdown', 174, 30));
+    editor.endConnection(event(editor, 'pointerup', 194, 30));
+    expect(editor.document.links).toHaveLength(1);
+    expect(editor.canUndo).toBe(true);
+    editor.undo();
+    expect(editor.document.links).toHaveLength(0);
+  });
+
+  it('cancels a connection without changing history', () => {
+    const editor = new NodeEditor({
+      document: {
+        nodes: [
+          {
+            id: 'source',
+            type: 'source',
+            title: 'Source',
+            position: { x: 0, y: 0 },
+            ports: [{ id: 'out', direction: 'output' }],
+          },
+        ],
+        links: [],
+      },
+    });
+    editor.beginConnection('source', 'out', event(editor, 'pointerdown', 174, 30));
+    editor.cancelConnection();
+    expect(editor.document.links).toHaveLength(0);
+    expect(editor.canUndo).toBe(false);
+  });
 });
