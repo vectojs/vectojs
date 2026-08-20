@@ -25,12 +25,15 @@
   <a href="https://www.npmjs.com/package/@vectojs/animation"><img alt="animation" src="https://img.shields.io/npm/v/@vectojs/animation?label=animation&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/tex"><img alt="tex" src="https://img.shields.io/npm/v/@vectojs/tex?label=tex&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/markdown"><img alt="markdown" src="https://img.shields.io/npm/v/@vectojs/markdown?label=markdown&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/markdown-app"><img alt="markdown-app" src="https://img.shields.io/npm/v/@vectojs/markdown-app?label=markdown-app&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/three"><img alt="three" src="https://img.shields.io/npm/v/@vectojs/three?label=three&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/devtools"><img alt="devtools" src="https://img.shields.io/npm/v/@vectojs/devtools?label=devtools&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/graph3d"><img alt="graph3d" src="https://img.shields.io/npm/v/@vectojs/graph3d?label=graph3d&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/video-exporter"><img alt="video-exporter" src="https://img.shields.io/npm/v/@vectojs/video-exporter?label=video-exporter&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/desktop"><img alt="desktop" src="https://img.shields.io/npm/v/@vectojs/desktop?label=desktop&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/knowledge-graph"><img alt="knowledge-graph" src="https://img.shields.io/npm/v/@vectojs/knowledge-graph?label=knowledge-graph&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/node-editor"><img alt="node-editor" src="https://img.shields.io/npm/v/@vectojs/node-editor?label=node-editor&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/table"><img alt="table" src="https://img.shields.io/npm/v/@vectojs/table?label=table&color=22d3ee"></a>
 </p>
 
 > Render only what is visible, materialize only what is usable, retain only what is necessary.
@@ -75,6 +78,9 @@ shape, glyph, point, or row.
 | [`@vectojs/tex`](./packages/tex)                         | Zero-DOM TeX math typesetting: a vendored KaTeX parse/layout kernel plus a self-contained SVG emit layer                       |
 | [`@vectojs/ui`](./packages/ui)                           | Canvas-native layout, form, content, data, navigation, and overlay components                                                  |
 | [`@vectojs/markdown`](./packages/markdown)               | Markdown + TeX-math rendering entity (`Markdown`, `CodeBlock`) built on `@vectojs/ui`, with `marked` + `@vectojs/tex`          |
+| [`@vectojs/markdown-app`](./packages/markdown-app)       | Standalone canvas-native Markdown reader and source workbench; composes `@vectojs/markdown` without `@vectojs/desktop`         |
+| [`@vectojs/node-editor`](./packages/node-editor)         | Standalone canvas-native node and link editor with typed ports, undoable commands, persistence, and deterministic auto-layout  |
+| [`@vectojs/table`](./packages/table)                     | Standalone canvas-native accessible data table with virtualization, keyboard navigation, and selectable cell projections       |
 | [`@vectojs/three`](./packages/three)                     | Project a VectoJS scene onto a Three.js texture and route raycast/XR input back into 2D                                        |
 | [`@vectojs/devtools`](./packages/devtools)               | In-page Virtual Math Tree inspector plus a headless audit/snapshot layer for tests and CI                                      |
 | [`@vectojs/graph3d`](./packages/graph3d)                 | 3D force-directed graph rendering on instanced Three.js, with an in-house dependency-free Barnes-Hut layout                    |

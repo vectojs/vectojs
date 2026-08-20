@@ -175,6 +175,23 @@
         "@vectojs/ui": ">=2.6.0 <3.0.0",
       },
     },
+    "packages/markdown-app": {
+      "name": "@vectojs/markdown-app",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@vectojs/core": "workspace:*",
+        "@vectojs/markdown": "workspace:*",
+        "@vectojs/ui": "workspace:*",
+        "jsdom": "^30.0.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=1.38.0 <2.0.0",
+        "@vectojs/markdown": ">=0.21.1 <1.0.0",
+        "@vectojs/ui": ">=2.19.0 <3.0.0",
+      },
+    },
     "packages/math": {
       "name": "@vectojs/math",
       "version": "0.1.1",
@@ -186,11 +203,9 @@
     "packages/node-editor": {
       "name": "@vectojs/node-editor",
       "version": "0.1.0",
-      "dependencies": {
+      "devDependencies": {
         "@vectojs/core": "workspace:*",
         "@vectojs/ui": "workspace:*",
-      },
-      "devDependencies": {
         "jsdom": "^30.0.1",
         "tsup": "^8.3.5",
         "vitest": "^4.1.10",
@@ -951,6 +966,8 @@
     "@vectojs/layout": ["@vectojs/layout@workspace:packages/layout"],
 
     "@vectojs/markdown": ["@vectojs/markdown@workspace:packages/markdown"],
+
+    "@vectojs/markdown-app": ["@vectojs/markdown-app@workspace:packages/markdown-app"],
 
     "@vectojs/math": ["@vectojs/math@workspace:packages/math"],
 
