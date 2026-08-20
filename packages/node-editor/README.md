@@ -42,6 +42,7 @@ const restored = deserializeDocument(saved);
 
 Malformed documents, unsupported schema versions, invalid port references, and
 non-JSON data are rejected. Serialization and deserialization use deep clones.
+These helpers do not access browser storage or mutate a `NodeEditor`.
 Collaboration and table/markdown app integration remain outside this package.
 
 ## Deterministic auto-layout
