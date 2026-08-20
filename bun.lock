@@ -211,6 +211,22 @@
         "vitest": "^4.1.10",
       },
     },
+    "packages/table": {
+      "name": "@vectojs/table",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@vectojs/core": "workspace:*",
+        "@vectojs/ui": "workspace:*",
+        "esbuild": "^0.28.1",
+        "jsdom": "^30.0.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=1.25.0 <2.0.0",
+        "@vectojs/ui": ">=2.19.0 <3.0.0",
+      },
+    },
     "packages/tex": {
       "name": "@vectojs/tex",
       "version": "0.1.1",
@@ -941,6 +957,8 @@
     "@vectojs/node-editor": ["@vectojs/node-editor@workspace:packages/node-editor"],
 
     "@vectojs/styles": ["@vectojs/styles@workspace:packages/styles"],
+
+    "@vectojs/table": ["@vectojs/table@workspace:packages/table"],
 
     "@vectojs/tex": ["@vectojs/tex@workspace:packages/tex"],
 

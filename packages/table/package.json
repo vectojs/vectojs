@@ -1,0 +1,56 @@
+{
+  "name": "@vectojs/table",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Canvas-native, virtualized, accessible data tables for VectoJS.",
+  "keywords": [
+    "canvas",
+    "table",
+    "virtualization",
+    "accessibility",
+    "typescript",
+    "vectojs"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/table"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../ui && bun run build) && tsup src/index.ts --format cjs,esm --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@vectojs/core": ">=1.25.0 <2.0.0",
+    "@vectojs/ui": ">=2.19.0 <3.0.0"
+  },
+  "devDependencies": {
+    "@vectojs/core": "workspace:*",
+    "@vectojs/ui": "workspace:*",
+    "esbuild": "^0.28.1",
+    "jsdom": "^30.0.1",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.10"
+  }
+}

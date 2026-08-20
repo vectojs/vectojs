@@ -11,7 +11,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter '@vectojs/math' build && bun run --filter '@vectojs/text' build && bun run --filter '@vectojs/graph-layout' build && bun run --filter '@vectojs/layout' build && bun run --filter '@vectojs/animation' build && bun run --filter '@vectojs/tex' build && bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/styles' build && bun run --filter '@vectojs/markdown' build && bun run --filter '@vectojs/three' build && bun run --filter '@vectojs/graph3d' build && bun run --filter '@vectojs/knowledge-graph' build && bun run --filter '@vectojs/desktop' build && bun run --filter '@vectojs/node-editor' build",
+    "build": "bun run --filter '@vectojs/math' build && bun run --filter '@vectojs/text' build && bun run --filter '@vectojs/graph-layout' build && bun run --filter '@vectojs/layout' build && bun run --filter '@vectojs/animation' build && bun run --filter '@vectojs/tex' build && bun run --filter '@vectojs/core' build && bun run --filter '@vectojs/ui' build && bun run --filter '@vectojs/table' build && bun run --filter '@vectojs/styles' build && bun run --filter '@vectojs/markdown' build && bun run --filter '@vectojs/three' build && bun run --filter '@vectojs/graph3d' build && bun run --filter '@vectojs/knowledge-graph' build && bun run --filter '@vectojs/desktop' build && bun run --filter '@vectojs/node-editor' build",
     "test": "bun run --filter '@vectojs/*' test",
     "test:benchmarks": "bun test benchmarks/_shared benchmarks/runner benchmarks/markdown-transcript",
     "format": "oxfmt --write \"packages/**/*.{js,ts,jsx,tsx,mjs,cjs,json}\" \"scripts/**/*.ts\" \"benchmarks/**/*.ts\" \"comparisons/**/*.ts\"",
