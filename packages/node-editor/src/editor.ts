@@ -237,7 +237,6 @@ export class NodeEditor extends Entity {
     }
     return this.document;
   }
-
   public beginConnection(nodeId: string, portId: string, event: VectoJSEvent): void {
     const node = getNode(this.documentState, nodeId);
     const port = getPort(node, portId);

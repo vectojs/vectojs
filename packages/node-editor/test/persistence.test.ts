@@ -98,7 +98,6 @@ describe('node editor persistence', () => {
       }),
     ).toThrow();
   });
-
   it('returns an independent imported document', () => {
     const restored = importDocument(exportDocument(document));
     const restoredNode = restored.nodes[0];
