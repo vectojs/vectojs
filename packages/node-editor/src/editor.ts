@@ -14,6 +14,7 @@ import {
   type PortDefinition,
 } from './model';
 import { SelectionState } from './selection';
+import { layoutDocument, type AutoLayoutOptions } from './layout';
 
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 76;
@@ -226,6 +227,15 @@ export class NodeEditor extends Entity {
   }
   public redo(): void {
     this.applyDocument(this.history.redo());
+  }
+
+  public applyAutoLayout(options: AutoLayoutOptions = {}): NodeDocument {
+    const next = layoutDocument(this.documentState, options);
+    if (JSON.stringify(next) !== JSON.stringify(this.documentState)) {
+      this.history.execute('Auto-layout', next);
+      this.applyDocument(this.history.currentDocument);
+    }
+    return this.document;
   }
 
   public beginConnection(nodeId: string, portId: string, event: VectoJSEvent): void {
