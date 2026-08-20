@@ -183,6 +183,23 @@
         "vitest": "^4.1.10",
       },
     },
+    "packages/node-editor": {
+      "name": "@vectojs/node-editor",
+      "version": "0.1.0",
+      "dependencies": {
+        "@vectojs/core": "workspace:*",
+        "@vectojs/ui": "workspace:*",
+      },
+      "devDependencies": {
+        "jsdom": "^30.0.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.10",
+      },
+      "peerDependencies": {
+        "@vectojs/core": ">=1.36.0 <2.0.0",
+        "@vectojs/ui": ">=2.16.7 <3.0.0",
+      },
+    },
     "packages/styles": {
       "name": "@vectojs/styles",
       "version": "0.3.2",
@@ -920,6 +937,8 @@
     "@vectojs/markdown": ["@vectojs/markdown@workspace:packages/markdown"],
 
     "@vectojs/math": ["@vectojs/math@workspace:packages/math"],
+
+    "@vectojs/node-editor": ["@vectojs/node-editor@workspace:packages/node-editor"],
 
     "@vectojs/styles": ["@vectojs/styles@workspace:packages/styles"],
 
