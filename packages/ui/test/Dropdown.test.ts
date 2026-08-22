@@ -62,3 +62,29 @@ describe('Dropdown', () => {
     expect(menu.children[0].width).toBe(200);
   });
 });
+
+describe('Dropdown menu projection', () => {
+  it('keeps the listbox container pointer-transparent so option clicks land on the option', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
+    scene.add(dropdown);
+
+    dropdown.emit('click', {});
+
+    const menu = (dropdown as any).activeMenu;
+    // The scene's per-mirror pointerdown handler calls setPointerCapture on
+    // every projected element the gesture bubbles through. A hit-testable
+    // listbox therefore overrides the option's own capture, and the browser
+    // retargets pointerup + click to the container — which has no click
+    // handler, so selecting an option silently did nothing.
+    expect(menu.getA11yAttributes().pointerEvents).toBe('none');
+
+    // Leaf options must stay clickable (the default).
+    for (const child of menu.children) {
+      const attrs = child.getA11yAttributes();
+      expect(attrs.role).toBe('option');
+      expect(attrs.pointerEvents ?? 'auto').toBe('auto');
+    }
+  });
+});
