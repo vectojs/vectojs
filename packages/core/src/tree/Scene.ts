@@ -3510,7 +3510,17 @@ export class Scene {
           }
         };
         el.addEventListener('pointerdown', (e) => {
-          if (typeof capEl.setPointerCapture === 'function') capEl.setPointerCapture(e.pointerId);
+          // Capture only when this mirror is the native target. A bubbled
+          // pointerdown (target = a descendant) must not re-capture: the child
+          // already captured itself, and an ancestor overriding that retargets
+          // pointerup + click to the common ancestor — measured live as
+          // Dropdown menu options whose clicks landed on their listbox
+          // container and never selected. `pointer-events: none` on the
+          // container does not prevent this: pe only gates hit-testing, the
+          // bubbled event still crosses the element and fires this listener.
+          if (e.target === capEl && typeof capEl.setPointerCapture === 'function') {
+            capEl.setPointerCapture(e.pointerId);
+          }
           node.dispatchEvent(new VectoJSEvent('pointerdown', node, e));
         });
         el.addEventListener('pointerup', (e) => {
