@@ -170,7 +170,17 @@ export class Input extends UIComponent {
       invalid: this._invalid ? true : undefined,
       textInputStyle: {
         font: this.font,
-        lineHeight: this.height - 2 * this.padding,
+        // Fill the inner box so the single line sits centred, but never below the
+        // font size. `height - 2 * padding` alone goes under it as soon as an app
+        // asks for a compact input: with the default `padding: 10`, any height
+        // below 33 crushes a 13px font, and a 28px-tall input projected an 8px
+        // line box that clipped `100` into something like `1QQ`.
+        //
+        // This element is the real editing surface, so a line box shorter than the
+        // font does not only clip painted glyphs — it misplaces the caret and
+        // selection rect against what the canvas draws, the same canvas/DOM
+        // disagreement the scrollbar-width note below guards against.
+        lineHeight: Math.max(fontSizePx(this.font), this.height - 2 * this.padding),
         padding: this.padding,
       },
     };
