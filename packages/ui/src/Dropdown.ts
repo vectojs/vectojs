@@ -191,10 +191,17 @@ export class Dropdown extends UIComponent {
     menu.height = this.options.length * 36 + (this.options.length - 1) * 2;
     menu.interactive = true;
 
-    // Listbox semantic accessibility
+    // Listbox semantic accessibility. The container mirror must be
+    // pointer-transparent: the scene's per-mirror pointerdown wiring calls
+    // setPointerCapture on every projected element a gesture bubbles through,
+    // so a hit-testable listbox overrides the option's own capture and the
+    // browser retargets pointerup + click to this Stack — which has no click
+    // handler, so selection silently dies with the menu left open. Leaf option
+    // Buttons below keep the default `auto`.
     (menu as any).getA11yAttributes = () => ({
       role: 'listbox',
       label: 'Options',
+      pointerEvents: 'none',
     });
 
     this.options.forEach((opt, index) => {
