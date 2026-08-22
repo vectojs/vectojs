@@ -517,6 +517,33 @@ export interface MarkdownOptions {
    * a document that virtualizes must be rendered whole.
    */
   virtualize?: boolean | { overscan?: number };
+  /**
+   * Give every table body a fixed pixel viewport, so `Table` virtualizes its
+   * rows: only the rows inside that viewport (plus overscan) mount cells and
+   * project `row`/`gridcell` semantics. Off by default.
+   *
+   * This is **not** {@link MarkdownOptions.virtualize}, and the two are
+   * independent. That one windows top-level *blocks* and cannot be combined with
+   * streaming; this one windows the *rows inside one table* and works while
+   * streaming, because `Table.appendRows` already mounts lazily when virtualized.
+   * A streaming reader whose cost is dominated by wide tables wants this one.
+   *
+   * Opt-in rather than automatic because it is a layout change, not just a
+   * performance one: a virtualized `Table` sets its height to exactly this value
+   * and turns its body into an internally scrolling region, so a 200-row table
+   * stops being a 200-row-tall block in the document flow. Applying it past some
+   * row-count threshold would silently reshape long tables.
+   *
+   * Applies to **every** table in the document, short ones included — so a
+   * two-row table is also fixed to this height. That is deliberate: `Table` takes
+   * `viewportHeight` as `readonly` and builds its body clip in the constructor, so
+   * a table cannot start plain and become virtualized once it grows. Every
+   * streamed table is lexed with zero rows the moment its delimiter row arrives,
+   * so a row-count condition would exclude precisely the streaming documents this
+   * option exists for. Choose a height that suits the document's tables, or leave
+   * it unset for mixed content where a few short tables are the whole cost.
+   */
+  tableViewportHeight?: number;
 }
 
 interface BlockMetrics {
@@ -584,6 +611,15 @@ export class Markdown extends UIComponent {
   private readonly virtualizeBlocks: boolean;
   /** Overscan margin (px) added above/below the visible window before mounting. */
   private readonly virtualOverscan: number;
+  /**
+   * Fixed body viewport for table blocks, from `opts.tableViewportHeight`; `0`
+   * leaves every table in `Table`'s classic grow-to-fit mode.
+   *
+   * Independent of {@link virtualizeBlocks}: that windows top-level blocks and
+   * is incompatible with streaming, whereas `Table`'s row virtualization works
+   * mid-stream because `appendRows` mounts lazily when virtualized.
+   */
+  private readonly tableViewportHeight: number;
   /** Top-level tokens that produce a child entity, in document order. */
   private virtualTokens: Token[] | null = null;
   /** Fenwick tree over per-block strides (height + blockGap) when virtualizing. */
@@ -889,6 +925,14 @@ export class Markdown extends UIComponent {
       typeof virt === 'object' && virt !== null && typeof virt.overscan === 'number'
         ? virt.overscan
         : 800;
+    // A non-finite or non-positive value would reach `Table` as a height and
+    // silently produce a zero-height (or NaN) scroll region, so it is normalized
+    // to "off" here rather than trusted.
+    const tableViewport = opts.tableViewportHeight;
+    this.tableViewportHeight =
+      typeof tableViewport === 'number' && Number.isFinite(tableViewport) && tableViewport > 0
+        ? tableViewport
+        : 0;
 
     this.content = new Stack({
       direction: 'vertical',
@@ -4266,6 +4310,14 @@ export class Markdown extends UIComponent {
             bg: t.tableBgColor,
             headerBg: t.tableHeaderBgColor,
             selectable: this.selectable,
+            // 0 = Table's classic grow-to-fit mode, so the default is unchanged.
+            // Applied unconditionally when set, including to a table that lexes
+            // with zero rows: `Table.viewportHeight` is readonly and its body clip
+            // is built in the constructor, so a table cannot become virtualized
+            // later — and every streamed table starts empty and grows through
+            // `appendRows`. Deciding by row count here would leave exactly the
+            // streaming case this exists for permanently unvirtualized.
+            viewportHeight: this.tableViewportHeight,
           }),
           () => this.tableAffordances(tblToken),
         );
