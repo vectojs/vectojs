@@ -9,6 +9,7 @@ import {
   GlyphTable,
   MAGIC_0,
   MAGIC_1,
+  MAX_CACHED_MISSES,
 } from '../src/emit/glyphCodec';
 import { getGlyph, shippedFonts, shippedGlyphCount, unitsPerEm } from '../src/emit/glyphTable';
 
@@ -206,6 +207,25 @@ describe('glyph table binary codec', () => {
     expect(nbsp).toBeDefined();
     expect(nbsp!.path).toBe('');
     expect(nbsp!.advance).toBeGreaterThan(0);
+  });
+
+  it('bounds its negative cache so adversarial codepoints cannot grow memory', () => {
+    // Long-lived SSR rendering untrusted input can request unbounded distinct
+    // codepoints, and every miss used to cache a permanent entry. The negative
+    // side must therefore evict FIFO once it reaches the cap; the positive side
+    // needs no cap of its own because it is bounded by the shipped glyph count.
+    const table = new GlyphTable(base64ToBytes(GLYPH_TABLE_BASE64));
+    const cachedMisses = () => (table as unknown as { missQueue: string[] }).missQueue.length;
+
+    const firstMissCode = 0x10_0000; // private-use area: nothing ships there
+    for (let i = 0; i < MAX_CACHED_MISSES + 50; i++) {
+      table.get('Main-Regular', firstMissCode + i);
+      expect(cachedMisses(), `after ${i + 1} misses`).toBeLessThanOrEqual(MAX_CACHED_MISSES);
+    }
+
+    // Eviction must not have touched positives or changed miss results.
+    expect(table.get('Main-Regular', 120)).toBeDefined();
+    expect(table.get('Main-Regular', firstMissCode)).toBeUndefined();
   });
 });
 
