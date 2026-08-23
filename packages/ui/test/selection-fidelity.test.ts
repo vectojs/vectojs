@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { Text, RichText, Table } from '../src/index';
+import { measureText } from '../src/measure';
 
 // jsdom has no canvas getContext; measure.ts falls back to its estimate. Stub to
 // keep the test output free of "Not implemented" noise.
@@ -99,6 +100,96 @@ describe('selection fidelity of content projections', () => {
       expect(t.getContentProjection()!.selectable).toBe(false);
       expect(t.setSelectable(true)).toBe(t);
       expect(t.getContentProjection()!.selectable).toBe(true);
+    });
+
+    // Center/right alignment shifts every painted line by a per-line offset.
+    // The projection must mirror that shift or the selection boxes hug x=0
+    // while the glyphs sit elsewhere: each aligned line carries ONE positioned
+    // run (the Scene's runs branch) anchored at the line's offset with the
+    // canvas-measured extent as its width — the non-justified sibling of the
+    // justify positioned-runs contract.
+    describe('horizontal align carriers', () => {
+      const source = 'alpha beta gamma delta epsilon zeta eta theta';
+      const opts = { font: '16px sans-serif', maxWidth: 120, lineHeight: 28 } as const;
+
+      it('centered lines carry a single positioned run symmetric in maxWidth', () => {
+        const t = new Text(source, { ...opts, textAlign: 'center' });
+        const p = t.getContentProjection()!;
+        expect(p.lines!.length).toBeGreaterThan(1);
+        for (const line of p.lines!) {
+          expect(line.runs).toHaveLength(1);
+          const run = line.runs![0];
+          // The run IS the line's paint geometry, not a natural-flow reflow.
+          expect(run.text).toBe(line.text);
+          expect(run.x).toBeCloseTo(line.x!, 6);
+          // Centering hangs the wrap-point trailing space (CSS text-align
+          // ignores it), so the OFFSET comes from the trimmed extent — equal
+          // slack on both sides → x = (maxWidth − w_trimmed)/2 — while the box
+          // width covers every copied character, space included.
+          const wTrimmed = measureText(run.text.trimEnd(), opts.font);
+          expect(run.x!).toBeCloseTo((opts.maxWidth - wTrimmed) / 2, 6);
+          expect(run.width).toBeCloseTo(measureText(run.text, opts.font), 6);
+          // The aligned line replaced natural per-grapheme carriers with its
+          // positioned run — both would fight over selection geometry.
+          expect(line.perGraphemeCarriers).toBe(false);
+        }
+        // Copy reconstruction is untouched by alignment.
+        expect(projectedSource(p)).toBe(source);
+      });
+
+      it('right-aligned runs pin their ink flush to maxWidth', () => {
+        const t = new Text(source, { ...opts, textAlign: 'right' });
+        const p = t.getContentProjection()!;
+        for (const line of p.lines!) {
+          const run = line.runs![0];
+          // Ink (trimmed extent) ends exactly at maxWidth; only the hung
+          // trailing space may extend the selectable box past it.
+          const wTrimmed = measureText(run.text.trimEnd(), opts.font);
+          expect(run.x! + wTrimmed).toBeCloseTo(opts.maxWidth, 6);
+          expect(run.width).toBeCloseTo(measureText(run.text, opts.font), 6);
+          expect(line.perGraphemeCarriers).toBe(false);
+        }
+        expect(projectedSource(p)).toBe(source);
+      });
+
+      it('left/default lines keep natural flow (no runs) — byte-parity', () => {
+        for (const o of [opts, { ...opts, textAlign: 'left' as const }]) {
+          const p = new Text(source, o).getContentProjection()!;
+          for (const line of p.lines!) {
+            expect(line.runs).toBeUndefined();
+            expect(line.x).toBe(0);
+            expect(line.perGraphemeCarriers).toBe(true);
+          }
+        }
+      });
+
+      it('alignment offsets survive setVisibleRange windowing per line', () => {
+        // Rows of DIFFERENT widths so a shared/block-level offset cannot pass:
+        // row i is (i+1)×8px wide, right-aligned in maxWidth 80 → x = 72 − 8i.
+        const body = Array.from({ length: 10 }, (_, i) => 'a'.repeat(i + 1)).join('\n');
+        const t = new Text(body, { font: '16px sans-serif', maxWidth: 80, textAlign: 'right' });
+        t.setVisibleRange(60, 40); // rows 3..4 (+2 overscan → drawn rows 1..7)
+        const p = t.getContentProjection()!;
+        // The DOM projection is NOT window-driven (Scene bands it via hints),
+        // but every projected row must still carry its own exact offset:
+        // row i ((i+1) chars × 8px) right-aligned → x = 80 − 8(i+1).
+        expect(p.lines!.map((l) => l.x)).toEqual([72, 64, 56, 48, 40, 32, 24, 16, 8, 0]);
+        const fast = { calls: [] as Array<{ x: number; text: string }> };
+        t.render({
+          fillText: (text: string, x: number) => fast.calls.push({ text, x }),
+        } as never);
+        // Exactly the windowed rows draw — each with its OWN offset intact.
+        expect(fast.calls.map((c) => c.text)).toEqual([
+          'aa',
+          'aaa',
+          'aaaa',
+          'aaaaa',
+          'aaaaaa',
+          'aaaaaaa',
+          'aaaaaaaa',
+        ]);
+        expect(fast.calls.map((c) => c.x)).toEqual([64, 56, 48, 40, 32, 24, 16]);
+      });
     });
   });
 

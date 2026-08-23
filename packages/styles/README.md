@@ -39,10 +39,22 @@ applyStyle(title, style({ fontFamily: 'Inter', fontSize: '18px', fontWeight: 700
 ## Rules of the road
 
 - Values are bare numbers (px) or `px` strings; `%`/`em` are rejected loudly.
+  This holds for `fontSize` at runtime too — tokens and JS callers bypass the
+  `${number}px` type, so non-px units fail loudly instead of composing a
+  shorthand Canvas2D silently drops.
 - String values may be `var(--key)` token references resolved against the
-  active theme; an unknown token throws.
+  active theme; an unknown token throws. References embedded inside a larger
+  string (`'rgba(var(--rgb), 0.4)'`) resolve by substitution as well, and
+  chains of token-references-token resolve transitively with cycle detection —
+  any cycle or missing token throws with the offending chain.
 - `fontFamily` / `fontSize` / `fontWeight` compose into the entity's `font`
-  shorthand, preserving the segments the style does not change.
+  shorthand, preserving the segments the style does not change. The parser
+  understands the full canvas prefix grammar
+  `[style || variant || weight]? size[/line-height]? family`; a stored
+  shorthand with an unrecognized size-like segment throws instead of being
+  silently recomposed into something invalid.
+- `css(...)` produces a fresh object and never aliases its inputs — per-axis
+  `padding` objects are copied into the merged result.
 - `padding` accepts a single value or `{ x, y }` (per-axis); box components
   size themselves at construction, so post-construction padding changes are
   picked up only by consumers that read `padding`/`paddingX`/`paddingY` live.
