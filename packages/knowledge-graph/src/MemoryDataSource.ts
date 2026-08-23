@@ -16,6 +16,8 @@ export class MemoryDataSource implements KgDataSource {
   private readonly entities = new Map<NodeId, KgEntity>();
   private readonly out = new Map<NodeId, KgFact[]>();
   private readonly inn = new Map<NodeId, KgFact[]>();
+  /** Bumped by {@link load} so outstanding cursors can detect mutation. */
+  private version = 0;
 
   constructor(data?: KgGraphData) {
     if (data) this.load(data);
@@ -25,6 +27,9 @@ export class MemoryDataSource implements KgDataSource {
     this.entities.clear();
     this.out.clear();
     this.inn.clear();
+    // Invalidate outstanding cursors: pagination in flight against the
+    // previous data must fail loudly rather than resume at shifted offsets.
+    this.version++;
     // Copy so later host mutations to the snapshot cannot corrupt the index.
     for (const e of data.entities) {
       this.entities.set(e.id, { ...e, labels: { ...e.labels } });
@@ -62,17 +67,28 @@ export class MemoryDataSource implements KgDataSource {
     }
     const direction = options.direction ?? 'both';
     const limit = options.limit ?? Infinity;
+    // Merge the out/in indexes deduped by fact identity: a self-loop
+    // (`source === target`) is indexed under both endpoints and would be
+    // double-listed within one `'both'` page.
     const facts: KgFact[] = [];
+    const seen = new Set<KgFact>();
     if (direction === 'out' || direction === 'both') {
-      for (const f of this.out.get(id) ?? []) facts.push(f);
+      for (const f of this.out.get(id) ?? []) {
+        if (!seen.has(f)) {
+          seen.add(f);
+          facts.push(f);
+        }
+      }
     }
     if (direction === 'in' || direction === 'both') {
-      for (const f of this.inn.get(id) ?? []) facts.push(f);
+      for (const f of this.inn.get(id) ?? []) {
+        if (!seen.has(f)) {
+          seen.add(f);
+          facts.push(f);
+        }
+      }
     }
-    const offset = options.cursor === undefined ? 0 : Number.parseInt(options.cursor, 10);
-    if (!Number.isSafeInteger(offset) || offset < 0) {
-      throw new Error(`Invalid MemoryDataSource cursor: ${options.cursor}`);
-    }
+    const offset = options.cursor === undefined ? 0 : this.parseCursor(options.cursor);
     const sliced = facts.slice(offset, offset + limit);
     const neighborIds = new Set<NodeId>();
     for (const f of sliced) {
@@ -90,8 +106,32 @@ export class MemoryDataSource implements KgDataSource {
       facts: sliced,
       neighbors,
       total: facts.length,
-      nextCursor: hasMore ? String(nextOffset) : undefined,
+      nextCursor: hasMore ? `${this.version}:${nextOffset}` : undefined,
       hasMore,
     };
+  }
+
+  /**
+   * Cursors are `<data-version>:<offset>` pairs. {@link load} bumps the
+   * version, so a cursor issued before a mid-pagination mutation is rejected
+   * loudly instead of silently slicing a different fact list.
+   */
+  private parseCursor(cursor: string): number {
+    const sep = cursor.indexOf(':');
+    if (sep < 0) throw new Error(`Invalid MemoryDataSource cursor: ${cursor}`);
+    const version = Number.parseInt(cursor.slice(0, sep), 10);
+    if (!Number.isSafeInteger(version)) {
+      throw new Error(`Invalid MemoryDataSource cursor: ${cursor}`);
+    }
+    if (version !== this.version) {
+      throw new Error(
+        `Stale MemoryDataSource cursor ${cursor}: the data was mutated after this cursor was issued`,
+      );
+    }
+    const offset = Number.parseInt(cursor.slice(sep + 1), 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error(`Invalid MemoryDataSource cursor: ${cursor}`);
+    }
+    return offset;
   }
 }
