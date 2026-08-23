@@ -5,6 +5,11 @@ import type { Style } from './types';
 /** A `var(--key)` reference with the key in capture group 1. Shared with the apply layer. */
 export const VAR_RE = /^var\(--([\w-]+)\)$/;
 
+/** An embedded `var(--key)` reference anywhere inside a composite string
+ *  (e.g. `'rgba(var(--rgb), 0.4)'`). Shared with the apply layer, which also
+ *  derives its global replace form from it. */
+export const HAS_VAR_RE = /var\(--([\w-]+)\)/;
+
 /**
  * A flat token set. Keys are written WITHOUT the `--` prefix and referenced in
  * style objects as `var(--<key>)`, mirroring CSS custom properties:
@@ -106,7 +111,8 @@ export function setTheme(next: Theme): void {
  * Register the var()-referencing keys of a style under the active theme.
  * Called by {@link applyStyle}; not part of the public surface.
  *
- * - A key whose value is a `var(--…)` expression is tracked.
+ * - A key whose value references a `var(--…)` token — anchored or embedded in
+ *   a composite string — is tracked.
  * - A key whose value is a literal (or no longer references a token) stops
  *   being tracked — the literal is written by the caller and must not be
  *   re-resolved (and possibly clobbered) on the next theme switch.
@@ -117,15 +123,15 @@ export function trackVarKeys(entity: Entity, style: Style): void {
   const keys = pairs.get(entity) ?? new Map<string, unknown>();
   for (const [key, value] of Object.entries(style)) {
     if (value === undefined) continue;
-    if (typeof value === 'string' && VAR_RE.test(value)) {
+    if (typeof value === 'string' && HAS_VAR_RE.test(value)) {
       keys.set(key, value);
       continue;
     }
     if (key === 'padding' && typeof value === 'object' && value !== null) {
       const pad = value as { x?: unknown; y?: unknown };
       const referencesToken =
-        (typeof pad.x === 'string' && VAR_RE.test(pad.x)) ||
-        (typeof pad.y === 'string' && VAR_RE.test(pad.y));
+        (typeof pad.x === 'string' && HAS_VAR_RE.test(pad.x)) ||
+        (typeof pad.y === 'string' && HAS_VAR_RE.test(pad.y));
       if (referencesToken) {
         keys.set(key, value);
         continue;
