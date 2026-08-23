@@ -21,6 +21,12 @@ const F32_MAX = 3.4028234663852886e38;
  * changes may replace it; hosts must reacquire `positions` after `setGraph`,
  * `appendGraph`, or `removeNodes`. The simulation uses a true 2D Barnes-Hut
  * quadtree and owns no timer; hosts decide when to call {@link step}.
+ *
+ * Nodes are referenced by ID everywhere in the public API — including the pin
+ * methods, whose pins therefore survive `removeNodes` compaction untouched.
+ * Links are validated strictly at every mutation boundary: endpoints must
+ * reference two distinct known nodes, and violations throw before any state
+ * changes.
  */
 export class ForceLayout2D {
   public positions = new Float32Array(0);
@@ -116,6 +122,20 @@ export class ForceLayout2D {
       if (seen.has(node.id)) throw new Error(`ForceLayout2D duplicate node ID: ${String(node.id)}`);
       seen.add(node.id);
     }
+    // Validate every link endpoint against the replacement node set BEFORE
+    // discarding current state, so a bad batch cannot leave an emptied layout
+    // behind. After the swap only the batch's nodes exist, which is exactly
+    // the membership checked here.
+    for (const link of data.links) {
+      const known = seen.has(link.source) && seen.has(link.target);
+      if (!known || idKey(link.source as NodeId) === idKey(link.target as NodeId)) {
+        throw new Error(
+          `ForceLayout2D.setGraph: link endpoints must reference two distinct known nodes (received ${describeId(
+            link.source,
+          )} -> ${describeId(link.target)})`,
+        );
+      }
+    }
     this.clearGraph();
     this.appendGraph(data);
     this.alpha = 1;
@@ -125,6 +145,12 @@ export class ForceLayout2D {
    * Append new node IDs and links without changing existing simulation state.
    * Existing and repeated node IDs are ignored. Links are replay-safe by their
    * directed endpoints plus optional `id`; parallel links require distinct IDs.
+   *
+   * The whole batch is validated before any mutation: a link whose endpoints
+   * reference an unknown node or the same node twice throws and leaves the
+   * layout unchanged. This is the same strict policy {@link updateLinks}
+   * applies — dangling links used to be dropped silently here, which hid data
+   * bugs as mysteriously missing structure.
    */
   public appendGraph(data: GraphData): void {
     this.assertUsable();
@@ -134,6 +160,29 @@ export class ForceLayout2D {
       if (!isNodeId(node.id) || this.nodeIndex.has(node.id) || seen.has(node.id)) continue;
       seen.add(node.id);
       newNodes.push(node);
+    }
+    // Validate every link endpoint up front, against both existing nodes and
+    // the nodes this batch is about to add. A pending node resolves to a
+    // unique key so two distinct pending endpoints never compare equal; a
+    // genuinely unknown endpoint throws before anything mutates. Forward
+    // references within one batch stay valid.
+    const UNKNOWN_ENDPOINT = Symbol('unknown');
+    const resolveEndpoint = (id: NodeId): number | string => {
+      const existing = this.nodeIndex.get(id);
+      if (existing !== undefined) return existing;
+      if (!seen.has(id)) return UNKNOWN_ENDPOINT;
+      return idKey(id);
+    };
+    for (const link of data.links) {
+      const source = resolveEndpoint(link.source);
+      const target = resolveEndpoint(link.target);
+      if (source === UNKNOWN_ENDPOINT || target === UNKNOWN_ENDPOINT || source === target) {
+        throw new Error(
+          `ForceLayout2D.appendGraph: link endpoints must reference two distinct known nodes (received ${describeId(
+            link.source,
+          )} -> ${describeId(link.target)})`,
+        );
+      }
     }
 
     this.ensureNodeCapacity(this.nodeCount + newNodes.length);
@@ -209,12 +258,22 @@ export class ForceLayout2D {
   public removeLinks(items: Iterable<GraphLink | LinkId>): void {
     this.assertUsable();
     const removeKeys = new Set<string>();
+    // Lazily built only when a bare link ID appears: one O(L) scan replaces
+    // the previous per-item rescan of every link (O(items × L)).
+    let linksByIdKey: Map<string, string[]> | undefined;
     for (const item of items) {
       if (isNodeId(item)) {
-        const idKeyValue = idKey(item);
-        for (let link = 0; link < this.linkCount; link++) {
-          if (this.linkIdKeys[link] === idKeyValue) removeKeys.add(this.linkKeys[link]!);
+        if (!linksByIdKey) {
+          linksByIdKey = new Map<string, string[]>();
+          for (let link = 0; link < this.linkCount; link++) {
+            const idKeyValue = this.linkIdKeys[link]!;
+            if (idKeyValue === '') continue; // link carries no id
+            const keys = linksByIdKey.get(idKeyValue);
+            if (keys) keys.push(this.linkKeys[link]!);
+            else linksByIdKey.set(idKeyValue, [this.linkKeys[link]!]);
+          }
         }
+        for (const key of linksByIdKey.get(idKey(item)) ?? []) removeKeys.add(key);
       } else {
         removeKeys.add(linkIdentity(item));
       }
@@ -309,22 +368,38 @@ export class ForceLayout2D {
     return this.alpha >= this.alphaMin;
   }
 
-  public pinNode(nodeIndex: number, x: number, y: number): void {
+  /**
+   * Pin a node by ID at absolute coordinates, fixing both axes.
+   *
+   * Pins are ID-addressed like every other node reference in this class, so
+   * they keep pointing at the same node across {@link removeNodes}
+   * compaction — an index-addressed pin would silently retarget to whichever
+   * node moved into that slot. Unknown IDs are ignored.
+   */
+  public pinNode(id: NodeId, x: number, y: number): void {
     this.assertUsable();
-    if (!this.validNodeIndex(nodeIndex)) return;
-    this.setNodePin(nodeIndex, { x, y });
+    const index = this.nodeIndex.get(id);
+    if (index === undefined) return;
+    this.setNodePin(id, { x, y });
   }
 
-  public unpinNode(nodeIndex: number): void {
+  /** Unpin a node by ID on both axes. Unknown IDs are ignored. */
+  public unpinNode(id: NodeId): void {
     this.assertUsable();
-    if (!this.validNodeIndex(nodeIndex)) return;
-    this.clearNodePin(nodeIndex, { x: true, y: true });
+    const index = this.nodeIndex.get(id);
+    if (index === undefined) return;
+    this.clearNodePin(id, { x: true, y: true });
   }
 
-  /** Pin either axis without changing the other axis's pin state. */
-  public setNodePin(nodeIndex: number, pin: { x?: number; y?: number }): void {
+  /**
+   * Pin either axis of a node by ID without changing the other axis's pin
+   * state. Non-finite coordinates fall back to the current position on that
+   * axis. Unknown IDs are ignored.
+   */
+  public setNodePin(id: NodeId, pin: { x?: number; y?: number }): void {
     this.assertUsable();
-    if (!this.validNodeIndex(nodeIndex)) return;
+    const nodeIndex = this.nodeIndex.get(id);
+    if (nodeIndex === undefined) return;
     const offset = nodeIndex * 2;
     if (pin.x !== undefined) {
       this.fixedX[nodeIndex] = toF32(pin.x, toF32(this.positionStorage[offset]));
@@ -340,13 +415,14 @@ export class ForceLayout2D {
     }
   }
 
-  /** Clear selected axis pins while preserving any axis omitted from `axes`. */
-  public clearNodePin(
-    nodeIndex: number,
-    axes: { x?: boolean; y?: boolean } = { x: true, y: true },
-  ): void {
+  /**
+   * Clear selected axis pins of a node by ID while preserving any axis omitted
+   * from `axes`. Unknown IDs are ignored.
+   */
+  public clearNodePin(id: NodeId, axes: { x?: boolean; y?: boolean } = { x: true, y: true }): void {
     this.assertUsable();
-    if (!this.validNodeIndex(nodeIndex)) return;
+    const nodeIndex = this.nodeIndex.get(id);
+    if (nodeIndex === undefined) return;
     if (axes.x) {
       this.pinnedX[nodeIndex] = 0;
       this.velocityX[nodeIndex] = 0;
@@ -744,6 +820,12 @@ function linkIdKeyOf(link: GraphLink): string {
 function idKey(id: NodeId): string {
   const value = String(id);
   return `${typeof id}:${value.length}:${value}`;
+}
+
+/** Render an arbitrary link endpoint for error messages without assuming it
+ * is a well-formed {@link NodeId} (JS callers can pass anything). */
+function describeId(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value);
 }
 
 function springShare(share: number, axisPinned: number, otherAxisPinned: number): number {
