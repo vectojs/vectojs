@@ -74,6 +74,17 @@ export async function runCli(
     runtime.error(USAGE);
     return 1;
   }
+  // A second positional is almost certainly a mistake (e.g. `vecto-export
+  // a.ts b.ts` intending a batch); silently exporting only the first hides
+  // the error, so fail loudly instead.
+  if (parsed.positionals.length > 1) {
+    runtime.error(
+      `Unexpected extra arguments: ${parsed.positionals.slice(1).join(' ')}. ` +
+        'vecto-export accepts exactly one input URL.',
+    );
+    runtime.error(USAGE);
+    return 1;
+  }
 
   let width: number;
   let height: number;

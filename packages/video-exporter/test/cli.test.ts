@@ -24,6 +24,18 @@ describe('runCli', () => {
     expect(fixture.error).toHaveBeenCalledWith(expect.stringContaining('Usage: vecto-export'));
   });
 
+  it('errors loudly on extra positionals instead of exporting one silently', async () => {
+    const fixture = runtime();
+
+    await expect(runCli(['scene-a.ts', 'scene-b.ts'], fixture.value)).resolves.toBe(1);
+
+    expect(fixture.exporter).not.toHaveBeenCalled();
+    expect(fixture.error).toHaveBeenCalledWith(
+      expect.stringMatching(/unexpected extra arguments.*scene-b\.ts/is),
+    );
+    expect(fixture.error).toHaveBeenCalledWith(expect.stringContaining('Usage: vecto-export'));
+  });
+
   it.each([
     ['--width', '12px'],
     ['--height', '0'],
