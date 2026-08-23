@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TweenDriver, SpringDriver } from '../src/drivers';
 import type { EasingFn } from '../src/easing';
+import type { SpringConfig } from '../src/drivers';
 
 // Drivers tick in milliseconds (Entity passes dt in ms).
 describe('TweenDriver', () => {
@@ -21,6 +22,60 @@ describe('TweenDriver', () => {
     expect(d.value).toBeCloseTo(0, 6);
     d.tick(50); // half of the actual tween
     expect(d.value).toBeCloseTo(5, 6);
+  });
+
+  it('rejects unknown easing names at construction instead of crashing on first tick', () => {
+    // `Easing['easeOtuQaud']` used to resolve to undefined: the first tick
+    // died with a bare TypeError and `wasmEasingId` returned undefined,
+    // breaking its `number | null` contract.
+    expect(
+      () => new TweenDriver(0, 100, { duration: 100, easing: 'easeOtuQaud' as never }),
+    ).toThrow(/unknown easing name "easeOtuQaud"/);
+    expect(
+      () => new TweenDriver(0, 100, { duration: 100, easing: 'not-an-easing' as never }),
+    ).toThrow(/expected one of/);
+  });
+
+  it('keeps consumed delay consumed across retargets (no starvation)', () => {
+    // The old retarget reset `elapsed`, fully re-charging the startup delay on
+    // every retarget — rapid retargets plus a delay starved the tween forever.
+    const d = new TweenDriver(0, 10, { duration: 100, delay: 50, easing: 'linear' });
+    d.tick(60); // delay paid (50) + 10ms of motion
+    expect(d.value).toBeCloseTo(1, 6);
+    d.retarget(20);
+    expect(d.delayMs).toBe(60); // segment start moved to "now": zero re-charge
+    d.tick(100); // one fresh duration completes the new segment immediately
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBe(20);
+
+    // Retargeting mid-flight starts the new segment immediately.
+    const e = new TweenDriver(0, 100, { duration: 100, easing: 'linear' });
+    for (let i = 0; i < 5; i++) {
+      e.tick(16); // rapid successive retargets must still make progress
+      e.retarget(e.target + 1);
+      const before = e.value;
+      e.tick(8);
+      expect(e.value).toBeGreaterThan(before - 1e-9); // never frozen
+    }
+    let done = false;
+    for (let i = 0; i < 200 && !done; i++) {
+      e.tick(16);
+      done = e.isDone();
+    }
+    expect(done).toBe(true);
+  });
+
+  it('retarget during the initial delay waits out only the remaining part', () => {
+    const d = new TweenDriver(0, 10, { duration: 100, delay: 50, easing: 'linear' });
+    d.tick(20); // 20 of the 50ms delay consumed
+    d.retarget(5);
+    d.tick(29);
+    expect(d.value).toBeCloseTo(0, 9); // still inside the remaining 30ms delay
+    d.tick(2);
+    expect(d.value).toBeGreaterThan(0); // segment now animating toward 5
+    d.tick(100);
+    expect(d.value).toBe(5);
+    expect(d.isDone()).toBe(true);
   });
 
   it('retarget restarts from the current value', () => {
@@ -108,21 +163,31 @@ describe('SpringDriver', () => {
     expect(after).toBeCloseTo(before, 9); // no snap on retarget
   });
 
-  it('drops a non-finite or non-positive mass instead of wedging the integrator', () => {
-    // mass 0 divides the acceleration by zero: the first update writes ±Infinity
-    // into the velocity, every later step is NaN, and `isAtRest()` (NaN < eps is
-    // false) can never turn true — the property freezes off-target.
-    const zeroMass = new SpringDriver(0, 100, { mass: 0 });
-    for (let i = 0; i < 600 && !zeroMass.isDone(); i++) zeroMass.tick(16);
-    expect(zeroMass.isDone()).toBe(true);
-    zeroMass.tick(16);
-    expect(zeroMass.value).toBeCloseTo(100, 3);
+  it('rejects non-finite or non-positive spring config at construction', () => {
+    // Any of these wedges the integrator permanently — mass 0 divides the
+    // acceleration by zero (velocity → ±Infinity → NaN), damping ≤ 0 never
+    // settles or diverges, stiffness ≤ 0 pushes away from the target — and
+    // `isDone()` can then never turn true, hanging completion awaits. The
+    // driver used to silently fall back to physics defaults, hiding which
+    // field was bad; it now throws with the field named.
+    const badConfigs: Array<[SpringConfig, RegExp]> = [
+      [{ mass: 0 }, /mass must be a finite number > 0 \(received 0\)/],
+      [{ mass: -2 }, /mass must be a finite number > 0 \(received -2\)/],
+      [{ stiffness: Number.NaN }, /stiffness must be a finite number > 0/],
+      [{ stiffness: 0 }, /stiffness must be a finite number > 0 \(received 0\)/],
+      [{ damping: -1 }, /damping must be a finite number > 0 \(received -1\)/],
+      [{ damping: Number.POSITIVE_INFINITY }, /damping must be a finite number > 0/],
+    ];
+    for (const [cfg, message] of badConfigs) {
+      expect(() => new SpringDriver(0, 100, cfg)).toThrow(message);
+    }
 
-    const nanStiffness = new SpringDriver(0, 100, { stiffness: Number.NaN });
-    for (let i = 0; i < 600 && !nanStiffness.isDone(); i++) nanStiffness.tick(16);
-    expect(nanStiffness.isDone()).toBe(true);
-    nanStiffness.tick(16);
-    expect(nanStiffness.value).toBeCloseTo(100, 3);
+    // Valid configs still converge exactly as before.
+    const d = new SpringDriver(0, 100, { mass: 4 });
+    for (let i = 0; i < 1200 && !d.isDone(); i++) d.tick(16);
+    expect(d.isDone()).toBe(true);
+    d.tick(16);
+    expect(d.value).toBeCloseTo(100, 3);
   });
 
   it('exposes the underlying SpringPhysics (no copy) for the batched WASM gather', () => {

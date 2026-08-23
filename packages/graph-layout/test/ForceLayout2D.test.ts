@@ -40,7 +40,7 @@ describe('ForceLayout2D', () => {
     const appended = new ForceLayout2D({ seed: 7, alphaDecay: 0 });
     appended.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
     appended.step(5);
-    appended.pinNode(0, 12, -8);
+    appended.pinNode('a', 12, -8);
     const before = [...appended.positions];
 
     appended.appendGraph({
@@ -55,11 +55,11 @@ describe('ForceLayout2D', () => {
     const control = new ForceLayout2D({ seed: 7, alphaDecay: 0 });
     control.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
     control.step(5);
-    control.pinNode(0, 12, -8);
+    control.pinNode('a', 12, -8);
     control.appendGraph({ nodes: [{ id: 'c' }], links: [{ source: 'b', target: 'c' }] });
     control.step();
-    appended.unpinNode(0);
-    control.unpinNode(0);
+    appended.unpinNode('a');
+    control.unpinNode('a');
     appended.step();
     control.step();
     expect([...appended.positions]).toEqual([...control.positions]);
@@ -263,18 +263,18 @@ describe('ForceLayout2D', () => {
     });
     layout.setGraph({ nodes: [{ id: 'node', x: 5, y: 20 }], links: [] });
 
-    layout.setNodePin(0, { x: 5 });
+    layout.setNodePin('node', { x: 5 });
     layout.step(5);
     expect(layout.positions[0]).toBe(5);
     expect(layout.positions[1]).not.toBe(20);
 
-    layout.setNodePin(0, { y: 12 });
-    layout.clearNodePin(0, { x: true });
+    layout.setNodePin('node', { y: 12 });
+    layout.clearNodePin('node', { x: true });
     layout.step();
     expect(layout.positions[1]).toBe(12);
     expect(layout.positions[0]).not.toBe(5);
 
-    layout.clearNodePin(0, { y: true });
+    layout.clearNodePin('node', { y: true });
     layout.step();
     expect([...layout.positions].every(Number.isFinite)).toBe(true);
   });
@@ -286,7 +286,7 @@ describe('ForceLayout2D', () => {
     state.velocityX[0] = 7;
     state.velocityY[0] = -9;
 
-    layout.setNodePin(0, { x: Infinity, y: NaN });
+    layout.setNodePin('node', { x: Infinity, y: NaN });
 
     expect(state.velocityX[0]).toBe(0);
     expect(state.velocityY[0]).toBe(0);
@@ -382,7 +382,7 @@ describe('ForceLayout2D', () => {
     const layout = new ForceLayout2D({ alphaDecay: 0 });
     layout.setGraph(graph);
     layout.step(3);
-    layout.pinNode(2, 30, 40);
+    layout.pinNode('c', 30, 40);
     const survivor = [...layout.positions.slice(4, 6)];
 
     layout.removeNodes(['a', 'missing']);
@@ -393,22 +393,126 @@ describe('ForceLayout2D', () => {
     expect([...layout.positions.slice(2, 4)]).toEqual([30, 40]);
   });
 
-  it('ignores malformed links without producing non-finite positions', () => {
+  it('keeps ID-addressed pins on the same node across removeNodes compaction', () => {
+    // Index-addressed pins silently retargeted after compaction: an old cached
+    // index still passed the range check but named a different node.
+    const layout = new ForceLayout2D({ repulsion: 300, centerStrength: 0, alphaDecay: 0 });
+    layout.setGraph({
+      nodes: [
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 50, y: 0 },
+        { id: 'c', x: 100, y: 0 },
+      ],
+      links: [],
+    });
+    layout.pinNode('c', 500, -60);
+
+    layout.removeNodes(['a']); // 'b' moves into slot 0, 'c' into slot 1
+
+    // The pin followed node 'c', not whatever now occupies its old slot.
+    layout.step(10);
+    expect([...layout.positions.slice(2, 4)]).toEqual([500, -60]);
+    expect(layout.positions[0]).not.toBe(500); // 'b' is free
+
+    // Pins set AFTER compaction also land on the right node.
+    layout.pinNode('b', -200, 40);
+    layout.step();
+    expect([...layout.positions.slice(0, 2)]).toEqual([-200, 40]);
+
+    // Unpin by ID releases exactly that node.
+    layout.unpinNode('c');
+    layout.step(5);
+    expect(layout.positions[2]).not.toBe(500);
+  });
+
+  it('ignores pins for unknown IDs without disturbing real ones', () => {
+    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    layout.setGraph({ nodes: [{ id: 'a' }], links: [] });
+    layout.pinNode('ghost', 99, 99);
+    layout.setNodePin('ghost', { x: 1 });
+    layout.clearNodePin('ghost');
+    layout.unpinNode('ghost');
+    layout.step();
+    expect(layout.positions[0]).not.toBe(99);
+  });
+
+  it('distinguishes numeric IDs from legacy indices when pinning', () => {
+    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    layout.setGraph({
+      nodes: [
+        { id: 10, x: 0, y: 0 },
+        { id: 20, x: 30, y: 0 },
+      ],
+      links: [],
+    });
+    // ID 20 — not "index 1" semantics; resolves through the ID map.
+    layout.pinNode(20, 7, 8);
+    layout.step();
+    expect([...layout.positions.slice(2, 4)]).toEqual([7, 8]);
+    expect(layout.positions[0]).not.toBe(7);
+    layout.unpinNode(10); // valid ID, just not pinned
+    expect(layout.nodeCount).toBe(2);
+  });
+
+  it('throws on dangling and self links at every mutation boundary', () => {
+    // Endpoint validation used to diverge: appendGraph soft-dropped dangling
+    // and self links while updateLinks hard-threw. The policy is now uniform —
+    // loud throws before any mutation.
+    const layout = new ForceLayout2D();
+    layout.setGraph({ nodes: [{ id: 'old' }], links: [] });
+    expect(() =>
+      layout.setGraph({
+        nodes: [{ id: 'a' }, { id: 'b' }],
+        links: [{ source: 'a', target: 'missing' }],
+      }),
+    ).toThrow(/unknown node "missing"|distinct known nodes.*"missing"/);
+    expect(layout.getNodeIds()).toEqual(['old']); // failed replacement left state intact
+
+    const loaded = new ForceLayout2D();
+    loaded.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
+    expect(() => loaded.appendGraph({ nodes: [], links: [{ source: 'a', target: 'a' }] })).toThrow(
+      /must reference two distinct known nodes/,
+    );
+    expect(() =>
+      loaded.appendGraph({
+        nodes: [{ id: 'c' }],
+        links: [{ source: 'c', target: 'ghost' }],
+      }),
+    ).toThrow(/distinct known nodes.*"ghost"/);
+    expect(() => loaded.updateLinks([{ source: 'a', target: 'a' }])).toThrow(
+      /updateLinks: link endpoints must reference two distinct existing nodes/,
+    );
+
+    // The failed batch above must not have left a half-applied mutation.
+    expect(loaded.getNodeIds()).toEqual(['a', 'b']);
+    const state = loaded as unknown as { linkCount: number };
+    expect(state.linkCount).toBe(0);
+  });
+
+  it('accepts forward-referenced endpoints within a single batch', () => {
+    // Strictness applies per batch, not per link ordering: nodes later in the
+    // same array satisfy links earlier in it.
+    const layout = new ForceLayout2D();
+    layout.appendGraph({
+      nodes: [{ id: 'late' }, { id: 'early' }],
+      links: [{ source: 'early', target: 'late' }],
+    });
+    const state = layout as unknown as { linkCount: number };
+    expect(state.linkCount).toBe(1);
+    expect(layout.getNodeIndex('late')).toBe(0); // input order preserved
+    expect(layout.getNodeIndex('early')).toBe(1);
+  });
+
+  it('keeps positions finite when accessor values are malformed', () => {
+    // Non-finite VALUES are clamped silently (they cannot be detected before
+    // integration); endpoint identity problems throw instead.
     const layout = new ForceLayout2D({
       linkDistance: (link) => Number(link.distance),
       linkStrength: (link) => Number(link.strength),
     });
     layout.setGraph({
       nodes: [{ id: 'a' }, { id: 'b' }],
-      links: [
-        { source: 'a', target: 'missing' },
-        { source: 'a', target: 'a' },
-        { source: 'a', target: 'b', distance: 'bad', strength: Infinity },
-      ],
-    });
-    layout.appendGraph({
-      nodes: [],
-      links: [{ source: null as never, target: undefined as never }],
+      links: [{ source: 'a', target: 'b', distance: 'bad', strength: Infinity }],
     });
     layout.step(100);
 
@@ -609,7 +713,7 @@ describe('ForceLayout2D', () => {
       ],
       links: [{ source: 'a', target: 'b' }],
     });
-    layout.pinNode(0, 1e100, -1e100);
+    layout.pinNode('a', 1e100, -1e100);
     layout.positions[0] = Infinity;
     layout.positions[1] = NaN;
     layout.positions[2] = Infinity;
@@ -685,8 +789,8 @@ describe('ForceLayout2D', () => {
     expect(() => layout.setGraph(graph)).toThrow(/disposed/);
     expect(() => layout.appendGraph(graph)).toThrow(/disposed/);
     expect(() => layout.removeNodes(['a'])).toThrow(/disposed/);
-    expect(() => layout.pinNode(0, 0, 0)).toThrow(/disposed/);
-    expect(() => layout.unpinNode(0)).toThrow(/disposed/);
+    expect(() => layout.pinNode('a', 0, 0)).toThrow(/disposed/);
+    expect(() => layout.unpinNode('a')).toThrow(/disposed/);
     expect(() => layout.reheat()).toThrow(/disposed/);
     expect(() => layout.getNodeIndex('a')).toThrow(/disposed/);
     expect(() => layout.getNodeId(0)).toThrow(/disposed/);

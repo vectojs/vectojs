@@ -63,6 +63,11 @@ export class SpatialHashGrid {
    * before the new ones are computed, so this method is safe to call every
    * frame.
    *
+   * Non-finite coordinates or a negative width/height throw: such a box
+   * enumerates no cells at all (`Math.floor(NaN / cs) <= cx <= NaN` is never
+   * true), so the entity would be "registered" yet invisible to every query —
+   * silently dropped work that surfaces only as missing neighbors.
+   *
    * @param id - Unique string identifier for the entity.
    * @param x - Left edge of the AABB in world space.
    * @param y - Top edge of the AABB in world space.
@@ -70,6 +75,18 @@ export class SpatialHashGrid {
    * @param h - Height of the AABB.
    */
   insert(id: string, x: number, y: number, w: number, h: number): void {
+    if (
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(w) ||
+      !Number.isFinite(h) ||
+      w < 0 ||
+      h < 0
+    ) {
+      throw new Error(
+        `SpatialHashGrid.insert: coordinates must be finite and width/height non-negative (received x=${String(x)}, y=${String(y)}, w=${String(w)}, h=${String(h)})`,
+      );
+    }
     this.remove(id);
     // A box spanning a huge number of cells is cheaper to test directly than to
     // register in every cell it covers (see MAX_CELLS_PER_AABB).
@@ -88,7 +105,10 @@ export class SpatialHashGrid {
   /**
    * Remove an entity from all grid cells it currently occupies.
    *
-   * Silently does nothing if the entity is not registered.
+   * Silently does nothing if the entity is not registered. Cells emptied by
+   * the removal are evicted from the map, so incremental insert/remove cycles
+   * keep the cell count proportional to live content instead of accumulating
+   * every cell ever touched (which also slows the whole-grid fallback query).
    *
    * @param id - Unique string identifier of the entity to remove.
    */
@@ -97,7 +117,10 @@ export class SpatialHashGrid {
     const keys = this.entityCells.get(id);
     if (!keys) return;
     for (const key of keys) {
-      this.grid.get(key)?.delete(id);
+      const cell = this.grid.get(key);
+      if (!cell) continue;
+      cell.delete(id);
+      if (cell.size === 0) this.grid.delete(key);
     }
     this.entityCells.delete(id);
   }
