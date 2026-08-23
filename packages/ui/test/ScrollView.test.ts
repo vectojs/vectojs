@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { Entity } from '@vectojs/core';
-import { DOCUMENT_SCROLL_PHYSICS, ScrollView } from '../src/index';
+import { type IRenderer, Entity } from '@vectojs/core';
+import { DOCUMENT_SCROLL_PHYSICS, ScrollView, Text } from '../src/index';
 
 /** A fixed-size leaf so the ScrollView has measurable content. */
 class Box extends Entity {
@@ -351,5 +351,65 @@ describe('ScrollView', () => {
     sv.updateContentSize();
     sv.scrollTo(50);
     expect(() => sv.update(16, 0)).not.toThrow();
+  });
+
+  /** Records fillText texts so Text virtualization is observable without pixels. */
+  function fillRecorder(): { r: IRenderer; texts: string[] } {
+    const texts: string[] = [];
+    const r = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === 'fillText') return (text: string) => texts.push(text);
+          return () => {};
+        },
+      },
+    ) as unknown as IRenderer;
+    return { r, texts };
+  }
+
+  it('drives a tall virtualized Text through scroll positions without losing a line', () => {
+    // 30 rows × lineHeight 20 = 600px of content in a 100px viewport. Each row
+    // string is unique ('line0'..), so drawn fillText calls identify rows.
+    const sv = new ScrollView({ width: 400, height: 100 });
+    const text = new Text(Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n'));
+    sv.add(text);
+    sv.updateContentSize();
+
+    const seenRows = new Set<number>();
+    const windows: number[][] = [];
+    // Offsets are deliberately NOT multiples of lineHeight (except the snapped
+    // ends): a spring resting at ±1e-9 of an exact multiple would flip the
+    // window's floor()/ceil() and make exact assertions flaky.
+    const sweep: Array<() => void> = [
+      () => {}, // rest at scrollTop 0
+      () => sv.scrollTo(90),
+      () => sv.scrollTo(215),
+      () => sv.scrollTo(340),
+      () => sv.scrollToBottom(), // jumpTo snaps exactly to maxScroll = 500
+    ];
+    for (const step of sweep) {
+      step();
+      settle(sv);
+      const { r, texts } = fillRecorder();
+      text.render(r);
+      expect(texts.length).toBeGreaterThan(0);
+      const rows = [...new Set(texts.map((s) => Number(s.slice(4))))].sort((a, b) => a - b);
+      windows.push(rows);
+      for (const n of rows) seenRows.add(n);
+    }
+
+    // Every pushed window draws one contiguous band of rows — no holes inside
+    // a viewport, which would flash as blank lines during scrolling.
+    for (const rows of windows) {
+      expect(rows[rows.length - 1]! - rows[0]!).toBe(rows.length - 1);
+    }
+    // Top boundary: viewport rows 0..4 plus the two-line overscan.
+    expect(windows[0]).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    // Bottom boundary still reaches the final content line.
+    expect(windows[windows.length - 1]).toContain(29);
+    // Sweeping the whole document loses nothing: consecutive windows overlap,
+    // so their union covers every line exactly once over.
+    expect([...seenRows].sort((a, b) => a - b)).toEqual(Array.from({ length: 30 }, (_, i) => i));
   });
 });

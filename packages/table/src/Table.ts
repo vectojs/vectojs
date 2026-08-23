@@ -98,6 +98,15 @@ class GridCellHotspot extends UIComponent {
     this.label = label;
   }
 
+  /**
+   * Same contract as {@link RowHotspot}: a Table computes every hotspot box from
+   * its column widths and row heights, so DevTools ownership metadata must list
+   * all four geometry properties as layout-controlled.
+   */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       role: this.rowIndex < 0 ? 'columnheader' : 'gridcell',
@@ -150,7 +159,17 @@ export class Table extends UIComponent {
 
   private readonly baseRowHeight: number;
   private readonly headerCells: Entity[];
-  private readonly bodyCells: Entity[][];
+  /**
+   * Cell entities per body row, aligned with {@link rows}.
+   *
+   * Classic mode constructs every row eagerly (all cells mount immediately).
+   * Virtualized mode leaves a row `null` until it first enters the window —
+   * `new Text()` pays a cold re-segment/re-measure pass, so building O(rows×cols)
+   * cells up front would defeat the point of windowing. Once built, a row is
+   * retained: rebuilding on every re-entry would re-pay shaping, and caller
+   * supplied `Entity` cells must keep their identity (see {@link appendRows}).
+   */
+  private readonly bodyCells: Array<Entity[] | null>;
 
   // ── Virtualization (opt-in via `viewportHeight`) ────────────────────────────
   /** Fixed viewport height when virtualized; `0` = classic grow-to-fit mode. */
@@ -182,6 +201,22 @@ export class Table extends UIComponent {
   private _activeRow = -1;
   private _activeCol = 0;
   /**
+   * Set by {@link reconcileVirtualRows} when a window shift unmounted the
+   * roving-tab-stop body row; consumed by {@link _syncGridA11y}, which re-anchors
+   * the stop onto a visible row before binding `tabIndex` and, if the old cell
+   * held DOM focus ({@link reanchorRestoreFocus}), restores focus to the new one.
+   */
+  private pendingFocusReanchor = false;
+  /** Whether the unmounted tab-stop cell actually held DOM focus. */
+  private reanchorRestoreFocus = false;
+  /**
+   * Top `y` of each classic-mode body row (prefix sums of {@link rowHeights}
+   * over {@link headerHeight}), rebuilt in one pass inside {@link layout} and
+   * read O(1) per hotspot slot by {@link _syncGridA11y}. Recomputing per slot was
+   * O(rows²) on every layout/appendRows — measured quadratic in #606.
+   */
+  private rowTops: number[] = [];
+  /**
    * Every `Entity` cell handed to this table, header or body.
    *
    * A field rather than a constructor local because {@link appendRows} has to
@@ -212,10 +247,14 @@ export class Table extends UIComponent {
     this.align = this.normalizeColumnAlign(opts.align);
 
     this.headerCells = this.headers.map((cell) => this.normalizeCell(cell, true, this.seenCells));
-    this.bodyCells = this.rows.map((row) => this.normalizeRow(row));
     for (const cell of this.headerCells) this.add(cell);
 
     if (this.virtualized) {
+      // Defer body-cell construction to window materialization; only the
+      // caller-supplied Entity cells are validated eagerly so a duplicate still
+      // throws at append time rather than at some later scroll frame.
+      this.bodyCells = this.rows.map(() => null);
+      for (const row of this.rows) this.reserveRowEntities(row);
       // Body cells live in a clipped, scrolled sub-container; only the visible
       // window is mounted (reconcileVirtualRows), pruning off-viewport cell
       // projection + a11y. The header stays a pinned direct child above it.
@@ -230,8 +269,10 @@ export class Table extends UIComponent {
       this.add(clip);
       this.bindScroll();
     } else {
-      // Classic grow-to-fit: every cell mounted directly on the table.
-      for (const row of this.bodyCells) for (const cell of row) this.add(cell);
+      // Classic grow-to-fit: every cell constructed and mounted directly.
+      const built = this.rows.map((row) => this.normalizeRow(row));
+      this.bodyCells = built;
+      for (const cells of built) for (const cell of cells) this.add(cell);
     }
 
     this.interactive = true;
@@ -276,10 +317,32 @@ export class Table extends UIComponent {
   }
 
   private clampScroll(): void {
+    this._targetY = Math.max(0, Math.min(this._targetY, this.maxScroll()));
+  }
+
+  /**
+   * Upper bound of the body scroll offset: total body height minus the visible
+   * viewport (never negative). Shared by the target clamp and by the per-frame
+   * {@link clampScrollPosition}, so the two can never disagree.
+   */
+  private maxScroll(): number {
     const bodyTotal = this.bodyCells.length * this.baseRowHeight;
     const bodyViewport = this.viewportHeight - this.headerHeight;
-    const max = Math.max(0, bodyTotal - bodyViewport);
-    this._targetY = Math.max(0, Math.min(this._targetY, max));
+    return Math.max(0, bodyTotal - bodyViewport);
+  }
+
+  /**
+   * Clamp the integrated offset, not just the target.
+   *
+   * The spring integrator can overshoot a freshly clamped `_targetY` on a hard
+   * wheel fling (measured: `scrollY` 2753 against a clamped target of 2286), and
+   * both {@link reconcileVirtualRows} and {@link _syncGridA11y} derive their
+   * window from `_scrollY` unclamped — an out-of-range offset yields an inverted
+   * `[first, last]` and crashes the hotspot pool shrink loop. Clamping here
+   * keeps the window well-formed every frame.
+   */
+  private clampScrollPosition(): void {
+    this._scrollY = Math.max(0, Math.min(this._scrollY, this.maxScroll()));
   }
 
   /**
@@ -299,6 +362,7 @@ export class Table extends UIComponent {
     this._velY *= Math.exp(-dt / 84);
     if (Math.abs(this._velY) > 0.05 || Math.abs(diff) > 0.05) {
       this._scrollY += this._velY * (dt / 16.67);
+      this.clampScrollPosition();
       this.reconcileVirtualRows();
       this._syncGridA11y();
       this.scene?.markDirty();
@@ -336,10 +400,20 @@ export class Table extends UIComponent {
       Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
     );
 
+    // If the roving tab stop's row is about to unmount, remember whether it
+    // actually held DOM focus BEFORE removal drops it (the a11y layer moves
+    // focus to its sentinel); _syncGridA11y consumes both flags to re-anchor.
+    if (this.virtualized && this._activeRow >= 0 && !this.mountedRows.has(this._activeRow)) {
+      this.pendingFocusReanchor = true;
+      this.reanchorRestoreFocus = this.activeCellHoldsFocus();
+    }
+
     // Unmount rows that scrolled out of the window.
     for (const rowIndex of this.mountedRows) {
       if (rowIndex < first || rowIndex > last) {
-        for (const cell of this.bodyCells[rowIndex]) {
+        const cells = this.bodyCells[rowIndex];
+        if (!cells) continue; // not yet materialized — nothing to detach
+        for (const cell of cells) {
           this.scene?.detachA11y?.(cell);
           clip.remove(cell);
         }
@@ -349,7 +423,7 @@ export class Table extends UIComponent {
     // Mount + position rows now in the window (positions are viewport-relative:
     // the clip sits at y=headerHeight, so a row's local y subtracts scrollY).
     for (let rowIndex = first; rowIndex <= last; rowIndex++) {
-      const row = this.bodyCells[rowIndex];
+      const row = this.ensureBodyCells(rowIndex);
       const rowTop = rowIndex * rh - this._scrollY;
       const mounting = !this.mountedRows.has(rowIndex);
       let x = 0;
@@ -403,11 +477,21 @@ export class Table extends UIComponent {
    * Grid keyboard model (WCAG grid pattern): Arrow keys move the focused cell
    * one step (clamped at the edges, header is row -1); Home/End jump to the
    * first/last column of the row; Ctrl+Home/Ctrl+End jump to the first
-   * header cell / last body cell. The target cell is scrolled into view and
-   * focused.
+   * header cell / last body cell; PageUp/PageDown move a viewport-worth of
+   * rows ({@link pageRows}) for scrollable grids. The target cell is scrolled
+   * into view and focused.
    */
   public handleGridKey(e: KeyboardEvent, rowIndex: number, colIndex: number): void {
-    const keys = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    const keys = [
+      'ArrowDown',
+      'ArrowUp',
+      'ArrowLeft',
+      'ArrowRight',
+      'Home',
+      'End',
+      'PageUp',
+      'PageDown',
+    ];
     if (!keys.includes(e.key)) return;
     e.preventDefault();
     const cols = this.columnCount();
@@ -439,8 +523,32 @@ export class Table extends UIComponent {
         }
         c = cols - 1;
         break;
+      case 'PageDown':
+        r = Math.min(lastRow, r + this.pageRows());
+        break;
+      case 'PageUp':
+        r = Math.max(-1, r - this.pageRows());
+        break;
     }
     this._focusCell(r, c);
+  }
+
+  /**
+   * Rows per PageUp/PageDown step: one viewport of body rows minus the incoming
+   * row, matching native listbox paging so the previous anchor stays visible.
+   * Virtualized tables have an exact fixed-row viewport; classic tables derive
+   * the page from their total height over the mean measured row height.
+   */
+  private pageRows(): number {
+    const viewport = this.virtualized
+      ? this.viewportHeight - this.headerHeight
+      : this.height - this.headerHeight;
+    const meanRowHeight =
+      this.rowHeights.length > 0
+        ? this.rowHeights.reduce((sum, h) => sum + h, 0) / this.rowHeights.length
+        : this.baseRowHeight;
+    if (meanRowHeight <= 0 || viewport <= 0) return 1;
+    return Math.max(1, Math.floor(viewport / meanRowHeight) - 1);
   }
 
   private _focusCell(rowIndex: number, colIndex: number): void {
@@ -452,14 +560,37 @@ export class Table extends UIComponent {
     }
     this._syncGridA11y();
     // Locate the freshly-synced hotspot and focus it.
-    const target =
-      rowIndex < 0
-        ? this.headerCellHotspots[colIndex]
-        : this.bodyRowPool
-            .flatMap((p) => p.cells)
-            .find((h) => h.rowIndex === rowIndex && h.colIndex === colIndex);
-    target?.focus();
+    this.findHotspot(rowIndex, colIndex)?.focus();
     this.scene?.markDirty();
+  }
+
+  /**
+   * The projected hotspot for a grid cell, header (`rowIndex < 0`) or body, or
+   * `null` when that cell is outside the mounted window.
+   */
+  private findHotspot(rowIndex: number, colIndex: number): GridCellHotspot | null {
+    if (rowIndex < 0) return this.headerCellHotspots[colIndex] ?? null;
+    for (const slot of this.bodyRowPool) {
+      const hit = slot.cells.find((h) => h.rowIndex === rowIndex && h.colIndex === colIndex);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  /**
+   * Whether the current roving-tab-stop cell's projected a11y element is the
+   * document's active element — i.e. wheel-scrolling it away would actually drop
+   * user focus. Only then may re-anchoring restore focus; a table scrolled while
+   * focus lives elsewhere must never steal it back.
+   */
+  private activeCellHoldsFocus(): boolean {
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    if (!active) return false;
+    const hotspot = this.findHotspot(this._activeRow, this._activeCol);
+    if (!hotspot) return false;
+    const el = this.scene?.getA11yElement(hotspot.id);
+    if (!el) return false; // projection lags one frame — cannot hold focus yet
+    return el === active || el.contains(active);
   }
 
   /** Snap a body row into the viewport (virtualized) before focusing it. */
@@ -526,16 +657,31 @@ export class Table extends UIComponent {
         Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
       );
       rowTopFor = (i) => i * rh - this._scrollY; // clip-relative
+      // A window shift unmounted the focused row (flag from
+      // reconcileVirtualRows): re-anchor the roving stop onto a visible row
+      // BEFORE tabIndex is bound, so exactly one stop stays reachable.
+      if (
+        this.pendingFocusReanchor &&
+        this._activeRow >= 0 &&
+        !this.mountedRows.has(this._activeRow) &&
+        last >= first
+      ) {
+        this._activeRow = Math.min(Math.max(this._activeRow, first), last);
+      }
     } else {
       first = 0;
       last = this.bodyCells.length - 1;
-      rowTopFor = (i) => {
-        let y = this.headerHeight;
-        for (let k = 0; k < i; k++) y += this.rowHeights[k];
-        return y;
-      };
+      // O(1) per slot: layout() rebuilt `rowTops` in one prefix pass; the length
+      // check covers syncs that run before any layout() (defensive only).
+      if (this.rowTops.length !== this.rowHeights.length) this.rebuildRowTops();
+      rowTopFor = (i) => this.rowTops[i];
     }
-    const need = this.bodyCells.length === 0 ? 0 : last - first + 1;
+    // `last < first` can only arise from a caller corrupting scroll state; clamp
+    // to zero so the shrink loop below can never pop from an empty pool.
+    const need =
+      this.bodyCells.length === 0
+        ? 0
+        : Math.max(0, Math.min(last, this.bodyCells.length - 1) - first + 1);
 
     // Grow / shrink the pool.
     while (this.bodyRowPool.length < need) {
@@ -576,6 +722,31 @@ export class Table extends UIComponent {
         cell.height = rowH;
         cx += this.colWidths[c];
       }
+    }
+
+    // The re-anchored stop is bound now; restore DOM focus only when the
+    // unmounted cell genuinely held it (never steal focus from elsewhere).
+    if (this.pendingFocusReanchor) {
+      this.pendingFocusReanchor = false;
+      if (this.reanchorRestoreFocus) {
+        this.reanchorRestoreFocus = false;
+        this.findHotspot(this._activeRow, this._activeCol)?.focus();
+      }
+    }
+  }
+
+  /**
+   * One-pass prefix sums of {@link rowHeights} over {@link headerHeight} —
+   * the classic-mode row tops consumed O(1) per hotspot slot by
+   * {@link _syncGridA11y}. Called from {@link layout} (which already walks
+   * heights) and defensively from {@link _syncGridA11y}.
+   */
+  private rebuildRowTops(): void {
+    this.rowTops = new Array(this.rowHeights.length);
+    let top = this.headerHeight;
+    for (let i = 0; i < this.rowHeights.length; i++) {
+      this.rowTops[i] = top;
+      top += this.rowHeights[i];
     }
   }
 
@@ -630,9 +801,54 @@ export class Table extends UIComponent {
    * layout and a11y path indexes it by column without bounds-checking.
    */
   private normalizeRow(row: TableCell[]): Entity[] {
-    return Array.from({ length: this.headers.length }, (_, column) =>
-      this.normalizeCell(row[column] ?? '', false, this.seenCells),
-    );
+    this.reserveRowEntities(row);
+    return this.buildRow(row);
+  }
+
+  /**
+   * Validate + register caller-supplied `Entity` cells WITHOUT building anything.
+   *
+   * Keeps duplicate-`Entity` rejection eager (at constructor/appendRows time)
+   * even though the expensive string-cell `Text` construction is deferred to
+   * window materialization in virtualized mode.
+   */
+  private reserveRowEntities(row: TableCell[]): void {
+    for (const cell of row) {
+      if (typeof cell !== 'string') {
+        if (this.seenCells.has(cell)) {
+          throw new Error('Table Entity cells must be unique instances.');
+        }
+        this.seenCells.add(cell);
+      }
+    }
+  }
+
+  /**
+   * Build the entity row for an already-reserved source row: one {@link Text}
+   * per string cell, the caller's `Entity` instance otherwise.
+   */
+  private buildRow(row: TableCell[]): Entity[] {
+    return Array.from({ length: this.headers.length }, (_, column) => {
+      const cell = row[column] ?? '';
+      if (typeof cell === 'string') return this.createTextCell(cell, false);
+      this.setCellSelectable(cell);
+      return cell;
+    });
+  }
+
+  /**
+   * Cell entities for a body row, constructing them on first touch.
+   *
+   * Virtualized materialization path — called from {@link reconcileVirtualRows}
+   * when a row enters the window. In classic mode every row is already built, so
+   * this is a plain read there.
+   */
+  private ensureBodyCells(rowIndex: number): Entity[] {
+    const existing = this.bodyCells[rowIndex];
+    if (existing) return existing;
+    const built = this.buildRow(this.rows[rowIndex]);
+    this.bodyCells[rowIndex] = built;
+    return built;
   }
 
   /**
@@ -663,13 +879,17 @@ export class Table extends UIComponent {
     if (rows.length === 0) return this;
 
     for (const row of rows) {
-      const cells = this.normalizeRow(row);
       this.rows.push(row);
-      this.bodyCells.push(cells);
-      // Virtualized mode mounts lazily in reconcileVirtualRows(), exactly as the
-      // constructor leaves its body cells unmounted; mounting here would put
-      // them on the table instead of inside the scrolling clip.
-      if (!this.virtualized) {
+      if (this.virtualized) {
+        // Validate Entity cells now, but defer Text construction to window
+        // materialization (ensureBodyCells), exactly as the constructor leaves
+        // its body cells unbuilt; mounting here would put them on the table
+        // instead of inside the scrolling clip.
+        this.reserveRowEntities(row);
+        this.bodyCells.push(null);
+      } else {
+        const cells = this.normalizeRow(row);
+        this.bodyCells.push(cells);
         for (const cell of cells) this.add(cell);
       }
     }
@@ -681,20 +901,23 @@ export class Table extends UIComponent {
   }
 
   private normalizeCell(cell: TableCell, header: boolean, seen: Set<Entity>): Entity {
-    if (typeof cell === 'string') {
-      return new Text(cell, {
-        font: header ? `bold ${this.font}` : this.font,
-        color: header ? this.headerTextColor : this.textColor,
-        lineHeight: 20,
-        selectable: this.selectable,
-      });
-    }
+    if (typeof cell === 'string') return this.createTextCell(cell, header);
     if (seen.has(cell)) {
       throw new Error('Table Entity cells must be unique instances.');
     }
     seen.add(cell);
     this.setCellSelectable(cell);
     return cell;
+  }
+
+  /** The one expensive cell construction: a cold-shaped {@link Text} projection. */
+  private createTextCell(text: string, header: boolean): Text {
+    return new Text(text, {
+      font: header ? `bold ${this.font}` : this.font,
+      color: header ? this.headerTextColor : this.textColor,
+      lineHeight: 20,
+      selectable: this.selectable,
+    });
   }
 
   private setCellSelectable(cell: Entity): void {
@@ -792,6 +1015,7 @@ export class Table extends UIComponent {
       // O(viewport) guarantee rather than degrading to O(rows).
       for (const rowIndex of this.mountedRows) {
         const row = this.bodyCells[rowIndex];
+        if (!row) continue; // mounted ⇒ materialized, but stay defensive
         for (let column = 0; column < row.length; column++) {
           this.syncStringCell(row[column], this.rows[rowIndex]?.[column]);
           this.fitCell(row[column], column);
@@ -803,7 +1027,13 @@ export class Table extends UIComponent {
       return this;
     }
 
-    this.rowHeights = this.bodyCells.map((row, rowIndex) => {
+    // Classic mode: every row is materialized, so measuring is a plain read
+    // (ensureBodyCells never constructs here). The prefix tops are rebuilt
+    // HERE — one fused pass over heights already being computed — so
+    // _syncGridA11y reads them O(1) per slot instead of re-walking the prefix
+    // per row (the O(rows²) sync in #606).
+    this.rowHeights = this.bodyCells.map((_, rowIndex) => {
+      const row = this.ensureBodyCells(rowIndex);
       let height = this.baseRowHeight;
       for (let column = 0; column < row.length; column++) {
         const cell = row[column];
@@ -813,10 +1043,11 @@ export class Table extends UIComponent {
       }
       return height;
     });
+    this.rebuildRowTops();
 
     let y = this.headerHeight;
     for (let rowIndex = 0; rowIndex < this.bodyCells.length; rowIndex++) {
-      const row = this.bodyCells[rowIndex];
+      const row = this.ensureBodyCells(rowIndex);
       const rowHeight = this.rowHeights[rowIndex];
       x = 0;
       for (let column = 0; column < row.length; column++) {
@@ -833,11 +1064,16 @@ export class Table extends UIComponent {
     return this;
   }
 
-  /** Enable or disable browser-native selection for every selectable cell. */
+  /** Enable or disable browser-native selection for every selectable cell.
+   *  Rows not yet materialized (virtualized, off-window) pick the flag up when
+   *  {@link ensureBodyCells} builds them. */
   public setSelectable(selectable: boolean): this {
     this.selectable = selectable;
     for (const cell of this.headerCells) this.setCellSelectable(cell);
-    for (const row of this.bodyCells) for (const cell of row) this.setCellSelectable(cell);
+    for (const row of this.bodyCells) {
+      if (!row) continue;
+      for (const cell of row) this.setCellSelectable(cell);
+    }
     this.scene?.markDirty();
     return this;
   }

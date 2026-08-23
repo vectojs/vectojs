@@ -36,6 +36,7 @@ export interface LinkData {
 export type LinkValidationError =
   | 'missing-source-node'
   | 'missing-target-node'
+  | 'duplicate-link-id'
   | 'missing-source-port'
   | 'missing-target-port'
   | 'source-port-direction'
@@ -59,17 +60,32 @@ export function createDocument(document: NodeDocument = { nodes: [], links: [] }
   return cloneDocument(document);
 }
 
+/** Deep-clone plain objects and arrays; other values (primitives, class instances) are shared as-is. */
+function deepCloneValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => deepCloneValue(item)) as T;
+  if (value !== null && typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) {
+      const copy: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value as Record<string, unknown>))
+        copy[key] = deepCloneValue(item);
+      return copy as T;
+    }
+  }
+  return value;
+}
+
 export function cloneDocument(document: NodeDocument): NodeDocument {
   return {
     nodes: document.nodes.map((node) => ({
       ...node,
       position: { ...node.position },
       ports: node.ports?.map((port) => ({ ...port })),
-      data: node.data ? { ...node.data } : undefined,
+      data: node.data ? deepCloneValue(node.data) : undefined,
     })),
     links: document.links.map((link) => ({
       ...link,
-      data: link.data ? { ...link.data } : undefined,
+      data: link.data ? deepCloneValue(link.data) : undefined,
     })),
   };
 }
@@ -98,12 +114,23 @@ export function getPort(
   return id ? node?.ports?.find((port) => port.id === id) : undefined;
 }
 
+/**
+ * Validate a prospective link against the document.
+ *
+ * Cycle policy: self-loops (`source === target`) are rejected; cycles spanning
+ * multiple nodes are allowed — the graph is a user-authored flow, and
+ * {@link layoutDocument} tolerates cycles by ranking strongly connected
+ * components together (Tarjan SCC, then a topological order over the component
+ * DAG).
+ */
 export function validateLink(document: NodeDocument, link: LinkData): LinkValidation {
   const source = getNode(document, link.source);
   const target = getNode(document, link.target);
   if (!source) return { valid: false, error: 'missing-source-node' };
   if (!target) return { valid: false, error: 'missing-target-node' };
   if (source.id === target.id) return { valid: false, error: 'same-node' };
+  if (document.links.some((existing) => existing.id === link.id))
+    return { valid: false, error: 'duplicate-link-id' };
   const sourcePort = getPort(source, link.sourcePort);
   const targetPort = getPort(target, link.targetPort);
   if (!sourcePort) return { valid: false, error: 'missing-source-port' };

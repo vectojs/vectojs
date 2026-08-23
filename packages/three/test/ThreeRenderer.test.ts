@@ -419,6 +419,56 @@ describe('ThreeRenderer', () => {
     });
   });
 
+  describe('drawImage orientation (GH-603)', () => {
+    it('keeps the texture unflipped like fillText so blitted images stay upright', () => {
+      const img = document.createElement('canvas');
+      renderer.drawImage(img, 0, 0, 32, 32);
+      const material = (renderer.scene.children[0] as THREE.Mesh)
+        .material as THREE.MeshBasicMaterial;
+      expect((material.map as THREE.Texture).flipY).toBe(false);
+    });
+
+    it('lands the source top-left texel at the destination top-left like Canvas2D', () => {
+      const img = document.createElement('canvas');
+      const dx = 10;
+      const dy = 20;
+      const dw = 32;
+      const dh = 16; // asymmetric rect: a vertical flip cannot alias as a shift
+      renderer.drawImage(img, dx, dy, dw, dh);
+
+      const mesh = renderer.scene.children[0] as THREE.Mesh;
+      const map = (mesh.material as THREE.MeshBasicMaterial).map!;
+      const position = mesh.geometry.getAttribute('position');
+      const uv = mesh.geometry.getAttribute('uv');
+      mesh.updateMatrixWorld(true);
+
+      // Pair each plane corner's world position with the source row it
+      // samples: flipY=true mirrors v during upload, flipY=false leaves the
+      // image row order intact, so rowFrac is measured from the source TOP.
+      const corner = new THREE.Vector3();
+      let topLeft: THREE.Vector3 | null = null;
+      let bottomRight: THREE.Vector3 | null = null;
+      for (let i = 0; i < position.count; i++) {
+        const u = uv.getX(i);
+        const rowFrac = map.flipY ? 1 - uv.getY(i) : uv.getY(i);
+        corner.fromBufferAttribute(position, i);
+        mesh.localToWorld(corner);
+        if (rowFrac === 0 && u === 0) topLeft = corner.clone();
+        if (rowFrac === 1 && u === 1) bottomRight = corner.clone();
+      }
+
+      expect(topLeft).not.toBeNull();
+      expect(bottomRight).not.toBeNull();
+
+      // Canvas2D parity: drawImage anchors the source top-left pixel at
+      // (dx, dy) and the bottom-right at (dx + dw, dy + dh).
+      expect(topLeft!.x).toBeCloseTo(dx);
+      expect(topLeft!.y).toBeCloseTo(dy);
+      expect(bottomRight!.x).toBeCloseTo(dx + dw);
+      expect(bottomRight!.y).toBeCloseTo(dy + dh);
+    });
+  });
+
   describe('mirrored y-down projection: DoubleSide materials (GH-516)', () => {
     it('fillCircle mesh is double-sided', () => {
       renderer.fillCircle(50, 50, 10, '#ffffff');
