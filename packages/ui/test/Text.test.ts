@@ -244,3 +244,81 @@ describe('Text bidi (RTL) selection projection', () => {
     });
   });
 });
+
+describe('Text ScrollVirtualizable (ScrollView-driven line culling)', () => {
+  // Twenty unique rows ('row0'..'row19'), lineHeight default 20 → line i spans
+  // y ∈ [20i, 20(i+1)). No DOM here, so geometry is deterministic (8px chars).
+  function tallBody(prefix: string): string {
+    return Array.from({ length: 20 }, (_, i) => `${prefix}${i}`).join('\n');
+  }
+
+  /** Map a drawn baseline back to its visual row index (draw y = (row+0.8)·20). */
+  const rowOfY = (y: number): number => Math.round((y - 0.8 * 20) / 20);
+
+  it('renders every line when never driven (zero behavior change)', () => {
+    const { r, lines } = recordingRenderer();
+    new Text(tallBody('row')).render(r);
+    expect(lines).toHaveLength(20);
+  });
+
+  it('culls fast-path lines outside [scrollY, scrollY+viewportHeight] plus two-line overscan', () => {
+    // The viewport covers rows 5..9 exactly (y 100..300); ±2 overscan widens
+    // the drawn window to rows 3..17.
+    const t = new Text(tallBody('row'));
+    t.setVisibleRange(100, 200);
+    const { r, lines } = recordingRenderer();
+    t.render(r);
+    expect(lines).toEqual(Array.from({ length: 15 }, (_, k) => `row${k + 3}`));
+  });
+
+  it('clamps the window at the top edge', () => {
+    const t = new Text(tallBody('row'));
+    t.setVisibleRange(0, 60); // rows 0..2 visible + overscan → window clamped to 0..5
+    const { r, lines } = recordingRenderer();
+    t.render(r);
+    expect(lines).toEqual(Array.from({ length: 6 }, (_, k) => `row${k}`));
+  });
+
+  it('clamps a scroll far past the bottom to the last line', () => {
+    const t = new Text(tallBody('row'));
+    t.setVisibleRange(999_999, 200);
+    const { r, lines } = recordingRenderer();
+    t.render(r);
+    expect(lines).toEqual(['row19']);
+  });
+
+  it('culls glyphs by their computed line on the justify path too', () => {
+    const t = new Text(tallBody('row'), { maxWidth: 200, textAlign: 'justify' });
+    t.setVisibleRange(80, 40); // viewport rows 4..6 + overscan → window 2..8
+    const { r, calls } = xyRecorder();
+    t.render(r);
+    const drawnRows = new Set(calls.map((c) => rowOfY(c.y)));
+    expect(drawnRows).toEqual(new Set([2, 3, 4, 5, 6, 7, 8]));
+  });
+
+  it('resets the window on setText so every line draws until the next drive', () => {
+    const t = new Text(tallBody('row'));
+    t.setVisibleRange(100, 200);
+    const culled = recordingRenderer();
+    t.render(culled.r);
+    expect(culled.lines).toHaveLength(15);
+
+    t.setText(tallBody('alt'));
+    const after = recordingRenderer();
+    t.render(after.r);
+    expect(after.lines).toHaveLength(20);
+  });
+
+  it('resets the window on setMaxWidth', () => {
+    const t = new Text(tallBody('row'), { maxWidth: 400 });
+    t.setVisibleRange(100, 200);
+    const culled = recordingRenderer();
+    t.render(culled.r);
+    expect(culled.lines).toHaveLength(15);
+
+    t.setMaxWidth(800);
+    const after = recordingRenderer();
+    t.render(after.r);
+    expect(after.lines).toHaveLength(20);
+  });
+});
