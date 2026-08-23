@@ -481,6 +481,12 @@ export class ThreeRenderer implements IRenderer {
         texture.needsUpdate = true;
       }
       texture.minFilter = THREE.LinearFilter;
+      // Textures upload with `flipY` by default, which puts the source's top
+      // row at the plane's bottom edge — upside down under this renderer's
+      // y-down ortho camera (the same reason fillText unflips its textures).
+      // Unflip so the image top lands at the destination's screen-top edge,
+      // matching Canvas2D drawImage.
+      texture.flipY = false;
       texture.userData.vectoCached = true;
       this.imageTextureCache.set(source, texture);
       // Bound the cache: dispose + evict the least-recently-used entries past
