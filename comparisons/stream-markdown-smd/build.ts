@@ -17,6 +17,9 @@ const out = await Bun.build({
   entrypoints: [join(HERE, 'entry.ts')],
   target: 'browser',
   minify: true,
+  // react-dom reads this at module scope to pick its production code paths; a
+  // bundle without the define runs React's dev build (slower, warning-spewing).
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   plugins: [
     {
       name: 'vecto-src',
@@ -29,6 +32,15 @@ const out = await Bun.build({
         }));
       },
     },
+    {
+      // @ant-design/x-markdown's ES build imports its own stylesheet. The suite
+      // measures parse/stream cost, not styling, so CSS becomes an empty module
+      // rather than a second bundler pipeline.
+      name: 'css-shim',
+      setup(b) {
+        b.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'js' }));
+      },
+    },
   ],
 });
 if (!out.success) {
@@ -37,6 +49,11 @@ if (!out.success) {
 }
 
 const js = await out.outputs[0]!.text();
+// dompurify ships the literal string "<script></script>", whose closing tag
+// would terminate an INLINE module early and take the whole page down with a
+// bare SyntaxError. Escaping the slash keeps the string byte-identical at
+// runtime while making it safe to inline.
+const safe = js.replaceAll('</script', '<\\/script');
 const html = `<!doctype html>
 <html>
   <head>
@@ -44,7 +61,7 @@ const html = `<!doctype html>
     <title>vectojs stream-markdown-smd gate bench</title>
   </head>
   <body>
-    <script type="module">${js}</script>
+    <script type="module">${safe}</script>
   </body>
 </html>
 `;
