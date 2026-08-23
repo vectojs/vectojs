@@ -1,4 +1,5 @@
-// Explicit Euler is conditionally stable: one step is only safe while
+// Semi-implicit (symplectic) Euler — velocity is integrated before position —
+// is conditionally stable: one step is only safe while
 // dt·√(k/m) stays small. rAF pauses in background tabs, so the first frame
 // after returning can deliver seconds of dt — integrated as a single step,
 // that catapults the value to ~10⁵ and the spring oscillates wildly. We cap
@@ -14,14 +15,33 @@ export class SpringPhysics {
 
   public stiffness: number = 180;
   public damping: number = 12;
-  public mass: number = 1;
 
   private readonly valEpsilon = 0.005;
   private readonly velEpsilon = 0.005;
+  private massValue: number = 1;
 
   constructor(initial: number) {
     this.value = initial;
     this.target = initial;
+  }
+
+  /**
+   * Inertial mass. Must be a finite number > 0: the acceleration divides by
+   * mass every substep, so a zero (or negative, or non-finite) mass writes
+   * ±Infinity into the velocity on the first update, every later value decays
+   * to NaN, and `isAtRest()` — NaN comparisons are false — can never turn true
+   * again. The spring would be wedged permanently, so invalid assignments
+   * throw at mutation time instead of silently poisoning the integration.
+   */
+  public get mass(): number {
+    return this.massValue;
+  }
+
+  public set mass(value: number) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`SpringPhysics.mass must be a finite number > 0 (received ${String(value)})`);
+    }
+    this.massValue = value;
   }
 
   public update(dt: number): void {
