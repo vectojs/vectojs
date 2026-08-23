@@ -1,5 +1,9 @@
 const MAX_DEPTH = 40;
 
+/** Sentinel tier for zero-radius points: below every real (finite) tier so
+ * they only ever act as cross-tier probe initiators, never as grid owners. */
+const ZERO_TIER = -0x40000000;
+
 /** Flat-array true-2D Barnes-Hut quadtree reused across simulation ticks. */
 export class BarnesHutQuadtree {
   private cellX = new Float64Array(0);
@@ -19,6 +23,10 @@ export class BarnesHutQuadtree {
   private collisionHead = new Int32Array(0);
   private collisionNext = new Int32Array(0);
   private collisionProbeSlots = new Int32Array(9);
+  private collisionTier = new Int32Array(0);
+  private collisionOrder = new Int32Array(0);
+  private collisionOrderOffsets = new Int32Array(0);
+  private collisionOrderCursor = new Int32Array(0);
   private positions: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private charges: Float32Array<ArrayBufferLike> = new Float32Array(0);
   private capacity = 0;
@@ -89,6 +97,15 @@ export class BarnesHutQuadtree {
       );
       if (nearestDistanceSquared > maxDistanceSquared + cutoffTolerance) continue;
       const charge = this.charge[node];
+      // INVARIANT: skipping subtrees whose aggregated charge is <= 0 is only
+      // sound while every point charge is non-negative. ForceLayout2D clamps
+      // repulsion to >= 0 when resolving accessors (addNode/sanitizeState),
+      // so a nonpositive subtree total means an empty subtree or exactly
+      // cancelling charges — either contributes ~zero net force and skipping
+      // it merely avoids wasted work. d3-style NEGATIVE (attractive) charges
+      // would make cancelled subtrees real force carriers; revisit this skip
+      // and finalize()'s `total > 0` center-of-charge guard before ever
+      // allowing negative charge magnitudes through.
       if (charge <= 0) continue;
       const leaf = this.internal[node] === 0;
       const dx = this.centerX[node] - qx;
@@ -196,72 +213,227 @@ export class BarnesHutQuadtree {
       maximumRadius = Math.max(maximumRadius, radii[point]);
     if (maximumRadius <= 0) return;
     this.ensureCollisionGrid(pointCount * 2);
-    const cellSize = Math.max(maximumRadius * 2, 1);
-    this.collisionUsed.fill(0);
-    this.collisionHead.fill(-1);
-    this.collisionNext.fill(-1, 0, pointCount);
+    this.ensureCollisionScratch(pointCount);
+
+    // Bin points into power-of-two RADIUS tiers instead of sizing one global
+    // grid from the maximum radius. A single `cellSize = 2·maxRadius` packs
+    // every small node into huge cells whenever one hub dominates, and the
+    // fixed 3×3 probe below degenerates into quadratic pair scans (measured
+    // 12ms → 197ms per tick going from 3k to 12k points with one large hub).
+    //
+    // Tier t holds radii in [2^t, 2^(t+1)) and uses cell size C_t = 2^(t+2):
+    // - same tier: any overlapping pair is closer than r_i + r_j < 2^(t+2) =
+    //   C_t, so the two cells are equal or adjacent — the 3×3 probe finds it;
+    // - cross tier (s < b): the SMALLER point probes the BIGGER tier's grid,
+    //   where r_small + r_big < 2^(s+1) + 2^(b+1) ≤ 3·2^b < C_b, again within
+    //   one adjacent-cell ring. Each pair has a unique bigger-tier member, so
+    //   it is resolved exactly once.
+    // Cell occupancy therefore tracks LOCAL density for every distribution,
+    // while uniform-radius scenes collapse to a single tier that behaves like
+    // the old maximum-based sizing.
+    const tierOf = this.collisionTier;
+    let minTier = 0;
+    let maxTier = -1; // max < min encodes "no positive-radius point yet"
     for (let point = 0; point < pointCount; point++) {
-      const cellX = Math.floor(positions[point * 2] / cellSize);
-      const cellY = Math.floor(positions[point * 2 + 1] / cellSize);
-      const slot = this.collisionSlot(cellX, cellY, true);
-      this.collisionNext[point] = this.collisionHead[slot]!;
-      this.collisionHead[slot] = point;
+      const radius = radii[point]!;
+      if (radius > 0) {
+        // floor(log2(r)): floating-point rounding can only ever drop a
+        // boundary radius into the finer tier, which keeps every bound above
+        // valid (they only get more conservative).
+        const tier = Math.floor(Math.log2(radius));
+        tierOf[point] = tier;
+        if (tier < minTier) minTier = tier;
+        if (tier > maxTier) maxTier = tier;
+      } else {
+        // Zero-radius points never own a grid, but they still collide against
+        // larger neighbors (distance < r_other). Bucket them below every real
+        // tier so they act as initiators only.
+        tierOf[point] = ZERO_TIER;
+      }
     }
-    for (let source = 0; source < pointCount; source++) {
-      const sourceX = positions[source * 2];
-      const sourceY = positions[source * 2 + 1];
-      const sourceRadius = radii[source];
-      const cellX = Math.floor(sourceX / cellSize);
-      const cellY = Math.floor(sourceY / cellSize);
-      let probeCount = 0;
-      for (let offsetX = -1; offsetX <= 1; offsetX++) {
-        for (let offsetY = -1; offsetY <= 1; offsetY++) {
-          const slot = this.collisionSlot(cellX + offsetX, cellY + offsetY, false);
-          if (slot < 0) continue;
-          let duplicate = false;
-          for (let probe = 0; probe < probeCount; probe++) {
-            const previous = this.collisionProbeSlots[probe];
-            if (
-              previous === slot ||
-              (this.collisionCellX[previous] === this.collisionCellX[slot] &&
-                this.collisionCellY[previous] === this.collisionCellY[slot])
-            ) {
-              duplicate = true;
-              break;
-            }
-          }
-          if (duplicate) continue;
-          this.collisionProbeSlots[probeCount++] = slot;
-          for (
-            let target = this.collisionHead[slot]!;
-            target >= 0;
-            target = this.collisionNext[target]!
+    const zeroBucket = minTier - 1;
+    let lowest = minTier;
+    for (let point = 0; point < pointCount; point++) {
+      if (tierOf[point] === ZERO_TIER) {
+        tierOf[point] = zeroBucket;
+        lowest = zeroBucket;
+      }
+    }
+
+    // Counting-sort points by tier so each pass walks contiguous slices.
+    const tierCount = maxTier - lowest + 1;
+    const offsets = this.collisionOrderOffsets;
+    offsets.fill(0, 0, tierCount + 1);
+    for (let point = 0; point < pointCount; point++) offsets[tierOf[point]! - lowest + 1]++;
+    for (let tier = 0; tier < tierCount; tier++) offsets[tier + 1] += offsets[tier]!;
+    const order = this.collisionOrder;
+    const cursor = this.collisionOrderCursor;
+    cursor.set(offsets.subarray(0, tierCount));
+    for (let point = 0; point < pointCount; point++)
+      order[cursor[tierOf[point]! - lowest]++] = point;
+
+    this.collisionUsed.fill(0);
+    this.collisionNext.fill(-1, 0, pointCount);
+    // When zero-radius points exist they fill bucket 0 (one below the smallest
+    // real tier), so the real-tier slices start at index 1; otherwise index 0.
+    const firstRealTier = minTier - lowest;
+    for (let tierIndex = firstRealTier; tierIndex <= maxTier - lowest; tierIndex++) {
+      const tier = lowest + tierIndex;
+      const start = offsets[tierIndex]!;
+      const end = offsets[tierIndex + 1]!;
+      if (end === start) continue;
+
+      // Build this tier's hash grid. One table is reused sequentially across
+      // tiers; occupied slots stay ≤ pointCount over a ≥2·pointCount table.
+      this.collisionUsed.fill(0);
+      this.collisionHead.fill(-1);
+      const cellSize = 4 * Math.pow(2, tier);
+      for (let index = start; index < end; index++) {
+        const point = order[index]!;
+        const slot = this.collisionSlot(
+          Math.floor(positions[point * 2] / cellSize),
+          Math.floor(positions[point * 2 + 1] / cellSize),
+          true,
+        );
+        this.collisionNext[point] = this.collisionHead[slot]!;
+        this.collisionHead[slot] = point;
+      }
+
+      // Same tier: sources walk their own grid with the shared pair-once rule.
+      for (let index = start; index < end; index++) {
+        const source = order[index]!;
+        const sourceX = positions[source * 2];
+        const sourceY = positions[source * 2 + 1];
+        const sourceRadius = radii[source]!;
+        const cellX = Math.floor(sourceX / cellSize);
+        const cellY = Math.floor(sourceY / cellSize);
+        this.probeCollisionCell(
+          positions,
+          radii,
+          velocitiesX,
+          velocitiesY,
+          pinnedX,
+          pinnedY,
+          strength,
+          seed,
+          source,
+          sourceX,
+          sourceY,
+          sourceRadius,
+          cellX,
+          cellY,
+          true,
+        );
+      }
+
+      // Cross tier: every smaller-tier (or zero-radius) point probes this
+      // tier's grid; each such pair resolves exactly once, initiated here.
+      for (let lowerIndex = 0; lowerIndex < tierIndex; lowerIndex++) {
+        const lowerStart = offsets[lowerIndex]!;
+        const lowerEnd = offsets[lowerIndex + 1]!;
+        for (let index = lowerStart; index < lowerEnd; index++) {
+          const source = order[index]!;
+          const sourceX = positions[source * 2];
+          const sourceY = positions[source * 2 + 1];
+          const cellX = Math.floor(sourceX / cellSize);
+          const cellY = Math.floor(sourceY / cellSize);
+          this.probeCollisionCell(
+            positions,
+            radii,
+            velocitiesX,
+            velocitiesY,
+            pinnedX,
+            pinnedY,
+            strength,
+            seed,
+            source,
+            sourceX,
+            sourceY,
+            radii[source]!,
+            cellX,
+            cellY,
+            false,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Walk the 3×3 cell neighborhood around (`cellX`, `cellY`) resolving the
+   * collisions of `source` against candidates found there.
+   *
+   * When `sameTier` is true the candidates come from the source's own tier
+   * grid, so unordered pairs must skip `target <= source` to resolve once.
+   * Cross-tier probes need no such filter: every candidate belongs to a
+   * strictly bigger tier than the initiating source, so each pair appears on
+   * exactly one initiator by construction.
+   */
+  private probeCollisionCell(
+    positions: Float32Array<ArrayBufferLike>,
+    radii: Float32Array<ArrayBufferLike>,
+    velocitiesX: Float32Array<ArrayBufferLike>,
+    velocitiesY: Float32Array<ArrayBufferLike>,
+    pinnedX: Uint8Array<ArrayBufferLike>,
+    pinnedY: Uint8Array<ArrayBufferLike>,
+    strength: number,
+    seed: number,
+    source: number,
+    sourceX: number,
+    sourceY: number,
+    sourceRadius: number,
+    cellX: number,
+    cellY: number,
+    sameTier: boolean,
+  ): void {
+    let probeCount = 0;
+    for (let offsetX = -1; offsetX <= 1; offsetX++) {
+      for (let offsetY = -1; offsetY <= 1; offsetY++) {
+        const slot = this.collisionSlot(cellX + offsetX, cellY + offsetY, false);
+        if (slot < 0) continue;
+        let duplicate = false;
+        for (let probe = 0; probe < probeCount; probe++) {
+          const previous = this.collisionProbeSlots[probe];
+          if (
+            previous === slot ||
+            (this.collisionCellX[previous!] === this.collisionCellX[slot] &&
+              this.collisionCellY[previous!] === this.collisionCellY[slot])
           ) {
-            if (target <= source) continue;
-            const minimumDistance = sourceRadius + radii[target];
-            let dx = positions[target * 2] - sourceX;
-            let dy = positions[target * 2 + 1] - sourceY;
-            const distanceSquared = dx * dx + dy * dy;
-            if (distanceSquared >= minimumDistance * minimumDistance) continue;
-            let distance = Math.sqrt(distanceSquared);
-            if (distance < 1e-6) {
-              const angle = collisionPairAngle(source, target, seed);
-              dx = Math.cos(angle) * 1e-6;
-              dy = Math.sin(angle) * 1e-6;
-              distance = 1e-6;
-            }
-            const overlap = ((minimumDistance - distance) / distance) * strength;
-            const forceX = dx * overlap;
-            const forceY = dy * overlap;
-            const sourceShareX = pinnedX[source] ? 0 : pinnedX[target] ? 1 : 0.5;
-            const targetShareX = pinnedX[target] ? 0 : pinnedX[source] ? 1 : 0.5;
-            const sourceShareY = pinnedY[source] ? 0 : pinnedY[target] ? 1 : 0.5;
-            const targetShareY = pinnedY[target] ? 0 : pinnedY[source] ? 1 : 0.5;
-            velocitiesX[source] = toF32(velocitiesX[source] - forceX * sourceShareX);
-            velocitiesY[source] = toF32(velocitiesY[source] - forceY * sourceShareY);
-            velocitiesX[target] = toF32(velocitiesX[target] + forceX * targetShareX);
-            velocitiesY[target] = toF32(velocitiesY[target] + forceY * targetShareY);
+            duplicate = true;
+            break;
           }
+        }
+        if (duplicate) continue;
+        this.collisionProbeSlots[probeCount++] = slot;
+        for (
+          let target = this.collisionHead[slot]!;
+          target >= 0;
+          target = this.collisionNext[target]!
+        ) {
+          if (sameTier && target <= source) continue;
+          const minimumDistance = sourceRadius + radii[target]!;
+          let dx = positions[target * 2] - sourceX;
+          let dy = positions[target * 2 + 1] - sourceY;
+          const distanceSquared = dx * dx + dy * dy;
+          if (distanceSquared >= minimumDistance * minimumDistance) continue;
+          let distance = Math.sqrt(distanceSquared);
+          if (distance < 1e-6) {
+            const angle = collisionPairAngle(source, target, seed);
+            dx = Math.cos(angle) * 1e-6;
+            dy = Math.sin(angle) * 1e-6;
+            distance = 1e-6;
+          }
+          const overlap = ((minimumDistance - distance) / distance) * strength;
+          const forceX = dx * overlap;
+          const forceY = dy * overlap;
+          const sourceShareX = pinnedX[source] ? 0 : pinnedX[target] ? 1 : 0.5;
+          const targetShareX = pinnedX[target] ? 0 : pinnedX[source] ? 1 : 0.5;
+          const sourceShareY = pinnedY[source] ? 0 : pinnedY[target] ? 1 : 0.5;
+          const targetShareY = pinnedY[target] ? 0 : pinnedY[source] ? 1 : 0.5;
+          velocitiesX[source] = toF32(velocitiesX[source] - forceX * sourceShareX);
+          velocitiesY[source] = toF32(velocitiesY[source] - forceY * sourceShareY);
+          velocitiesX[target] = toF32(velocitiesX[target] + forceX * targetShareX);
+          velocitiesY[target] = toF32(velocitiesY[target] + forceY * targetShareY);
         }
       }
     }
@@ -277,6 +449,8 @@ export class BarnesHutQuadtree {
     this.collisionCellX = this.collisionCellY = new Float64Array(0);
     this.collisionHead = this.collisionNext = new Int32Array(0);
     this.collisionProbeSlots = new Int32Array(9);
+    this.collisionTier = this.collisionOrder = new Int32Array(0);
+    this.collisionOrderOffsets = this.collisionOrderCursor = new Int32Array(0);
     this.positions = this.charges = new Float32Array(0);
     this.capacity = 0;
     this.pointCapacity = 0;
@@ -417,6 +591,18 @@ export class BarnesHutQuadtree {
     this.collisionCellY = new Float64Array(capacity);
     this.collisionHead = new Int32Array(capacity);
     this.collisionNext = new Int32Array(Math.max(this.pointCapacity, required));
+  }
+
+  /** Per-point tier assignment plus counting-sorted point order, both reused
+   * across ticks. `offsets` has one extra slot for the prefix-sum tail. */
+  private ensureCollisionScratch(required: number): void {
+    if (required <= this.collisionTier.length) return;
+    let next = Math.max(64, this.collisionTier.length);
+    while (next < required) next *= 2;
+    this.collisionTier = new Int32Array(next);
+    this.collisionOrder = new Int32Array(next);
+    this.collisionOrderOffsets = new Int32Array(next + 1);
+    this.collisionOrderCursor = new Int32Array(next + 1);
   }
 
   private collisionSlot(cellX: number, cellY: number, create: boolean): number {
