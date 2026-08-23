@@ -51,6 +51,13 @@ class PortEntity extends UIComponent {
       event.stopPropagation();
       editor.cancelConnection();
     });
+    // Keyboard parity (WCAG 2.1.1): the hotspot advertises role="button", so
+    // core synthesizes `click` from Enter/Space on focus — route it into the
+    // same connection gesture the pointer uses.
+    this.on('click', (event: VectoJSEvent) => {
+      event.stopPropagation();
+      editor.portActivated(node.id, port.id);
+    });
   }
   public isPointInside(globalX: number, globalY: number): boolean {
     const point = this.worldToLocal(globalX, globalY);
@@ -242,32 +249,61 @@ export class NodeEditor extends Entity {
     const port = getPort(node, portId);
     if (!node || !port || port.direction !== 'output') return;
     this.connection = { nodeId, portId };
-    this.connectionPoint = this.getEventPoint(event);
+    this.connectionPoint = this.getLocalPoint(event);
     this.scene?.markDirty();
+  }
+
+  /**
+   * Keyboard connection gesture (WCAG 2.1.1): activating an output port starts
+   * a pending connection; activating an input port commits it. Escape cancels
+   * via the editor keydown handler. Core synthesizes `click` from Enter/Space
+   * on the focused port hotspot.
+   */
+  public portActivated(nodeId: string, portId: string): void {
+    const node = getNode(this.documentState, nodeId);
+    const port = getPort(node, portId);
+    if (!node || !port) return;
+    if (port.direction === 'output') {
+      // No pointer is attached to a keyboard gesture, so no rubber line point.
+      this.connection = { nodeId, portId };
+      this.connectionPoint = null;
+      this.scene?.markDirty();
+      return;
+    }
+    if (this.connection) this.commitLink({ nodeId, portId });
   }
 
   public moveConnection(event: VectoJSEvent): void {
     if (!this.connection) return;
-    this.connectionPoint = this.getEventPoint(event);
+    this.connectionPoint = this.getLocalPoint(event);
     this.scene?.markDirty();
   }
 
   public endConnection(event: VectoJSEvent): void {
     if (!this.connection) return;
-    const target = this.findPortAt(this.getEventPoint(event));
-    if (target) {
-      const link: LinkData = {
-        id: `link:${this.connection.nodeId}:${this.connection.portId}:${target.nodeId}:${target.portId}`,
-        source: this.connection.nodeId,
-        sourcePort: this.connection.portId,
-        target: target.nodeId,
-        targetPort: target.portId,
-      };
-      try {
-        this.createLink(link);
-      } catch {
-        // Invalid targets cancel the transient connection without history.
-      }
+    const point = this.getLocalPoint(event);
+    if (!point) {
+      this.cancelConnection();
+      return;
+    }
+    const target = this.findPortAt(point);
+    if (target) this.commitLink(target);
+    else this.cancelConnection();
+  }
+
+  private commitLink(target: { nodeId: string; portId: string }): void {
+    if (!this.connection) return;
+    const link: LinkData = {
+      id: `link:${this.connection.nodeId}:${this.connection.portId}:${target.nodeId}:${target.portId}`,
+      source: this.connection.nodeId,
+      sourcePort: this.connection.portId,
+      target: target.nodeId,
+      targetPort: target.portId,
+    };
+    try {
+      this.createLink(link);
+    } catch {
+      // Invalid targets cancel the transient connection without history.
     }
     this.cancelConnection();
   }
@@ -305,31 +341,33 @@ export class NodeEditor extends Entity {
 
   public beginDrag(id: string, event: VectoJSEvent): void {
     const node = getNode(this.documentState, id);
-    if (!node || event.sceneX === undefined || event.sceneY === undefined) return;
+    const point = this.getLocalPoint(event);
+    if (!node || !point) return;
     this.select(id, event.shiftKey || event.metaKey || event.ctrlKey);
     this.dragDocument = cloneDocument(this.documentState);
     this.selection.drag = {
       nodeId: id,
       originX: node.position.x,
       originY: node.position.y,
-      pointerX: event.sceneX,
-      pointerY: event.sceneY,
+      pointerX: point.x,
+      pointerY: point.y,
     };
   }
 
   public moveDrag(event: VectoJSEvent): void {
     const drag = this.selection.drag;
-    if (!drag || event.sceneX === undefined || event.sceneY === undefined) return;
+    const point = this.getLocalPoint(event);
+    if (!drag || !point) return;
     const position = {
-      x: drag.originX + event.sceneX - drag.pointerX,
-      y: drag.originY + event.sceneY - drag.pointerY,
+      x: drag.originX + point.x - drag.pointerX,
+      y: drag.originY + point.y - drag.pointerY,
     };
     this.applyPreview(updateNodePosition(this.documentState, drag.nodeId, position));
   }
 
   public endDrag(event: VectoJSEvent): void {
     if (!this.selection.drag) return;
-    if (event.sceneX !== undefined && event.sceneY !== undefined) this.moveDrag(event);
+    this.moveDrag(event);
     const before = this.dragDocument ?? this.documentState;
     const changed = JSON.stringify(before) !== JSON.stringify(this.documentState);
     if (changed) this.history.execute('Move node', this.documentState);
@@ -353,13 +391,15 @@ export class NodeEditor extends Entity {
       return;
     }
     const modifier = event.metaKey || event.ctrlKey;
-    if (modifier && event.key?.toLowerCase() === 'z') {
+    if (modifier && (event.key?.toLowerCase() === 'z' || event.key?.toLowerCase() === 'y')) {
       event.preventDefault();
-      if (event.shiftKey) this.redo();
+      // Undo/redo rebuilds the tree under an active gesture; a stale drag
+      // origin would teleport the node and commit a bogus history entry.
+      // End transient interactions first, mirroring the Escape path above.
+      this.cancelConnection();
+      this.cancelDrag();
+      if (event.key?.toLowerCase() === 'y' || event.shiftKey) this.redo();
       else this.undo();
-    } else if (modifier && event.key?.toLowerCase() === 'y') {
-      event.preventDefault();
-      this.redo();
     }
   }
 
@@ -369,8 +409,15 @@ export class NodeEditor extends Entity {
     this.scene?.markDirty();
   }
 
-  private getEventPoint(event: VectoJSEvent): { x: number; y: number } {
-    return { x: event.sceneX ?? 0, y: event.sceneY ?? 0 };
+  /**
+   * Pointer position in the editor's own (document-local) coordinate space.
+   * Node positions, port hit boxes and the rubber line all live in this space,
+   * so scene-space input must be mapped through the editor's transform before
+   * it is compared with them — raw `sceneX/sceneY` is only correct at identity.
+   */
+  private getLocalPoint(event: VectoJSEvent): { x: number; y: number } | null {
+    if (event.sceneX === undefined || event.sceneY === undefined) return null;
+    return this.worldToLocal(event.sceneX, event.sceneY);
   }
   private findPortAt(point: { x: number; y: number }): { nodeId: string; portId: string } | null {
     for (const node of this.documentState.nodes) {
