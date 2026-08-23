@@ -1021,6 +1021,12 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
       // prevent reuse.
       const transform = `translate(${fmt(g.x)} ${fmt(g.y)}) scale(${fmt(g.scale)} ${fmt(-g.scale)})`;
       const id = defId.get(`${g.font}\u0000${g.code}`);
+      // SVG2's plain `href` (no `xlink:href` fallback) is a deliberate choice:
+      // every engine that renders this output — Chromium 50+, Firefox 51+,
+      // Safari 12.1+, and the resvg/rsvg converters used in tooling — supports
+      // it, while adding xlink would need an xmlns:xlink declaration on every
+      // formula and bytes on every placement. Revisit only if a consumer that
+      // predates SVG2 <use> ever becomes real.
       return id
         ? `<use href="#${id}" transform="${transform}"/>`
         : `<path transform="${transform}" d="${glyph.path}"/>`;
