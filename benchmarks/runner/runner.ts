@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, rmdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BenchmarkServer } from '../_shared/server';
@@ -320,8 +321,9 @@ export async function runBenchmarkSuite(
   const benchRoot = resolve(benchmarksRoot, config.benchDir);
   const resultsRoot = join(benchRoot, 'results');
   const currentSuiteRunId = suiteRunId();
-  const runRoot = join(repositoryRoot, 'tmp', 'benchmark-runner', currentSuiteRunId);
-  await mkdir(runRoot, { recursive: true });
+  // Scratch profiles live under the OS temp dir, never inside the repository
+  // tree — a stranded directory there reappears for every user who deletes it.
+  const runRoot = join(tmpdir(), 'vectojs-benchmark-runner', currentSuiteRunId);
 
   const windows = new HyprlandWindowController();
   const homeWorkspace = await windows.activeWorkspace();
@@ -331,6 +333,7 @@ export async function runBenchmarkSuite(
   let status = 0;
 
   try {
+    await mkdir(runRoot, { recursive: true });
     server = await startRunnerServer(benchRoot, config.port);
     console.log(`serving ${config.benchDir} on ${server.url} (runId ${currentSuiteRunId})`);
 
@@ -431,5 +434,6 @@ export async function runBenchmarkSuite(
     }
     await safely(() => windows.focusWorkspace(homeWorkspace));
     await rm(runRoot, { recursive: true, force: true });
+    await safely(() => rmdir(dirname(runRoot)));
   }
 }
