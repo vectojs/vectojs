@@ -59,6 +59,14 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
+import {
+  CLASS_TO_FACE,
+  DEFAULT_FONT,
+  DELIM_SIZE_FONTS,
+  DIRECT_FONT_CLASSES,
+  SIZE_MULTIPLIERS,
+} from '../src/emit/fonts';
+import { MU, NULL_DELIMITER_SPACE, ROW_ALIGN_CLASSES } from '../src/emit/svg';
 
 /**
  * Files copied from KaTeX's `src/`, ordered as the pipeline runs rather than
@@ -929,6 +937,437 @@ function upstreamCommit(sourceRepo: string): string {
   }
 }
 
+/* ------------------------------------------------------------------------- *
+ * Emit-constants drift guard.
+ *
+ * The emit layer in `src/emit/` hand-transcribes constants from upstream files
+ * this script does NOT vendor: `styles/katex.scss` and `Options.ts` stay
+ * upstream, so until now nothing noticed when a stylesheet value moved — a
+ * changed `$mu`, delimiter space or size multiplier would silently misplace
+ * rules, delimiters or scripts (issue #611). The functions below re-derive
+ * every guarded constant from the upstream sources and compare them with what
+ * the committed emit layer encodes, on every vendor run in either mode.
+ *
+ * Scope note: the `AVAILABLE` face inventory in `fonts.ts` describes which
+ * weight/style combinations ship as TTF files — a property of the fonts, not
+ * of the stylesheet — and is deliberately not guarded here.
+ * ------------------------------------------------------------------------- */
+
+/** A flattened SCSS rule: resolved selector plus its declarations. */
+export interface FlatRule {
+  selector: string;
+  decls: Record<string, string>;
+}
+
+/** Class tokens that are structure, never an alignment-bearing owner. */
+const STRUCTURAL_CLASSES = new Set(['span', 'vlist', 'vlist-t', 'vlist-t2', 'vlist-r', 'pstrut']);
+
+/**
+ * Emitted alignment entries with no upstream `text-align` rule, each with the
+ * reason the deviation is deliberate. A key here still fails the guard once
+ * upstream declares a *different* alignment for it.
+ */
+const EXPECTED_ROW_ALIGN_DEVIATIONS: Record<string, { align: string; reason: string }> = {
+  sqrt: {
+    align: 'center',
+    reason:
+      'upstream has no text-align rule under .sqrt (the old comment cited katex.scss:406, ' +
+      'which is .op-limits). Kept because both sqrt rows measure equal width, making ' +
+      'centering output-neutral; revisit if sqrt ever grows unequal rows.',
+  },
+};
+
+/**
+ * The upstream values the guard extracted from the current KaTeX checkout.
+ * Numeric fields are `null` when their declaration is absent, which is itself
+ * drift when the committed side still has the constant.
+ */
+export interface UpstreamEmitConstants {
+  /** Denominator of `$mu: calc(1em / N)`; null when absent. */
+  muDenominator: number | null;
+  /** `$nulldelimiterspace` in em; null when absent. */
+  nullDelimiterSpace: number | null;
+  /** `$sizes:` list from katex.scss. */
+  scssSizes: number[];
+  /** `sizeMultipliers` array from Options.ts. */
+  optionsSizes: number[];
+  /**
+   * Family/weight/style per single-class font rule, e.g. `.mathbf -> Main,
+   * bold`. Axes the rule does not set are absent; family is null when the rule
+   * sets only weight/style.
+   */
+  classFaces: Record<string, { family: string | null; bold?: boolean; italic?: boolean }>;
+  /** `delimsizing sizeN -> SizeN-Regular`. */
+  delimSizeFonts: Record<string, string>;
+  /** `small-op` / `large-op` / `delim-sizeN -> their dedicated faces. */
+  directFontClasses: Record<string, string>;
+  /**
+   * Every text-align declaration upstream makes, as (selector, value) pairs.
+   * Unfiltered here; the checker decides which ones position vlist rows.
+   */
+  alignRules: { selector: string; align: string }[];
+  /** Family named by the `.katex { font: ... }` default shorthand. */
+  defaultFontFamily: string | null;
+}
+
+/**
+ * Resolves SCSS nesting into flat `(selector, decls)` pairs.
+ *
+ * Only the subset of SCSS katex.scss uses: nested selectors, `&`, comma
+ * groups, line and block comments, and declarations (including `$var:` ones).
+ * A nested chunk without `&` is appended to each parent with a descendant
+ * combinator; a chunk with `&` replaces the `&` with each parent - the
+ * composition CSS semantics SCSS defines. Declarations are split on the first
+ * `:`, which is safe here because selector chunks never carry a declaration
+ * fragment before their `{`.
+ */
+export function flattenScss(text: string): FlatRule[] {
+  // Strip comments first: they may contain braces, which would corrupt the
+  // block structure below.
+  const clean = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+  const rules: FlatRule[] = [];
+
+  interface Frame {
+    /** Resolved selector of this block ('' for the synthetic root). */
+    parents: string[];
+    decls: Record<string, string>;
+    buffer: string;
+    isRoot: boolean;
+  }
+
+  const flushDecl = (frame: Frame) => {
+    const idx = frame.buffer.indexOf(':');
+    if (idx > 0) {
+      frame.decls[frame.buffer.slice(0, idx).trim()] = frame.buffer.slice(idx + 1).trim();
+    }
+    frame.buffer = '';
+  };
+
+  const stack: Frame[] = [{ parents: [''], decls: {}, buffer: '', isRoot: true }];
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    const top = stack[stack.length - 1];
+
+    if (ch === '{') {
+      const resolved: string[] = [];
+      for (const chunk of top.buffer.split(',')) {
+        const sel = chunk.trim();
+        if (!sel) continue;
+        for (const parent of top.parents) {
+          resolved.push(
+            sel.includes('&')
+              ? sel.replaceAll('&', parent).trim()
+              : parent
+                ? `${parent} ${sel}`
+                : sel,
+          );
+        }
+      }
+      // Record the rule as soon as it OPENS, and keep mutating its decls:
+      // children then appear after their parent, matching document order.
+      // Pure containers (.delimsizing holds only nested rules) end up with no
+      // declarations and are dropped by the final filter.
+      const frame: Frame = { parents: resolved, decls: {}, buffer: '', isRoot: false };
+      rules.push({ selector: frame.parents.join(', '), decls: frame.decls });
+      stack.push(frame);
+      top.buffer = '';
+      continue;
+    }
+
+    if (ch === '}') {
+      if (top.buffer.trim()) flushDecl(top);
+      stack.pop();
+      continue;
+    }
+
+    if (ch === ';') {
+      if (top.buffer.trim()) flushDecl(top);
+      continue;
+    }
+
+    top.buffer += ch;
+  }
+  return rules.filter((rule) => Object.keys(rule.decls).length > 0);
+}
+
+/** All numeric literals in `raw`, preserving order. */
+function numberList(raw: string): number[] {
+  return (raw.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+}
+
+/**
+ * Extracts every constant the guard checks, from the upstream checkout's
+ * `src/` directory. Throws when a source file is missing: a vanished
+ * stylesheet must stop the vendor run, not pass as "nothing drifted".
+ */
+export function extractUpstreamEmitConstants(sourceDir: string): UpstreamEmitConstants {
+  const scssBytes = tryRead(join(sourceDir, 'styles/katex.scss'));
+  if (scssBytes === null) {
+    throw new Error(
+      `vendor-katex: missing upstream stylesheet: ${join(sourceDir, 'styles/katex.scss')}`,
+    );
+  }
+  const optionsBytes = tryRead(join(sourceDir, 'Options.ts'));
+  if (optionsBytes === null) {
+    throw new Error(`vendor-katex: missing upstream Options.ts: ${join(sourceDir, 'Options.ts')}`);
+  }
+  const scss = scssBytes.toString('utf8');
+
+  const out: UpstreamEmitConstants = {
+    muDenominator: null,
+    nullDelimiterSpace: null,
+    scssSizes: [],
+    optionsSizes: [],
+    classFaces: {},
+    delimSizeFonts: {},
+    directFontClasses: {},
+    alignRules: [],
+    defaultFontFamily: null,
+  };
+
+  // Scalar variables, read from the raw text: their position in the nesting
+  // carries no information, and the declarations sit inside blocks the
+  // flattener would otherwise have to surface specially.
+  const mu = /\$mu\s*:\s*calc\(\s*1em\s*\/\s*(\d+(?:\.\d+)?)\s*\)/.exec(scss);
+  if (mu) out.muDenominator = Number(mu[1]);
+
+  const ptPerEm = /\$ptperem\s*:\s*(\d+(?:\.\d+)?)\s*;/.exec(scss);
+  const nds = /\$nulldelimiterspace\s*:\s*calc\(\s*([\d.]+)em\s*\/\s*\$ptperem\s*\)/.exec(scss);
+  if (ptPerEm && nds) out.nullDelimiterSpace = Number(nds[1]) / Number(ptPerEm[1]);
+
+  const sizes = /\$sizes\s*:\s*([^;]+);/.exec(scss);
+  if (sizes) out.scssSizes = numberList(sizes[1]);
+
+  const optSizes = /sizeMultipliers\s*=\s*\[([^\]]*)\]/.exec(optionsBytes.toString('utf8'));
+  if (optSizes) out.optionsSizes = numberList(optSizes[1]);
+
+  for (const { selector, decls } of flattenScss(scss)) {
+    // A flattened grouped rule shares one decls object across all its
+    // resolved selectors, and every group must contribute its own class
+    // (`.mathbb, .textbb { ... }` names two faces, not one).
+    for (const group of selector.split(',')) {
+      const sel = group.trim();
+      if (!sel) continue;
+      const lastCompound =
+        sel
+          .split(/[>+~\s]+/)
+          .filter(Boolean)
+          .pop() ?? '';
+      const classes = [...lastCompound.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]);
+
+      // Font-bearing rules: a single-class compound selects a face outright;
+      // `&.sizeN` under .delimsizing and `.op-symbol.small-op|large-op` pick the
+      // dedicated delimiter/op faces; `.delim-sizeN` appears mid-selector under
+      // `.delimsizing.mult`.
+      const familyMatch = /^KaTeX_([A-Za-z0-9]+)/.exec(decls['font-family'] ?? '');
+      if (familyMatch) {
+        const font = `${familyMatch[1]}-Regular`;
+        if (classes.length === 1 && !STRUCTURAL_CLASSES.has(classes[0])) {
+          // Recorded together with the axis-only rules below.
+        } else if (classes.length >= 2 && classes[0] === 'delimsizing') {
+          const m = /^size(\d)$/.exec(classes[classes.length - 1]);
+          if (m) out.delimSizeFonts[`size${m[1]}`] = font;
+        } else if (classes.length >= 2) {
+          out.directFontClasses[classes[classes.length - 1]] = font;
+        }
+        const ds = /\.delim-size(\d)(?![\w-])/.exec(sel);
+        if (ds) out.directFontClasses[`delim-size${ds[1]}`] = font;
+      }
+
+      // Every single-class rule that sets ANY font axis is recorded, including
+      // weight/style-only rules like `.textbf` - those have no font-family line,
+      // and dropping one silently would be exactly the drift this guard exists
+      // to report.
+      const setsFontAxis =
+        familyMatch !== null ||
+        decls['font-weight'] !== undefined ||
+        decls['font-style'] !== undefined;
+      if (setsFontAxis && classes.length === 1 && !STRUCTURAL_CLASSES.has(classes[0])) {
+        out.classFaces[classes[0]] = {
+          family: familyMatch ? familyMatch[1] : null,
+          ...(decls['font-weight'] === 'bold' ? { bold: true } : {}),
+          ...(decls['font-style'] === 'italic'
+            ? { italic: true }
+            : decls['font-style'] === 'normal'
+              ? { italic: false }
+              : {}),
+        };
+      }
+
+      // Every text-align is recorded; the checker separates the vlist-
+      // positioning rules from cosmetic ones (.svg-align, .cd-label-left).
+      const ta = decls['text-align'];
+      if (ta === 'left' || ta === 'center' || ta === 'right') {
+        out.alignRules.push({ selector: sel, align: ta });
+      }
+
+      // The default-face shorthand: `.katex { font: normal 1.21em KaTeX_Main ... }`.
+      if (decls['font']) {
+        const fam = /^[\w-]+\s+[\d.]+em\s+KaTeX_([A-Za-z0-9]+)/.exec(decls['font']);
+        if (fam) out.defaultFontFamily = fam[1];
+      }
+    }
+  }
+
+  return out;
+}
+
+/** Compares one numeric pair within float-print tolerance. */
+function close(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 1e-12;
+}
+
+/**
+ * Re-extracts the upstream constants and diffs them against the committed emit
+ * tables. Returns human-readable drift messages; empty means clean. Each
+ * message names both sides so the fix (update the emit table, or re-record the
+ * upstream value deliberately) starts from evidence.
+ */
+export function checkEmitConstants(sourceDir: string): string[] {
+  const up = extractUpstreamEmitConstants(sourceDir);
+  const drift: string[] = [];
+
+  if (up.muDenominator === null) {
+    drift.push('$mu disappeared from katex.scss; emit MU has nothing to anchor to');
+  } else if (!close(MU, 1 / up.muDenominator)) {
+    drift.push(`$mu is now 1/${up.muDenominator} em but emit MU is ${MU} (src/emit/svg.ts)`);
+  }
+
+  if (up.nullDelimiterSpace === null) {
+    drift.push('$nulldelimiterspace disappeared from katex.scss');
+  } else if (!close(NULL_DELIMITER_SPACE, up.nullDelimiterSpace)) {
+    drift.push(
+      `$nulldelimiterspace is now ${up.nullDelimiterSpace} em but emit NULL_DELIMITER_SPACE is ` +
+        `${NULL_DELIMITER_SPACE} (src/emit/svg.ts)`,
+    );
+  }
+
+  const sizesDrift = (got: number[]): boolean =>
+    got.length !== SIZE_MULTIPLIERS.length || got.some((v, i) => v !== SIZE_MULTIPLIERS[i]);
+  if (up.scssSizes.length === 0) {
+    drift.push('$sizes list missing from katex.scss');
+  } else if (sizesDrift(up.scssSizes)) {
+    drift.push(
+      `katex.scss $sizes is [${up.scssSizes}] but emit SIZE_MULTIPLIERS is ` +
+        `[${SIZE_MULTIPLIERS}] (src/emit/fonts.ts)`,
+    );
+  }
+  if (up.optionsSizes.length === 0) {
+    drift.push('sizeMultipliers missing from Options.ts');
+  } else if (sizesDrift(up.optionsSizes)) {
+    drift.push(
+      `Options.ts sizeMultipliers is [${up.optionsSizes}] but emit SIZE_MULTIPLIERS is ` +
+        `[${SIZE_MULTIPLIERS}] (src/emit/fonts.ts)`,
+    );
+  }
+
+  if (up.defaultFontFamily === null) {
+    drift.push('.katex default font shorthand missing from katex.scss');
+  } else if (`${up.defaultFontFamily}-Regular` !== DEFAULT_FONT) {
+    drift.push(
+      `.katex default font is now KaTeX_${up.defaultFontFamily} but emit DEFAULT_FONT is ` +
+        `${DEFAULT_FONT} (src/emit/fonts.ts)`,
+    );
+  }
+
+  // Class-to-face tables, compared axis-by-axis; null/undefined means "not
+  // set", which must agree with "not set" on the other side.
+  for (const [cls, face] of Object.entries(up.classFaces)) {
+    const mine = CLASS_TO_FACE[cls];
+    if (!mine) {
+      drift.push(`upstream font class .${cls} is not encoded in CLASS_TO_FACE (src/emit/fonts.ts)`);
+      continue;
+    }
+    if ((face.family ?? '') !== (mine.family ?? '')) {
+      drift.push(
+        `.${cls} family is now ${face.family ?? '(none)'} but CLASS_TO_FACE says '${mine.family}'`,
+      );
+    }
+    if ((face.bold ?? false) !== (mine.bold ?? false)) {
+      drift.push(
+        `.${cls} bold is now ${face.bold ?? false} but CLASS_TO_FACE says ${mine.bold ?? false}`,
+      );
+    }
+    if ((face.italic ?? undefined) !== (mine.italic ?? undefined)) {
+      drift.push(
+        `.${cls} italic is now ${face.italic ?? '(unset)'} but CLASS_TO_FACE says ` +
+          `${mine.italic ?? '(unset)'}`,
+      );
+    }
+  }
+  for (const cls of Object.keys(CLASS_TO_FACE)) {
+    if (!(cls in up.classFaces)) {
+      drift.push(`CLASS_TO_FACE entry .${cls} has no matching font-axis rule in katex.scss`);
+    }
+  }
+
+  for (const [cls, font] of Object.entries(up.delimSizeFonts)) {
+    if (DELIM_SIZE_FONTS[cls] !== font) {
+      drift.push(
+        `delimsizing ${cls} maps to ${font} upstream but DELIM_SIZE_FONTS says ` +
+          `${DELIM_SIZE_FONTS[cls]}`,
+      );
+    }
+  }
+  for (const cls of Object.keys(DELIM_SIZE_FONTS)) {
+    if (!(cls in up.delimSizeFonts)) {
+      drift.push(`DELIM_SIZE_FONTS entry ${cls} has no matching rule in katex.scss`);
+    }
+  }
+
+  for (const [cls, font] of Object.entries(up.directFontClasses)) {
+    if (DIRECT_FONT_CLASSES[cls] !== font) {
+      drift.push(
+        `${cls} maps to ${font} upstream but DIRECT_FONT_CLASSES says ${DIRECT_FONT_CLASSES[cls]}`,
+      );
+    }
+  }
+  for (const cls of Object.keys(DIRECT_FONT_CLASSES)) {
+    if (!(cls in up.directFontClasses)) {
+      drift.push(`DIRECT_FONT_CLASSES entry ${cls} has no matching rule in katex.scss`);
+    }
+  }
+
+  // Direction one: every emitted key must have an upstream rule that names
+  // its class — found by class match, whatever selector shape carries it.
+  const alignFor = (key: string): string | undefined => {
+    const re = new RegExp(`\\.${key}(?![\\w-])`);
+    return up.alignRules.find((rule) => re.test(rule.selector))?.align;
+  };
+  for (const [key, mine] of Object.entries(ROW_ALIGN_CLASSES)) {
+    const want = alignFor(key) ?? EXPECTED_ROW_ALIGN_DEVIATIONS[key]?.align;
+    if (want === undefined) {
+      drift.push(
+        `ROW_ALIGN_CLASSES entry ${key} has no upstream text-align rule and no recorded deviation`,
+      );
+    } else if (want !== mine) {
+      drift.push(`upstream aligns ${key} to ${want} but ROW_ALIGN_CLASSES says ${mine}`);
+    }
+  }
+
+  // Direction two: an upstream rule that positions vlist rows through a class
+  // the emit layer neither encodes nor records as a deviation. Scoped to
+  // selectors that reach a vlist (or the mfrac double-span shape), so
+  // cosmetic text-aligns (.svg-align, .cd-label-left, display math centering)
+  // do not read as drift.
+  for (const rule of up.alignRules) {
+    if (!/vlist-t/.test(rule.selector) && !/> span > span/.test(rule.selector)) continue;
+    const owners = [...rule.selector.matchAll(/\.([A-Za-z][\w-]*)/g)]
+      .map((m) => m[1])
+      .filter((c) => !STRUCTURAL_CLASSES.has(c));
+    const candidate = owners[owners.length - 1];
+    if (!candidate) continue;
+    if (candidate in ROW_ALIGN_CLASSES || candidate in EXPECTED_ROW_ALIGN_DEVIATIONS) continue;
+    drift.push(
+      `upstream positions vlists of .${candidate} to ${rule.align} but ` +
+        'ROW_ALIGN_CLASSES does not encode it',
+    );
+  }
+
+  return drift;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const sourceIdx = args.indexOf('--source');
@@ -957,6 +1396,19 @@ function main() {
   // it never ran. Anything that can fail must fail while the committed tree is
   // still intact.
   const drifted = checkHandWritten(sourceDir, pkgRoot);
+
+  // The emit-constants guard runs in both modes and fails before anything is
+  // written, for the same fail-early reason as above.
+  const constantsDrift = checkEmitConstants(sourceDir);
+  if (constantsDrift.length > 0) {
+    console.error(
+      `vendor-katex: ${constantsDrift.length} emit constant(s) diverged from upstream:\n` +
+        constantsDrift.map((d) => `  - ${d}`).join('\n') +
+        `\nUpdate src/emit/ to the new upstream values (after re-verifying the affected ` +
+        `placements against a real browser), then re-run.`,
+    );
+    process.exit(1);
+  }
 
   if (!check) rmSync(committedDir, { recursive: true, force: true });
 
@@ -1067,4 +1519,8 @@ layer in \`../emit/\` translates the span tree and does not re-derive layout.
   }
 }
 
-main();
+// Guarded so the extraction and comparison helpers above can be imported from
+// tests (vitest sets import.meta.main false) without executing a vendor run.
+if (import.meta.main) {
+  main();
+}

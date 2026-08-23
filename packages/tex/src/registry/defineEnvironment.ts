@@ -41,10 +41,28 @@ type EnvHandler = (
   optArgs: (AnyParseNode | null | undefined)[],
 ) => AnyParseNode;
 
-/** Parse-time properties controlling how the environment is read. */
+/**
+ * Parse-time properties controlling how the environment is read.
+ *
+ * Upstream's `EnvProps` declares only `numArgs`, and its `defineEnvironment`
+ * pins the rest to hardcoded defaults — so a future KaTeX that starts passing
+ * `argTypes` or `numOptionalArgs` for an environment would have those fields
+ * silently dropped here. They are accepted and passed through instead, with
+ * upstream's documented defaults, so a version bump surfaces new fields in
+ * `_environments` rather than losing them (issue #611).
+ */
 type EnvProps = {
   /** Number of arguments following `\begin{name}`. (default 0) */
   numArgs: number;
+  /**
+   * The type of argument to parse in each position, optional arguments first,
+   * mirroring `FunctionSpec.argTypes`. (default undefined)
+   */
+  argTypes?: ArgType[];
+  /** Whether the environment is allowed inside text mode. (default false) */
+  allowedInText?: boolean;
+  /** How many optional arguments to parse. (default 0) */
+  numOptionalArgs?: number;
 };
 
 /**
@@ -95,11 +113,16 @@ export default function defineEnvironment<NODETYPE extends NodeType>({
   handler,
   htmlBuilder,
 }: EnvDefSpec<NODETYPE>) {
+  // Resolve every field explicitly, as upstream's `defineFunction` does for
+  // its own spec: declared values pass through, undeclared ones get their
+  // documented defaults. Rebuilding the literal (rather than spreading props)
+  // keeps `_environments` entries shaped exactly like `EnvSpec`.
   const data = {
     type,
     numArgs: props.numArgs || 0,
-    allowedInText: false,
-    numOptionalArgs: 0,
+    argTypes: props.argTypes,
+    allowedInText: props.allowedInText ?? false,
+    numOptionalArgs: props.numOptionalArgs ?? 0,
     handler,
   };
   for (let i = 0; i < names.length; ++i) {
