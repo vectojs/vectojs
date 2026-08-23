@@ -83,6 +83,10 @@ function fontMeasurer(font: string): GlyphMeasurer | null {
   };
 }
 
+/** Extra lines drawn above and below a ScrollView-driven window, so fast
+ *  scrolling never shows a blank edge before the next drive lands. */
+const VISIBLE_RANGE_OVERSCAN_LINES = 2;
+
 /**
  * A multi-line text component rendered with native canvas `fillText`.
  *
@@ -90,6 +94,11 @@ function fontMeasurer(font: string): GlyphMeasurer | null {
  * `Intl.Segmenter` path as `TextEntity`), with its cold/hot split: {@link setText}
  * re-measures (cold), {@link setMaxWidth} only re-wraps (hot). Projects a `div`
  * shadow node carrying the text as its accessible name.
+ *
+ * Implements ScrollView's duck-typed `ScrollVirtualizable` contract: when
+ * driven by {@link Text.setVisibleRange}, only the lines inside the pushed
+ * window are drawn (see {@link render}). Never driven — e.g. outside a
+ * ScrollView — every line draws exactly as before.
  *
  * @example new Text('Hello world', { maxWidth: 200 }).setPosition(20, 20);
  */
@@ -126,6 +135,12 @@ export class Text extends UIComponent {
    *  the glyph-accurate render + positioned-carrier projection so selection
    *  overlaps the reordered / right-aligned canvas glyphs. */
   private hasBidi = false;
+  /**
+   * Inclusive `[startLine, endLine]` window last pushed by
+   * {@link setVisibleRange}, or `null` while never driven (draw everything).
+   * Cleared by every full relayout, since those renumber the visual lines.
+   */
+  private visibleLines: { start: number; end: number } | null = null;
 
   constructor(text: string, opts: TextOptions = {}) {
     super();
@@ -457,12 +472,47 @@ export class Text extends UIComponent {
       this.lineSourceRanges = [{ start: 0, end: 0 }];
     }
 
+    // A relayout renumbers every visual line, so any window pushed by a
+    // driving ScrollView is stale — drop it and draw whole until the next
+    // frame's drive re-pushes one.
+    this.visibleLines = null;
+
     this.width = result.totalWidth;
     this.height = Math.max(maxIdx + 1, 1) * this.lineHeight;
   }
 
   public getA11yAttributes(): A11yAttributes {
     return { label: this.text };
+  }
+
+  /**
+   * Receive the visible viewport from an enclosing {@link ScrollView}, which
+   * detects this component via the duck-typed `ScrollVirtualizable` contract
+   * (`typeof child.setVisibleRange === 'function'`) and pushes it every frame.
+   *
+   * Stores the inclusive line range intersecting
+   * `[scrollY, scrollY + viewportHeight]` — widened by a two-line overscan so
+   * sub-line offsets and spring overshoot never pop a partially visible edge
+   * line out of existence — and both render paths skip lines outside it. The
+   * stored range is cleared by any full relayout ({@link setText},
+   * {@link setMaxWidth}, {@link setTextAlign}), so a Text that is never driven
+   * keeps drawing every line with zero behavior change.
+   *
+   * @param scrollY - Content-space top of the viewport relative to this Text's own top.
+   * @param viewportHeight - Visible height in pixels.
+   */
+  public setVisibleRange(scrollY: number, viewportHeight: number): void {
+    const start = Math.max(0, Math.floor(scrollY / this.lineHeight) - VISIBLE_RANGE_OVERSCAN_LINES);
+    const end =
+      Math.ceil((scrollY + viewportHeight) / this.lineHeight) + VISIBLE_RANGE_OVERSCAN_LINES;
+    const lastLine = Math.max(0, this.lines.length - 1);
+    this.visibleLines = { start: Math.min(start, lastLine), end: Math.min(end, lastLine) };
+  }
+
+  /** Whether `line` may draw under the current window (`null` = everything draws). */
+  private lineInWindow(line: number): boolean {
+    const w = this.visibleLines;
+    return w === null || (line >= w.start && line <= w.end);
   }
 
   public render(r: IRenderer): void {
@@ -475,14 +525,19 @@ export class Text extends UIComponent {
       for (const node of this.glyphNodes) {
         if (!node.char.trim()) continue;
         const line = Math.round(node.y / lineQuantum);
+        if (!this.lineInWindow(line)) continue;
         r.fillText(node.char, node.x, (line + 0.8) * this.lineHeight, this.font, this.color);
       }
       return;
     }
-    // Fast default: one fillText per visual line.
+    // Fast default: one fillText per visual line. When a ScrollView has pushed
+    // a window via setVisibleRange, lines outside [start, end] skip their
+    // fillText call — on tall selectable text those calls are the dominant
+    // per-frame cost while scrolled.
     for (let i = 0; i < this.lines.length; i++) {
-      if (this.lines[i])
-        r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
+      if (!this.lines[i]) continue;
+      if (!this.lineInWindow(i)) continue;
+      r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
     }
   }
 }
