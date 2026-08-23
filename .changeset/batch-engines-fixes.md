@@ -22,5 +22,5 @@ Engines validation sweep (#610): loud boundary validation for math, animation, a
 
 - Pin APIs (`pinNode`, `unpinNode`, `setNodePin`, `clearNodePin`) are now **ID-addressed** like every other node reference. Index-addressed pins silently retargeted to the wrong node after `removeNodes` compaction.
 - Link endpoint validation is unified and strict: `setGraph`/`appendGraph` now throw on dangling or self links (matching `updateLinks`) and validate the whole batch before mutating, so failed calls leave state unchanged.
-- Collision broad-phase bins points into power-of-two radius tiers with per-tier grids, bounding probe cost by local density instead of packing small nodes into cells sized by the largest hub (measured 197ms → 5ms per tick at 12k points with one large hub).
-- `removeLinks` resolves bare link IDs through a lazily built index, O(links + items) instead of O(items × links).
+- Collision broad-phase bins points into power-of-two radius tiers with per-tier grids, bounding probe cost by local density instead of packing small nodes into cells sized by the largest hub (measured 352M → 2.3M pair-scans over three ticks at 12k points with one large hub; uniform-radius scenes stay within noise at ~1 ms/tick).
+- The collision tier offset tables are sized by tier span, not point count, so legal-but-extreme radius spreads can no longer overflow the counting sort.
