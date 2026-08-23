@@ -28,7 +28,7 @@ describe('ForceLayout2D link mutations', () => {
       ],
     });
     layout.step(4);
-    layout.pinNode(2, 20, -10);
+    layout.pinNode('c', 20, -10);
 
     const beforePositions = [...layout.positions];
     const beforeVelocityX = [...state(layout).velocityX];
