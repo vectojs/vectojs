@@ -26,6 +26,19 @@ export interface StackOptions {
    * entire painted subtree. Defaults to false.
    */
   cullOffscreenChildren?: boolean;
+  /**
+   * Target extent along the main axis in pixels. When set (and `wrap` is
+   * false), `layout()` stretches the LAST child along the main axis so the
+   * children plus gaps total exactly this size — enabling fill-remaining
+   * layouts without hand-rolled per-render loops. The last child never
+   * shrinks below its own content size: if the other children plus gaps
+   * leave less room than that, it keeps its content size and the content
+   * overflows the container (the container still reports `fillTarget` as its
+   * main-axis extent). All other children keep their sizes. Ignored when
+   * `wrap: true`. While set, the O(1) incremental append paths are bypassed
+   * and every mutation re-runs the full `layout()`.
+   */
+  fillTarget?: number;
 }
 
 /**
@@ -33,8 +46,9 @@ export interface StackOptions {
  * with a gap, aligning them on the cross axis. Re-runs layout whenever a child is
  * added; its own `width`/`height` size to the laid-out content (enabling culling).
  *
- * Children keep their own sizes; only their `x`/`y` are set. Purely structural —
- * draws nothing itself.
+ * Children keep their own sizes; only their `x`/`y` are set (the sole
+ * exception is the last child when `fillTarget` is set — see
+ * {@link StackOptions.fillTarget}). Purely structural — draws nothing itself.
  *
  * @example
  * const col = new Stack({ direction: 'vertical', gap: 12 });
@@ -50,6 +64,18 @@ export class Stack extends UIComponent {
   public maxWidth: number;
   public maxHeight: number;
   public cullOffscreenChildren: boolean;
+  /** Requested main-axis extent, or `undefined` when {@link StackOptions.fillTarget} is not set. */
+  public fillTarget: number | undefined;
+
+  // Bookkeeping for the stretch `layout()` applies to the last child while
+  // `fillTarget` is set: which entity was stretched, its content (pre-stretch)
+  // main extent, and the extent actually applied. A later `layout()` uses these
+  // to tell its own previous stretch apart from a genuine external resize —
+  // so repeated layouts don't compound the stretch and a shrinking
+  // `fillTarget` still takes effect.
+  private fillStretchedChild: Entity | null = null;
+  private fillStretchedOriginal = 0;
+  private fillStretchedApplied = 0;
 
   // Set by `remove()` (or anything else that can invalidate the incremental
   // append assumptions below) so the next `add()` falls back to a full
@@ -80,6 +106,7 @@ export class Stack extends UIComponent {
     this.maxWidth = opts.maxWidth ?? Infinity;
     this.maxHeight = opts.maxHeight ?? Infinity;
     this.cullOffscreenChildren = opts.cullOffscreenChildren ?? false;
+    this.fillTarget = opts.fillTarget;
     this.viewportCullChildren = this.cullOffscreenChildren;
   }
 
@@ -139,7 +166,10 @@ export class Stack extends UIComponent {
 
   public add(child: Entity): this {
     super.add(child);
-    if (this.fastAppendDirty || this.align !== 'start') {
+    if (this.fastAppendDirty || this.align !== 'start' || this.fillTarget !== undefined) {
+      // fillTarget forces the full path too: the previous last child may be
+      // carrying layout()'s stretch, which must be un-applied before the new
+      // child is placed and the stretch recomputed onto the new last child.
       this.layout();
       this.fastAppendDirty = false;
     } else if (this.wrap) {
@@ -182,6 +212,7 @@ export class Stack extends UIComponent {
       this.fastAppendDirty ||
       this.wrap ||
       this.align !== 'start' ||
+      this.fillTarget !== undefined ||
       this.children[this.children.length - 1] !== child
     ) {
       this.layout();
@@ -273,6 +304,23 @@ export class Stack extends UIComponent {
     const vertical = this.direction === 'vertical';
     const limit = vertical ? this.maxHeight : this.maxWidth;
 
+    // Fill-target bookkeeping: un-apply the stretch that an earlier layout()
+    // put on a child, so the sizes measured below are content sizes rather
+    // than this container's own past output. When the stretched child is
+    // still the last one AND fill is still active, the entity physically
+    // keeps its stretched size for now (it is re-stretched below anyway) and
+    // only the recorded content size feeds the math — that keeps repeated
+    // layouts idempotent, respects genuine external resizes, and lets a
+    // shrinking fillTarget take effect.
+    const fillActive = this.fillTarget !== undefined && !this.wrap;
+    const lastChild = this.children[this.children.length - 1];
+    if (this.fillStretchedChild && (!fillActive || this.fillStretchedChild !== lastChild)) {
+      const prev = this.fillStretchedChild;
+      if (vertical) prev.height = this.fillStretchedOriginal;
+      else prev.width = this.fillStretchedOriginal;
+      this.fillStretchedChild = null;
+    }
+
     // Pass 1: group into lines if wrapping
     const lines: Entity[][] = [];
     let currentLine: Entity[] = [];
@@ -290,6 +338,34 @@ export class Stack extends UIComponent {
       }
     }
     if (currentLine.length > 0) lines.push(currentLine);
+
+    // Pass 1.5 (fill): stretch the LAST child along the main axis so the
+    // children plus gaps total exactly fillTarget — floored at its content
+    // size, never shrinking below it. With wrap off, pass 1 produced at most
+    // one line holding every child. The content size is the recorded
+    // pre-stretch value when this child still carries our own previous
+    // stretch; anything else means it was genuinely resized from outside and
+    // the new size wins.
+    if (fillActive && lines.length > 0) {
+      const line = lines[lines.length - 1];
+      const last = line[line.length - 1];
+      const rawMain = vertical ? last.height : last.width;
+      const contentMain =
+        this.fillStretchedChild === last && rawMain === this.fillStretchedApplied
+          ? this.fillStretchedOriginal
+          : rawMain;
+      let othersMain = 0;
+      for (let i = 0; i < line.length - 1; i++) {
+        othersMain += vertical ? line[i].height : line[i].width;
+      }
+      const leftover = this.fillTarget! - othersMain - (line.length - 1) * this.gap;
+      const applied = Math.max(contentMain, leftover);
+      if (vertical) last.height = applied;
+      else last.width = applied;
+      this.fillStretchedChild = last;
+      this.fillStretchedOriginal = contentMain;
+      this.fillStretchedApplied = applied;
+    }
 
     // Pass 2: layout lines
     let totalCross = 0;
@@ -329,6 +405,16 @@ export class Stack extends UIComponent {
 
     this.width = vertical ? totalCross : maxTotalMain;
     this.height = vertical ? maxTotalMain : totalCross;
+
+    // While filling, the container reports exactly fillTarget along the main
+    // axis — even when insufficient space floored the last child at its
+    // content size and the laid-out children now overflow it (overflow
+    // semantics, like a fixed-size box). With no children there is nothing
+    // to stretch, so an empty stack keeps its content-based size of zero.
+    if (fillActive && lines.length > 0) {
+      if (vertical) this.height = this.fillTarget!;
+      else this.width = this.fillTarget!;
+    }
 
     // Refresh the incremental wrap-append state from the just-computed lines so
     // the next wrapping `add()` can extend the last line in O(1) instead of
