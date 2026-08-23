@@ -11,7 +11,7 @@ import {
   createMetricsMeasurer,
 } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
-import { familyOf, fontSizePx, getSharedMeasuringContext } from './measure';
+import { familyOf, fontSizePx, getSharedMeasuringContext, measureText } from './measure';
 import type { ContentProjection, ContentProjectionRun } from '@vectojs/core';
 
 /** Construction options for {@link Text}. */
@@ -31,11 +31,15 @@ export interface TextOptions {
   /**
    * Horizontal alignment. `'justify'` stretches every wrapped line flush to
    * {@link maxWidth} (paragraph-final and newline-ended lines stay ragged);
-   * `'left'` (default) leaves them ragged. Needs {@link maxWidth} to take
-   * effect. When justify (or {@link hyphenate}) is active the component draws
-   * glyph-by-glyph; left-aligned text keeps the fast one-`fillText`-per-line path.
+   * `'center'` / `'right'` shift each wrapped line by
+   * `(maxWidth − lineWidth) × ½ / 1`; `'left'` (default) leaves them ragged.
+   * Needs {@link maxWidth} to take effect — without one, center/right behave
+   * like left. When justify (or {@link hyphenate}) is active the component
+   * draws glyph-by-glyph; left/center/right keep the fast one-`fillText`-per-
+   * line path, with each aligned line's selection box tracking its glyphs via a
+   * positioned single-run carrier.
    */
-  textAlign?: 'left' | 'justify';
+  textAlign?: 'left' | 'center' | 'right' | 'justify';
   /**
    * Optional hyphenator: given a word, return its break parts (e.g.
    * `['hyphen', 'ation']`). A word that doesn't fit breaks at the chosen point
@@ -83,6 +87,10 @@ function fontMeasurer(font: string): GlyphMeasurer | null {
   };
 }
 
+/** Extra lines drawn above and below a ScrollView-driven window, so fast
+ *  scrolling never shows a blank edge before the next drive lands. */
+const VISIBLE_RANGE_OVERSCAN_LINES = 2;
+
 /**
  * A multi-line text component rendered with native canvas `fillText`.
  *
@@ -90,6 +98,11 @@ function fontMeasurer(font: string): GlyphMeasurer | null {
  * `Intl.Segmenter` path as `TextEntity`), with its cold/hot split: {@link setText}
  * re-measures (cold), {@link setMaxWidth} only re-wraps (hot). Projects a `div`
  * shadow node carrying the text as its accessible name.
+ *
+ * Implements ScrollView's duck-typed `ScrollVirtualizable` contract: when
+ * driven by {@link Text.setVisibleRange}, only the lines inside the pushed
+ * window are drawn (see {@link render}). Never driven — e.g. outside a
+ * ScrollView — every line draws exactly as before.
  *
  * @example new Text('Hello world', { maxWidth: 200 }).setPosition(20, 20);
  */
@@ -104,6 +117,15 @@ export class Text extends UIComponent {
   private engine: LayoutEngine;
   private prepared: PreparedText;
   private fontSize: number;
+  /**
+   * Component-level horizontal alignment. The {@link LayoutEngine} only knows
+   * `'left' | 'justify'` (its own {@link LayoutEngine.textAlign}), so center /
+   * right are a post-layout concern here: every wrapped line keeps its natural
+   * left-aligned geometry and gets a per-line x-offset instead (see
+   * {@link lineOffsets}). Justify is still forwarded to the engine, which owns
+   * glyph placement for it.
+   */
+  private uiAlign: 'left' | 'center' | 'right' | 'justify';
   private lines: string[] = [];
   private lineSourceRanges: Array<{ start: number; end: number }> = [];
   /** Per-glyph nodes from the last layout, kept only when a glyph-accurate
@@ -111,6 +133,18 @@ export class Text extends UIComponent {
    *  `fillText` per line and never touches this. */
   private glyphNodes: LayoutNode[] = [];
   private perGlyph = false;
+  /**
+   * Per-visual-line x-offset applied at paint and projection time, recomputed
+   * by {@link applyLayout}. Zero everywhere for left/justify (justify is
+   * engine-driven); for `'center'` / `'right'` line i is shifted by
+   * `(maxWidth − measureText(line_i)) × {center: ½, right: 1}`. Line widths are
+   * measured with the shared LRU-cached `measureText`, which measures the whole
+   * shaped line string — the same extent the fast path's single `fillText`
+   * paints. Bidi content keeps pure engine placement (see
+   * {@link bidiLineOriginX}) and never takes an alignment offset, mirroring how
+   * justify likewise stays off the bidi path.
+   */
+  private lineOffsets: number[] = [];
   /**
    * Bumped whenever a layout or a projected property changes.
    *
@@ -126,6 +160,12 @@ export class Text extends UIComponent {
    *  the glyph-accurate render + positioned-carrier projection so selection
    *  overlaps the reordered / right-aligned canvas glyphs. */
   private hasBidi = false;
+  /**
+   * Inclusive `[startLine, endLine]` window last pushed by
+   * {@link setVisibleRange}, or `null` while never driven (draw everything).
+   * Cleared by every full relayout, since those renumber the visual lines.
+   */
+  private visibleLines: { start: number; end: number } | null = null;
 
   constructor(text: string, opts: TextOptions = {}) {
     super();
@@ -140,13 +180,15 @@ export class Text extends UIComponent {
     if (opts.preserveLeadingSpaces) {
       this.engine.preserveLeadingSpaces = true;
     }
-    this.engine.textAlign = opts.textAlign ?? 'left';
+    this.uiAlign = opts.textAlign ?? 'left';
+    this.engine.textAlign = this.uiAlign === 'justify' ? 'justify' : 'left';
     if (opts.hyphenate) this.engine.hyphenate = opts.hyphenate;
     // Justify moves glyphs within a line and hyphenate inserts a '-' not in the
     // source string, so a single fillText(line) can't reproduce either; switch
-    // to the glyph-accurate render path when either is on. Left-aligned text
-    // keeps the fast one-fillText-per-line default.
-    this.perGlyph = this.engine.textAlign === 'justify' || !!opts.hyphenate;
+    // to the glyph-accurate render path when either is on. Left/center/right
+    // text keeps the fast one-fillText-per-line default — alignment shifts the
+    // whole line, which one fillText expresses exactly as well as left does.
+    this.perGlyph = this.uiAlign === 'justify' || !!opts.hyphenate;
     this.prepared = this.engine.prepare(this.text, EMPTY_GLYPH_ATLAS, this.fontSize);
     // Not interactive: static text's semantic presence is its content
     // projection. An interactive a11y div would sit ABOVE the selectable
@@ -239,6 +281,35 @@ export class Text extends UIComponent {
   }
 
   /**
+   * Positioned single-run carrier for a center/right-aligned line — the
+   * non-justified sibling of {@link justifiedRuns}. The canvas paints the whole
+   * line with ONE `fillText` at the line's alignment offset, so one run whose
+   * `x` is that offset and whose `width` is the line's measured extent is
+   * exactly its geometry: Scene places the run as a flow-relative positioned
+   * carrier (Scene.ts's runs branch) pinned to the canvas-measured width
+   * instead of the browser's own re-measurement, so the DOM selection box
+   * overlaps the shifted glyphs instead of hugging the left edge at x=0.
+   * Empty lines paint nothing and project nothing.
+   */
+  private alignedLineRun(lineIndex: number): ContentProjectionRun[] | undefined {
+    const text = this.lines[lineIndex];
+    if (!text.trim()) return undefined;
+    return [
+      {
+        text,
+        // x is the trimmed-extent offset (the paint origin); width stays the
+        // UNTRIMMED measured extent so the selectable box covers every
+        // character copy returns, the hung trailing space included — it may
+        // poke past the ink (or maxWidth on right-aligned lines), exactly like
+        // CSS hangs a wrap-point space into the margin.
+        x: this.lineOffsets[lineIndex] ?? 0,
+        width: measureText(text, this.font),
+        font: this.font,
+      },
+    ];
+  }
+
+  /**
    * Visual left origin (min glyph x) of a bidi line. The engine right-aligns
    * RTL lines, so their glyphs don't start at x=0; projecting the logical line
    * string at this origin (with the browser doing its own bidi via `dir=auto`)
@@ -266,7 +337,8 @@ export class Text extends UIComponent {
         selectable: this.selectable,
       };
     }
-    const justified = this.engine.textAlign === 'justify';
+    const justified = this.uiAlign === 'justify';
+    const aligned = this.uiAlign === 'center' || this.uiAlign === 'right';
     // Only build the rows in the band. Unlike the grid path, Scene reads these
     // positionally and every entry carries its own `y`, so a compacted array is
     // correct — no index alignment to preserve.
@@ -282,15 +354,22 @@ export class Text extends UIComponent {
       const visualText = this.lines[index];
       const range = this.lineSourceRanges[index] ?? { start: 0, end: 0 };
       const nextStart = this.lineSourceRanges[index + 1]?.start ?? this.text.length;
-      // Justify uses per-word positioned carriers (widened gaps). Bidi/RTL does
+      // Justify uses per-word positioned carriers (widened gaps); center/right
+      // use one positioned run per line (the alignment offset). Bidi/RTL does
       // NOT use carriers: per-glyph carriers overlap selection rects but break
       // logical caret hit-mapping (the browser can't resolve a click inside a
       // 1-char box back to the logical offset). Instead keep a single
       // natural-flow line string — the browser does its own bidi (correct caret
       // mapping) — but anchor it at the line's VISUAL origin so the right-aligned
       // RTL glyphs and the DOM selection box line up.
-      const runs = this.hasBidi ? undefined : justified ? this.justifiedRuns(index) : undefined;
-      const lineX = this.hasBidi ? this.bidiLineOriginX(index) : 0;
+      const runs = this.hasBidi
+        ? undefined
+        : justified
+          ? this.justifiedRuns(index)
+          : aligned
+            ? this.alignedLineRun(index)
+            : undefined;
+      const lineX = this.hasBidi ? this.bidiLineOriginX(index) : (this.lineOffsets[index] ?? 0);
       return {
         // Canvas keeps its visual glyph order; the semantic layer keeps logical
         // source order so native copy and RTL text remain correct.
@@ -315,8 +394,9 @@ export class Text extends UIComponent {
         //
         // Excluded when bidi: DOM order is logical while x is visual, so
         // per-glyph carriers break caret hit-mapping (PR #146 revert). Excluded
-        // when justified because those lines already carry positioned runs.
-        perGraphemeCarriers: !this.hasBidi && !justified,
+        // when justified or aligned because those lines already carry
+        // positioned runs.
+        perGraphemeCarriers: !this.hasBidi && !justified && !aligned,
         // render()'s fast default paints this line as ONE shaped
         // `fillText(line)`, so the ink includes browser kerning and ligatures
         // and the carriers must be measured as shaped prefix differences. The
@@ -388,12 +468,16 @@ export class Text extends UIComponent {
   }
 
   /**
-   * Set horizontal alignment (`'justify'` stretches wrapped lines flush to
-   * {@link setMaxWidth}'s width; the last line stays ragged) and re-lay out.
-   * Switching to `'justify'` engages the glyph-accurate render path.
+   * Set horizontal alignment and re-lay out. `'justify'` stretches wrapped
+   * lines flush to {@link setMaxWidth}'s width (the last line stays ragged) and
+   * engages the glyph-accurate render path; `'center'` / `'right'` shift every
+   * line by `(maxWidth − lineWidth) × ½ / 1` on the fast path, with a
+   * positioned single-run carrier per line so selection tracks the glyphs.
+   * Needs {@link maxWidth} — without one, center/right behave like left.
    */
-  public setTextAlign(align: 'left' | 'justify'): this {
-    this.engine.textAlign = align;
+  public setTextAlign(align: 'left' | 'center' | 'right' | 'justify'): this {
+    this.uiAlign = align;
+    this.engine.textAlign = align === 'justify' ? 'justify' : 'left';
     if (align === 'justify') this.perGlyph = true;
     this.applyLayout();
     this.scene?.markDirty();
@@ -457,12 +541,72 @@ export class Text extends UIComponent {
       this.lineSourceRanges = [{ start: 0, end: 0 }];
     }
 
+    // Alignment offsets are a post-layout, per-line quantity: the engine stays
+    // left-aligned (its own textAlign only knows left/justify), so center/right
+    // shift each wrapped line by the slack between maxWidth and the line's
+    // measured extent. measureText is LRU-cached and measures the whole shaped
+    // string — exactly what the fast path's single fillText paints. The slack
+    // comes from the TRIMMED extent: the engine retains the wrap-point trailing
+    // space in the line string, and CSS text-align hangs that space — it paints
+    // nothing and must not eat into the slack, or centered ink sits left of
+    // true center and right-aligned ink stops short of the edge. Without a
+    // maxWidth there is no slack to distribute and center/right degenerate to
+    // left (same rule as justify needing a wrap width). Bidi keeps pure engine
+    // placement; mixing an alignment shift into bidiLineOriginX would
+    // double-offset lines the engine already right-aligns.
+    const aligned = (this.uiAlign === 'center' || this.uiAlign === 'right') && !this.hasBidi;
+    if (aligned && this.maxWidth !== undefined) {
+      const factor = this.uiAlign === 'right' ? 1 : 0.5;
+      const maxW = this.maxWidth;
+      this.lineOffsets = this.lines.map((line) => {
+        const w = measureText(line.trimEnd(), this.font);
+        return line.trim() ? (maxW - w) * factor : 0;
+      });
+    } else {
+      this.lineOffsets = new Array(this.lines.length).fill(0);
+    }
+
+    // A relayout renumbers every visual line, so any window pushed by a
+    // driving ScrollView is stale — drop it and draw whole until the next
+    // frame's drive re-pushes one.
+    this.visibleLines = null;
+
     this.width = result.totalWidth;
     this.height = Math.max(maxIdx + 1, 1) * this.lineHeight;
   }
 
   public getA11yAttributes(): A11yAttributes {
     return { label: this.text };
+  }
+
+  /**
+   * Receive the visible viewport from an enclosing {@link ScrollView}, which
+   * detects this component via the duck-typed `ScrollVirtualizable` contract
+   * (`typeof child.setVisibleRange === 'function'`) and pushes it every frame.
+   *
+   * Stores the inclusive line range intersecting
+   * `[scrollY, scrollY + viewportHeight]` — widened by a two-line overscan so
+   * sub-line offsets and spring overshoot never pop a partially visible edge
+   * line out of existence — and both render paths skip lines outside it. The
+   * stored range is cleared by any full relayout ({@link setText},
+   * {@link setMaxWidth}, {@link setTextAlign}), so a Text that is never driven
+   * keeps drawing every line with zero behavior change.
+   *
+   * @param scrollY - Content-space top of the viewport relative to this Text's own top.
+   * @param viewportHeight - Visible height in pixels.
+   */
+  public setVisibleRange(scrollY: number, viewportHeight: number): void {
+    const start = Math.max(0, Math.floor(scrollY / this.lineHeight) - VISIBLE_RANGE_OVERSCAN_LINES);
+    const end =
+      Math.ceil((scrollY + viewportHeight) / this.lineHeight) + VISIBLE_RANGE_OVERSCAN_LINES;
+    const lastLine = Math.max(0, this.lines.length - 1);
+    this.visibleLines = { start: Math.min(start, lastLine), end: Math.min(end, lastLine) };
+  }
+
+  /** Whether `line` may draw under the current window (`null` = everything draws). */
+  private lineInWindow(line: number): boolean {
+    const w = this.visibleLines;
+    return w === null || (line >= w.start && line <= w.end);
   }
 
   public render(r: IRenderer): void {
@@ -475,14 +619,34 @@ export class Text extends UIComponent {
       for (const node of this.glyphNodes) {
         if (!node.char.trim()) continue;
         const line = Math.round(node.y / lineQuantum);
-        r.fillText(node.char, node.x, (line + 0.8) * this.lineHeight, this.font, this.color);
+        if (!this.lineInWindow(line)) continue;
+        // The offset is 0 on every engine-aligned path (left/justify/bidi);
+        // only center/right with hyphenate shifts per-glyph x here.
+        r.fillText(
+          node.char,
+          node.x + (this.lineOffsets[line] ?? 0),
+          (line + 0.8) * this.lineHeight,
+          this.font,
+          this.color,
+        );
       }
       return;
     }
-    // Fast default: one fillText per visual line.
+    // Fast default: one fillText per visual line, at the line's alignment
+    // offset (0 for left/justify — byte-identical to the pre-alignment draw).
+    // When a ScrollView has pushed a window via setVisibleRange, lines outside
+    // [start, end] skip their fillText call — on tall selectable text those
+    // calls are the dominant per-frame cost while scrolled.
     for (let i = 0; i < this.lines.length; i++) {
-      if (this.lines[i])
-        r.fillText(this.lines[i], 0, (i + 0.8) * this.lineHeight, this.font, this.color);
+      if (!this.lines[i]) continue;
+      if (!this.lineInWindow(i)) continue;
+      r.fillText(
+        this.lines[i],
+        this.lineOffsets[i] ?? 0,
+        (i + 0.8) * this.lineHeight,
+        this.font,
+        this.color,
+      );
     }
   }
 }

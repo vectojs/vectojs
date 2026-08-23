@@ -1,4 +1,9 @@
-import { Markdown, type MarkdownThemePresetName, resolvePresetTheme } from '@vectojs/markdown';
+import {
+  Markdown,
+  PRESET_THEMES,
+  type MarkdownThemePresetName,
+  resolvePresetTheme,
+} from '@vectojs/markdown';
 import {
   DOCUMENT_SCROLL_PHYSICS,
   Dropdown,
@@ -31,13 +36,9 @@ export interface MarkdownAppOptions {
   onChange?: (content: string) => void;
 }
 
-const THEMES: MarkdownAppTheme[] = [
-  'githubDark',
-  'githubLight',
-  'dracula',
-  'solarizedDark',
-  'solarizedLight',
-];
+// Single source of truth with @vectojs/markdown: a preset added there shows up
+// here automatically instead of compiling but silently no-oping in setTheme.
+const THEMES = Object.keys(PRESET_THEMES) as MarkdownThemePresetName[];
 
 /**
  * A standalone canvas-native Markdown reader and source workbench.
@@ -170,6 +171,9 @@ export class MarkdownApp extends UIComponent {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
     this.layoutApp();
+    // Child relayout paths early-return on unchanged geometry (e.g. Markdown
+    // `setMaxWidth`) and never dirty the scene themselves.
+    this.scene?.markDirty();
     return this;
   }
 

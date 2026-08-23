@@ -43,6 +43,30 @@ RUN_TIMEOUT=${RUN_TIMEOUT:-60} # per-browser budget before the one extension
 RUN_EXTEND=${RUN_EXTEND:-180}  # one-shot extension if still working at the deadline
 LOG="/tmp/${BENCH}-server.log"
 
+# Hyprland 0.56 turned `hyprctl dispatch <args>` into a Lua shorthand: the args
+# are spliced into `return hl.dispatch(<args>)` as Lua SOURCE, so the classic
+# positional syntax (`dispatch exec [workspace 3] cmd`) is now a Lua parse
+# error ("']' expected near '3'"). Because every dispatch here discarded its
+# output, that breakage surfaced only as "no window appeared on workspace N".
+# Dispatchers are Lua values under hl.dsp.* and take string/table arguments:
+#
+#   launch  hl.dsp.exec_cmd('<cmd>')                    — still honors `[workspace N]`
+#   focus   hl.dsp.focus({ window = 'address:X' })      — ALSO activates the window's workspace
+#   close   hl.dsp.window.close({ window = 'address:X' })
+#   goto ws hl.dsp.workspace.change_id({ workspace = N, id = N })
+#
+# Verified against Hyprland 0.56.2 (2026-08-23): exec rule pinning, focus-driven
+# activation and address-keyed close all behave as the old positional calls did.
+lua_quote() {
+  # Escape single quotes for embedding in a single-quoted Lua string.
+  local s=${1//\'/\\\'} # ' -> \'
+  printf %s "$s"
+}
+
+dispatch_lua() {
+  hyprctl dispatch "$1" >/dev/null
+}
+
 start_server() {
   local pid
   pid=$(ss -ltnp 2>/dev/null | grep -oP "${PORT}.*pid=\K[0-9]+" | head -1 || true)
@@ -88,9 +112,9 @@ for c in json.load(sys.stdin):
 # Close the benchmark window and hop back to the caller's workspace, so the
 # terminal is foreground again the moment a run ends.
 close_and_return() {
-  hyprctl dispatch closewindow "address:$1" >/dev/null 2>&1 || true
+  dispatch_lua "hl.dsp.window.close({ window = 'address:$1' })" >/dev/null 2>&1 || true
   sleep 0.5
-  hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true
+  dispatch_lua "hl.dsp.workspace.change_id({ workspace = $HOME_WORKSPACE, id = $HOME_WORKSPACE })" >/dev/null 2>&1 || true
 }
 
 run_one() {
@@ -148,9 +172,10 @@ run_one() {
 
   echo "  launching $browser on workspace $WORKSPACE (incognito)…"
   # The exec rule places the window before it maps, so it never flashes onto
-  # whatever workspace happens to be active.
-  hyprctl dispatch exec "[workspace $WORKSPACE] $cmd" >/dev/null
-  hyprctl dispatch workspace "$WORKSPACE" >/dev/null
+  # whatever workspace happens to be active. Deliberately NOT `|| true`: a
+  # dispatch failure here is exactly the silent no-launch this script once
+  # misreported as a timeout, so it must abort the run instead.
+  dispatch_lua "hl.dsp.exec_cmd('$(lua_quote "[workspace $WORKSPACE] $cmd")')"
   sleep 3
 
   for _ in $(seq 1 60); do
@@ -163,8 +188,10 @@ run_one() {
     return 1
   fi
   # Focus still matters even though nothing is captured: an unfocused window
-  # throttles rAF and can be descheduled mid-measurement.
-  hyprctl dispatch focuswindow "address:$addr" >/dev/null
+  # throttles rAF and can be descheduled mid-measurement. This one call also
+  # activates the window's workspace, which is why no separate
+  # `dispatch workspace` is needed before it (verified on 0.56.2).
+  dispatch_lua "hl.dsp.focus({ window = 'address:$addr' })"
   echo "  focused $addr"
 
   waited=0
@@ -190,8 +217,7 @@ run_one() {
     waited=$((waited + 2))
     # Re-focus periodically: a window that loses focus mid-run throttles rAF.
     if [ $((waited % 20)) -eq 0 ]; then
-      hyprctl dispatch workspace "$WORKSPACE" >/dev/null 2>&1 || true
-      hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+      dispatch_lua "hl.dsp.focus({ window = 'address:$addr' })" >/dev/null 2>&1 || true
     fi
     # Still running at the deadline? Give it one extension rather than failing.
     if [ "$waited" -eq "$timeout" ] && [ "$extend" -gt 0 ]; then
@@ -211,5 +237,10 @@ echo "serving $BENCH on $URL"
 # Return to the caller's workspace even if a run dies unexpectedly.
 trap 'hyprctl dispatch workspace "$HOME_WORKSPACE" >/dev/null 2>&1 || true' EXIT
 
-for b in "${BROWSERS[@]}"; do run_one "$b" || true; done
+# A browser that fails to launch or finish must be visible in the exit code:
+# this script once exited 0 through a total launch failure, and a caller that
+# trusts the code then quotes nothing (or worse, stale numbers) as a result.
+rc=0
+for b in "${BROWSERS[@]}"; do run_one "$b" || rc=1; done
 echo "results in $RESULTS/"
+exit "$rc"

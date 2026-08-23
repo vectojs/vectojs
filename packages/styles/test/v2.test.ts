@@ -252,16 +252,18 @@ describe('font composition', () => {
     setTheme(reset);
   });
 
-  it('parses a long digit run with a bad unit in linear time (code-scanning ReDoS)', () => {
+  it('rejects a long digit run with a bad unit fast (code-scanning ReDoS)', () => {
     // Regression for the js/polynomial-redos alert on SIZE_RE. A 20k digit
-    // run with a non-unit suffix must fail the size parse fast — this test
-    // would time out under the old `\d+\.?\d*` backtracking, which enumerates
-    // O(n²) split points across the adjacent digit classes. (The cast
-    // bypasses the compile-time fontSize narrowing — the runtime must still
-    // handle a malformed string without pathological work.)
+    // run with a non-px suffix must fail fast — under the old
+    // `\d+\.?\d*` backtracking this enumerated O(n²) split points across the
+    // adjacent digit classes. Since GH-608 the runtime also enforces the
+    // `${number}px` type on fontSize, so the malformed value now fails loudly
+    // instead of composing an invalid shorthand; the assertion still proves
+    // the rejection happens without pathological work. (The cast bypasses the
+    // compile-time narrowing — the runtime must handle JS callers too.)
     const e = stub({ font: '16px Inter' });
     const long = ('9'.repeat(20000) + 'zzz') as `${number}px`;
-    expect(() => applyStyle(e, style({ fontSize: long }))).not.toThrow();
+    expect(() => applyStyle(e, style({ fontSize: long }))).toThrow(/fontSize/);
   });
 
   it('rejects a font shorthand leaked into fontFamily (GH-452)', () => {

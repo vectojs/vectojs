@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
+import { FixedZLayout } from '../src/FixedZLayout';
 import { KnowledgeGraphSession } from '../src/KnowledgeGraphSession';
 import { MemoryDataSource } from '../src/MemoryDataSource';
-import type { KgGraphData } from '../src/types';
+import type { KgDataSource, KgGraphData } from '../src/types';
 import * as THREE from 'three';
 
 const SAMPLE: KgGraphData = {
@@ -125,5 +126,98 @@ describe('KnowledgeGraphSession review fixes', () => {
     // Graph grew
     expect(session.entityCount).toBeGreaterThan(before.length);
     session.dispose();
+  });
+});
+
+describe('KnowledgeGraphSession async safety and ownership', () => {
+  /** Select a node through the wired handler without simulating pointer events. */
+  const selectAt = (session: KnowledgeGraphSession, index: number | null): void => {
+    (session as unknown as { handleSelect(index: number | null): void }).handleSelect(index);
+  };
+
+  it('routes select-triggered expand failures to onError', async () => {
+    let calls = 0;
+    const failing: KgDataSource = {
+      getNodes: (ids) => SAMPLE.entities.filter((e) => ids?.includes(e.id)),
+      getNeighbors: () => {
+        calls++;
+        return Promise.reject(new Error('loader down'));
+      },
+    };
+    const onError = vi.fn();
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source: failing,
+      onError,
+    });
+    await session.bootstrap(['b'], false); // no expansion yet, so select expands
+    selectAt(session, 0);
+    // The rejection must be routed to onError — an unhandled rejection would
+    // fail this suite.
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(calls).toBe(1);
+    const [error, entity] = onError.mock.calls[0]!;
+    expect((error as Error).message).toBe('loader down');
+    expect(entity?.id).toBe('b');
+    session.dispose();
+  });
+
+  it('logs instead of throwing when no onError handler is given', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failing: KgDataSource = {
+      getNodes: () => SAMPLE.entities,
+      getNeighbors: () => Promise.reject(new Error('boom')),
+    };
+    const session = new KnowledgeGraphSession({ domElement: dom(), source: failing });
+    try {
+      await session.bootstrap(['b'], false);
+      selectAt(session, 0);
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          '[KnowledgeGraphSession] select expand failed:',
+          expect.any(Error),
+        ),
+      );
+    } finally {
+      consoleError.mockRestore();
+      session.dispose();
+    }
+  });
+
+  it('model is the single layout driver during expand', async () => {
+    const setGraphSpy = vi.spyOn(FixedZLayout.prototype, 'setGraph');
+    const reheatSpy = vi.spyOn(FixedZLayout.prototype, 'reheat');
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source: new MemoryDataSource(SAMPLE),
+      expandOnSelect: false,
+    });
+    try {
+      await session.bootstrap(['b'], false); // one initial build, no reheat
+      const builds = setGraphSpy.mock.calls.length;
+      const heats = reheatSpy.mock.calls.length;
+      await session.expand('b'); // exactly one setGraph + one reheat, from the model
+      expect(setGraphSpy.mock.calls.length).toBe(builds + 1);
+      expect(reheatSpy.mock.calls.length).toBe(heats + 1);
+      // b was seeded alone; expanding it pulls in a (fact a→b).
+      expect(session.entityCount).toBe(2);
+    } finally {
+      setGraphSpy.mockRestore();
+      reheatSpy.mockRestore();
+      session.dispose();
+    }
+  });
+
+  it('disposes the layout it constructed', () => {
+    const disposeSpy = vi.spyOn(FixedZLayout.prototype, 'dispose');
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source: new MemoryDataSource(SAMPLE),
+      expandOnSelect: false,
+    });
+    expect(disposeSpy).not.toHaveBeenCalled();
+    session.dispose();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    disposeSpy.mockRestore();
   });
 });

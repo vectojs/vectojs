@@ -53,15 +53,20 @@ const UPEM = 1000;
 
 /**
  * `$mu: calc(1em / 18)` (katex.scss:187) — TeX's math unit, 1/18 em.
+ *
+ * Exported so `scripts/vendor-katex.ts` can verify it against the upstream
+ * stylesheet on every vendor run; see its emit-constants guard.
  */
-const MU = 1 / 18;
+export const MU = 1 / 18;
 
 /**
  * `$nulldelimiterspace: calc(1.2em / $ptperem)` with `$ptperem: 10`
  * (katex.scss:187-188). A `nulldelimiter` span is empty, so this advance
  * exists only in CSS and has to be reintroduced here.
+ *
+ * Exported for the vendoring drift guard, as {@link MU}.
  */
-const NULL_DELIMITER_SPACE = 0.12;
+export const NULL_DELIMITER_SPACE = 0.12;
 
 /**
  * KaTeX renders at `font-size: 1.21em` (`katex.scss:24`), so one em in the span
@@ -193,49 +198,61 @@ interface EmitState {
   paths: PlacedPath[];
   lines: PlacedLine[];
   missing: Set<string>;
+  /**
+   * Missing glyphs already warned about, so a formula repeating one unmapped
+   * character warns once instead of once per occurrence.
+   */
+  warnedMetricsMisses: Set<string>;
 }
 
 /** How a vlist positions its rows relative to the widest one. */
-type RowAlign = 'left' | 'center' | 'right';
+export type RowAlign = 'left' | 'center' | 'right';
+
+/**
+ * Class → `text-align`, encoding the katex.scss rules that position a vlist's
+ * rows against the widest one. Exported so the vendoring drift guard can
+ * re-derive the mapping from upstream on every vendor run; see
+ * `scripts/vendor-katex.ts`.
+ *
+ * Sources (katex.scss, KaTeX `5a5bf206`):
+ *
+ * - `.mfrac > span > span { text-align: center }` (line 262)
+ * - `.op-limits > .vlist-t { text-align: center }` (lines 405-408)
+ * - `.katex-accent > .vlist-t { text-align: center }` (lines 411-414)
+ * - `.col-align-c|l|r > .vlist-t` (lines 442-451)
+ * - `.x-arrow, .mover, .munder { text-align: center }` (lines 563-566)
+ *
+ * `sqrt: 'center'` is a deliberate deviation from upstream, which has no
+ * `text-align` rule under `.sqrt`; see the guard's deviation table for why.
+ */
+export const ROW_ALIGN_CLASSES: Readonly<Record<string, RowAlign>> = {
+  'col-align-c': 'center',
+  'col-align-l': 'left',
+  'col-align-r': 'right',
+  mfrac: 'center',
+  sqrt: 'center',
+  'katex-accent': 'center',
+  'op-limits': 'center',
+  'x-arrow': 'center',
+  mover: 'center',
+  munder: 'center',
+};
 
 /**
  * Resolves the `text-align` that applies to a vlist's rows.
  *
  * These are CSS rules on ancestors, not properties of the tree, so a vlist
- * cannot be positioned correctly from its own contents alone:
- *
- * - `.mfrac > span > span { text-align: center }` (katex.scss:262)
- * - `.sqrt > .vlist-t { text-align: center }` (katex.scss:406)
- * - `.katex-accent > .vlist-t { text-align: center }` (katex.scss:411)
- * - `.col-align-c|l|r > .vlist-t` (katex.scss:442-452)
- * - `.op-limits > .vlist-t { text-align: center }` (katex.scss:253-255)
- * - `.x-arrow, .mover, .munder { text-align: center }` (katex.scss:568-570)
- *
- * The chain is outermost-first, so the nearest enclosing rule wins by scanning
- * from the end.
+ * cannot be positioned correctly from its own contents alone — a narrow
+ * numerator must be centred over the fraction rule, and a subscript under the
+ * middle of its operator. The chain is outermost-first, so the nearest
+ * enclosing rule wins by scanning from the end. Anything unmatched is the CSS
+ * initial value, `left`.
  */
 function rowAlign(chain: readonly string[]): RowAlign {
   for (let i = chain.length - 1; i >= 0; i--) {
-    const c = chain[i];
-    if (c === 'col-align-c') {
-      return 'center';
-    }
-    if (c === 'col-align-r') {
-      return 'right';
-    }
-    if (c === 'col-align-l') {
-      return 'left';
-    }
-    if (
-      c === 'mfrac' ||
-      c === 'sqrt' ||
-      c === 'katex-accent' ||
-      c === 'op-limits' ||
-      c === 'x-arrow' ||
-      c === 'mover' ||
-      c === 'munder'
-    ) {
-      return 'center';
+    const align = ROW_ALIGN_CLASSES[chain[i]];
+    if (align !== undefined) {
+      return align;
     }
   }
   return 'left';
@@ -366,7 +383,23 @@ function emitSymbol(
         state.missing.add(`${font}/U+${code.toString(16).toUpperCase().padStart(4, '0')}`);
       }
       const m = getCharacterMetrics(ch, font, 'math');
-      penX += (m?.width ?? node.width) * UPEM * scale;
+      const width = m?.width ?? node.width;
+      if (Number.isFinite(width)) {
+        penX += width * UPEM * scale;
+      } else {
+        // Both the metrics table and the node's own width missed. Advancing by
+        // the non-finite value would poison penX and, through it, the viewBox.
+        // Degrade to a zero advance and say so once per unique miss — quiet
+        // NaN output is how a bad glyph becomes an invisible layout bug.
+        const key = `${font}/U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
+        if (!phantom && !state.warnedMetricsMisses.has(key)) {
+          state.warnedMetricsMisses.add(key);
+          console.warn(
+            `[tex] no metrics for missing glyph ${key}; advancing 0 ` +
+              '(outline table and font metrics both missed)',
+          );
+        }
+      }
     }
   }
 
@@ -641,6 +674,7 @@ function emitContainer(
       paths: [],
       lines: [],
       missing: new Set(),
+      warnedMetricsMisses: new Set(),
     };
     for (const child of node.children ?? []) {
       if (clipEm != null && child instanceof SvgNode) {
@@ -734,6 +768,7 @@ function emitVList(
         paths: [],
         lines: [],
         missing: new Set(),
+        warnedMetricsMisses: new Set(),
       };
       const rowChain = [...classChain, ...row.classes];
       for (const child of row.children ?? []) {
@@ -840,6 +875,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     paths: [],
     lines: [],
     missing: new Set(),
+    warnedMetricsMisses: new Set(),
   };
   walk(tree, state, [], 0, 1, undefined);
 

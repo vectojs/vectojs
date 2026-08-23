@@ -230,17 +230,20 @@ _faster_ from 200 to 500 rows. Each arm's repetition count is now calibrated fro
 a probe call to fill a ~20 ms window, and the raw per-call samples ship in the
 JSON so the calibration is auditable.
 
-## `stream-markdown-smd` — vs `streaming-markdown`, `streamdown`, `markstream-vue`
+## `stream-markdown-smd` — vs `streaming-markdown`, `streamdown`, `markstream-vue`, `incremark`, `react-markdown`, `@ant-design/x-markdown`
 
-Four streaming strategies in one suite, on one page, in one run:
+Seven streaming strategies in one suite, on one page, in one run:
 [`smd`](https://github.com/thetarnav/streaming-markdown) (a true incremental
 parser), [`streamdown`](https://github.com/vercel/streamdown) (Vercel's
 AI-chat Markdown renderer), the parser behind
 [`markstream-vue`](https://github.com/BuptStEve/markstream-vue) (published
-standalone as `stream-markdown-parser`), and both of our own strategies.
+standalone as `stream-markdown-parser`), `@incremark/core` (an incremental
+parser built for AI streaming), `react-markdown` (React's most common Markdown
+renderer), `@ant-design/x-markdown` (Ant Design X's AI-chat streaming
+renderer), and both of our own strategies.
 
 **Against `smd` this is still a loss, but no longer the biggest one recorded
-here — it was 571× and is now 8.3×.** `smd` (0.2.15, zero dependencies, ~1.6k
+here — it was 571× and is now 8.0×.** `smd` (0.2.15, zero dependencies, ~1.6k
 lines) advances a persistent state machine over a flat `Uint32Array` token stack
 and emits through a four-callback renderer interface, so it never revisits text it
 has already consumed. Our streaming path used to re-lex the **entire accumulated
@@ -256,7 +259,7 @@ subset. `@vectojs/markdown` parses **and** lays out **and** renders to canvas
 MathJax. Only the streaming-parse axis is compared, because that is the only
 place the two genuinely overlap.
 
-The two later arms are narrower still, and each is measured at the boundary where
+The five later arms are narrower still, and each is measured at the boundary where
 it genuinely overlaps with us:
 
 - **`streamdown`** is a React renderer. Its per-block `remark`/React stage is
@@ -269,10 +272,51 @@ it genuinely overlaps with us:
   the arm imports `stream-markdown-parser` directly and no framework work is in
   the timing. It returns a full node structure where our arm returns tokens — an
   asymmetry stated in the results rather than hidden, per ground rule 4.
+- **`incremark`** (`@incremark/core` 0.3.10) is an incremental parser built for
+  AI streaming, on a `marked` engine like ours. Measured at its public API: a
+  persistent parser driven by `append()` once per chunk, closed with
+  `finalize()`. Its `append()` re-parses the stable region between the last
+  boundary and the current one, so it sits in the same stable-boundary strategy
+  class as our `incrementalLex` and markstream's parser; the definition maps and
+  AST rebuilds it returns on every call are part of what is measured.
+- **`react-markdown`** 10.1.0 is the most common choice for rendering Markdown
+  in React. It has no separable parser export and no cross-render cache, so the
+  arm calls its synchronous `Markdown` component function directly, once per
+  chunk over the accumulated document: remark re-parses the whole text and
+  converts hast to React elements inside the timed region, while React
+  reconciliation and DOM commit stay outside, exactly as our entity building
+  does.
+- **`x-markdown`** (`@ant-design/x-markdown` 2.9.0, Ant Design X) is an AI-chat
+  streaming renderer whose `useStreaming` hook is genuinely incremental — a
+  per-character recognizer caches completed syntax — but whose component then
+  re-runs a full `marked` parse → HTML → sanitisation → element construction on
+  every chunk. The arm renders the real component per chunk through `flushSync`
+  into a detached container, so both stages sit inside the timed region; the
+  React scheduling constant that adds is stated here rather than subtracted,
+  per ground rule 4.
 
-Both new arms are gated on producing the same output streamed as they do in one
-shot before any timing is taken (`streamdownMatchesOneShot`,
-`markstreamMatchesOneShot`), and all ten gates pass in both engines.
+Every third-party arm is gated on producing the same output streamed as it does
+in one shot before any timing is taken (`streamdownMatchesOneShot`,
+`markstreamMatchesOneShot`, `incremarkMatchesOneShot`,
+`reactMarkdownMatchesOneShot`, `xmarkdownMatchesOneShot`), and all thirteen
+gates pass in both engines.
+
+All marked-based arms — `vecto`, the `wholeDocument` control, `streamdown`,
+`incremark`, `x-markdown` — lex through the **same** workspace copy of `marked`,
+aliased at bundle time to `packages/markdown`'s pinned copy, so engine constant
+factors cannot masquerade as strategy differences. `react-markdown` runs
+micromark/remark instead, which is exactly why it is included.
+
+### Libraries excluded from this suite
+
+Two libraries under `references/markdown/` cannot run this axis and are excluded
+with a reason rather than silently dropped:
+
+- **`FluidMarkdown`** — native iOS/Android/HarmonyOS implementation with no
+  browser runtime, so there is nothing for the streaming-parse axis to run.
+- **`react-native-streamdown`** — a React Native port of streamdown; its web
+  twin `streamdown` is already measured above, and driving the port through
+  `react-native-web` would change what is being measured.
 
 ### The comparison is not "our parser vs theirs" — we don't have a parser
 
@@ -281,7 +325,7 @@ shot before any timing is taken (`streamdownMatchesOneShot`,
 parser" against `smd` would be benchmarking `marked` against `smd`: two
 third-party libraries, neither of them ours. What **is** ours is the strategy, and
 the suite measures both of ours in the same process on the same hardware as the
-three third-party arms:
+six third-party arms:
 
 - **`wholeDocument`** — the original: cache the accumulated source, append the
   delta, re-lex the whole thing, return only the changed token tail via a
@@ -293,26 +337,38 @@ three third-party arms:
 
 ### Results
 
-Real Chrome 151 / Firefox 153, COOP+COEP isolated, median of 9 trials after 3
+Real Chrome 151 / Firefox 154, COOP+COEP isolated, median of 9 trials after 3
 warmups, 32-char chunks, every arm driven through an identical counting sink so
-none pays for rendering. All ten gates pass in both engines.
+none pays for rendering. All thirteen gates pass in both engines. A second full
+Chrome pass on the same commit reproduced every exponent family; its medians are
+archived alongside as `-i2` and the drift is reported below.
 
-| Document (200 sections, 25 070 chars, 784 chunks) | Chrome      | Firefox     |
-| ------------------------------------------------- | ----------- | ----------- |
-| `smd`, whole stream                               | 0.73 ms     | 1.06 ms     |
-| **ours, current** (stable block boundary)         | **6.08 ms** | **9.76 ms** |
-| ours **before** (whole-document re-lex, control)  | 445.5 ms    | 443.2 ms    |
-| `markstream` (`stream-markdown-parser` 1.2.0)     | 955.1 ms    | 487.9 ms    |
-| `streamdown` 2.5.0 (`remend` + block split)       | 5562.0 ms   | 5184.0 ms   |
-| — of which `remend` alone                         | 5064.0 ms   | 4636.8 ms   |
-| one full `marked.lexer()` of the finished doc     | 1.96 ms     | 1.06 ms     |
+| Document (200 sections, 25 070 chars, 784 chunks)       | Chrome      | Firefox      |
+| ------------------------------------------------------- | ----------- | ------------ |
+| `smd`, whole stream                                     | 0.86 ms     | 1.14 ms      |
+| **ours, current** (stable block boundary)               | **6.91 ms** | **10.60 ms** |
+| ours **before** (whole-document re-lex, control)        | 487.5 ms    | 461.8 ms     |
+| `incremark` (`@incremark/core` 0.3.10)                  | 12.62 ms    | 12.02 ms     |
+| `markstream` (`stream-markdown-parser` 1.2.0)           | 1048.5 ms   | 481.2 ms     |
+| `@ant-design/x-markdown` 2.9.0 (component per chunk)    | 10329.7 ms  | 6383.6 ms    |
+| `react-markdown` 10.1.0 (sync component call per chunk) | 16220.7 ms  | 8758.7 ms    |
+| `streamdown` 2.5.0 (`remend` + block split)             | 5654.6 ms   | 5014.8 ms    |
+| — of which `remend` alone                               | 5162.5 ms   | 4512.4 ms    |
+| one full `marked.lexer()` of the finished doc           | 2.06 ms     | 1.38 ms      |
 
-Our own before/after is **73.2× in Chrome, 45.4× in Firefox**, and the remaining
-gap to `smd` is **8.3× / 9.2×**. The last row used to be the finding: lexing the
+Our own before/after is **70.6× in Chrome, 43.6× in Firefox**, and the remaining
+gap to `smd` is **8.0× / 9.3×**. The last row used to be the finding: lexing the
 finished document once cost about a millisecond while streaming it cost 434 ms,
 i.e. ~445× of pure re-work. That re-work is what the boundary removes. The
-streamed cost is now **3.1× a single full lex** in Chrome (9.2× in Firefox),
+streamed cost is now **3.4× a single full lex** in Chrome (7.7× in Firefox),
 against 439× before.
+
+_Repeatability:_ a second Chrome pass under visibly heavier co-tenant load moved
+the sub-millisecond arms up to +86 % and the control arm up to +66 %, while the
+three heaviest arms stayed within −4.4 %…+24 %. Every exponent family reproduced.
+Both passes are archived (`cmp-stream-markdown-smd-chrome151-2026-08-23-i{1,2}.json`,
+Firefox as `cmp-stream-markdown-smd-firefox154-2026-08-23.json`); quoted figures
+are the quieter first pass.
 
 ### The control arm is a faithful model of the competing strategy
 
@@ -326,43 +382,91 @@ a reader should distrust — a straw man is easy to build by accident.
 
 | Sections                                  | 25    | 50    | 100   | 200   |
 | ----------------------------------------- | ----- | ----- | ----- | ----- |
-| streamdown − remend ÷ our control, Chrome | 0.98× | 1.05× | 1.17× | 1.12× |
-| the same, Firefox                         | 1.06× | 1.01× | 1.08× | 1.23× |
+| streamdown − remend ÷ our control, Chrome | 0.89× | 1.02× | 1.09× | 1.01× |
+| the same, Firefox                         | 1.04× | 1.01× | 1.08× | 1.09× |
 
-Within 1.0–1.23× at every size in both engines, and on the same exponent (2.049
-vs our control's 1.988 in Chrome; 2.057 vs 1.982 in Firefox). Characters fed to
-the lexer agree independently: 9 850 405 for streamdown against 9 847 040 for our
-control at 200 sections, a 0.03% difference from its slightly different block
-splitting. So the before/after this suite publishes is measured against a
-faithful model of what a real competitor does, not against a weakened stand-in.
+Within 0.9–1.1× at every size in both engines (second Chrome pass: 0.74–1.09×,
+the control arm being the noisier side under load), and on the same exponent
+family (2.31 vs our control's 1.64 in the quoted pass; 2.58 vs 1.94 in Firefox;
+across both Chrome passes the pair moved together). Characters fed to the lexer
+agree independently: 9 850 405 for streamdown against 9 847 040 for our control
+at 200 sections, a 0.03% difference from its slightly different block splitting.
+So the before/after this suite publishes is measured against a faithful model of
+what a real competitor does, not against a weakened stand-in.
 
 ### Scaling exponents, measured across 3 070 → 25 070 chars
 
-| Arm                                          | Chrome | Firefox |
-| -------------------------------------------- | ------ | ------- |
-| `smd`                                        | 0.80   | 0.34    |
-| ours **before** (control)                    | 1.99   | 1.98    |
-| ours **after**                               | 1.02   | 1.25    |
-| `markstream`                                 | 1.86   | 1.77    |
-| `streamdown`                                 | 2.63   | 2.63    |
-| `streamdown`, `remend` alone                 | 2.75   | 2.79    |
-| single `marked.lexer()` call                 | 1.12   | 0.79    |
-| ours, characters handed to the lexer         | 1.00   | 1.00    |
-| `markstream`, characters handed to its lexer | 1.00   | 1.00    |
-| `streamdown`, characters handed to its lexer | 1.99   | 1.99    |
+| Arm                                            | Chrome | Firefox |
+| ---------------------------------------------- | ------ | ------- |
+| `smd`                                          | 0.37   | 0.32    |
+| ours **before** (control)                      | 1.64   | 1.94    |
+| ours **after**                                 | 0.79   | 1.19    |
+| `incremark`                                    | 0.68   | 0.98    |
+| `markstream`                                   | 1.75   | 1.69    |
+| `@ant-design/x-markdown`                       | 1.67   | 1.90    |
+| `react-markdown`                               | 2.00   | 1.96    |
+| `streamdown`                                   | 2.31   | 2.58    |
+| `streamdown`, `remend` alone                   | 2.45   | 2.75    |
+| single `marked.lexer()` call                   | 0.92   | 0.87    |
+| ours, characters handed to the lexer           | 1.00   | 1.00    |
+| `markstream`, characters handed to its lexer   | 1.00   | 1.00    |
+| `incremark`, characters handed to its lexer    | 1.00   | 1.00    |
+| `streamdown`, characters handed to its lexer   | 1.99   | 1.99    |
+| `x-markdown`, characters handed to marked      | 2.00   | 2.00    |
+| `react-markdown`, characters through micromark | 2.00   | 2.00    |
 
 **The exponent is the substance, not the ratio.** `marked.lexer()` is linear, and
-the old strategy's 1.98 was arithmetic: N chunks × O(document) per chunk. The
+the old strategy's ~1.9–2.0 was arithmetic: N chunks × O(document) per chunk. The
 boundary brings our arm back to the parser's own complexity class, which is why
-the improvement grows with length — 9.6× at 25 sections, 73.2× at 200. The former
-"widens with length, exactly the wrong direction for a chat transcript" now runs
-the right way.
+the improvement grows with length — 9.6× at 25 sections, 70.6× at 200 in the
+quoted pass. The former "widens with length, exactly the wrong direction for a
+chat transcript" now runs the right way.
 
 The characters-fed rows are the mechanism, measured independently of wall time and
 at each library's **real tokenizer entry point** rather than its public API. Ours
 fall from **9 847 040 to 63 806** (154×) at an exponent of 1.00. Wall time can
 move for incidental reasons; wall time and characters-lexed agreeing is what makes
 the attribution sound.
+
+### Three AI-chat renderers, three different answers
+
+The arms added since the suite first ran are all renderers built for the same
+job — streaming an LLM answer into a chat bubble — and they land in three
+different places on the axis this suite measures:
+
+- **`incremark` is boundary-class, like us and `markstream`.** Its lexer sees only
+  **63 575 characters** across the whole stream against our 63 806 — it also
+  re-tokenizes just the unstable tail after its last stable boundary, and the
+  character counts agree with ours to 0.4 %. The wall-clock cost of that class is
+  **12.62 ms / 12.02 ms** (Chrome/Firefox), i.e. **1.83× our arm in Chrome but
+  only 1.13× in Firefox**, at a wall-time exponent that brackets linear
+  (0.68–0.98) over characters-fed at exactly 1.000. The constant-factor overhead
+  over our arm is bookkeeping, not tokenizing: every `append()` rebuilds its
+  definition maps and re-splices the aggregate AST across _all_ completed blocks,
+  work that grows with the document even though lexing does not.
+- **`react-markdown` has no streaming strategy at all.** Every chunk re-runs the
+  full remark pipeline over the accumulated document — micromark sees the entire
+  prefix each time (**9 847 040 characters**, arithmetic prefix-sums confirmed),
+  exponent 2.00 / 1.96, and at 200 sections it is the slowest arm measured:
+  **16.2 s in Chrome**. It is markedly cheaper in Firefox (**8.8 s**) — the same
+  engine divergence direction `markstream` shows, stated rather than averaged
+  away. Scope: driven as a direct synchronous component call, so element-tree
+  construction is included and React commit/DOM is outside the measured region,
+  exactly where our canvas/entity work sits for our own arm.
+- **`@ant-design/x-markdown` is genuinely incremental — everywhere except where
+  it matters most.** Its `useStreaming` cache advances a per-character state
+  machine over just the new chunk. But every update then feeds the completed
+  string through a fresh `marked` parse to HTML plus a sanitiser: across the
+  stream marked receives **9 843 357 characters, 99.96 % of the theoretical
+  whole-document maximum**, at an exponent of 2.00 in both engines, which drags
+  the wall clock to **10.3 s / 6.4 s** (exponent 1.67 / 1.90). Driven as the real
+  published component per chunk via `flushSync`; the React scheduling constant
+  that this adds is included in the number and stated per ground rule 4.
+
+All three gates hold in both engines (`incremarkMatchesOneShot`,
+`reactMarkdownMatchesOneShot`, `xmarkdownMatchesOneShot`): each library's final
+streamed state is identical to what a one-shot pass over the finished document
+produces, so no fast number below is buying its speed with a broken parse.
 
 ### `markstream-vue` converged on the same strategy we did
 
@@ -379,19 +483,20 @@ document at 200 sections) and only re-tokenizes a tail internally. The real entr
 point is `md.block.parse(src, …)`, where `src` is the tail — 32, 50, 82 chars on
 the first three calls.
 
-**Where it still costs 157× (Chrome) / 50× (Firefox) against our arm** is the
+**Where it still costs 152× (Chrome) / 45× (Firefox) against our arm** is the
 other half of the call: `parseMarkdownToStructure` rebuilds and returns the
 **entire node array** on every chunk. Summed across the stream that is 158 907
 nodes returned for a final 400 (397×), against 2 523 for a final 50 (50.5×). The
 caller pays O(nodes) per chunk no matter how little was re-tokenized, which is why
-a linear tokenizer still yields a 1.77–1.86 wall-time exponent. Note it is
+a linear tokenizer still yields a 1.69–1.75 wall-time exponent. Note it is
 **faster in Firefox than in Chrome** while ours is the reverse — opposite engine
 preferences, worth stating rather than averaging away.
 
 ### `streamdown`'s cost is 89–91% `remend`, and that is an upstream bug
 
-`remend` is 5064 ms of streamdown's 5562 ms in Chrome (91.0%) and 4637 of 5184 in
-Firefox (89.4%), at an exponent of 2.75–2.79 — worse than the whole-document
+`remend` is 5162.5 ms of streamdown's 5654.6 ms in Chrome (91.3%) and 4512.4 of
+5014.8 in Firefox (90.0%), at an exponent of 2.45–2.75 — worse than the
+whole-document
 lexing it sits in front of. We traced this to a quadratic scan in
 `packages/remend/src/link-image-handler.ts:153`: for every `[` in the text it
 calls `isInsideCodeBlock(text, i)`, which itself rescans `0..i`. Removing
@@ -456,7 +561,7 @@ which would remove the larger of the two degrade paths. That is a rendering
 behaviour change for existing content and affects `Markdown.ts` equally, so it
 belongs in its own task rather than riding along with a performance fix.
 
-Closing the remaining 8.3× would mean not calling `marked` at all — `smd`'s design
+Closing the remaining 8.0× would mean not calling `marked` at all — `smd`'s design
 advantage is that it never re-tokenizes a partial block, whereas we re-lex the
 unstable tail from its start on every chunk. That is a genuine architectural
 difference and not obviously worth the cost of owning a CommonMark parser.

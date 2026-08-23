@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getGlyph, UNITS_PER_EM } from '../src/emit/glyphTable';
 import { emitSVG } from '../src/emit/svg';
 import { layout } from '../src/layout';
+import { Span, SymbolNode } from '../src/kernel/domTree';
+import type { HtmlDomNode } from '../src/kernel/domTree';
 
 /**
  * Phase 1 acceptance: one TeX string -> one self-contained SVG string.
@@ -258,5 +260,47 @@ describe('emitSVG', () => {
     // Escaping is a no-op on every valid colour, so normal themes are
     // unchanged.
     expect(emitSVG(layout('x'), { color: 'rgb(1, 2, 3)' }).svg).toContain('fill="rgb(1, 2, 3)"');
+  });
+
+  it('keeps the viewBox finite when a missing glyph has no metrics either', () => {
+    // The metrics table covers every character KaTeX lays out, but emit must
+    // survive its own defensive path: when BOTH the outline table and
+    // `getCharacterMetrics` miss, the old `(m?.width ?? node.width)` fallback
+    // read the SymbolNode's width — and a non-finite value there poisoned
+    // penX and the whole viewBox. A hand-built tree forces that path
+    // deterministically (no kernel input produces it): the constructor
+    // coerces falsy widths to 0 (`width || 0`), so the poison value is
+    // assigned after construction.
+    const symbol = new SymbolNode('\uE000', 0.5, 0, 0, 0);
+    symbol.width = Number.NaN;
+    const tree = new Span<HtmlDomNode>([], [symbol], undefined);
+    tree.height = 0.5;
+    tree.depth = 0;
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const uE000Warns = () => warn.mock.calls.filter((args) => String(args[0]).includes('U+E000'));
+    try {
+      const out = emitSVG(tree);
+
+      expect(out.width).toBe(0); // advance fell back to 0, not NaN
+      expect(Number.isFinite(out.height)).toBe(true);
+      expect(Number.isFinite(out.depth)).toBe(true);
+      const [, , w, h] = /viewBox="([^"]+)"/.exec(out.svg)![1].split(' ').map(Number);
+      expect(w).toBeGreaterThan(0); // pad-only box, still finite
+      expect(h).toBeGreaterThan(0);
+      expect(out.missing).toEqual(['Main-Regular/U+E000']);
+      expect(uE000Warns()).toHaveLength(1);
+
+      // The warn fires once per unique miss even when the glyph repeats.
+      warn.mockClear();
+      const twin = new SymbolNode('\uE000', 0.5, 0, 0, 0);
+      twin.width = Number.NaN;
+      const repeated = new Span<HtmlDomNode>([], [symbol, twin], undefined);
+      repeated.height = 0.5;
+      emitSVG(repeated);
+      expect(uE000Warns()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
