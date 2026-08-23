@@ -152,6 +152,118 @@ describe('Text alignment & hyphenation', () => {
       expect(line.runs).toBeUndefined();
     }
   });
+
+  it('justify projection anchors at x=0 (engine owns placement, no extra shift)', () => {
+    // Guards the center/right work against double-shifting the engine-aligned
+    // paths: justified lines keep line.x = 0 and their first word at x = 0.
+    const t = new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'justify' });
+    const line0 = t.getContentProjection()!.lines![0];
+    expect(line0.x).toBe(0);
+    expect(line0.runs![0].x).toBeCloseTo(0, 0);
+  });
+});
+
+describe('Text horizontal align (center / right)', () => {
+  // No DOM here, so the layout engine AND measureText share the portable
+  // 0.5em-per-char fallback (8px per char at the default 16px font): every
+  // offset below is exact arithmetic — (maxWidth − lineWidth) × factor — not
+  // an approximation of a real font.
+  it('centers a single line at (maxWidth − lineWidth) / 2', () => {
+    const { r, calls } = xyRecorder();
+    // 'ab' paints 16px wide in a maxWidth of 80 → slack 64 → offset 32.
+    new Text('ab', { maxWidth: 80, textAlign: 'center' }).render(r);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ text: 'ab', x: 32, y: 0.8 * 20 });
+  });
+
+  it('right-aligns a single line flush to maxWidth', () => {
+    const { r, calls } = xyRecorder();
+    // Right edge lands exactly at maxWidth: offset 80 − 16 = 64.
+    new Text('ab', { maxWidth: 80, textAlign: 'right' }).render(r);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ text: 'ab', x: 64, y: 0.8 * 20 });
+  });
+
+  it('computes the offset PER WRAPPED LINE, not once for the block', () => {
+    // Wraps into 'aa aa aa ' (trimmed extent 8 chars = 64px; the wrap-point
+    // trailing space hangs) + 'aa aa' (5 chars = 40px): distinct slack per line
+    // → offsets (80−64)/2 = 8 and (80−40)/2 = 20.
+    const t = new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'center' });
+    const proj = t.getContentProjection()!;
+    expect(proj.lines!.map((l) => l.text)).toEqual(['aa aa aa ', 'aa aa']);
+    expect(proj.lines![0].x).toBeCloseTo(8, 6);
+    expect(proj.lines![1].x).toBeCloseTo(20, 6);
+    // The fast path paints exactly the projected origins.
+    const { r, calls } = xyRecorder();
+    t.render(r);
+    expect(calls.map((c) => c.x)).toEqual([8, 20]);
+    expect(calls.map((c) => c.y)).toEqual([16, 36]);
+  });
+
+  it('hangs the wrap-point trailing space like CSS text-align does', () => {
+    // The retained trailing space paints no ink and must not eat slack:
+    // centered ink stays at true center, right-aligned ink reaches the edge.
+    const { r, calls } = xyRecorder();
+    new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'center' }).render(r);
+    // Ink extents are the TRIMMED widths: 8..72 (center 40 ✓) and 20..60.
+    expect(calls.map((c) => c.x)).toEqual([8, 20]);
+    expect(calls[0]!.text).toBe('aa aa aa ');
+  });
+
+  it('right-align wraps each line flush to the same right edge', () => {
+    const { r, calls } = xyRecorder();
+    new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'right' }).render(r);
+    // 64px trimmed line at x=16 and 40px line at x=40 → ink ends exactly at 80.
+    expect(calls.map((c) => c.x)).toEqual([16, 40]);
+    expect(calls.every((c) => c.x + c.text.trimEnd().length * 8 === 80)).toBe(true);
+  });
+
+  it('carries ONE positioned run per aligned line so selection tracks glyphs', () => {
+    const t = new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'center' });
+    const line0 = t.getContentProjection()!.lines![0];
+    expect(line0.runs).toHaveLength(1);
+    const [run] = line0.runs!;
+    // Anchored at the trimmed-extent offset (the paint origin), but the box
+    // covers the UNTRIMMED characters so copy's trailing space selects too.
+    expect(run.text).toBe('aa aa aa ');
+    expect(run.x).toBeCloseTo(8, 6);
+    expect(run.width).toBeCloseTo(72, 6);
+    expect(run.font).toContain('16px');
+  });
+
+  it('default (and explicit left) stays byte-parity: x=0, no runs, natural carriers', () => {
+    const implicit = new Text('aa aa aa aa aa', { maxWidth: 80 });
+    const explicit = new Text('aa aa aa aa aa', { maxWidth: 80, textAlign: 'left' });
+    const { r, calls } = xyRecorder();
+    implicit.render(r);
+    expect(calls.every((c) => c.x === 0)).toBe(true);
+    // Unset option and 'left' project identically — no run/carrier regression.
+    expect(implicit.getContentProjection()!.lines).toEqual(explicit.getContentProjection()!.lines);
+    for (const line of implicit.getContentProjection()!.lines!) {
+      expect(line.runs).toBeUndefined();
+      expect(line.perGraphemeCarriers).toBe(true);
+      expect(line.x).toBe(0);
+    }
+  });
+
+  it('without maxWidth there is no slack, so center/right degenerate to left', () => {
+    const { r, calls } = xyRecorder();
+    new Text('aa\nbb', { textAlign: 'center' }).render(r);
+    expect(calls.every((c) => c.x === 0)).toBe(true);
+  });
+
+  it('setTextAlign switches alignment at runtime, both directions', () => {
+    const t = new Text('ab', { maxWidth: 80 });
+    t.setTextAlign('right');
+    const right = xyRecorder();
+    t.render(right.r);
+    expect(right.calls[0]!.x).toBe(64);
+
+    t.setTextAlign('left');
+    const left = xyRecorder();
+    t.render(left.r);
+    expect(left.calls[0]!.x).toBe(0);
+  });
 });
 
 describe('Text bidi (RTL) selection projection', () => {
@@ -320,5 +432,39 @@ describe('Text ScrollVirtualizable (ScrollView-driven line culling)', () => {
     const after = recordingRenderer();
     t.render(after.r);
     expect(after.lines).toHaveLength(20);
+  });
+
+  it('keeps per-line alignment offsets for exactly the windowed lines', () => {
+    // Twelve rows of DIFFERENT widths ('a'..'aaaaaaaaaaaa'), centered in
+    // maxWidth 80: row i is (i+1)×8px wide → offset (80 − 8(i+1))/2 = 36 − 4i.
+    // Culling decides WHICH lines draw; each drawn line must still carry its
+    // own offset — windowing and alignment are orthogonal per-line concerns.
+    const body = Array.from({ length: 12 }, (_, i) => 'a'.repeat(i + 1)).join('\n');
+    const t = new Text(body, { maxWidth: 80, textAlign: 'center' });
+    // Viewport covers rows 3..4; ±2 overscan widens the drawn window to 1..7.
+    t.setVisibleRange(60, 40);
+    const { r, calls } = xyRecorder();
+    t.render(r);
+    expect(calls.map((c) => c.text)).toEqual([
+      'aa',
+      'aaa',
+      'aaaa',
+      'aaaaa',
+      'aaaaaa',
+      'aaaaaaa',
+      'aaaaaaaa',
+    ]);
+    expect(calls.map((c) => c.x)).toEqual([32, 28, 24, 20, 16, 12, 8]);
+  });
+
+  it('aligned text culls on the projection side too (hint band, offsets intact)', () => {
+    const body = Array.from({ length: 12 }, (_, i) => 'a'.repeat(i + 1)).join('\n');
+    const t = new Text(body, { maxWidth: 80, textAlign: 'right' });
+    // Band y∈[60,100] at lineHeight 20 selects rows 2..5; right-aligned row i
+    // sits at 80 − 8(i+1), so the compacted band still carries exact offsets.
+    const p = t.getContentProjection({ minY: 60, maxY: 100 });
+    const rows = p!.lines!.map((l) => l.text.length - 1);
+    expect(rows).toEqual([2, 3, 4, 5]);
+    expect(p!.lines!.map((l) => l.x)).toEqual([56, 48, 40, 32]);
   });
 });
