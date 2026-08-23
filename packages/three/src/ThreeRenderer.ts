@@ -207,6 +207,15 @@ export class ThreeRenderer implements IRenderer {
   public camera: THREE.OrthographicCamera;
   public renderer: THREE.WebGLRenderer;
 
+  /**
+   * Cap on the effective device pixel ratio applied to the GL backing store.
+   * `undefined` (default) uses the real, uncapped `devicePixelRatio`. Kept in
+   * sync by `Scene` on every {@link resize} call (`SceneOptions.maxDPR`), which
+   * probes for the field with `'maxDPR' in renderer`, so it must stay a
+   * declared instance property rather than only a constructor argument.
+   */
+  public maxDPR?: number;
+
   private width: number;
   private height: number;
 
@@ -242,7 +251,7 @@ export class ThreeRenderer implements IRenderer {
       antialias: true,
     });
     this.renderer.setSize(this.width, this.height);
-    this.renderer.setPixelRatio(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+    this.renderer.setPixelRatio(this.effectiveDPR());
 
     this.matrix = new THREE.Matrix4().identity();
 
@@ -265,9 +274,7 @@ export class ThreeRenderer implements IRenderer {
         // Three's WebGLRenderer rebuilds its GL state lazily on the next render;
         // re-apply DPR (a restore can land on a different display) and force a
         // present so the freshly-restored, cleared framebuffer is repainted.
-        this.renderer.setPixelRatio(
-          typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
-        );
+        this.renderer.setPixelRatio(this.effectiveDPR());
         this.renderer.setSize(this.width, this.height);
         this.frameDirty = true;
         if (!this.disposed) this.present();
@@ -284,6 +291,27 @@ export class ThreeRenderer implements IRenderer {
     }
   }
 
+  /** Real `devicePixelRatio`, clamped to {@link maxDPR} when set. Mirrors
+   * `CanvasRenderer.effectiveDPR` in @vectojs/core. */
+  private effectiveDPR(): number {
+    const real = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
+  }
+
+  /**
+   * The ratio the GL backing store is **currently** scaled by — a live read of
+   * Three's own applied value, not a fresh `devicePixelRatio` lookup.
+   *
+   * Implements the {@link IRenderer.pixelRatio} contract: consumers rasterize
+   * pixels (text atlases, blitted canvases) against this rather than
+   * `window.devicePixelRatio`, so a scene clamped via {@link maxDPR} no longer
+   * produces window-ratio rasters that the clamped backing store resamples
+   * into blur.
+   */
+  public get pixelRatio(): number {
+    return this.renderer.getPixelRatio() || 1;
+  }
+
   /**
    * Re-apply the device pixel ratio when it changes at runtime (window dragged
    * between displays of different density, or browser zoom). A `resolution`
@@ -296,7 +324,8 @@ export class ThreeRenderer implements IRenderer {
     this.dprMediaQuery?.removeEventListener?.('change', this.dprChangeHandler as EventListener);
     this.dprMediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
     this.dprChangeHandler = () => {
-      this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+      // Re-clamped: a zoom past maxDPR must not unclamp the backing store.
+      this.renderer.setPixelRatio(this.effectiveDPR());
       this.renderer.setSize(this.width, this.height);
       this.frameDirty = true;
       if (!this.disposed) this.present();
@@ -313,6 +342,10 @@ export class ThreeRenderer implements IRenderer {
   public resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    // Re-clamped here rather than only in the constructor: `Scene` syncs
+    // `maxDPR` onto the renderer immediately before calling resize, and the
+    // real DPR can change between construction and now (display drag, zoom).
+    this.renderer.setPixelRatio(this.effectiveDPR());
     this.renderer.setSize(width, height);
     this.camera.right = width;
     this.camera.bottom = height;
@@ -1113,5 +1146,11 @@ export class ThreeRenderer implements IRenderer {
     this.dprChangeHandler = null;
     // The WebGLRenderer holds the actual GL context — release it.
     this.renderer.dispose();
+    // `dispose()` alone only frees Three's bookkeeping; the underlying GL
+    // context stays alive until GC, so SPA mount/unmount cycles accumulated
+    // live contexts until the browser capped out. Forcing the loss releases
+    // the context immediately (the canvas then reports `contextlost`, which
+    // is harmless — the listeners are detached above).
+    this.renderer.forceContextLoss();
   }
 }

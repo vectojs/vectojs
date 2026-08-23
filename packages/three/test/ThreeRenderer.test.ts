@@ -25,6 +25,7 @@ vi.mock('three', async () => {
     clear = vi.fn();
     render = vi.fn();
     dispose = vi.fn();
+    forceContextLoss = vi.fn();
     setScissor = vi.fn((x: number | THREE.Vector4, y?: number, z?: number, w?: number) => {
       if (x instanceof actual.Vector4) this.scissor.copy(x);
       else this.scissor.set(x, y ?? 0, z ?? 0, w ?? 0);
@@ -604,6 +605,12 @@ describe('ThreeRenderer', () => {
     expect(renderer.renderer.dispose).toHaveBeenCalledOnce();
   });
 
+  it('forces GL context loss on dispose so SPA cycles do not accumulate contexts', () => {
+    renderer.dispose();
+    renderer.dispose(); // idempotent
+    expect(renderer.renderer.forceContextLoss).toHaveBeenCalledTimes(1);
+  });
+
   it('does not dispose frame resources twice after clear then dispose', () => {
     renderer.fillCircle(10, 10, 5, '#fff');
     const mesh = renderer.scene.children[0] as THREE.Mesh;
@@ -691,6 +698,74 @@ describe('ThreeRenderer', () => {
 
         expect(setPixelRatio).toHaveBeenCalledWith(2);
         dprRenderer.dispose();
+      } finally {
+        (window as any).matchMedia = originalMatchMedia;
+        (window as any).devicePixelRatio = 1;
+      }
+    });
+  });
+
+  describe('IRenderer.pixelRatio contract and maxDPR clamping', () => {
+    it('reports the backing store ratio, not a live window lookup', () => {
+      renderer.renderer.setPixelRatio(2);
+      expect(renderer.pixelRatio).toBe(2);
+      (window as any).devicePixelRatio = 3; // must not leak into the read
+      expect(renderer.pixelRatio).toBe(2);
+      (window as any).devicePixelRatio = 1;
+      renderer.renderer.setPixelRatio(1);
+    });
+
+    it('clamps the applied ratio to maxDPR at construction', () => {
+      (window as any).devicePixelRatio = 3;
+      try {
+        const clamped = new ThreeRenderer(document.createElement('canvas'));
+        clamped.maxDPR = 2;
+        // Scene syncs maxDPR then calls resize(); replicate that handshake.
+        clamped.resize(100, 100);
+        expect(clamped.pixelRatio).toBe(2);
+        expect(vi.mocked(clamped.renderer.setPixelRatio)).toHaveBeenLastCalledWith(2);
+        clamped.dispose();
+      } finally {
+        (window as any).devicePixelRatio = 1;
+      }
+    });
+
+    it('uses the uncapped window DPR when maxDPR is undefined', () => {
+      (window as any).devicePixelRatio = 3;
+      try {
+        const uncapped = new ThreeRenderer(document.createElement('canvas'));
+        uncapped.resize(100, 100);
+        expect(uncapped.pixelRatio).toBe(3);
+        uncapped.dispose();
+      } finally {
+        (window as any).devicePixelRatio = 1;
+      }
+    });
+
+    it('keeps the clamp across a runtime DPR change (zoom past maxDPR)', () => {
+      const originalMatchMedia = (window as any).matchMedia;
+      const lists: Array<{ handler: () => void }> = [];
+      (window as any).matchMedia = (media: string) => ({
+        media,
+        matches: false,
+        addEventListener: (_t: string, h: () => void) => lists.push({ handler: h }),
+        removeEventListener: (_t: string, h: () => void) => {
+          const i = lists.findIndex((l) => l.handler === h);
+          if (i >= 0) lists.splice(i, 1);
+        },
+      });
+      try {
+        (window as any).devicePixelRatio = 2;
+        const clamped = new ThreeRenderer(document.createElement('canvas'));
+        clamped.maxDPR = 1.5;
+        clamped.resize(100, 100);
+
+        // A zoom lands (DPR rises to 3): the re-armed watcher fires.
+        (window as any).devicePixelRatio = 3;
+        for (const l of lists.slice()) l.handler();
+
+        expect(clamped.pixelRatio).toBe(1.5);
+        clamped.dispose();
       } finally {
         (window as any).matchMedia = originalMatchMedia;
         (window as any).devicePixelRatio = 1;
