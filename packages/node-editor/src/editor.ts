@@ -53,8 +53,14 @@ class PortEntity extends UIComponent {
     });
     // Keyboard parity (WCAG 2.1.1): the hotspot advertises role="button", so
     // core synthesizes `click` from Enter/Space on focus — route it into the
-    // same connection gesture the pointer uses.
+    // same connection gesture the pointer uses. Provenance matters: core also
+    // dispatches entity `click` for native browser clicks on this mirror
+    // (pointer capture retargets a released connect-drag back onto it), and
+    // those must not mutate connection state — the pointer handlers above own
+    // it. A synthesized click carries the keydown itself as nativeEvent, so a
+    // real KeyboardEvent instance identifies the keyboard path.
     this.on('click', (event: VectoJSEvent) => {
+      if (!(event.nativeEvent instanceof KeyboardEvent)) return;
       event.stopPropagation();
       editor.portActivated(node.id, port.id);
     });
