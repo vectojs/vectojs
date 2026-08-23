@@ -23,6 +23,39 @@ describe('SpringPhysics', () => {
     expect(spring.velocity).toBe(0);
   });
 
+  describe('Mass validation (public mutable field)', () => {
+    it('rejects zero mass with a thrown error instead of wedging on force/0', () => {
+      const spring = new SpringPhysics(0);
+      // mass 0 divides the acceleration by zero: velocity becomes ±Infinity,
+      // every later value NaN, and `isAtRest()` can never turn true again.
+      expect(() => {
+        spring.mass = 0;
+      }).toThrow(/mass must be a finite number > 0/);
+      expect(spring.mass).toBe(1); // untouched default
+    });
+
+    it('rejects negative and non-finite mass assignments', () => {
+      const spring = new SpringPhysics(0);
+      for (const bad of [-1, -1e-9, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() => {
+          spring.mass = bad;
+        }).toThrow(/mass must be a finite number > 0/);
+      }
+      expect(spring.mass).toBe(1);
+    });
+
+    it('accepts positive mass changes and keeps integrating with them', () => {
+      const spring = new SpringPhysics(0);
+      spring.target = 100;
+      spring.mass = 4;
+      expect(spring.mass).toBe(4);
+      // Heavier mass settles slower (ω_n = √(k/m)); allow plenty of frames.
+      for (let i = 0; i < 1200 && !spring.isAtRest(); i++) spring.update(0.016);
+      expect(spring.isAtRest()).toBe(true);
+      expect(spring.value).toBeCloseTo(100, 1);
+    });
+  });
+
   describe('Damping ratio properties (ζ = c / (2 * sqrt(k * m)))', () => {
     it('underdamped (ζ < 1) should overshoot target', () => {
       const spring = new SpringPhysics(0);
