@@ -156,4 +156,64 @@ describe('FfmpegSupervisor', () => {
     await supervisor.terminate();
     expect(child.kill).not.toHaveBeenCalled();
   });
+
+  it('captures an async stdin EPIPE arriving after a resolved write', async () => {
+    const { child, supervisor } = setup();
+    // Accepted write: no drain waiter exists afterwards, so nothing else
+    // listens on stdin when the pipe dies.
+    await supervisor.write(Buffer.from('frame'));
+
+    // Regression: before the persistent listener this emit threw
+    // ERR_UNHANDLED_ERROR synchronously, escaping every caller's try/catch.
+    expect(() => child.stdin.emit('error', new Error('write EPIPE'))).not.toThrow();
+
+    await expect(supervisor.write(Buffer.from('next'))).rejects.toThrow(/stdin failed.*EPIPE/is);
+  });
+
+  it('never reports success over a broken pipe, even on exit code 0', async () => {
+    const { child, supervisor } = setup();
+    const finished = supervisor.finish();
+    child.stdin.emit('error', new Error('write EPIPE'));
+    child.close(0);
+    await expect(finished).rejects.toThrow(/stdin failed.*EPIPE/is);
+  });
+
+  it('finish() without a signal escalates to SIGKILL instead of hanging forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const { child, supervisor } = setup();
+      const finished = supervisor.finish();
+      // Attach the rejection handler up front: the ladder may settle (and
+      // reject) mid-advance, before the final await below.
+      const assertion = expect(finished).rejects.toThrow(/did not exit after SIGTERM and SIGKILL/i);
+      expect(child.stdin.end).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(50); // initial close wait expires
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      await vi.advanceTimersByTimeAsync(50); // SIGTERM grace expires
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      await vi.advanceTimersByTimeAsync(50); // SIGKILL grace expires
+
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('finish() without a signal still succeeds when FFmpeg exits after SIGTERM', async () => {
+    vi.useFakeTimers();
+    try {
+      const { child, supervisor } = setup();
+      const finished = supervisor.finish();
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      child.close(0);
+
+      await expect(finished).resolves.toBeUndefined();
+      expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
