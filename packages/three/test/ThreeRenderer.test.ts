@@ -223,7 +223,7 @@ describe('ThreeRenderer', () => {
     expect(vi.mocked(renderer.renderer.render)).toHaveBeenCalledTimes(1);
   });
 
-  it('stroke() draws one Line per sub-path (no connectors across moveTo gaps)', () => {
+  it('stroke() builds one ribbon mesh per sub-path (no geometry across moveTo gaps)', () => {
     renderer.clear();
     renderer.beginPath();
     renderer.moveTo(0, 0);
@@ -231,12 +231,127 @@ describe('ThreeRenderer', () => {
     renderer.moveTo(50, 50); // second sub-path
     renderer.lineTo(60, 50);
     renderer.stroke('#ffffff', 1);
-    const lines = renderer.scene.children.filter((o) => (o as THREE.Line).isLine);
-    expect(lines).toHaveLength(2);
-    // Each line has its own 2 points — nothing spans the (10,0)→(50,50) gap.
-    for (const line of lines) {
-      const pos = (line as THREE.Line).geometry.getAttribute('position');
-      expect(pos.count).toBe(2);
+    const strokes = renderer.scene.children.filter((o) => o instanceof THREE.Mesh);
+    expect(strokes).toHaveLength(2);
+    // Each ribbon carries its own 4 corner vertices — nothing spans the
+    // (10,0)→(50,50) gap.
+    for (const mesh of strokes) {
+      const pos = (mesh as THREE.Mesh).geometry.getAttribute('position');
+      expect(pos.count).toBe(4);
+    }
+  });
+
+  it('stroke() realizes the requested width as geometry (WebGL ignores linewidth)', () => {
+    renderer.beginPath();
+    renderer.moveTo(10, 0);
+    renderer.lineTo(30, 0); // horizontal segment, width 4
+    renderer.stroke('#ffffff', 4);
+
+    const mesh = renderer.scene.children[0] as THREE.Mesh;
+    expect(mesh.material).toBeInstanceOf(THREE.MeshBasicMaterial);
+    const pos = mesh.geometry.getAttribute('position');
+    // The ribbon must span ±halfWidth around y=0 instead of collapsing to
+    // the hairline a Line would have drawn.
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      minY = Math.min(minY, pos.getY(i));
+      maxY = Math.max(maxY, pos.getY(i));
+    }
+    expect(minY).toBeCloseTo(-2);
+    expect(maxY).toBeCloseTo(2);
+  });
+
+  it('stroke() ignores non-positive widths like Canvas2D', () => {
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(10, 0);
+    renderer.stroke('#ffffff', 0);
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(10, 0);
+    renderer.stroke('#ffffff', -3);
+    expect(renderer.scene.children).toHaveLength(0);
+  });
+
+  it('stroke() samples gradients through the shared shader instead of the first stop', () => {
+    const grad = renderer.createLinearGradient(0, 0, 100, 0, [
+      { stop: 0, color: '#ff0000' },
+      { stop: 1, color: '#0000ff' },
+    ]);
+    renderer.beginPath();
+    renderer.moveTo(0, 0);
+    renderer.lineTo(100, 0);
+    renderer.stroke(grad, 2);
+
+    const material = (renderer.scene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial;
+    expect(material).toBeInstanceOf(THREE.ShaderMaterial);
+    expect(material.uniforms.u_grad_stops).toBeDefined();
+  });
+
+  it('warns once per process when a gradient exceeds the 8-stop uniform table', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stops = Array.from({ length: 12 }, (_, i) => ({
+        stop: i / 11,
+        color: i % 2 ? '#ff0000' : '#0000ff',
+      }));
+      const grad = renderer.createLinearGradient(0, 0, 100, 100, stops);
+      renderer.beginPath();
+      renderer.moveTo(0, 0);
+      renderer.lineTo(100, 0);
+      renderer.lineTo(100, 100);
+      renderer.closePath();
+      renderer.fill(grad);
+      renderer.beginPath();
+      renderer.moveTo(0, 0);
+      renderer.lineTo(100, 0);
+      renderer.lineTo(100, 100);
+      renderer.closePath();
+      renderer.fill(grad); // same over-limit gradient again
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('resampled'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fillText rasterizes a real gradient instead of the first stop color', () => {
+    let createdWith: number[] | null = null;
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type: string) {
+      if (type === '2d') {
+        return {
+          font: '',
+          fillStyle: '',
+          measureText: () => ({ width: 100 }),
+          fillText: () => {},
+          scale: () => {},
+          createLinearGradient: (...coords: number[]) => {
+            createdWith = coords;
+            return { addColorStop: () => {} };
+          },
+        } as any;
+      }
+      return originalGetContext.apply(this, arguments as any);
+    };
+
+    try {
+      const grad = renderer.createLinearGradient(100, 20, 200, 20, [
+        { stop: 0, color: '#ff0000' },
+        { stop: 1, color: '#0000ff' },
+      ]);
+      renderer.fillText('grad', 100, 50, '16px sans-serif', grad);
+
+      // The axis is translated into the raster's local space: baseline at
+      // (100, 50) ↔ raster origin, fontSize 16 → offset y = 34.
+      expect(createdWith).toEqual([0, -14, 100, -14]);
+      // Distinct cache entry from any solid-color raster of the same text.
+      const keys = [...(renderer as any).textTextureCache.keys()] as string[];
+      expect(keys[0]).toContain('grad(100,20,200,20;');
+    } finally {
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
     }
   });
 
