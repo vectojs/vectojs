@@ -377,3 +377,247 @@ describe('Stack wrap fast-append equivalence (O(N^2) -> O(N))', () => {
     }
   });
 });
+
+describe('Stack fillTarget', () => {
+  it('stretches the last vertical child by the remaining extent after fixed siblings and gaps', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 100 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 15);
+    const c = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    stack.add(c);
+
+    // remaining = 100 - (10 + 15) - (2 gaps * 5) = 65 -> c stretches to 65.
+    expect(c.height).toBe(65);
+    expect(a.y).toBe(0);
+    expect(b.y).toBe(15);
+    expect(c.y).toBe(35); // 10 + 5 + 15 + 5
+    // children + gaps total exactly fillTarget…
+    expect(c.y + c.height).toBe(100);
+    // …the container reports exactly fillTarget along the main axis…
+    expect(stack.height).toBe(100);
+    // …and the cross axis is unchanged (widest child).
+    expect(stack.width).toBe(20);
+  });
+
+  it('works along the horizontal axis too', () => {
+    const stack = new Stack({ direction: 'horizontal', gap: 4, fillTarget: 120 });
+    const a = new Box(30, 10);
+    const b = new Box(40, 20);
+    const c = new Box(10, 5);
+    stack.add(a);
+    stack.add(b);
+    stack.add(c);
+
+    // remaining = 120 - (30 + 40) - (2 gaps * 4) = 42 -> c widens to 42.
+    expect(c.width).toBe(42);
+    expect(a.x).toBe(0);
+    expect(b.x).toBe(34);
+    expect(c.x).toBe(78); // 30 + 4 + 40 + 4
+    expect(stack.width).toBe(120);
+    expect(stack.height).toBe(20); // cross axis unchanged
+  });
+
+  it('fills the entire target when there is only one child', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 7, fillTarget: 80 });
+    const only = new Box(10, 10);
+    stack.add(only);
+
+    expect(only.height).toBe(80);
+    expect(only.y).toBe(0);
+    expect(stack.height).toBe(80);
+  });
+
+  it('floors the last child at its content size when space is insufficient', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 30 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 15);
+    const c = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    stack.add(c);
+
+    // remaining = 30 - 25 - 10 = -5 < c's content height of 10: c keeps its
+    // content size and the laid-out children overflow the container, which
+    // still reports exactly fillTarget (overflow semantics).
+    expect(c.height).toBe(10);
+    expect(c.y).toBe(35);
+    expect(stack.height).toBe(30);
+  });
+
+  it('keeps repeated layouts idempotent instead of compounding the stretch', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 100 });
+    stack.add(new Box(20, 10));
+    const b = new Box(20, 10);
+    stack.add(b);
+    expect(b.height).toBe(85);
+
+    stack.layout();
+    stack.layout();
+    expect(b.height).toBe(85); // not 85 stretched again
+    expect(stack.height).toBe(100);
+  });
+
+  it('lets a shrinking fillTarget take effect on the next layout', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 100 });
+    stack.add(new Box(20, 10));
+    const b = new Box(20, 10);
+    stack.add(b);
+    expect(b.height).toBe(85);
+
+    stack.fillTarget = 50;
+    stack.layout();
+    // remaining = 50 - 10 - 5 = 35.
+    expect(b.height).toBe(35);
+    expect(stack.height).toBe(50);
+  });
+
+  it('restores the previously stretched child when a new last child is added', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 100 });
+    const a = new Box(20, 10);
+    const b = new Box(20, 10);
+    stack.add(a);
+    stack.add(b);
+    expect(b.height).toBe(85); // was stretched
+
+    const c = new Box(20, 10);
+    stack.add(c);
+    // b is back to its content size and the stretch moved onto c.
+    expect(b.height).toBe(10);
+    expect(b.y).toBe(15);
+    expect(c.height).toBe(70); // 100 - (10 + 10) - (2 gaps * 5)
+    expect(c.y).toBe(30);
+    expect(stack.height).toBe(100);
+  });
+
+  it('produces via add() exactly what a direct full layout() produces (fast paths disabled)', () => {
+    const opts = { direction: 'vertical' as const, gap: 5, fillTarget: 90 };
+    const sizes: Array<[number, number]> = [
+      [20, 10],
+      [35, 25],
+      [50, 8],
+      [30, 12],
+    ];
+
+    const fast = new Stack(opts);
+    for (const [w, h] of sizes) fast.add(new Box(w, h));
+
+    const ref = new Stack(opts);
+    for (const [w, h] of sizes) (ref as any).children.push(new Box(w, h));
+    for (const c of (ref as any).children) c.parent = ref;
+    ref.layout();
+
+    expect(fast.width).toBe(ref.width);
+    expect(fast.height).toBe(ref.height);
+    for (let i = 0; i < sizes.length; i++) {
+      expect(fast.children[i].x).toBe(ref.children[i].x);
+      expect(fast.children[i].y).toBe(ref.children[i].y);
+      expect(fast.children[i].width).toBe(ref.children[i].width);
+      expect(fast.children[i].height).toBe(ref.children[i].height);
+    }
+    // Last child fills: 90 - (10 + 25 + 8) - (3 gaps * 5) = 32.
+    expect(fast.children[3].height).toBe(32);
+  });
+
+  it('routes resizeLastChild through a full layout while filling', () => {
+    const stack = new Stack({ direction: 'vertical', gap: 5, fillTarget: 100 });
+    stack.add(new Box(20, 10));
+    const b = new Box(20, 10);
+    stack.add(b);
+    expect(b.height).toBe(85);
+
+    // Externally shrink the last child's content, then notify: the O(1)
+    // arithmetic assumes content-sized children, so this must fall back to a
+    // full layout and recompute the stretch from the new content size.
+    b.height = 4;
+    stack.resizeLastChild(b);
+    expect(b.height).toBe(85); // 100 - 10 - 5
+    expect(stack.height).toBe(100);
+  });
+
+  it('leaves an empty stack content-sized (zero) even with fillTarget set', () => {
+    const stack = new Stack({ fillTarget: 200 });
+    stack.layout();
+    expect(stack.width).toBe(0);
+    expect(stack.height).toBe(0);
+  });
+
+  it('is byte-identical to legacy behavior when unset', () => {
+    const legacy = new Stack({ direction: 'horizontal', gap: 3 });
+    const unset = new Stack({ direction: 'horizontal', gap: 3, fillTarget: undefined });
+    for (const [w, h] of [
+      [10, 20],
+      [10, 45],
+      [10, 5],
+    ]) {
+      legacy.add(new Box(w, h));
+      unset.add(new Box(w, h));
+    }
+
+    expect(unset.width).toBe(legacy.width);
+    expect(unset.height).toBe(legacy.height);
+    // Legacy content-sized totals, untouched by any fill logic.
+    expect(legacy.width).toBe(10 * 3 + 3 * 2);
+    expect(legacy.height).toBe(45);
+    for (let i = 0; i < 3; i++) {
+      expect(unset.children[i].x).toBe(legacy.children[i].x);
+      expect(unset.children[i].y).toBe(legacy.children[i].y);
+      expect(unset.children[i].width).toBe(legacy.children[i].width);
+      expect(unset.children[i].height).toBe(legacy.children[i].height);
+    }
+  });
+
+  it('is ignored entirely when wrap is true', () => {
+    const opts = {
+      direction: 'horizontal' as const,
+      wrap: true,
+      maxWidth: 100,
+      gap: 10,
+    };
+    const withFill = new Stack({ ...opts, fillTarget: 1000 });
+    const without = new Stack(opts);
+    for (const [w, h] of [
+      [50, 20],
+      [50, 20],
+      [50, 20],
+    ]) {
+      withFill.add(new Box(w, h));
+      without.add(new Box(w, h));
+    }
+
+    expect(withFill.width).toBe(without.width);
+    expect(withFill.height).toBe(without.height);
+    expect(withFill.children[2].width).toBe(50); // never stretched
+    for (let i = 0; i < 3; i++) {
+      expect(withFill.children[i].x).toBe(without.children[i].x);
+      expect(withFill.children[i].y).toBe(without.children[i].y);
+    }
+  });
+
+  it('keeps culling ranges monotonic and sane while the last child is stretched', () => {
+    const stack = new Stack({
+      direction: 'vertical',
+      gap: 0,
+      fillTarget: 500,
+      cullOffscreenChildren: true,
+    });
+    for (let i = 0; i < 20; i++) stack.add(new Box(100, 20));
+
+    // 19 fixed children of 20 + stretched last child of 120.
+    expect(stack.children[19].height).toBe(120);
+    expect(stack.height).toBe(500);
+    // Positions remain strictly descending-free / monotonically increasing,
+    // which the binary search in getRenderChildRange relies on.
+    for (let i = 1; i < 20; i++) {
+      expect(stack.children[i].y).toBeGreaterThan(stack.children[i - 1].y);
+    }
+
+    const range = stack.getRenderChildRange({ x: 0, y: 300, width: 100, height: 100 });
+    expect(range).not.toBeNull();
+    expect(range!.start).toBe(14); // first child whose band reaches y >= 300
+    expect(range!.end).toBe(20);
+    expect(range!.end).toBeLessThanOrEqual(20);
+    expect(stack.children).toHaveLength(20);
+  });
+});
