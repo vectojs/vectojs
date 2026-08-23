@@ -20,6 +20,24 @@ function parseFontSize(font: string): number {
   return size !== undefined && FONT_SIZE_RE.test(size) ? Number.parseFloat(size) : 16;
 }
 
+/**
+ * The gradient fragment shader interpolates a fixed 8-entry uniform table, so
+ * a gradient with more than eight stops is resampled to evenly spaced samples
+ * along its axis instead of being reproduced exactly — a silent fidelity
+ * change unless surfaced. Warned once per process, not once per draw: HUD
+ * redraws would otherwise spam the console every frame.
+ */
+let gradientResampleWarned = false;
+function warnGradientResampled(stopCount: number): void {
+  if (gradientResampleWarned) return;
+  gradientResampleWarned = true;
+  console.warn(
+    `[@vectojs/three] Linear gradient with ${stopCount} color stops exceeds the ` +
+      '8-stop uniform table and was resampled to evenly spaced samples; ' +
+      'colors between stops may deviate slightly from Canvas2D.',
+  );
+}
+
 export class WebGLGradient {
   public type = 'linear';
   constructor(
@@ -29,6 +47,82 @@ export class WebGLGradient {
     public y1: number,
     public colorStops: { stop: number; color: string }[],
   ) {}
+}
+
+/** Consecutive points closer than this are treated as the same point when
+ * expanding a stroke polyline (closed shapes repeat their first point). */
+const STROKE_DEDUPE_EPSILON = 1e-6;
+
+/**
+ * Expand a polyline into a triangle-strip ribbon `width` world-units wide,
+ * centred on the path. WebGL renders `LineBasicMaterial.linewidth` as a 1px
+ * hairline no matter what the material asks for, so a requested stroke width
+ * only reaches the framebuffer as real geometry.
+ *
+ * Joints are beveled via per-point normals averaged from the adjacent segments
+ * (a miter join's spikes at near-reversals are avoided by falling back to the
+ * previous segment's normal) and caps are flat — adequate fidelity for UI
+ * strokes at their usual 1–4px widths.
+ */
+function buildStrokeRibbon(
+  rawPoints: THREE.Vector2[],
+  width: number,
+): { positions: Float32Array; indices: number[] } | null {
+  const points: THREE.Vector2[] = [];
+  outer: for (const point of rawPoints) {
+    for (const kept of points) {
+      if (kept.distanceToSquared(point) < STROKE_DEDUPE_EPSILON) continue outer;
+    }
+    points.push(point);
+  }
+  if (points.length < 2) return null;
+
+  const half = Math.max(width, 0) / 2;
+  const offsets: THREE.Vector2[] = [];
+  const normalOf = (from: THREE.Vector2, to: THREE.Vector2) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    return new THREE.Vector2(-dy / length, dx / length);
+  };
+  let previousNormal: THREE.Vector2 | null = null;
+  for (let i = 0; i < points.length; i++) {
+    const previous = points[i - 1];
+    const next = points[i + 1];
+    if (!previous) {
+      previousNormal = normalOf(points[0], next!);
+    } else if (!next) {
+      previousNormal = previousNormal ?? normalOf(previous, points[i]);
+    } else {
+      const incoming: THREE.Vector2 = previousNormal ?? normalOf(previous, points[i]);
+      const outgoing = normalOf(points[i], next);
+      const averaged = new THREE.Vector2().addVectors(incoming, outgoing);
+      // Near-reversal (the average collapses): keep the incoming segment's
+      // normal instead of spiking the joint.
+      previousNormal =
+        averaged.lengthSq() > STROKE_DEDUPE_EPSILON ? averaged.normalize() : incoming;
+    }
+    offsets.push(previousNormal!);
+  }
+
+  const positions = new Float32Array(points.length * 2 * 3);
+  const indices: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const point = points[i];
+    const normal = offsets[i];
+    const base = i * 6;
+    positions[base] = point.x + normal.x * half;
+    positions[base + 1] = point.y + normal.y * half;
+    positions[base + 2] = 0;
+    positions[base + 3] = point.x - normal.x * half;
+    positions[base + 4] = point.y - normal.y * half;
+    positions[base + 5] = 0;
+    if (i > 0) {
+      const row = i * 2;
+      indices.push(row - 2, row - 1, row, row - 1, row + 1, row);
+    }
+  }
+  return { positions, indices };
 }
 
 /**
@@ -113,6 +207,15 @@ export class ThreeRenderer implements IRenderer {
   public camera: THREE.OrthographicCamera;
   public renderer: THREE.WebGLRenderer;
 
+  /**
+   * Cap on the effective device pixel ratio applied to the GL backing store.
+   * `undefined` (default) uses the real, uncapped `devicePixelRatio`. Kept in
+   * sync by `Scene` on every {@link resize} call (`SceneOptions.maxDPR`), which
+   * probes for the field with `'maxDPR' in renderer`, so it must stay a
+   * declared instance property rather than only a constructor argument.
+   */
+  public maxDPR?: number;
+
   private width: number;
   private height: number;
 
@@ -148,7 +251,7 @@ export class ThreeRenderer implements IRenderer {
       antialias: true,
     });
     this.renderer.setSize(this.width, this.height);
-    this.renderer.setPixelRatio(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+    this.renderer.setPixelRatio(this.effectiveDPR());
 
     this.matrix = new THREE.Matrix4().identity();
 
@@ -171,9 +274,7 @@ export class ThreeRenderer implements IRenderer {
         // Three's WebGLRenderer rebuilds its GL state lazily on the next render;
         // re-apply DPR (a restore can land on a different display) and force a
         // present so the freshly-restored, cleared framebuffer is repainted.
-        this.renderer.setPixelRatio(
-          typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
-        );
+        this.renderer.setPixelRatio(this.effectiveDPR());
         this.renderer.setSize(this.width, this.height);
         this.frameDirty = true;
         if (!this.disposed) this.present();
@@ -190,6 +291,27 @@ export class ThreeRenderer implements IRenderer {
     }
   }
 
+  /** Real `devicePixelRatio`, clamped to {@link maxDPR} when set. Mirrors
+   * `CanvasRenderer.effectiveDPR` in @vectojs/core. */
+  private effectiveDPR(): number {
+    const real = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
+  }
+
+  /**
+   * The ratio the GL backing store is **currently** scaled by — a live read of
+   * Three's own applied value, not a fresh `devicePixelRatio` lookup.
+   *
+   * Implements the {@link IRenderer.pixelRatio} contract: consumers rasterize
+   * pixels (text atlases, blitted canvases) against this rather than
+   * `window.devicePixelRatio`, so a scene clamped via {@link maxDPR} no longer
+   * produces window-ratio rasters that the clamped backing store resamples
+   * into blur.
+   */
+  public get pixelRatio(): number {
+    return this.renderer.getPixelRatio() || 1;
+  }
+
   /**
    * Re-apply the device pixel ratio when it changes at runtime (window dragged
    * between displays of different density, or browser zoom). A `resolution`
@@ -202,7 +324,8 @@ export class ThreeRenderer implements IRenderer {
     this.dprMediaQuery?.removeEventListener?.('change', this.dprChangeHandler as EventListener);
     this.dprMediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
     this.dprChangeHandler = () => {
-      this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+      // Re-clamped: a zoom past maxDPR must not unclamp the backing store.
+      this.renderer.setPixelRatio(this.effectiveDPR());
       this.renderer.setSize(this.width, this.height);
       this.frameDirty = true;
       if (!this.disposed) this.present();
@@ -219,6 +342,10 @@ export class ThreeRenderer implements IRenderer {
   public resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    // Re-clamped here rather than only in the constructor: `Scene` syncs
+    // `maxDPR` onto the renderer immediately before calling resize, and the
+    // real DPR can change between construction and now (display drag, zoom).
+    this.renderer.setPixelRatio(this.effectiveDPR());
     this.renderer.setSize(width, height);
     this.camera.right = width;
     this.camera.bottom = height;
@@ -522,6 +649,134 @@ export class ThreeRenderer implements IRenderer {
     this.activeObjects.push(mesh);
   }
 
+  /**
+   * Builds the linear-gradient ShaderMaterial shared by {@link fill} and
+   * {@link stroke}. The fragment shader interpolates a fixed 8-entry uniform
+   * table, so gradients with more than eight stops are resampled to evenly
+   * spaced samples along the axis (a documented fidelity limitation — warned
+   * once per process by {@link warnGradientResampled}).
+   */
+  private createGradientMaterial(grad: WebGLGradient): THREE.ShaderMaterial {
+    const sortedStops = [...grad.colorStops].sort((a, b) => a.stop - b.stop);
+
+    if (sortedStops.length < 2) {
+      // Handled by callers (single stop degrades to a solid fill).
+      throw new Error('createGradientMaterial requires at least two color stops');
+    }
+
+    const finalColors: THREE.Vector4[] = [];
+    const finalStops: number[] = [];
+
+    if (sortedStops.length > 8) {
+      warnGradientResampled(sortedStops.length);
+      const lerpColor = (c1: string, c2: string, f: number) => {
+        const rgba1 = parseColorToRGBA(c1);
+        const rgba2 = parseColorToRGBA(c2);
+        return new THREE.Vector4(
+          rgba1[0] + (rgba2[0] - rgba1[0]) * f,
+          rgba1[1] + (rgba2[1] - rgba1[1]) * f,
+          rgba1[2] + (rgba2[2] - rgba1[2]) * f,
+          rgba1[3] + (rgba2[3] - rgba1[3]) * f,
+        );
+      };
+
+      for (let k = 0; k < 8; k++) {
+        const t = k / 7;
+        if (t <= sortedStops[0].stop) {
+          const rgba = parseColorToRGBA(sortedStops[0].color);
+          finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
+        } else if (t >= sortedStops[sortedStops.length - 1].stop) {
+          const rgba = parseColorToRGBA(sortedStops[sortedStops.length - 1].color);
+          finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
+        } else {
+          let i = 0;
+          for (let idx = 0; idx < sortedStops.length - 1; idx++) {
+            if (t >= sortedStops[idx].stop && t <= sortedStops[idx + 1].stop) {
+              i = idx;
+              break;
+            }
+          }
+          const gap = sortedStops[i + 1].stop - sortedStops[i].stop;
+          const f = gap > 0.0001 ? (t - sortedStops[i].stop) / gap : 0.0;
+          finalColors.push(lerpColor(sortedStops[i].color, sortedStops[i + 1].color, f));
+        }
+        finalStops.push(t);
+      }
+    } else {
+      for (let i = 0; i < 8; i++) {
+        const stopIdx = Math.min(i, sortedStops.length - 1);
+        const stop = sortedStops[stopIdx];
+        const rgba = parseColorToRGBA(stop.color);
+        finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
+        finalStops.push(stop.stop);
+      }
+    }
+
+    // Gradient endpoints are transformed by the CURRENT matrix, matching
+    // Canvas2D where the gradient is defined in the coordinate space active
+    // when the geometry is drawn.
+    const u_grad_start = new THREE.Vector3(grad.x0, grad.y0, 0).applyMatrix4(this.matrix);
+    const u_grad_end = new THREE.Vector3(grad.x1, grad.y1, 0).applyMatrix4(this.matrix);
+
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        u_grad_start: {
+          value: new THREE.Vector2(u_grad_start.x, u_grad_start.y),
+        },
+        u_grad_end: {
+          value: new THREE.Vector2(u_grad_end.x, u_grad_end.y),
+        },
+        u_grad_colors: { value: finalColors },
+        u_grad_stops: { value: finalStops },
+        u_global_alpha: { value: this.globalAlpha },
+      },
+      vertexShader: `
+        varying vec2 v_world_pos;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          v_world_pos = worldPos.xy;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        varying vec2 v_world_pos;
+        uniform vec2 u_grad_start;
+        uniform vec2 u_grad_end;
+        uniform vec4 u_grad_colors[8];
+        uniform float u_grad_stops[8];
+        uniform float u_global_alpha;
+
+        void main() {
+          vec2 d = u_grad_end - u_grad_start;
+          float d_len_sq = dot(d, d);
+          float t = 0.0;
+          if (d_len_sq > 0.0001) {
+            t = clamp(dot(v_world_pos - u_grad_start, d) / d_len_sq, 0.0, 1.0);
+          }
+          vec4 finalColor = u_grad_colors[7];
+          if (t <= u_grad_stops[0]) {
+            finalColor = u_grad_colors[0];
+          } else {
+            for (int i = 0; i < 7; i++) {
+              if (t >= u_grad_stops[i] && t <= u_grad_stops[i+1]) {
+                float gap = u_grad_stops[i+1] - u_grad_stops[i];
+                float factor = gap > 0.0001 ? (t - u_grad_stops[i]) / gap : 0.0;
+                finalColor = mix(u_grad_colors[i], u_grad_colors[i+1], factor);
+                break;
+              }
+            }
+          }
+          gl_FragColor = vec4(finalColor.rgb, finalColor.a * u_global_alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      // See fillText: the y-down ortho camera flips winding, so FrontSide
+      // shapes would be culled.
+      side: THREE.DoubleSide,
+    });
+  }
+
   fill(colorOrGradient: string | any): void {
     if (!this.currentPath) return;
 
@@ -535,117 +790,9 @@ export class ThreeRenderer implements IRenderer {
         return;
       }
 
-      const finalColors: THREE.Vector4[] = [];
-      const finalStops: number[] = [];
-
-      if (sortedStops.length > 8) {
-        const lerpColor = (c1: string, c2: string, f: number) => {
-          const rgba1 = parseColorToRGBA(c1);
-          const rgba2 = parseColorToRGBA(c2);
-          return new THREE.Vector4(
-            rgba1[0] + (rgba2[0] - rgba1[0]) * f,
-            rgba1[1] + (rgba2[1] - rgba1[1]) * f,
-            rgba1[2] + (rgba2[2] - rgba1[2]) * f,
-            rgba1[3] + (rgba2[3] - rgba1[3]) * f,
-          );
-        };
-
-        for (let k = 0; k < 8; k++) {
-          const t = k / 7;
-          if (t <= sortedStops[0].stop) {
-            const rgba = parseColorToRGBA(sortedStops[0].color);
-            finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
-          } else if (t >= sortedStops[sortedStops.length - 1].stop) {
-            const rgba = parseColorToRGBA(sortedStops[sortedStops.length - 1].color);
-            finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
-          } else {
-            let i = 0;
-            for (let idx = 0; idx < sortedStops.length - 1; idx++) {
-              if (t >= sortedStops[idx].stop && t <= sortedStops[idx + 1].stop) {
-                i = idx;
-                break;
-              }
-            }
-            const gap = sortedStops[i + 1].stop - sortedStops[i].stop;
-            const f = gap > 0.0001 ? (t - sortedStops[i].stop) / gap : 0.0;
-            finalColors.push(lerpColor(sortedStops[i].color, sortedStops[i + 1].color, f));
-          }
-          finalStops.push(t);
-        }
-      } else {
-        for (let i = 0; i < 8; i++) {
-          const stopIdx = Math.min(i, sortedStops.length - 1);
-          const stop = sortedStops[stopIdx];
-          const rgba = parseColorToRGBA(stop.color);
-          finalColors.push(new THREE.Vector4(rgba[0], rgba[1], rgba[2], rgba[3]));
-          finalStops.push(stop.stop);
-        }
-      }
-
-      const u_grad_start = new THREE.Vector3(grad.x0, grad.y0, 0).applyMatrix4(this.matrix);
-      const u_grad_end = new THREE.Vector3(grad.x1, grad.y1, 0).applyMatrix4(this.matrix);
-
-      const shapes = this.currentPath.toShapes();
-      for (const shape of shapes) {
+      const material = this.createGradientMaterial(grad);
+      for (const shape of this.currentPath.toShapes()) {
         const geometry = new THREE.ShapeGeometry(shape);
-        const material = new THREE.ShaderMaterial({
-          uniforms: {
-            u_grad_start: {
-              value: new THREE.Vector2(u_grad_start.x, u_grad_start.y),
-            },
-            u_grad_end: {
-              value: new THREE.Vector2(u_grad_end.x, u_grad_end.y),
-            },
-            u_grad_colors: { value: finalColors },
-            u_grad_stops: { value: finalStops },
-            u_global_alpha: { value: this.globalAlpha },
-          },
-          vertexShader: `
-            varying vec2 v_world_pos;
-            void main() {
-              vec4 worldPos = modelMatrix * vec4(position, 1.0);
-              v_world_pos = worldPos.xy;
-              gl_Position = projectionMatrix * viewMatrix * worldPos;
-            }
-          `,
-          fragmentShader: `
-            varying vec2 v_world_pos;
-            uniform vec2 u_grad_start;
-            uniform vec2 u_grad_end;
-            uniform vec4 u_grad_colors[8];
-            uniform float u_grad_stops[8];
-            uniform float u_global_alpha;
-
-            void main() {
-              vec2 d = u_grad_end - u_grad_start;
-              float d_len_sq = dot(d, d);
-              float t = 0.0;
-              if (d_len_sq > 0.0001) {
-                t = clamp(dot(v_world_pos - u_grad_start, d) / d_len_sq, 0.0, 1.0);
-              }
-              vec4 finalColor = u_grad_colors[7];
-              if (t <= u_grad_stops[0]) {
-                finalColor = u_grad_colors[0];
-              } else {
-                for (int i = 0; i < 7; i++) {
-                  if (t >= u_grad_stops[i] && t <= u_grad_stops[i+1]) {
-                    float gap = u_grad_stops[i+1] - u_grad_stops[i];
-                    float factor = gap > 0.0001 ? (t - u_grad_stops[i]) / gap : 0.0;
-                    finalColor = mix(u_grad_colors[i], u_grad_colors[i+1], factor);
-                    break;
-                  }
-                }
-              }
-              gl_FragColor = vec4(finalColor.rgb, finalColor.a * u_global_alpha);
-            }
-          `,
-          transparent: true,
-          depthWrite: false,
-          // See fillText: the y-down ortho camera flips winding, so FrontSide
-          // shapes would be culled.
-          side: THREE.DoubleSide,
-        });
-
         const mesh = new THREE.Mesh(geometry, material);
         mesh.applyMatrix4(this.matrix);
         this.scene.add(mesh);
@@ -684,35 +831,56 @@ export class ThreeRenderer implements IRenderer {
 
   stroke(colorOrGradient: string | any, lineWidth: number = 1): void {
     if (!this.currentPath) return;
-    let color = '#ffffff';
-    if (typeof colorOrGradient === 'string') {
-      color = colorOrGradient;
-    } else if (colorOrGradient && colorOrGradient.type === 'linear') {
+    // Canvas2D ignores non-positive lineWidth (keeps the previous value);
+    // there is no previous value to keep here, so draw nothing.
+    if (!(lineWidth > 0)) return;
+
+    const isGradient = !!(colorOrGradient && colorOrGradient.type === 'linear');
+    let parsed: { color: THREE.Color; alpha: number } | null = null;
+    if (isGradient) {
       const grad = colorOrGradient as WebGLGradient;
-      if (grad.colorStops && grad.colorStops.length > 0) {
-        color = grad.colorStops[0].color;
-      }
+      // A degenerate gradient strokes as its single stop / fallback color,
+      // mirroring the fill() degradation path.
+      const sortedStops = [...(grad.colorStops ?? [])].sort((a, b) => a.stop - b.stop);
+      parsed = sortedStops.length >= 2 ? null : parseThreeColor(sortedStops[0]?.color ?? '#ffffff');
+    } else {
+      parsed = parseThreeColor(typeof colorOrGradient === 'string' ? colorOrGradient : '#ffffff');
     }
+    const opacity = this.globalAlpha * (parsed?.alpha ?? 1);
 
-    const parsed = parseThreeColor(color);
-    const opacity = this.globalAlpha * parsed.alpha;
-    // One Line per sub-path: concatenating all shapes into a single Line
-    // would draw spurious connector segments across every moveTo() gap.
+    // One ribbon mesh per sub-path: concatenating all shapes into a single
+    // strip would draw spurious connector geometry across every moveTo() gap.
     for (const shape of this.currentPath.toShapes()) {
-      const points = shape.getPoints();
-      if (points.length < 2) continue;
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({
-        color: parsed.color,
-        transparent: opacity < 1,
-        opacity,
-        linewidth: lineWidth,
-      });
-      const line = new THREE.Line(geometry, material);
-      line.applyMatrix4(this.matrix);
+      const ribbon = buildStrokeRibbon(shape.getPoints(), lineWidth);
+      if (!ribbon) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(ribbon.positions, 3));
+      geometry.setIndex(ribbon.indices);
 
-      this.scene.add(line);
-      this.activeObjects.push(line);
+      // LineBasicMaterial.linewidth is ignored by WebGL (always 1px), so
+      // widths are realized by expanding the path into a triangle-strip
+      // ribbon; gradients sample the same shader fill() uses, evaluated at
+      // each fragment's world position across the ribbon's width.
+      const material =
+        parsed === null
+          ? this.createGradientMaterial(colorOrGradient as WebGLGradient)
+          : new THREE.MeshBasicMaterial({
+              color: parsed.color,
+              transparent: opacity < 1,
+              opacity,
+              depthWrite: false,
+              // The y-down ortho camera mirrors the projection, which flips
+              // triangle winding in clip space and makes three.js cull
+              // FrontSide geometry. DoubleSide keeps the ribbon visible
+              // regardless of the mirror.
+              side: THREE.DoubleSide,
+            });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.applyMatrix4(this.matrix);
+
+      this.scene.add(mesh);
+      this.activeObjects.push(mesh);
     }
   }
 
@@ -740,9 +908,55 @@ export class ThreeRenderer implements IRenderer {
    *  a cache hit re-inserts the entry). */
   private imageTextureCacheLimit = 256;
 
+  /**
+   * Serializes a {@link WebGLGradient} into the text-texture cache key so two
+   * texts using different gradients never share a raster.
+   */
+  private gradientCacheKey(grad: WebGLGradient): string {
+    const stops = [...grad.colorStops]
+      .sort((a, b) => a.stop - b.stop)
+      .map((stop) => `${stop.stop}:${stop.color}`)
+      .join(';');
+    return `grad(${grad.x0},${grad.y0},${grad.x1},${grad.y1};${stops})`;
+  }
+
+  /**
+   * Rasterizes `text` at (x, y) with a real Canvas2D linear gradient instead
+   * of collapsing it to the first stop's color. The gradient is defined in
+   * the scene's coordinate space, but the raster canvas draws the text at its
+   * own origin — so the axis is translated by the text's placement offset
+   * (baseline at (x, y) ↔ raster point (0, fontSize)) to keep the sampled
+   * colors identical to Canvas2D.
+   */
+  private createTextGradient(
+    ctx: CanvasRenderingContext2D,
+    grad: WebGLGradient,
+    x: number,
+    y: number,
+    fontSize: number,
+  ): CanvasGradient {
+    const offsetY = y - fontSize;
+    const gradient = ctx.createLinearGradient(
+      grad.x0 - x,
+      grad.y0 - offsetY,
+      grad.x1 - x,
+      grad.y1 - offsetY,
+    );
+    for (const stop of [...grad.colorStops].sort((a, b) => a.stop - b.stop)) {
+      gradient.addColorStop(stop.stop, stop.color);
+    }
+    return gradient;
+  }
+
   fillText(text: string, x: number, y: number, font: string, color: string | any): void {
     if (typeof document === 'undefined') return;
 
+    // Either a plain CSS color string or a gradient descriptor; the latter is
+    // resolved into a real CanvasGradient on the raster canvas below.
+    const gradient =
+      color && typeof color !== 'string' && color.type === 'linear' && color.colorStops?.length >= 2
+        ? (color as WebGLGradient)
+        : null;
     let fillCol = '#ffffff';
     if (typeof color === 'string') {
       fillCol = color;
@@ -756,8 +970,10 @@ export class ThreeRenderer implements IRenderer {
     const dpr = this.renderer.getPixelRatio() || 1;
     // The DPR is part of the key: a ratio change must produce fresh rasters,
     // not reuse textures baked at the old resolution (they would stay blurry
-    // on HiDPI or waste resolution on a 1x display).
-    const cacheKey = `${dpr}|${font}|${fillCol}|${text}`;
+    // on HiDPI or waste resolution on a 1x display). Gradient fills key on
+    // their full definition so distinct gradients never share a raster.
+    const fillKey = gradient ? this.gradientCacheKey(gradient) : fillCol;
+    const cacheKey = `${dpr}|${font}|${fillKey}|${text}`;
     let entry = this.textTextureCache.get(cacheKey);
     if (entry) {
       // Refresh LRU order (Map iteration order is insertion order).
@@ -780,7 +996,7 @@ export class ThreeRenderer implements IRenderer {
       ctx.scale(dpr, dpr);
 
       ctx.font = font;
-      ctx.fillStyle = fillCol;
+      ctx.fillStyle = gradient ? this.createTextGradient(ctx, gradient, x, y, fontSize) : fillCol;
       ctx.textBaseline = 'alphabetic';
       ctx.fillText(text, 0, fontSize);
 
@@ -936,5 +1152,11 @@ export class ThreeRenderer implements IRenderer {
     this.dprChangeHandler = null;
     // The WebGLRenderer holds the actual GL context — release it.
     this.renderer.dispose();
+    // `dispose()` alone only frees Three's bookkeeping; the underlying GL
+    // context stays alive until GC, so SPA mount/unmount cycles accumulated
+    // live contexts until the browser capped out. Forcing the loss releases
+    // the context immediately (the canvas then reports `contextlost`, which
+    // is harmless — the listeners are detached above).
+    this.renderer.forceContextLoss();
   }
 }

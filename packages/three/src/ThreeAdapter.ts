@@ -19,6 +19,22 @@ interface PointerState {
 }
 
 /**
+ * Shape the SSR fallback canvas is assumed to expose when there is no DOM to
+ * create a real `<canvas>` (`document` undefined). Previously this was a bare
+ * `{ width, height } as HTMLCanvasElement`, hiding which members consumers may
+ * touch; spelling them out keeps the assumption visible and type-checked at
+ * the single construction site. Anything beyond these members is unsupported
+ * without a real canvas.
+ */
+interface OffscreenCanvasFallback {
+  width: number;
+  height: number;
+  addEventListener?: HTMLCanvasElement['addEventListener'];
+  removeEventListener?: HTMLCanvasElement['removeEventListener'];
+  dispatchEvent?: HTMLCanvasElement['dispatchEvent'];
+}
+
+/**
  * Adapts a VectoJS Scene into a Three.js CanvasTexture, allowing VectoJS
  * components to be rendered in 3D space (e.g. on a plane, screen, or VR dashboard).
  */
@@ -54,7 +70,10 @@ export class ThreeAdapter {
       optCanvas ||
       (typeof document !== 'undefined'
         ? document.createElement('canvas')
-        : ({ width: options.width, height: options.height } as HTMLCanvasElement));
+        : ({
+            width: options.width,
+            height: options.height,
+          } satisfies OffscreenCanvasFallback as unknown as HTMLCanvasElement));
     this.canvas.width = options.width;
     this.canvas.height = options.height;
 
@@ -96,13 +115,13 @@ export class ThreeAdapter {
    * Call this from window/document event listeners passing the raycaster.
    *
    * @param raycaster Three.js Raycaster instance.
-   * @param type Pointer event type: 'pointerdown' | 'pointerup' | 'pointermove' | 'wheel' | 'click'.
+   * @param type Pointer event type: 'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove' | 'wheel' | 'click'.
    * @param originalEvent Optional original DOM Event to forward scroll deltas or button states.
    * @returns true if the ray intersected the VectoJS mesh; false otherwise.
    */
   public updateIntersection(
     raycaster: THREE.Raycaster,
-    type: 'pointerdown' | 'pointerup' | 'pointermove' | 'wheel' | 'click',
+    type: 'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove' | 'wheel' | 'click',
     originalEvent?: Event,
   ): boolean {
     const intersects = raycaster.intersectObject(this.mesh);
@@ -120,6 +139,7 @@ export class ThreeAdapter {
         state.lastUv.copy(hit.uv);
         state.isHovering = true;
         this.dispatchAtUv(type, hit.uv, pointerId, originalEvent);
+        this.pruneEndedPointer(pointerId, type);
         return true;
       }
     }
@@ -129,7 +149,24 @@ export class ThreeAdapter {
       state.isHovering = false;
       this.dispatchAtUv('pointerleave', state.lastUv, pointerId, originalEvent);
     }
+    this.pruneEndedPointer(pointerId, type);
     return false;
+  }
+
+  /**
+   * Touch contacts receive fresh, monotonically increasing pointerIds, so
+   * without pruning {@link activePointers} grew by one entry per tap for the
+   * adapter's lifetime (previously only `dispose()` cleared it). pointerup /
+   * pointercancel end a contact — its state is dropped once the final event
+   * has been dispatched, since dispatchAtUv still reads that state.
+   */
+  private pruneEndedPointer(
+    pointerId: number,
+    type: 'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove' | 'wheel' | 'click',
+  ): void {
+    if (type === 'pointerup' || type === 'pointercancel') {
+      this.activePointers.delete(pointerId);
+    }
   }
 
   /**

@@ -45,6 +45,17 @@ export class FfmpegSupervisor {
   private closeCode: number | null = null;
   private closeSignal: NodeJS.Signals | null = null;
   private spawnError: Error | null = null;
+  /**
+   * Set by the persistent stdin `'error'` handler installed in the
+   * constructor. FFmpeg dying mid-export destroys the pipe and emits an async
+   * EPIPE *after* the last `write()` has already resolved — with no live
+   * listener that surfaces as a listener-less uncaught exception, escaping the
+   * ExportSession try/catch, skipping its cleanup, and orphaning headless
+   * Chromium plus the Vite server. Recorded here instead, then surfaced by
+   * {@link processError} so the next write/finish routes the failure through
+   * the normal abort/cleanup path.
+   */
+  private stdinError: Error | null = null;
   private inputCompleted = false;
   private finishPromise: Promise<void> | null = null;
   private terminatePromise: Promise<void> | null = null;
@@ -68,6 +79,13 @@ export class FfmpegSupervisor {
     child.on('error', (error: Error) => {
       this.spawnError = new Error(`Failed to start FFmpeg: ${error.message}`, { cause: error });
       this.markClosed(null, null);
+    });
+    // Persistent handler for the lifetime of the pipe. The per-write listener
+    // in waitForDrain() only covers backpressure windows; an EPIPE arriving
+    // between writes (the common crash timing) needs this one to avoid
+    // becoming an uncaught exception.
+    child.stdin.on('error', (error: Error) => {
+      this.stdinError = new Error(`FFmpeg stdin failed: ${error.message}`, { cause: error });
     });
     child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       this.markClosed(code, signal);
@@ -99,13 +117,17 @@ export class FfmpegSupervisor {
 
   private processError(early: boolean): Error | null {
     if (this.spawnError) return this.spawnError;
-    if (!this.closed) return null;
-    if (!early && this.closeCode === 0) return null;
-    const phase = early ? 'exited before input completed' : 'exited';
-    const stderr = this.stderr.trim();
-    return new Error(
-      `FFmpeg ${phase} with ${this.exitDescription()}${stderr ? `:\n${stderr}` : ''}`,
-    );
+    if (!this.closed) return this.stdinError;
+    if (early || this.closeCode !== 0) {
+      const phase = early ? 'exited before input completed' : 'exited';
+      const stderr = this.stderr.trim();
+      return new Error(
+        `FFmpeg ${phase} with ${this.exitDescription()}${stderr ? `:\n${stderr}` : ''}`,
+      );
+    }
+    // Clean exit, but a stdin error still means bytes were lost mid-stream —
+    // never report success over a broken pipe.
+    return this.stdinError;
   }
 
   private async waitForDrain(): Promise<void> {
@@ -187,7 +209,26 @@ export class FfmpegSupervisor {
 
   private async waitForCloseOrAbort(): Promise<void> {
     const signal = this.options.signal;
-    if (!signal) return this.closedPromise;
+    if (!signal) {
+      // Library users may pass no AbortSignal; a bare await on closedPromise
+      // would hang finish() forever if FFmpeg wedges. Escalate through the
+      // same SIGTERM→SIGKILL ladder terminate() uses instead of trusting the
+      // child to exit on its own. Each stage waits terminateTimeoutMs
+      // (default 1000ms), so a legitimate slow finalize has that long per
+      // stage before force-kill.
+      await this.waitForCloseOrTimeout();
+      if (this.closed) return;
+      this.child.kill('SIGTERM');
+      await this.waitForCloseOrTimeout();
+      if (this.closed) return;
+      this.child.kill('SIGKILL');
+      await this.waitForCloseOrTimeout();
+      if (this.closed) return;
+      const stderr = this.stderr.trim();
+      throw new Error(
+        `FFmpeg did not exit after SIGTERM and SIGKILL${stderr ? `:\n${stderr}` : ''}`,
+      );
+    }
     this.throwIfAborted();
 
     await new Promise<void>((resolve, reject) => {

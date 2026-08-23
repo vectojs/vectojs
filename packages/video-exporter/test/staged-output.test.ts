@@ -134,4 +134,34 @@ describe('StagedOutput', () => {
       ]),
     });
   });
+
+  it('reclaims staging files stranded by a killed previous run', async () => {
+    // A kill between backup-rename and install strands the previous output
+    // inside hidden `.vecto-*` paths that no cleanup of that dead run will
+    // ever visit; the next export start must reclaim them.
+    await writeFile(join(scratchDir, '.result.vecto-dead.backup.mp4'), 'previous-output');
+    await writeFile(join(scratchDir, '.result.vecto-dead.mp4'), 'partial-frame');
+
+    const output = StagedOutput.create(target, { randomUUID: () => 'fresh' });
+    await writeFile(output.path, 'new');
+
+    await output.commit();
+
+    expect(await readFile(target, 'utf8')).toBe('new');
+    expect(await readdir(scratchDir)).toEqual(['result.mp4']);
+  });
+
+  it('sweeping leaves unrelated files untouched', async () => {
+    await writeFile(join(scratchDir, '.result.vecto-dead.mp4'), 'stale');
+    await writeFile(join(scratchDir, 'unrelated.vecto-x.mp4'), 'keep-me');
+    await writeFile(join(scratchDir, '.other.vecto-dead.mp4'), 'keep-me-too');
+
+    const output = StagedOutput.create(target, { randomUUID: () => 'fresh' });
+    await output.cleanup();
+
+    const remaining = (await readdir(scratchDir)).sort();
+    expect(remaining).toContain('unrelated.vecto-x.mp4');
+    expect(remaining).toContain('.other.vecto-dead.mp4');
+    expect(remaining).not.toContain('.result.vecto-dead.mp4');
+  });
 });
