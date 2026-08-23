@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { ExportSession, type ExportSessionDependencies } from '../src/export-session.js';
+import { startFfmpeg, type ChildProcessLike, type WritableLike } from '../src/ffmpeg-supervisor.js';
 import type { NormalizedExportOptions } from '../src/options.js';
 
 const PNG_BASE64 = Buffer.from('png-frame').toString('base64');
@@ -292,6 +294,70 @@ describe('ExportSession', () => {
 
     expect(failure.name).toBe('AbortError');
     expect(fixture.encoderWrite).toHaveBeenCalledOnce();
+    expect(fixture.outputCommit).not.toHaveBeenCalled();
+  });
+
+  it('routes a mid-export FFmpeg death into fail-fast cleanup instead of an uncaught crash', async () => {
+    const fixture = harness();
+
+    class FakeWritable extends EventEmitter implements WritableLike {
+      write = vi.fn(() => true);
+      end = vi.fn();
+      destroy = vi.fn();
+    }
+    class DyingFfmpeg extends EventEmitter implements ChildProcessLike {
+      stdin = new FakeWritable();
+      stderr = new EventEmitter();
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      kill = vi.fn(() => true);
+    }
+
+    const child = new DyingFfmpeg();
+    let frame = 0;
+    fixture.dependencies.startFfmpeg = (encoderOptions) => {
+      const supervisor = startFfmpeg(encoderOptions, { spawn: () => child });
+      return {
+        write: async (bytes: Uint8Array) => {
+          await supervisor.write(bytes);
+          if (++frame === 1) {
+            // FFmpeg dies AFTER the first write resolved, on a macrotask —
+            // outside any supervisor call, exactly the timing that used to
+            // fire a listener-less EPIPE as an uncaught exception and bypass
+            // this session's cleanup.
+            setTimeout(() => {
+              child.stdin.emit('error', new Error('write EPIPE'));
+              child.emit('close', 255, null);
+            }, 0);
+          }
+        },
+        finish: () => supervisor.finish(),
+        terminate: async () => {
+          // Log like the harness's fake encoder so the cleanup-order
+          // assertions below can see the call.
+          fixture.events.push('ffmpeg.terminate');
+          await supervisor.terminate();
+        },
+      };
+    };
+
+    // The 0ms death timer lands while the loop is still running or during
+    // finish()'s close wait, so either the write path (early phase) or the
+    // finish path (late phase) surfaces the code-255 exit — both route into
+    // this session's cleanup rather than crashing the host process.
+    await expect(new ExportSession(options(), fixture.dependencies).run()).rejects.toThrow(
+      /code 255/,
+    );
+
+    // Cleanup ran to completion: nothing orphaned, output reclaimed.
+    const tail = fixture.events.slice(-5);
+    expect(tail).toEqual([
+      'progress.stop',
+      'ffmpeg.terminate',
+      'browser.close',
+      'target.close',
+      'output.cleanup',
+    ]);
     expect(fixture.outputCommit).not.toHaveBeenCalled();
   });
 });

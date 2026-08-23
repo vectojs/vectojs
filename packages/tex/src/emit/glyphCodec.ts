@@ -70,6 +70,19 @@ export const MAGIC_1 = 0x47;
 export const FORMAT_VERSION = 1;
 
 /**
+ * How many distinct misses (face, codepoint) may stay cached.
+ *
+ * A miss is cached so repeated requests for the same absent glyph do not re-run
+ * the face lookup — but the miss space is unbounded: an adversarial document
+ * (long-lived SSR over untrusted input) can request millions of distinct
+ * codepoints, and caching every one grows memory without limit. The negative
+ * side is therefore capped FIFO. The cap is far above any legitimate formula's
+ * distinct-miss count while bounding the structure to a few tens of KB; the
+ * positive side needs no cap because it is bounded by the shipped glyph count.
+ */
+export const MAX_CACHED_MISSES = 1024;
+
+/**
  * Sequential reader over the encoded bytes.
  *
  * `pos` is public because the index pass needs to record and restore offsets to
@@ -265,6 +278,8 @@ export class GlyphTable {
   private readonly bytes: Uint8Array;
   private readonly faces = new Map<string, FaceIndex>();
   private readonly cache = new Map<string, DecodedGlyph | undefined>();
+  /** Insertion-ordered keys of the cached misses, for FIFO eviction. */
+  private readonly missQueue: string[] = [];
 
   constructor(bytes: Uint8Array) {
     this.bytes = bytes;
@@ -303,7 +318,9 @@ export class GlyphTable {
    * is outside the shipped whitelist.
    *
    * A miss is not an error: the caller records it and degrades, which is the
-   * documented fallback for symbols outside the whitelist.
+   * documented fallback for symbols outside the whitelist. Misses are cached —
+   * bounded by {@link MAX_CACHED_MISSES}, FIFO — so a repeated absent glyph is
+   * not re-looked-up, without letting adversarial input grow the cache.
    */
   get(font: string, code: number): DecodedGlyph | undefined {
     const key = `${font}\u0000${code}`;
@@ -315,6 +332,13 @@ export class GlyphTable {
     const entry = face?.glyphs.get(code);
     if (!entry) {
       this.cache.set(key, undefined);
+      this.missQueue.push(key);
+      if (this.missQueue.length > MAX_CACHED_MISSES) {
+        // Evict the oldest miss only. Positive entries are never in the queue,
+        // so eviction cannot drop a decoded outline.
+        const oldest = this.missQueue.shift();
+        if (oldest !== undefined) this.cache.delete(oldest);
+      }
       return undefined;
     }
     const decoded: DecodedGlyph = {

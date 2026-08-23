@@ -77,6 +77,17 @@ describe('node editor persistence', () => {
     sourceData.config.value = 42;
   });
 
+  it('rejects documents with duplicate link ids on both export and import', () => {
+    const duplicated = {
+      ...document,
+      links: [document.links[0], { ...document.links[0], targetPort: undefined }],
+    };
+    expect(() => exportDocument(duplicated)).toThrow(/duplicate link id link/);
+    expect(() =>
+      importDocument(JSON.stringify({ ...duplicated, schemaVersion: NODE_EDITOR_SCHEMA_VERSION })),
+    ).toThrow(NodeEditorPersistenceError);
+  });
+
   it('rejects non-JSON-safe values before JSON serialization', () => {
     expect(() =>
       serializeDocument({

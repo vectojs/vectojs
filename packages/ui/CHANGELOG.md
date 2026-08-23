@@ -1,5 +1,34 @@
 # @vectojs/ui
 
+## 2.20.0
+
+### Minor Changes
+
+- c20c0d1: Add a `fillTarget` option to `Stack` for fill-remaining layouts.
+
+  When `fillTarget` is set (and `wrap` is false), `layout()` stretches the LAST
+  child along the main axis so the children plus gaps total exactly `fillTarget`,
+  floored at that child's content size — it never shrinks below its own content,
+  so insufficient space overflows the container while the container still reports
+  exactly `fillTarget` along the main axis. This enables fill-remaining layouts
+  (e.g. a footer/list filling the rest of a fixed panel) without hand-rolled
+  per-render resize loops.
+
+  Other children keep their sizes and only their positions are set, as before.
+  While the option is set, Stack's O(1) incremental append paths (`add`
+  fast path, wrap fast-append, `resizeLastChild`) automatically fall back to a
+  full `layout()`; with the option unset, behavior and performance are unchanged.
+
+- 93ed7f1: Add `'center'` and `'right'` to `Text`'s `textAlign` (alongside `'left'` and `'justify'`). Alignment is a post-layout per-line x-offset — `(maxWidth − lineWidth) × {center: ½, right: 1}` — so it needs a `maxWidth` to take effect and keeps the fast one-`fillText`-per-line render path (no glyph-accurate mode). Each aligned line projects a positioned single-run carrier anchored at its offset with its measured extent as width, so DOM selection boxes and find highlights track the shifted glyphs instead of hugging the left edge; wrap-point trailing spaces hang like CSS `text-align`. Offsets are per-line and compose orthogonally with `setVisibleRange` line culling.
+- 7dbd38f: `Text` implements ScrollView's duck-typed `ScrollVirtualizable` contract: a
+  `ScrollView` whose content contains a `Text` now pushes the live viewport via
+  `Text.setVisibleRange(scrollY, viewportHeight)` every frame, and both of Text's
+  draw paths skip lines outside that window (plus a two-line overscan). Tall
+  selectable text no longer pays the full per-frame `fillText` cost while
+  scrolled. Texts that are never driven render every line exactly as before, and
+  any full relayout (`setText` / `setMaxWidth` / `setTextAlign`) resets the
+  window until the next drive.
+
 ## 2.19.2
 
 ### Patch Changes
