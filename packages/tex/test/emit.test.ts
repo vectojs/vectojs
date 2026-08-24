@@ -417,4 +417,19 @@ describe('emitSVG', () => {
     expect(clips[0]!.w).toBeGreaterThan(0);
     expect(clips[1]!.w).toBeGreaterThan(clips[0]!.w);
   });
+
+  it('\\phase advances its content extent, not its 400em tail', () => {
+    const out = emitSVG(layout('\\phase{-120}'));
+    const bare = emitSVG(layout('-120'));
+
+    // The angle SVG declares `width: "400em"`; `.hide-tail` without an inline
+    // extent clips it to the content, so the advance is the body plus the
+    // reserved left pad — not four hundred em.
+    expect(out.width).toBeLessThan(5);
+    expect(out.width).toBeGreaterThan(bare.width);
+
+    // The clipped overlay ink still exists.
+    expect(out.svg).toContain('clip-path');
+    expect(out.svg).toContain('<path');
+  });
 });

@@ -185,10 +185,25 @@ export class Dropdown extends UIComponent {
     });
 
     const menu = new Stack({ direction: 'vertical', gap: 2 });
-    menu.x = triggerBounds.x;
-    menu.y = triggerBounds.y + triggerBounds.height + 4;
-    menu.width = triggerBounds.width;
-    menu.height = this.options.length * 36 + (this.options.length - 1) * 2;
+    const menuHeight = this.options.length * 36 + (this.options.length - 1) * 2;
+    const menuWidth = triggerBounds.width;
+    // Flip above the trigger when there is no room below and more room above
+    // (same rule as Overlay._position), then clamp into view like
+    // Overlay._placeAt: a trigger docked near the scene bottom must not open a
+    // menu whose rows extend off-canvas, where neither pointer nor keyboard
+    // focus can reach them (#664).
+    const edgeOffset = 4;
+    const spaceBelow = scene.height - (triggerBounds.y + triggerBounds.height);
+    const spaceAbove = triggerBounds.y;
+    let menuY =
+      spaceBelow >= menuHeight + edgeOffset || spaceBelow >= spaceAbove
+        ? triggerBounds.y + triggerBounds.height + edgeOffset
+        : triggerBounds.y - menuHeight - edgeOffset;
+    menuY = Math.max(edgeOffset, Math.min(menuY, scene.height - menuHeight - edgeOffset));
+    menu.x = Math.max(edgeOffset, Math.min(triggerBounds.x, scene.width - menuWidth - edgeOffset));
+    menu.y = menuY;
+    menu.width = menuWidth;
+    menu.height = menuHeight;
     menu.interactive = true;
 
     // Listbox semantic accessibility. The container mirror must be
