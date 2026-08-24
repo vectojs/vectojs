@@ -11,7 +11,13 @@ import {
   Dropdown,
   Tooltip,
 } from '@vectojs/ui';
-import { buildTreeModel, describeEntity, pickInScene, type DevtoolsTreeNode } from './model';
+import {
+  buildTreeModel,
+  describeEntity,
+  pickInScene,
+  refreshTreeLabels,
+  type DevtoolsTreeNode,
+} from './model';
 import { auditScene, type AuditFinding } from './audit';
 import {
   highlightGeometry,
@@ -712,6 +718,11 @@ export class DevtoolsPanel {
 
     const version = this.host.structureVersion;
     if (!force && version === this.treeVersion && this.allNodes.length > 0) {
+      // Labels embed live geometry (the tree's whole point is answering
+      // questions without selecting), but transforms don't bump the structure
+      // version — rewrite them in place per tick so animated/moved entities
+      // don't show coordinates from the last structural change (#706).
+      refreshTreeLabels(this.allNodes, this.index);
       if (this.selected) this.writeDetails(this.selected);
       // Plugin readouts follow the same rule as the selection details: component
       // state changes without the tree's shape changing.
