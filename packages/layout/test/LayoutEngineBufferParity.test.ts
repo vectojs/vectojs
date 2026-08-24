@@ -96,6 +96,29 @@ describe('LayoutEngine buffer path ↔ allocating path parity', () => {
     expect(buffer.xs[1]).toBeCloseTo(10);
   });
 
+  it('keeps baselineShifts attached through the RTL reversal (prepareRich)', () => {
+    const engine = new LayoutEngine(400, 200);
+    // Two Hebrew runs with different shifts in one RTL paragraph: the L2
+    // reversal swaps glyph slots, so each slot's y must be computed from the
+    // shift of the glyph NOW occupying it (#668 had the shifts stay behind).
+    const runs: TextRun[] = [
+      { text: '\u05E9', style: { baselineShift: 4 } },
+      { text: '\u05DC\u05E9', style: { baselineShift: -10 } },
+    ];
+    const prepared = engine.prepareRich(runs, atlas, 32);
+
+    const nodes = engine.layoutPrepared(prepared).nodes;
+    const buffer = new LayoutResultBuffer();
+    engine.layoutPreparedIntoBuffer(prepared, buffer);
+
+    expect(buffer.count).toBe(nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(buffer.chars[i]).toBe(nodes[i].char);
+      expect(buffer.ys[i]).toBeCloseTo(nodes[i].y, 4);
+      expect(buffer.hs[i]).toBeCloseTo(nodes[i].height, 4);
+    }
+  });
+
   it('shares one baseline for mixed-size inline runs (prepareRich)', () => {
     const engine = new LayoutEngine(400, 200);
     const runs: TextRun[] = [{ text: 'A' }, { text: 'B', style: { fontSize: 64 } }, { text: 'C' }];
