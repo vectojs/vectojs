@@ -396,6 +396,37 @@ test('a stale reply after cancel is not routed to the replacement request', asyn
   expect((freshCb.mock.calls[0][0] as LayoutWorkerResponse).codePoints).toHaveLength(2);
 });
 
+test('cancelLayout purges only the target entity, not hyphen-prefix siblings', async () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  // 'text' + '-' is a hyphen-boundary prefix of sibling id 'text-1': cancelling
+  // 'text' used to purge 'text-1-<seq>' too, silently cancelling the other
+  // entity's in-flight layout (#675).
+  const siblingCb = vi.fn();
+  manager.queueLayout('text-1', 'aa', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: siblingCb,
+  });
+  const cb = vi.fn();
+  manager.queueLayout('text', 'bb', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: cb,
+  });
+
+  manager.cancelLayout('text');
+  await new Promise((r) => setTimeout(r, 60));
+
+  expect(cb).not.toHaveBeenCalled();
+  expect(siblingCb).toHaveBeenCalledTimes(1);
+});
+
 test('destroy clears singleton ownership so getInstance returns a live manager', () => {
   const first = LayoutWorkerManager.getInstance();
   const firstWorker = MockWorker.instances[0];
