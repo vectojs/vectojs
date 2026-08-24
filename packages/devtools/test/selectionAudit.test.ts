@@ -97,4 +97,60 @@ describe('auditSceneSelection — traversal', () => {
     // and must accept the id filter. (Real drift numbers come from the harness.)
     expect(auditSceneSelection(scene, { entityIds: ['a'] })).toEqual([]);
   });
+
+  it('leaves the user’s live DOM selection intact after auditing', () => {
+    const scene = makeScene();
+    const e = new ProjText('sel-text', {
+      text: 'x',
+      font: '16px sans',
+      lines: [line()],
+    });
+    scene.add(e);
+
+    // Materialize the content element the audit reads (the geometry half is
+    // inert under jsdom's empty rects; this test pins the *side effects*).
+    const rootEl = document.createElement('div');
+    const lineEl = document.createElement('span');
+    lineEl.textContent = 'hello world';
+    rootEl.appendChild(lineEl);
+    (scene as unknown as { contentElements: Map<string, HTMLElement> }).contentElements.set(
+      'sel-text',
+      rootEl,
+    );
+
+    // jsdom Ranges have no client-rect geometry; stub it to the empty case so
+    // the audit walks its loop (finding nothing) and reaches its tail.
+    const realRects = (Range.prototype as unknown as { getClientRects?: () => number[] })
+      .getClientRects;
+    (Range.prototype as unknown as { getClientRects: () => number[] }).getClientRects = () => [];
+
+    // The user has live text selected on the page.
+    const holder = document.createElement('div');
+    holder.textContent = 'user selected text';
+    document.body.appendChild(holder);
+    const sel = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    expect(sel.toString()).toBe('user selected text');
+
+    let findings: unknown[];
+    try {
+      // A read-only audit measured via DETACHED ranges (document.createRange +
+      // selectNodeContents) — it never sets a DocumentSelection, so it must not
+      // clear one either (#708). Pre-fix, the trailing `sel.removeAllRanges()`
+      // destroyed the user's selection as a side effect.
+      findings = auditEntitySelection(scene, e);
+    } finally {
+      if (realRects) {
+        (Range.prototype as unknown as { getClientRects: () => number[] }).getClientRects =
+          realRects;
+      }
+    }
+    expect(findings).toEqual([]);
+    expect(window.getSelection()!.toString()).toBe('user selected text');
+
+    document.body.removeChild(holder);
+  });
 });
