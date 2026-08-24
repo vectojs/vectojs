@@ -72,6 +72,22 @@ describe('URL policy', () => {
     expect(sanitizeUrl('javascript&amp;colon;alert(1)')).toBe('javascript&amp;colon;alert(1)');
   });
 
+  it('maps out-of-range character references to U+FFFD without throwing', () => {
+    // &#x110000; is beyond U+10FFFF: an HTML parser maps it to U+FFFD, while
+    // String.fromCodePoint raises RangeError — which used to escape the
+    // documented never-throws contract of sanitizeUrl/isSafeUrl.
+    const hostile = '<a href="javascript&#x110000;&#1114112;alert(1)">x</a>';
+    expect(() => sanitizeUrl(hostile)).not.toThrow();
+    expect(() => isSafeUrl(hostile)).not.toThrow();
+    // The decoded form holds replacement characters instead of a colon, so
+    // the payload parses as relative and the input is returned verbatim.
+    expect(sanitizeUrl('&#x110000;')).toBe('&#x110000;');
+    expect(isSafeUrl('https&#58;//example.com/&#x10ffff;')).toBe(true);
+    expect(sanitizeUrl('https&#58;//example.com/&#1114111;')).toBe(
+      'https&#58;//example.com/&#1114111;',
+    );
+  });
+
   it('handles empty and non-string values without throwing', () => {
     expect(sanitizeUrl('   ')).toBe('');
     expect(sanitizeUrl(null)).toBe('');
