@@ -335,6 +335,15 @@ pub extern "C" fn tween_step(dt: f64, count: usize) -> i32 {
             let to = *A.t_to.add(i);
             let id = *A.t_ease.add(i) as i32;
             *A.t_val.add(i) = from + (to - from) * ease(id, p);
+            // Terminal snap, mirroring `TweenDriver.tick` (`packages/animation/
+            // src/drivers.ts`): a custom easing may not satisfy f(1) === 1 and
+            // `from + (to - from) * 1` can round short of `to` for
+            // magnitude-spread pairs, so once the tween is complete the value
+            // must be exactly the destination. Bit-parity requires the same
+            // condition (`active >= dur`) and the same unconditional write.
+            if active >= dur {
+                *A.t_val.add(i) = to;
+            }
         }
     }
     STATUS_OK
