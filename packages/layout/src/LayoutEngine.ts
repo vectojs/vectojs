@@ -369,7 +369,6 @@ export interface LayoutNode {
   sourceIndex?: number;
   sourceLength?: number;
   isRTL?: boolean;
-  combining?: string[];
 }
 
 /**
@@ -417,7 +416,6 @@ export interface PreparedGlyph {
   level: number;
   sourceIndex: number;
   sourceLength: number;
-  combining?: string[];
   /**
    * Set when the glyph atlas had no entry for this glyph, so its advance came
    * from the canvas measurer instead of the atlas.
@@ -465,7 +463,14 @@ export interface PreparedText {
   paragraphs: PreparedParagraph[];
   fontSize: number;
   fallbackToCanvas?: boolean;
-  /** Advance width of '-' at `fontSize`, for wrap-time hyphen insertion. */
+  /**
+   * Advance width of '-' at `fontSize`, for wrap-time hyphen insertion.
+   *
+   * Set only when some word carries break points — the sole consumer of this
+   * value — so a paragraph without hyphenation opportunities performs no '-'
+   * measurement (and, without registered metrics, raises no spurious
+   * unmeasured-glyph warning). Absent means layout falls back to `0.3em`.
+   */
   hyphenWidth?: number;
 }
 
@@ -1212,18 +1217,34 @@ export class LayoutEngine {
       offset += consumed;
     }
 
+    // The hyphen advance is consulted only when a word actually carries break
+    // points (soft hyphens or hyphenator output — the source need not contain a
+    // literal '-'). Measuring it unconditionally meant every prepare() pass paid
+    // an atlas probe or measurer call for '-', and in a metrics-less
+    // environment that call incremented `unmeasuredGlyphs` and consumed the
+    // one-time warning on text containing no hyphenation opportunity at all.
+    let mayHyphenate = false;
+    for (const paragraph of paragraphs) {
+      if (paragraph.words.some((w) => w.breakPoints && w.breakPoints.length > 0)) {
+        mayHyphenate = true;
+        break;
+      }
+    }
+
     return {
       paragraphs,
       fontSize,
       fallbackToCanvas: fallbackToCanvas || undefined,
-      hyphenWidth: this.glyphWidth(
-        this.glyphKeyFor('-', fontAtlas),
-        fontAtlas,
-        fontSize,
-        undefined,
-        false,
-        false,
-      ),
+      hyphenWidth: mayHyphenate
+        ? this.glyphWidth(
+            this.glyphKeyFor('-', fontAtlas),
+            fontAtlas,
+            fontSize,
+            undefined,
+            false,
+            false,
+          )
+        : undefined,
     };
   }
 
@@ -2175,7 +2196,6 @@ export class LayoutEngine {
             level: glyph.level,
             sourceIndex: glyph.sourceIndex,
             sourceLength: glyph.sourceLength,
-            combining: glyph.combining,
           });
 
           currentX += charWidth;
@@ -2462,6 +2482,11 @@ export class LayoutResultBuffer {
   /** Convert to the standard LayoutResult format (allocates — use sparingly). */
   toLayoutResult(): LayoutResult {
     const nodes: LayoutNode[] = [];
+    // Derived from the committed slots rather than hard-coded: max right edge
+    // and lowest glyph bottom are exactly the ink box this buffer holds, so a
+    // consumer of the converted result gets honest dimensions.
+    let totalWidth = 0;
+    let totalHeight = 0;
     for (let i = 0; i < this.count; i++) {
       nodes.push({
         char: this.chars[i],
@@ -2470,7 +2495,11 @@ export class LayoutResultBuffer {
         width: this.ws[i],
         height: this.hs[i],
       });
+      const right = this.xs[i] + this.ws[i];
+      if (right > totalWidth) totalWidth = right;
+      const bottom = this.ys[i] + this.hs[i];
+      if (bottom > totalHeight) totalHeight = bottom;
     }
-    return { nodes, totalWidth: 0, totalHeight: 0 };
+    return { nodes, totalWidth, totalHeight };
   }
 }

@@ -30,6 +30,13 @@ export interface LayoutWorkerResponse {
   xCoords: Float32Array;
   yCoords: Float32Array;
   packedStyles: Uint32Array;
+  /**
+   * Set when the request could not be laid out (e.g. the font id is unknown —
+   * no metrics were ever posted for it). The geometry buffers are then
+   * zero-length. A bare `return` here used to leave the requester's callback
+   * pending forever, indistinguishable from a crashed worker.
+   */
+  error?: string;
 }
 
 const fontCache: Map<string, MSDFFontData> = new Map();
@@ -75,7 +82,20 @@ self.onmessage = (e: MessageEvent) => {
 
   const font = fontCache.get(request.fontId);
   if (!font) {
-    // Cannot layout without metrics
+    // Cannot layout without metrics. Reply with an error-shaped response
+    // rather than returning silently: a dropped request left its pending
+    // callback waiting forever, reading exactly like a hung worker.
+    (self as any).postMessage({
+      id: request.id,
+      seqId: request.seqId,
+      width: 0,
+      height: 0,
+      codePoints: new Uint32Array(0),
+      xCoords: new Float32Array(0),
+      yCoords: new Float32Array(0),
+      packedStyles: new Uint32Array(0),
+      error: `unknown-font:${request.fontId}`,
+    });
     return;
   }
 
