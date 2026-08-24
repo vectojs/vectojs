@@ -190,8 +190,45 @@ function resolveName(entity: Entity): {
   return { source: 'none' };
 }
 
+/**
+ * Document-order lookup across the projected layer, paid once per run.
+ *
+ * Resolving an entity's reading order naively is `querySelectorAll` plus an
+ * O(P) scan per projected node — quadratic across a whole-scene pass on
+ * document-sized projections. This index builds one element→position map per
+ * projection root the first time it is consulted and answers every later
+ * entity from it.
+ */
+export interface ReadingOrderIndex {
+  /** 1-based position of `el` in document order, or undefined when unprojected. */
+  orderOf(el: Element): number | undefined;
+}
+
+/** Create an empty {@link ReadingOrderIndex}. */
+function createReadingOrderIndex(): ReadingOrderIndex {
+  const roots = new Map<Node, Map<Element, number>>();
+  return {
+    orderOf(el: Element): number | undefined {
+      const root = el.closest('[data-vecto-a11y-root]') ?? el.ownerDocument;
+      if (!root) return undefined;
+      let index = roots.get(root);
+      if (!index) {
+        index = new Map();
+        const nodes = root.querySelectorAll('[data-vecto-id]');
+        for (let i = 0; i < nodes.length; i++) index.set(nodes[i]!, i + 1);
+        roots.set(root, index);
+      }
+      return index.get(el);
+    },
+  };
+}
+
 /** Full accessibility readout for one entity. */
-export function inspectA11y(scene: Scene, entity: Entity): A11yInfo {
+export function inspectA11y(
+  scene: Scene,
+  entity: Entity,
+  readingOrder?: ReadingOrderIndex,
+): A11yInfo {
   const attrs = a11yAttributesOf(entity);
   const projected = !!(attrs && (attrs.tag || attrs.role || attrs.label || entity.interactive));
   const { name, source } = resolveName(entity);
@@ -218,13 +255,11 @@ export function inspectA11y(scene: Scene, entity: Entity): A11yInfo {
     // (`grid > row > gridcell`), so a sibling index restarts at 1 inside every
     // row and stops being comparable between widgets — which is the one thing
     // this field is for. `querySelectorAll` returns document order, which is
-    // exactly the order assistive tech and Tab traverse.
-    const root = el.closest('[data-vecto-a11y-root]') ?? el.ownerDocument;
-    if (root) {
-      const projected = root.querySelectorAll('[data-vecto-id]');
-      const index = [...projected].indexOf(el);
-      if (index >= 0) info.readingOrder = index + 1;
-    }
+    // exactly the order assistive tech and Tab traverse. Batch callers pass a
+    // shared {@link ReadingOrderIndex} so the query runs once per pass.
+    const lookup = readingOrder ?? createReadingOrderIndex();
+    const order = lookup.orderOf(el);
+    if (order !== undefined) info.readingOrder = order;
   }
   return info;
 }
@@ -382,9 +417,12 @@ export function auditA11y(scene: Scene, opts: A11yAuditOptions = {}): A11yFindin
 /** Reading order as a flat list, in the order assistive tech traverses it. */
 export function a11yReadingOrder(scene: Scene): A11yInfo[] {
   const infos: A11yInfo[] = [];
+  // One index for the whole pass: per-entity lookups would rescan the
+  // projection for every node (querySelectorAll + O(P) indexOf each).
+  const readingOrder = createReadingOrderIndex();
   const walk = (entity: Entity): void => {
     if (entity.a11yHidden) return;
-    const info = inspectA11y(scene, entity);
+    const info = inspectA11y(scene, entity, readingOrder);
     if (info.projected) infos.push(info);
     for (const child of entity.children) walk(child);
   };

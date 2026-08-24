@@ -22,18 +22,3 @@ export function attachDevtools(
   panel.detach = () => panel.destroy();
   return panel;
 }
-export {
-  diagnoseDirty,
-  type DirtyCause,
-  type DirtyDiagnosis,
-  type DirtyDiagnosisOptions,
-} from './dirtyDiagnosis';
-export {
-  acceleratorAudit,
-  acceleratorInspector,
-  auditAccelerators,
-  formatAcceleratorInspection,
-  inspectAccelerators,
-  type AcceleratorFinding,
-  type AcceleratorInspection,
-} from './acceleratorInspect';

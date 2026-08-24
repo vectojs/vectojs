@@ -276,7 +276,10 @@ export function auditMarkdownStreaming(scene: Scene): PluginFinding[] {
     }
     for (const child of entity.children) walk(child);
   };
+  // Overlay-mounted markdown (showOverlay) streams too; audit.ts treats the
+  // overlay root as first-class and so does every other scene walk.
   walk(scene.rootEntity);
+  walk(scene.overlayRootEntity);
   return findings;
 }
 

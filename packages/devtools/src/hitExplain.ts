@@ -10,7 +10,7 @@ import { entityPath } from './inspect';
  * the outside: the click lands somewhere unexpected, or nowhere.
  *
  * This walks the tree in the same order and applies the same gates as
- * `Scene.findHitRecursively`, recording a verdict per candidate instead of
+ * `HitTester.findHitRecursively`, recording a verdict per candidate instead of
  * returning on the first hit. The reasons mirror the engine's own rejection
  * conditions rather than approximating them, so an explanation that says "rejected
  * for opacity" is the reason the engine rejected it.
@@ -95,7 +95,7 @@ function pointInBounds(b: Bounds, x: number, y: number): boolean {
   return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
 }
 
-/** Mirrors `Scene.isPointerTransparent`. */
+/** Mirrors `HitTester.isPointerTransparent`. */
 function isPointerTransparent(entity: Entity): boolean {
   try {
     const attrs = entity.getA11yAttributes();

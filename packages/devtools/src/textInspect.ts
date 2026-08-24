@@ -180,7 +180,11 @@ export function inspectText(entity: Entity): TextInspection | null {
   const source = sourceTextOf(entity);
   if (source === undefined) return null;
 
-  const levels = Array.from(BidiResolver.resolveLevels(source));
+  // One bidi pass per inspection: `levels` (for the readout) and `resolved`
+  // (for segment reordering, which wants the resolver's own Uint8Array) view
+  // the same resolution.
+  const resolved = BidiResolver.resolveLevels(source);
+  const levels = Array.from(resolved);
   const baseLevel = BidiResolver.getBaseLevel(source);
   const unavailable = [...ABSENT_CAPABILITIES];
 
@@ -190,11 +194,7 @@ export function inspectText(entity: Entity): TextInspection | null {
     baseDirection: directionOf(baseLevel),
     levels,
     levelRuns: runsOf(levels),
-    reversalSegments: BidiResolver.reorderSegments(
-      source,
-      BidiResolver.resolveLevels(source),
-      baseLevel,
-    ),
+    reversalSegments: BidiResolver.reorderSegments(source, resolved, baseLevel),
     visualOrder: BidiResolver.reorderIndices(source),
     clusters: clustersOf(source),
     glyphs: [],
@@ -307,7 +307,8 @@ export function shapeProbe(
     lineHeight: options.lineHeight ?? 16,
     baseline: options.baseline ?? 12,
   });
-  const levels = Array.from(BidiResolver.resolveLevels(text));
+  const resolved = BidiResolver.resolveLevels(text);
+  const levels = Array.from(resolved);
   const baseLevel = BidiResolver.getBaseLevel(text);
   return {
     source: text,
@@ -315,11 +316,7 @@ export function shapeProbe(
     baseDirection: directionOf(baseLevel),
     levels,
     levelRuns: runsOf(levels),
-    reversalSegments: BidiResolver.reorderSegments(
-      text,
-      BidiResolver.resolveLevels(text),
-      baseLevel,
-    ),
+    reversalSegments: BidiResolver.reorderSegments(text, resolved, baseLevel),
     visualOrder: BidiResolver.reorderIndices(text),
     clusters: clustersOf(text),
     glyphs: grid.lines.flatMap((line) =>
@@ -475,6 +472,9 @@ export function auditTextShaping(scene: Scene): Array<{
     }
     for (const child of entity.children) walk(child);
   };
+  // Overlay-mounted text (showOverlay) misses the atlas too; audit.ts treats
+  // the overlay root as first-class and so does every other scene walk.
   walk(scene.rootEntity);
+  walk(scene.overlayRootEntity);
   return findings;
 }

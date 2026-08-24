@@ -53,7 +53,12 @@ export interface PluginContext {
  * false, meaning "not relevant to this entity".
  */
 export interface PluginInspector {
-  /** Tab id and label. The id must be unique across plugins. */
+  /**
+   * Tab id and label. The id must be unique across plugins: the panel keys
+   * rows and tabs by it. A collision is not fatal — later duplicates get a
+   * `#2`/`#3`… suffix and a console warning — but the suffixed id is assigned
+   * by registration order, so treat uniqueness as required.
+   */
   id: string;
   label: string;
   /** Narrow the inspector to the entities it understands. Defaults to all. */
