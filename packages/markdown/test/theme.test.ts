@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { RichText, Stack } from '@vectojs/ui';
 import { CodeBlock, Markdown } from '../src/Markdown';
+import { resolvePresetTheme } from '../src/markdown-presets';
 
 /**
  * The exact 12-key theme literal that existed before the token centralization
@@ -313,6 +314,58 @@ describe('Markdown theme tokens', () => {
       // shape the parser never produces.
       const md = new Markdown('x', { theme: { bodyLineHeight: 60 } });
       expect(md.theme.bodyLineHeight).toBe(60);
+    });
+  });
+
+  describe('setTheme', () => {
+    it('re-renders existing blocks with the new palette', () => {
+      const md = new Markdown('[text](https://example.com)', { theme: { linkColor: '#ff0000' } });
+      const before = findRichText(md.content);
+      expect(before!.spans.some((s) => s.style?.color === '#ff0000')).toBe(true);
+
+      md.setTheme({ linkColor: '#00ff00' });
+
+      expect(md.theme.linkColor).toBe('#00ff00');
+      const rt = findRichText(md.content);
+      expect(rt).not.toBeNull();
+      // The rebuilt block must carry the NEW color — a setter that only swapped
+      // internal state without re-rendering would leave the old span in place,
+      // which is exactly the unsynced-mutation trap #657 item 6 closed off.
+      expect(rt!.spans.some((s) => s.style?.color === '#00ff00')).toBe(true);
+      expect(rt!.spans.some((s) => s.style?.color === '#ff0000')).toBe(false);
+    });
+
+    it('accepts preset names like the constructor option does', () => {
+      const md = new Markdown('Hi', { theme: 'dracula' });
+      md.setTheme('githubLight');
+
+      expect(md.theme).toEqual(resolvePresetTheme('githubLight'));
+      // Plain paragraphs carry `textColor` on the RichText container, not as a
+      // per-span style, so the container is the carrier asserted here.
+      const rt = findRichText(md.content);
+      expect(rt!.color).toBe(resolvePresetTheme('githubLight').textColor);
+    });
+
+    it('carries the new blockGap onto the content Stack', () => {
+      // The Stack gap is seeded from the palette in the constructor and
+      // renderMarkdown never revisits it; a theme swap that skipped this would
+      // lay blocks out at the old stride while every other token moved.
+      const md = new Markdown('a\n\nb', { theme: { blockGap: 16 } });
+      expect(md.content.gap).toBe(16);
+
+      md.setTheme({ blockGap: 40 });
+      expect(md.theme.blockGap).toBe(40);
+      expect(md.content.gap).toBe(40);
+    });
+
+    it('keeps direct assignment a compile-time and runtime error (#657)', () => {
+      const md = new Markdown('x');
+      expect(() => {
+        // @ts-expect-error `theme` is a read-only view; the mutation path is
+        // setTheme(). The runtime throw is what JS callers hit instead of the
+        // pre-#776 silent no-op.
+        md.theme = { textColor: '#000000' };
+      }).toThrow(TypeError);
     });
   });
 });
