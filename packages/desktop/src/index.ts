@@ -39,4 +39,9 @@ export {
   type WindowChrome,
   type WindowOptions,
 } from './Window';
-export { WindowManager, type OpenWindowOptions, type WindowManagerListener } from './WindowManager';
+export {
+  WindowManager,
+  type OpenDialogOptions,
+  type OpenWindowOptions,
+  type WindowManagerListener,
+} from './WindowManager';

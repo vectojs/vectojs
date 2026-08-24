@@ -1,7 +1,8 @@
-import type { Scene } from '@vectojs/core';
+import { type Entity, type Scene } from '@vectojs/core';
 import type { AppRegistry } from './AppRegistry';
 import type { DisplayLayout } from './DisplayLayout';
 import type { Vfs } from './Vfs';
+import type { AppContext } from './types';
 import {
   DesktopWindow,
   DEFAULT_WINDOW_HEIGHT,
@@ -30,6 +31,34 @@ export type WindowManagerListener = (event: {
 }) => void;
 
 /**
+ * Options for {@link WindowManager.openDialog}: a floating, optionally-modal
+ * shell window that needs NO AppRegistry entry (confirm prompts, pickers,
+ * transient forms). Dialogs are excluded from taskbar entries and carry
+ * close-only chrome (no resize/maximize/minimize).
+ */
+export interface OpenDialogOptions {
+  /** Titlebar text and accessible name of the dialog. */
+  title: string;
+  width?: number;
+  height?: number;
+  /** Top-left position; omitted → centered on the primary work area. */
+  x?: number;
+  y?: number;
+  /**
+   * Client content: a ready entity, or a builder receiving the dialog's
+   * {@link AppContext} (`ctx.close()` dismisses the dialog).
+   */
+  content: Entity | ((ctx: AppContext) => Entity);
+  /** Block refocusing other windows while open. Default true. */
+  modal?: boolean;
+  /** Escape closes the dialog. Default true. */
+  dismissible?: boolean;
+}
+
+/** Internal pseudo app id for dialogs opened via {@link WindowManager.openDialog}. */
+const DIALOG_APP_ID = 'dialog';
+
+/**
  * Owns open {@link DesktopWindow} instances (KWin-like):
  * open / focus / close / z-order / multi-instance policy.
  */
@@ -44,6 +73,11 @@ export class WindowManager {
   private cascade = 0;
   private seq = 0;
   private readonly listeners = new Set<WindowManagerListener>();
+  /** Open dialogs in open order (last = topmost). */
+  private readonly dialogOrder: DesktopWindow[] = [];
+  /** Focus holder when a dialog opened; restored on close. */
+  private readonly dialogPrevFocus = new Map<DesktopWindow, DesktopWindow | null>();
+  private readonly onDocKeyDown = (e: KeyboardEvent) => this.handleDocKeyDown(e);
 
   constructor(
     scene: Scene,
@@ -140,8 +174,68 @@ export class WindowManager {
     return win;
   }
 
+  /**
+   * Open a shell dialog WITHOUT an AppRegistry entry: close-only chrome,
+   * no resize/maximize/minimize, excluded from taskbar entries. Modal dialogs
+   * hold focus while open; closing restores focus to the window focused
+   * before the dialog opened. When `x`/`y` are omitted the dialog is centered
+   * on the work area (clamped to fit).
+   */
+  openDialog(opts: OpenDialogOptions): DesktopWindow {
+    const modal = opts.modal ?? true;
+    const dismissible = opts.dismissible ?? true;
+    const displayId = this.layout.primary().id;
+    const area = this.layout.workArea(displayId);
+    const width = opts.width ?? DEFAULT_WINDOW_WIDTH;
+    const height = opts.height ?? DEFAULT_WINDOW_HEIGHT;
+    const x = opts.x ?? area.x + Math.round((area.width - width) / 2);
+    const y = opts.y ?? area.y + Math.round((area.height - height) / 2);
+    const clamped = this.layout.clampRect(x, y, width, height, displayId);
+
+    const prevFocus = this.focused;
+    const pseudoApp = {
+      id: DIALOG_APP_ID,
+      title: opts.title,
+      create: (ctx: AppContext): Entity =>
+        typeof opts.content === 'function' ? opts.content(ctx) : opts.content,
+    };
+    const win = new DesktopWindow({
+      app: pseudoApp,
+      windowId: `${DIALOG_APP_ID}-${++this.seq}`,
+      title: opts.title,
+      width: clamped.width,
+      height: clamped.height,
+      x: clamped.x,
+      y: clamped.y,
+      chrome: this.chrome,
+      scene: this.scene,
+      vfs: this.vfs,
+      windowManager: this,
+      workArea: () => this.layout.workArea(displayId),
+      onClose: (w) => this.close(w),
+      onFocus: (w) => this.focus(w),
+      onStateChange: (w) => this.handleWindowStateChange(w),
+      dialog: { modal, dismissible },
+    });
+
+    // Register before focus so the modality gate recognizes the new dialog.
+    this.dialogOrder.push(win);
+    this.dialogPrevFocus.set(win, prevFocus);
+    if (this.dialogOrder.length === 1) this.attachEscape();
+
+    this.scene.showOverlay(win);
+    this.windows.push(win);
+    this.focus(win);
+    this.emit('open', win);
+    return win;
+  }
+
   focus(win: DesktopWindow): void {
     if (!this.windows.includes(win)) return;
+    // Modal dialog holds focus: click-driven or programmatic refocus of any
+    // other window (including lower ones) is blocked until it closes.
+    const topModal = this.topModal();
+    if (topModal && win !== topModal) return;
     if (win.minimized) win.restoreFromMinimized();
     if (this.focused === win) {
       this.restack(win);
@@ -165,6 +259,14 @@ export class WindowManager {
     const idx = this.windows.indexOf(win);
     if (idx < 0) return;
     this.windows.splice(idx, 1);
+    const dialogIdx = this.dialogOrder.indexOf(win);
+    let restoreTo: DesktopWindow | null = null;
+    if (dialogIdx >= 0) {
+      this.dialogOrder.splice(dialogIdx, 1);
+      restoreTo = this.dialogPrevFocus.get(win) ?? null;
+      this.dialogPrevFocus.delete(win);
+      if (this.dialogOrder.length === 0) this.detachEscape();
+    }
     if (this.focused === win) {
       this.scene.releaseA11yProjection(win);
       this.focused = null;
@@ -173,7 +275,12 @@ export class WindowManager {
     win.destroy();
     this.emit('close', win);
 
-    const next = [...this.windows].reverse().find((w) => !w.minimized);
+    let next = [...this.windows].reverse().find((w) => !w.minimized);
+    // A closed dialog hands focus back to its opener, not to whatever is
+    // topmost underneath it.
+    if (restoreTo && this.windows.includes(restoreTo) && !restoreTo.minimized) {
+      next = restoreTo;
+    }
     if (next) this.focus(next);
     else this.scene.markDirty();
   }
@@ -188,6 +295,8 @@ export class WindowManager {
 
   /** Cycle focus through non-minimized windows (Alt+Tab lite). */
   cycleFocus(backward = false): void {
+    // A modal dialog holds focus: cycling would move it to a lower window.
+    if (this.topModal()) return;
     const live = this.windows.filter((w) => !w.minimized);
     if (live.length === 0) return;
     const cur = this.focused && live.includes(this.focused) ? this.focused : live[live.length - 1]!;
@@ -196,6 +305,35 @@ export class WindowManager {
       ? live[(i - 1 + live.length) % live.length]!
       : live[(i + 1) % live.length]!;
     this.focus(next);
+  }
+
+  /** Topmost open modal dialog, or null when no modal dialog is open. */
+  private topModal(): DesktopWindow | null {
+    for (let i = this.dialogOrder.length - 1; i >= 0; i--) {
+      const w = this.dialogOrder[i]!;
+      if (w.modal) return w;
+    }
+    return null;
+  }
+
+  private attachEscape(): void {
+    if (typeof document === 'undefined') return;
+    document.addEventListener('keydown', this.onDocKeyDown, true);
+  }
+
+  private detachEscape(): void {
+    if (typeof document === 'undefined') return;
+    document.removeEventListener('keydown', this.onDocKeyDown, true);
+  }
+
+  private handleDocKeyDown(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    const top = this.dialogOrder[this.dialogOrder.length - 1];
+    // Only dismissible dialogs respond to Escape (topmost wins).
+    if (!top || !top.dismissible) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.close(top);
   }
 
   private restack(win: DesktopWindow): void {

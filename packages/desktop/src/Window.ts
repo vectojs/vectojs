@@ -37,6 +37,17 @@ export interface WindowOptions {
   onClose: (win: DesktopWindow) => void;
   onFocus: (win: DesktopWindow) => void;
   onStateChange?: (win: DesktopWindow) => void;
+  /**
+   * Shell-dialog chrome (set by {@link WindowManager.openDialog}): close-only
+   * titlebar, no resize/maximize/minimize affordances, and `ariaModal`
+   * projection when `modal` is true. Absent for regular app windows.
+   */
+  dialog?: {
+    /** Modal dialogs hold focus while open (refocus of other windows blocked). */
+    modal?: boolean;
+    /** Escape closes the dialog. Default true. */
+    dismissible?: boolean;
+  };
 }
 
 /** Default outer window size when neither the app nor the opener specifies one. */
@@ -150,6 +161,12 @@ export class DesktopWindow extends UIComponent {
   public readonly title: string;
   public readonly appIconSvg: string | undefined;
   public readonly chrome: WindowChrome;
+  /** True when opened as a shell dialog (close-only chrome, no resize). */
+  public readonly isDialog: boolean;
+  /** Modal dialogs hold focus while open (enforced by the window manager). */
+  public readonly modal: boolean;
+  /** Escape closes this dialog (shell-dialog option, default true). */
+  public readonly dismissible: boolean;
   public focused = false;
   public maximized = false;
   public minimized = false;
@@ -157,8 +174,8 @@ export class DesktopWindow extends UIComponent {
   private readonly shell: Card;
   private readonly titlebar: Card;
   private readonly titleLabel: Text;
-  private readonly minBtn: Button;
-  private readonly maxBtn: Button;
+  private readonly minBtn: Button | null;
+  private readonly maxBtn: Button | null;
   private readonly closeBtn: Button;
   private readonly dragHandle: TitlebarDragHandle;
   private readonly grips: ResizeGrips;
@@ -193,6 +210,9 @@ export class DesktopWindow extends UIComponent {
     this.title = opts.title ?? opts.app.title;
     this.appIconSvg = opts.app.iconSvg;
     this.chrome = opts.chrome;
+    this.isDialog = opts.dialog !== undefined;
+    this.modal = opts.dialog?.modal ?? false;
+    this.dismissible = opts.dialog?.dismissible ?? true;
     this.onClose = opts.onClose;
     this.onFocus = opts.onFocus;
     this.onStateChange = opts.onStateChange;
@@ -262,36 +282,37 @@ export class DesktopWindow extends UIComponent {
     this.dragHandle.interactive = true;
     this.dragHandle.a11yProjection = 'eager';
     this.dragHandle.on('pointerdown', (e: unknown) => this.beginTitlebarDrag(e as PointerCoords));
-    this.dragHandle.on('dblclick', () => this.toggleMaximize());
+    if (!this.isDialog) {
+      // Shell dialogs cannot maximize: no dblclick toggle on the titlebar.
+      this.dragHandle.on('dblclick', () => this.toggleMaximize());
+    }
     this.dragHandle.on('keydown', (e: unknown) => this.handleMoveKey(e as KeyboardMoveEvent));
     this.shell.add(this.dragHandle);
 
     this.closeBtn = this.makeChromeBtn(WINDOW_ICONS.close, 'Close', () => this.onClose(this), true);
-    this.maxBtn = this.makeChromeBtn(
-      WINDOW_ICONS.maximize,
-      'Maximize',
-      () => this.toggleMaximize(),
-      false,
-    );
-    this.minBtn = this.makeChromeBtn(
-      WINDOW_ICONS.minimize,
-      'Minimize',
-      () => this.minimize(),
-      false,
-    );
+    this.maxBtn = this.isDialog
+      ? null
+      : this.makeChromeBtn(WINDOW_ICONS.maximize, 'Maximize', () => this.toggleMaximize(), false);
+    this.minBtn = this.isDialog
+      ? null
+      : this.makeChromeBtn(WINDOW_ICONS.minimize, 'Minimize', () => this.minimize(), false);
 
     this.closeBtn.x = this.width - btnW - 8;
     this.closeBtn.y = btnY;
-    this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
-    this.maxBtn.y = btnY;
-    this.minBtn.x = this.maxBtn.x - btnW - btnGap;
-    this.minBtn.y = btnY;
-    this.shell.add(this.minBtn);
-    this.shell.add(this.maxBtn);
+    if (this.maxBtn) {
+      this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
+      this.maxBtn.y = btnY;
+    }
+    if (this.minBtn) {
+      this.minBtn.x = (this.maxBtn?.x ?? this.closeBtn.x) - btnW - btnGap;
+      this.minBtn.y = btnY;
+    }
+    if (this.minBtn) this.shell.add(this.minBtn);
+    if (this.maxBtn) this.shell.add(this.maxBtn);
     this.shell.add(this.closeBtn);
 
     this.grips = new ResizeGrips(
-      () => this.focused && !this.maximized && !this.minimized,
+      () => this.focused && !this.maximized && !this.minimized && !this.isDialog,
       () => this.chrome.focusRing,
     );
     this.grips.a11yProjection = 'never';
@@ -375,7 +396,7 @@ export class DesktopWindow extends UIComponent {
     return {
       role: 'dialog',
       label: this.title,
-      ariaModal: 'false',
+      ariaModal: this.modal ? 'true' : 'false',
       pointerEvents: 'none',
     };
   }
@@ -421,7 +442,7 @@ export class DesktopWindow extends UIComponent {
     const area = this.workArea();
     this.applyGeom(area.x, area.y, area.width, area.height);
     this.maximized = true;
-    this.maxBtn.setLabel('❐');
+    this.maxBtn?.setLabel('❐');
     this.notifyState();
   }
 
@@ -431,7 +452,7 @@ export class DesktopWindow extends UIComponent {
     this.restored = null;
     this.maximized = false;
     this.applyGeom(r.x, r.y, r.width, r.height);
-    this.maxBtn.setLabel('□');
+    this.maxBtn?.setLabel('□');
     this.notifyState();
   }
 
@@ -464,7 +485,7 @@ export class DesktopWindow extends UIComponent {
     if (this.maximized) {
       this.restored = null;
       this.maximized = false;
-      this.maxBtn.setLabel('□');
+      this.maxBtn?.setLabel('□');
     }
     this.applyGeom(x, y, w, h);
   }
@@ -495,8 +516,8 @@ export class DesktopWindow extends UIComponent {
     const btnW = 28;
     const btnGap = 4;
     this.closeBtn.x = this.width - btnW - 8;
-    this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
-    this.minBtn.x = this.maxBtn.x - btnW - btnGap;
+    if (this.maxBtn) this.maxBtn.x = this.closeBtn.x - btnW - btnGap;
+    if (this.minBtn) this.minBtn.x = (this.maxBtn?.x ?? this.closeBtn.x) - btnW - btnGap;
     this.dragHandle.width = Math.max(0, this.width - this.chromeBtnStripWidth());
     this.dragHandle.height = this.chrome.titlebarHeight;
     this.sizeGrips();
@@ -521,11 +542,12 @@ export class DesktopWindow extends UIComponent {
   }
 
   private chromeBtnStripWidth(): number {
-    return 8 + 28 * 3 + 4 * 2 + 4;
+    // Dialogs carry a single Close button in the strip.
+    return this.isDialog ? 8 + 28 + 4 : 8 + 28 * 3 + 4 * 2 + 4;
   }
 
   private hitResizeEdge(lx: number, ly: number): ResizeEdge | null {
-    if (this.maximized) return null;
+    if (this.maximized || this.isDialog) return null;
     const h = this.chrome.resizeHandle;
     const nearL = lx <= h;
     const nearR = lx >= this.width - h;
