@@ -98,17 +98,10 @@ export const ABBR_EXTENSIONS: TokenizerAndRendererExtension[] = [
   },
 ];
 
-/**
- * Whether `text` contains an abbreviation-definition line at all.
- *
- * Cheap reject first (`*[` is rare outside this construct), matching every
- * other opener-detector in this package (`hasContainerOpener`,
- * `hasFootnoteDefOpener`).
- */
-export function hasAbbrDef(text: string): boolean {
-  if (text.includes('*[') === false) return false;
-  return new RegExp(DEF_RE.source, 'm').test(text);
-}
+// NOTE: unlike container/footnote blocks, an abbreviation definition is
+// strictly single-line (`DEF_RE` ends at the first newline), so it can never
+// span a blank line and needs no cheap-reject opener guard in incrementalLex.
+// A `hasAbbrDef` detector stood here dead until #657 removed it.
 
 /**
  * Scan top-level tokens for `abbrDef` entries and build the term dictionary.
