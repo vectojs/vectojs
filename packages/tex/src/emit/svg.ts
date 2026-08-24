@@ -207,6 +207,20 @@ interface PlacedPath extends ColoredPlacement {
    * radical, so without this the vinculum overdraws the entire formula.
    */
   clip?: { x: number; y: number; w: number; h: number };
+  /**
+   * Pending multi-piece stretchy overlay (`.halfarrow-*`/`.brace-*`): the
+   * piece draws its fraction window of the enclosing container extent and
+   * advances nothing, like a fullWidth rect. Resolved by `placeOverlay` once
+   * that extent is known; until then `h` holds the piece box height.
+   */
+  overlay?: {
+    start: number;
+    end: number;
+    align: 'xMinYMin' | 'xMidYMin' | 'xMaxYMin';
+    /** Declared SVG viewBox, for slice scaling at resolution time. */
+    vw: number;
+    vh: number;
+  };
 }
 
 interface EmitState {
@@ -290,6 +304,30 @@ const CONTAINER_BORDER_CLASSES: Readonly<
   Record<string, { top?: number; right?: number; bottom?: number; left?: number }>
 > = {
   angl: { top: 0.049, right: 0.049 },
+};
+
+/**
+ * Multi-piece stretchy overlays: `\overbrace`, `\underbrace`,
+ * `\xleftrightarrow` and friends split one 400em-wide path across 2–3 spans
+ * (`stretchy.ts:237-247`). In CSS the pieces are `position: absolute`
+ * percentage windows of `.katex-stretchy` (katex.scss:519-547) —
+ *
+ * - `.halfarrow-left { left: 0; width: 50.2% }` / `.halfarrow-right { right:
+ *   0; width: 50.2% }`
+ * - `.brace-left { left: 0; width: 25.1% }`, `.brace-center { left: 25%;
+ *   width: 50% }`, `.brace-right { right: 0; width: 25.1% }`
+ *
+ * — so they contribute no advance and slice the shared path through their own
+ * window with the piece's `preserveAspectRatio` alignment.
+ */
+const OVERLAY_PIECES: Readonly<
+  Record<string, { start: number; end: number; align: 'xMinYMin' | 'xMidYMin' | 'xMaxYMin' }>
+> = {
+  'halfarrow-left': { start: 0, end: 0.502, align: 'xMinYMin' },
+  'halfarrow-right': { start: 0.498, end: 1, align: 'xMaxYMin' },
+  'brace-left': { start: 0, end: 0.251, align: 'xMinYMin' },
+  'brace-center': { start: 0.25, end: 0.75, align: 'xMidYMin' },
+  'brace-right': { start: 0.749, end: 1, align: 'xMaxYMin' },
 };
 
 /** Parses a CSS length that KaTeX wrote via `makeEm`, returning em. */
@@ -549,6 +587,49 @@ function emitSvgNode(
   state.x += widthEm * UPEM * scale;
 }
 
+/**
+ * Records one overlay piece's paths as pending: geometry against the
+ * container extent is unknown until `placeOverlay` runs, so only the
+ * y-extent (from the SvgNode's declared em height) and slice inputs are
+ * concrete here.
+ */
+function emitOverlayPiece(
+  node: SvgNode,
+  state: EmitState,
+  y: number,
+  scale: number,
+  color: string | undefined,
+  piece: { start: number; end: number; align: 'xMinYMin' | 'xMidYMin' | 'xMaxYMin' },
+): void {
+  const heightEm = parseEm(node.attributes.height);
+  const viewBox = node.attributes.viewBox?.split(/\s+/).map(Number);
+  const hasBox = viewBox?.length === 4 && viewBox.every(Number.isFinite);
+  const vw = hasBox ? viewBox![2] : 400000;
+  const vh = hasBox ? viewBox![3] : heightEm * UPEM;
+
+  for (const child of node.children) {
+    if (!(child instanceof PathNode)) {
+      continue;
+    }
+    const d = child.alternate ?? SVG_PATHS[child.pathName];
+    if (!d) {
+      continue;
+    }
+    state.paths.push({
+      d,
+      x: state.x,
+      // The box's bottom sits on the row baseline; `y` is the top edge.
+      y: y - heightEm * UPEM * scale,
+      sx: 1,
+      sy: 1,
+      w: 0,
+      h: heightEm * UPEM * scale,
+      color,
+      overlay: { start: piece.start, end: piece.end, align: piece.align, vw, vh },
+    });
+  }
+}
+
 /** Emits a Span, Anchor or DocumentFragment and its children. */
 function emitContainer(
   node: Span<HtmlDomNode> | Anchor | DocumentFragment<HtmlDomNode>,
@@ -737,6 +818,25 @@ function emitContainer(
     }
   }
 
+  // Multi-piece stretchy overlays (`.halfarrow-*`/`.brace-*`, see
+  // `stretchy.ts:237-247`) are absolutely positioned percentage windows of
+  // the enclosing row: each piece's SvgNode declares `width: "400em"` but
+  // advances nothing — taking it literally measured `\overbrace{x+y}` at
+  // 1200em. The pieces draw their window of the container extent, resolved
+  // like fullWidth rules once that extent is known.
+  const pieceClass = classes.find((c) => OVERLAY_PIECES[c] !== undefined);
+  if (pieceClass !== undefined) {
+    if (!phantom) {
+      const piece = OVERLAY_PIECES[pieceClass]!;
+      for (const child of node.children ?? []) {
+        if (child instanceof SvgNode) {
+          emitOverlayPiece(child, state, y, localScale, color, piece);
+        }
+      }
+    }
+    return;
+  }
+
   // `functions/rule.ts:44` is the one place a Span carries an explicit width,
   // and there it means a filled rectangle.
   if (node instanceof Span && node.width != null) {
@@ -870,6 +970,9 @@ function emitVList(
   // Same for `\cancel` overlay lines, whose x endpoints are fractions of this
   // vlist's row width.
   const lineStart = state.lines.length;
+  // And for multi-piece stretchy overlays (`\overbrace`), whose windows are
+  // fractions of the row extent too.
+  const pathStart = state.paths.length;
 
   const firstRow = (vtable.children ?? []).find(
     (c): c is Span<HtmlDomNode> => c instanceof Span && c.hasClass('vlist-r'),
@@ -958,6 +1061,13 @@ function emitVList(
       l.fullWidth = false;
     }
   }
+  // And overlay pieces slice the same extent through their windows.
+  for (let i = pathStart; i < state.paths.length; i++) {
+    const p = state.paths[i];
+    if (p.overlay) {
+      placeOverlay(p, startX, width);
+    }
+  }
 
   state.x = maxX;
 }
@@ -999,6 +1109,38 @@ function placeRect(r: PlacedRect, startX: number, width: number): void {
     r.w = width;
   }
   r.fullWidth = false;
+}
+
+/**
+ * Resolves a pending overlay piece against its container extent, reproducing
+ * the browser's `preserveAspectRatio … slice` rendering inside the piece's
+ * absolute-positioned window (`.halfarrow-*`/`.brace-*`): a uniform scale
+ * that *covers* the window, aligned per the piece and clipped to it.
+ */
+function placeOverlay(p: PlacedPath, startX: number, width: number): void {
+  const o = p.overlay;
+  if (!o) {
+    return;
+  }
+  const boxX = startX + o.start * width;
+  const boxW = Math.max((o.end - o.start) * width, 0);
+  const boxH = p.h;
+
+  const s = Math.max(boxW / o.vw, boxH / o.vh);
+  p.sx = s;
+  p.sy = s;
+  // xMinYMin pins the viewBox origin to the window's left edge; xMaxYMin
+  // aligns its right edge; xMidYMin centres the covered extent.
+  p.x =
+    o.align === 'xMinYMin'
+      ? boxX
+      : o.align === 'xMidYMin'
+        ? boxX + (boxW - o.vw * s) / 2
+        : boxX + boxW - o.vw * s;
+  // YMin keeps the top edge pinned.
+  p.w = boxW;
+  p.clip = { x: boxX, y: p.y, w: boxW, h: boxH };
+  p.overlay = undefined;
 }
 
 /** Formats a number for SVG output, trimming pointless precision. */
@@ -1050,6 +1192,12 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
   for (const r of state.rects) {
     if (r.fullWidth) {
       placeRect(r, 0, state.x);
+    }
+  }
+  // Same fallback for overlay pieces outside any vlist.
+  for (const p of state.paths) {
+    if (p.overlay) {
+      placeOverlay(p, 0, state.x);
     }
   }
   // Same fallback for `\cancel` overlay lines not enclosed in a vlist.
