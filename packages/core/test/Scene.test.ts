@@ -743,6 +743,49 @@ describe('Scene', () => {
     expect(grpEl.hasAttribute('tabindex')).toBe(false);
   });
 
+  it('activates Space on keyup, not on keydown, for projected buttons', () => {
+    const parentDiv = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    parentDiv.appendChild(canvas);
+    const scene = new Scene(canvas);
+
+    class ButtonLike extends Entity {
+      isPointInside() {
+        return false;
+      }
+      render() {}
+      getA11yAttributes() {
+        return { tag: 'div' as const, role: 'button', label: 'Go' };
+      }
+    }
+    const b = new ButtonLike('btn');
+    b.interactive = true;
+    b.width = 40;
+    b.height = 20;
+    scene.add(b);
+    (scene as any).syncA11y((scene as any).root);
+
+    const el = (scene as any).a11yElements.get('btn') as HTMLElement;
+    let clicks = 0;
+    b.on('click', () => (clicks += 1));
+
+    // Press: scrolling is suppressed, but no click yet — a held key would
+    // otherwise auto-repeat the activation (APG expects release).
+    const down = new KeyboardEvent('keydown', { key: ' ', cancelable: true });
+    el.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(clicks).toBe(0);
+
+    // Release: exactly one activation.
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ' }));
+    expect(clicks).toBe(1);
+
+    // Enter keeps its press semantics.
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', cancelable: true });
+    el.dispatchEvent(enter);
+    expect(clicks).toBe(2);
+  });
+
   it('syncA11y honors and refreshes an explicit semantic tab index', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');

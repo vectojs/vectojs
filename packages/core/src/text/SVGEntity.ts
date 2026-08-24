@@ -7,12 +7,49 @@ function isSvgWhitespace(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
+/**
+ * Index of the `>` that actually closes the open tag, skipping quoted
+ * attribute values. A bare `indexOf('>')` truncates the tag at the first
+ * `>` inside a value (`<svg title="a>b" …>`), so every later attribute —
+ * including `viewBox` — goes unseen by the regex-free attribute scan.
+ */
+function findSvgTagEnd(source: string, from: number): number {
+  let quote: string | null = null;
+  for (let i = from; i < source.length; i++) {
+    const ch = source[i];
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '>') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Width/height with a percentage unit cannot be resolved without a viewport to
+ * resolve against, so callers treat it as absent and let `viewBox` decide.
+ */
+function isPercentDimension(value: string): boolean {
+  return value.trim().endsWith('%');
+}
+
+/** ViewBox is usable only when it holds exactly four finite numbers. */
+function viewBoxDimensions(value: string): { width: number; height: number } | null {
+  const parts = value.split(/[\s,]+/).map(parseFloat);
+  return parts.length === 4 && parts.every(Number.isFinite)
+    ? { width: parts[2], height: parts[3] }
+    : null;
+}
+
 function readSvgAttribute(source: string, name: string): string | null {
   const lowerSource = source.toLowerCase();
   const svgStart = lowerSource.indexOf('<svg');
   if (svgStart < 0) return null;
 
-  const tagEnd = source.indexOf('>', svgStart + 4);
+  const tagEnd = findSvgTagEnd(source, svgStart + 4);
   if (tagEnd < 0) return null;
 
   const tag = source.slice(svgStart + 4, tagEnd);
@@ -99,14 +136,17 @@ export class SVGEntity extends Entity {
           const hAttr = svgEl.getAttribute('height');
           const vbAttr = svgEl.getAttribute('viewBox');
 
-          if (wAttr && hAttr) {
+          if (wAttr && hAttr && !isPercentDimension(wAttr) && !isPercentDimension(hAttr)) {
             width = parseFloat(wAttr) || 100;
             height = parseFloat(hAttr) || 100;
           } else if (vbAttr) {
-            const parts = vbAttr.split(/[\s,]+/).map(parseFloat);
-            if (parts.length === 4) {
-              width = parts[2];
-              height = parts[3];
+            // A non-finite part (`viewBox="0 0 100 none"`, truncated markup)
+            // must not flow NaN into `Math.max(1, Math.round(NaN * scale))`
+            // during rasterization; fall through to the defaults instead.
+            const dims = viewBoxDimensions(vbAttr);
+            if (dims) {
+              width = dims.width;
+              height = dims.height;
             }
           }
         }
@@ -119,14 +159,14 @@ export class SVGEntity extends Entity {
       const hAttr = readSvgAttribute(this.svgSource, 'height');
       const vbAttr = readSvgAttribute(this.svgSource, 'viewBox');
 
-      if (wAttr && hAttr) {
+      if (wAttr && hAttr && !isPercentDimension(wAttr) && !isPercentDimension(hAttr)) {
         width = parseFloat(wAttr) || 100;
         height = parseFloat(hAttr) || 100;
       } else if (vbAttr) {
-        const parts = vbAttr.split(/[\s,]+/).map(parseFloat);
-        if (parts.length === 4) {
-          width = parts[2];
-          height = parts[3];
+        const dims = viewBoxDimensions(vbAttr);
+        if (dims) {
+          width = dims.width;
+          height = dims.height;
         }
       }
     }

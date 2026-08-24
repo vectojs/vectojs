@@ -50,6 +50,33 @@
 
 import type { Entity } from '../Entity';
 
+/**
+ * One decorated element inside {@link A11yProjectionManager.sortNormalElementsVisually}.
+ * Instances are pooled on the manager (`orderDecorated`) and rewritten in place
+ * each pass, so reordering allocates nothing in steady state.
+ */
+interface OrderRecord {
+  el: HTMLElement;
+  /** Original collection index — keeps every sort stable across engines. */
+  i: number;
+  /** Absolute (ancestor-accumulated) top/left, comparable across nesting levels. */
+  top: number;
+  left: number;
+  /** Whether this element contains another ordered one (spans all its rows). */
+  container: boolean;
+}
+
+/** Zero-height mirrors still need a row band; clamp to a small minimum. */
+function orderBandBottom(r: OrderRecord): number {
+  return r.container ? r.top + 4 : r.top + Math.max(Number.parseFloat(r.el.style.height) || 0, 4);
+}
+
+const byTopThenIndex = (p: OrderRecord, q: OrderRecord): number => p.top - q.top || p.i - q.i;
+const byLeftAscThenIndex = (p: OrderRecord, q: OrderRecord): number => p.left - q.left || p.i - q.i;
+/** RTL rows read right-to-left. */
+const byLeftDescThenIndex = (p: OrderRecord, q: OrderRecord): number =>
+  q.left - p.left || p.i - q.i;
+
 export class A11yProjectionManager {
   /**
    * Set by anything that changes which elements exist or how they nest, and
@@ -92,6 +119,21 @@ export class A11yProjectionManager {
    * implicit root region. See {@link sortNormalElementsVisually}.
    */
   private readonly orderRegions: Map<HTMLElement, Entity> = new Map<HTMLElement, Entity>();
+  /**
+   * Decoration records for {@link sortNormalElementsVisually}: one per ordered
+   * element, pooled across passes and rewritten in place — the sort runs on
+   * structure-change frames, where the module's zero-GC policy applies.
+   */
+  private readonly orderDecorated: OrderRecord[] = [];
+  /** Region → decorated elements, reused by {@link sortNormalElementsVisually}. */
+  private readonly orderBucketByRegion: Map<Entity | null, OrderRecord[]> = new Map<
+    Entity | null,
+    OrderRecord[]
+  >();
+  /** Pool of bucket arrays backing {@link orderBucketByRegion} across passes. */
+  private readonly orderBuckets: OrderRecord[][] = [];
+  /** Scratch for one visual row inside {@link sortNormalElementsVisually}. */
+  private readonly orderRowScratch: OrderRecord[] = [];
 
   /** Mark the projected DOM as needing a reorder on the next pass. */
   public markNeedsReorder(): void {
@@ -310,10 +352,6 @@ export class A11yProjectionManager {
     const els = this.normalElements;
     if (els.length < 2) return;
 
-    // A zero-height mirror (rare) still needs a row band so same-top siblings
-    // group together; clamp to a small minimum.
-    const heightOf = (el: HTMLElement) => Math.max(Number.parseFloat(el.style.height) || 0, 4);
-
     // Identify which of these elements contain another one. Composite widgets
     // nest (`grid` > `row` > `gridcell`), and a container necessarily spans every
     // row it owns, so letting it extend a row band merges all of its rows into a
@@ -332,6 +370,8 @@ export class A11yProjectionManager {
       }
     }
 
+    // Decorate with the original index so the sort is stable across engines.
+    //
     // `top`/`left` are written **parent-relative** for a nested mirror (see
     // `rebaseChildBox`) and world-relative for a flat one, so the raw values are
     // not comparable across nesting levels: every `gridcell` inside a `row`
@@ -339,67 +379,91 @@ export class A11yProjectionManager {
     // document. Accumulate ancestor offsets to put every element back into one
     // space. The walk stops at the first ancestor that is not itself being
     // ordered, which is `a11yRoot`.
-    const absolute = (el: HTMLElement): { top: number; left: number } => {
+    //
+    // The records themselves are pooled: this runs on structure-change frames,
+    // and the module's zero-GC policy applies to it exactly as to the collect
+    // pass — grow the pool when a pass needs more records, reuse the rest.
+    const decorated = this.orderDecorated;
+    while (decorated.length < els.length) {
+      decorated.push({ el: els[0], i: 0, top: 0, left: 0, container: false });
+    }
+    for (let i = 0; i < els.length; i++) {
+      const rec = decorated[i];
       let top = 0;
       let left = 0;
-      for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+      for (let node: HTMLElement | null = els[i]; node; node = node.parentElement) {
         top += Number.parseFloat(node.style.top) || 0;
         left += Number.parseFloat(node.style.left) || 0;
         const parent = node.parentElement;
         if (!parent || !members.has(parent)) break;
       }
-      return { top, left };
-    };
-
-    // Decorate with the original index so the sort is stable across engines.
-    const decorated = els.map((el, i) => {
-      const { top, left } = absolute(el);
-      return { el, i, top, left, container: containers.has(el) };
-    });
+      rec.el = els[i];
+      rec.i = i;
+      rec.top = top;
+      rec.left = left;
+      rec.container = containers.has(els[i]);
+    }
 
     // Partition into regions, keeping first-encounter order. `normalElements` is
     // filled by a depth-first walk, so first encounter is the author's declared
-    // order and a region's own members are already adjacent here.
+    // order and a region's own members are already adjacent here. Bucket arrays
+    // come from a pool for the same reason as the records.
     const regions = this.orderRegions;
-    const buckets = new Map<Entity | null, (typeof decorated)[number][]>();
-    for (const d of decorated) {
-      const key = regions.get(d.el) ?? null;
-      const bucket = buckets.get(key);
-      if (bucket) bucket.push(d);
-      else buckets.set(key, [d]);
+    const buckets = this.orderBucketByRegion;
+    const bucketPool = this.orderBuckets;
+    let bucketsUsed = 0;
+    buckets.clear();
+    for (let i = 0; i < els.length; i++) {
+      const rec = decorated[i];
+      const key = regions.get(rec.el) ?? null;
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = bucketPool[bucketsUsed];
+        if (bucket === undefined) {
+          bucket = [];
+          bucketPool.push(bucket);
+        }
+        bucketsUsed++;
+        bucket.length = 0;
+        buckets.set(key, bucket);
+      }
+      bucket.push(rec);
     }
 
-    const bandBottom = (r: (typeof decorated)[number]) =>
-      r.top + (r.container ? 4 : heightOf(r.el));
-    const sorted: HTMLElement[] = [];
+    // Results are written back through a cursor instead of collected in a fresh
+    // output array: nothing reads `els` after decoration, so it can be
+    // overwritten in place.
+    let out = 0;
 
     // Band within a region only, so a row never spans two regions.
     for (const order of buckets.values()) {
-      order.sort((p, q) => p.top - q.top || p.i - q.i);
+      order.sort(byTopThenIndex);
 
       // Bucket into visual rows by vertical overlap, then sort each row inline. A
       // container contributes its position — so it still sorts ahead of its own
       // descendants — but not its height, which is what keeps its rows separate.
+      // Rows are contiguous ranges of `order`, copied into one shared scratch
+      // buffer rather than allocating a slice per row.
       let rowStart = 0;
-      let rowBottom = order.length ? bandBottom(order[0]) : 0;
+      let rowBottom = order.length ? orderBandBottom(order[0]) : 0;
       const flushRow = (end: number) => {
-        const row = order.slice(rowStart, end);
-        row.sort((p, q) => (rtl ? q.left - p.left : p.left - q.left) || p.i - q.i);
-        for (const r of row) sorted.push(r.el);
+        const row = this.orderRowScratch;
+        row.length = 0;
+        for (let m = rowStart; m < end; m++) row.push(order[m]);
+        row.sort(rtl ? byLeftDescThenIndex : byLeftAscThenIndex);
+        for (const r of row) els[out++] = r.el;
       };
       for (let k = 1; k < order.length; k++) {
         if (order[k].top < rowBottom) {
           // Same row — extend the band to the tallest element seen so far.
-          rowBottom = Math.max(rowBottom, bandBottom(order[k]));
+          rowBottom = Math.max(rowBottom, orderBandBottom(order[k]));
         } else {
           flushRow(k);
           rowStart = k;
-          rowBottom = bandBottom(order[k]);
+          rowBottom = orderBandBottom(order[k]);
         }
       }
       flushRow(order.length);
     }
-
-    for (let i = 0; i < sorted.length; i++) els[i] = sorted[i];
   }
 }
