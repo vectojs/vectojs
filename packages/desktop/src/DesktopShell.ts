@@ -203,6 +203,10 @@ export class DesktopShell {
   /** Dynamically apply theme tokens and optional wallpaper image to the shell and scene. */
   setTheme(t: DesktopThemeTokens, wallpaperImage?: string | null): void {
     this.assertLive();
+    // Close an open StartMenu first: it is not remounted below (unlike the
+    // taskbar), so a menu left open across the swap keeps the old theme's
+    // colors and anchors to a stale taskbar box.
+    this.closeStartMenu();
     this.config.theme = { ...this.config.theme, ...t };
     setTheme(tokens(this.config.theme));
     if (this.wallpaper) {

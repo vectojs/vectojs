@@ -159,8 +159,7 @@ function resolveValue(value: unknown, theme: Theme, seen: Set<string> = new Set(
 }
 
 /** Resolve `var()` references in a style object, in place of the caller's object. */
-export function resolveStyle(style: Style, theme: Theme): { style: Style; hadVar: boolean } {
-  let hadVar = false;
+export function resolveStyle(style: Style, theme: Theme): { style: Style } {
   const out: Style = {};
   for (const [key, value] of Object.entries(style)) {
     if (value === undefined) continue;
@@ -169,14 +168,12 @@ export function resolveStyle(style: Style, theme: Theme): { style: Style; hadVar
       const x = resolveValue(pad.x, theme);
       const y = resolveValue(pad.y, theme);
       out.padding = { x: x as CssLength | undefined, y: y as CssLength | undefined };
-      hadVar ||= x !== pad.x || y !== pad.y;
       continue;
     }
     const resolved = resolveValue(value, theme);
-    hadVar ||= resolved !== value;
     (out as Record<string, unknown>)[key] = resolved;
   }
-  return { style: out, hadVar };
+  return { style: out };
 }
 
 /** Apply a resolved style without a theme lookup; internal for {@link setTheme}. */

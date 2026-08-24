@@ -689,7 +689,7 @@ export class VirtualList<T = unknown> extends UIComponent {
             {
               label: 'visibleRange',
               value: [start, end],
-              hint: 'Inclusive row indices currently mounted, before overscan',
+              hint: 'Inclusive row indices currently mounted, overscan included on both ends',
             },
             { label: 'mountedRows', value: this._pool.size, readOnly: true },
             { label: 'totalRows', value: total, readOnly: true },

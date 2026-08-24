@@ -26,6 +26,12 @@ export interface InputOptions {
   height?: number;
   /** Placeholder text shown when empty. */
   placeholder?: string;
+  /**
+   * Accessible name. Falls back to `placeholder` when unset — placeholder-as-name
+   * is a classic WCAG anti-pattern (the name disappears on first keystroke), so
+   * set this whenever a visible label is drawn on canvas rather than projected.
+   */
+  label?: string;
   /** Initial value. Default `''`. */
   value?: string;
   /** CSS font shorthand. Default `'16px sans-serif'`. */
@@ -46,6 +52,8 @@ export interface InputOptions {
   padding?: number;
   /** Invoked with the new value whenever the field changes. */
   onChange?: (value: string) => void;
+  /** Whether the field is disabled (no native editing, projected `disabled`). Default `false`. */
+  disabled?: boolean;
 }
 
 /**
@@ -66,6 +74,9 @@ export class Input extends UIComponent {
   public value: string;
   private _required = false;
   private _invalid = false;
+  private _disabled = false;
+  /** Accessible name; falls back to the placeholder (see {@link InputOptions.label}). */
+  public label?: string;
   public placeholder: string;
   public font: string;
   public color: string;
@@ -93,6 +104,8 @@ export class Input extends UIComponent {
     this.value = opts.value ?? '';
     this._required = opts.required ?? false;
     this._invalid = opts.invalid ?? false;
+    this._disabled = opts.disabled ?? false;
+    this.label = opts.label;
     this.placeholder = opts.placeholder ?? '';
     this.font = opts.font ?? '16px sans-serif';
     this.color = opts.color ?? '#e2e8f0';
@@ -126,6 +139,7 @@ export class Input extends UIComponent {
         selectionEnd?: number;
         composition?: { start: number; length: number } | null;
       }) => {
+        if (this._disabled) return; // a disabled field must not accept edits
         this.value = e.value;
         this.selectionStart = e.selectionStart ?? this.value.length;
         this.selectionEnd = e.selectionEnd ?? this.value.length;
@@ -168,18 +182,32 @@ export class Input extends UIComponent {
     this.scene?.markDirty();
   }
 
+  /** Whether the field is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'input',
       inputType: 'text',
       placeholder: this.placeholder,
       value: this.value,
-      label: this.placeholder,
+      // Prefer the explicit label; placeholder-as-name is only a fallback
+      // (the name vanishes on first keystroke — WCAG anti-pattern).
+      label: this.label ?? this.placeholder,
       // `undefined` when not set, not `false`: the projection removes an
       // undefined attribute, whereas `aria-invalid="false"` means "explicitly
       // valid" and is deliberately preserved — so only emit these when they hold.
       required: this._required ? true : undefined,
       invalid: this._invalid ? true : undefined,
+      disabled: this._disabled ? true : undefined,
       textInputStyle: {
         font: this.font,
         // Fill the inner box so the single line sits centred, but never below the

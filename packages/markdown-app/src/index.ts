@@ -140,7 +140,16 @@ export class MarkdownApp extends UIComponent {
   }
 
   public setTheme(theme: MarkdownAppTheme): this {
-    if (!THEMES.includes(theme) || this.theme === theme) return this;
+    // Fail loud on unknown names instead of silently no-oping, matching the
+    // convention everywhere else in these packages (styles throws on unknown
+    // tokens/properties). The type keeps valid presets out of TS callers; this
+    // guards JS callers and casts.
+    if (!THEMES.includes(theme)) {
+      throw new TypeError(
+        `@vectojs/markdown-app: unknown theme '${String(theme)}' — valid presets: ${THEMES.join(', ')}`,
+      );
+    }
+    if (this.theme === theme) return this;
     this.theme = theme;
     this.preview.theme = resolvePresetTheme(theme);
     // Rebuild so existing blocks receive the new numeric theme tokens too.

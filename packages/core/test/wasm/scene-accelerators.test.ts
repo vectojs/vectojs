@@ -234,7 +234,7 @@ describe.skipIf(!haveWasm)('rejected is reachable, not decorative', () => {
     setWindow();
   });
 
-  it('reports rejected when the anim kernel refuses the count', () => {
+  it('reports springs-rejected when the spring kernel refuses the count', () => {
     const scene = sceneWith();
     scene.setAnimBackend(animInstantiate(bytes())!);
     scene.animGate = { spring: 2, tween: 2, mixed: 2 };
@@ -251,10 +251,45 @@ describe.skipIf(!haveWasm)('rejected is reachable, not decorative', () => {
 
     tickMs(scene, 16);
     const a = scene.accelerators;
-    expect(a.animation.reason).toBe('rejected');
+    // Springs-only frame: the kind that declined is named, not a blanket
+    // fully-JS 'rejected' (that verdict is reserved for both kinds declining).
+    expect(a.animation.reason).toBe('springs-rejected');
+    // The JS fallback ticked the springs, so nothing ran through WASM.
     expect(a.animation.activeThisFrame).toBe(false);
     expect(a.animation.path).toBe('js');
     // A rejected batch must not also claim it ran.
+    expect(scene.animBatchedLastFrame).toBe(false);
+  });
+
+  it('reports rejected only when BOTH anim kernels refuse, and keeps partial truth', () => {
+    const scene = sceneWith();
+    scene.setAnimBackend(animInstantiate(bytes())!);
+    scene.animGate = { spring: 2, tween: 2, mixed: 2 };
+    for (let i = 0; i < 6; i++) {
+      const e = new Box();
+      scene.root.add(e);
+      // Mixed workload so both kernels get a pack this frame.
+      if (i % 2 === 0) e.springTo({ x: 50 });
+      else e.animateTo({ x: 50 }, { duration: 100, easing: 'linear' });
+    }
+
+    const backend = (scene as unknown as { _animWasm: Record<string, unknown> })._animWasm;
+    // Only tweens decline: springs still step via WASM, so the frame is a
+    // partial acceleration — active with the failing kind named.
+    backend.stepTweens = () => false;
+    tickMs(scene, 16);
+    let a = scene.accelerators;
+    expect(a.animation.reason).toBe('tweens-rejected');
+    expect(a.animation.activeThisFrame).toBe(true);
+    expect(a.animation.path).toBe('wasm');
+
+    // Both decline: fully-JS frame, the plain fault verdict.
+    backend.stepSprings = () => false;
+    tickMs(scene, 16);
+    a = scene.accelerators;
+    expect(a.animation.reason).toBe('rejected');
+    expect(a.animation.activeThisFrame).toBe(false);
+    expect(a.animation.path).toBe('js');
     expect(scene.animBatchedLastFrame).toBe(false);
   });
 

@@ -102,4 +102,39 @@ describe('Slider', () => {
     // role stays slider; keyboard support makes the role honest
     expect(slider.getA11yAttributes().role).toBe('slider');
   });
+
+  it('clamps and snaps the initial value through the same path as mutations', () => {
+    // value:250 used to store raw — thumb past the track, aria valuenow "250".
+    expect(new Slider({ min: 0, max: 100, value: 250 }).value).toBe(100);
+    // Off-step init used to render off-grid until first interaction.
+    expect(new Slider({ min: 0, max: 100, value: 33, step: 10 }).value).toBe(30);
+    expect(new Slider({ min: 0, max: 100, value: -5 }).value).toBe(0);
+    expect(new Slider({}).value).toBe(0); // default min
+  });
+
+  it('rejects a non-positive/non-finite step and an inverted range at construction', () => {
+    for (const bad of [0, -1, Number.NaN]) {
+      expect(() => new Slider({ step: bad })).toThrow(/step must be/);
+    }
+    expect(() => new Slider({ min: 100, max: 0 })).toThrow(/max must be/);
+  });
+
+  it('projects disabled and ignores pointer + keyboard input while disabled', () => {
+    const onChange = vi.fn();
+    const slider = new Slider({ value: 50, onChange, disabled: true });
+    expect(slider.disabled).toBe(true);
+    // `undefined` when enabled so the projection drops the attribute entirely.
+    expect(slider.getA11yAttributes().disabled).toBe(true);
+    expect(new Slider({}).getA11yAttributes().disabled).toBeUndefined();
+
+    slider.emit('pointerdown', { localX: 150 });
+    slider.emit('pointermove', { localX: 150 });
+    pressKey(slider, 'End');
+    expect(slider.value).toBe(50);
+    expect(onChange).not.toHaveBeenCalled();
+
+    slider.disabled = false;
+    pressKey(slider, 'End');
+    expect(slider.value).toBe(100);
+  });
 });

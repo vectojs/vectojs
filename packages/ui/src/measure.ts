@@ -92,8 +92,8 @@ function measureWithRegisteredMetrics(text: string, font: string): number | unde
 
 // Cache `(font, text) → width`. Native `measureText` forces a layout/context
 // switch each call — wasteful for hot paths that re-measure the same strings
-// every frame: `wrapLines` (per-word candidates) and `Input` caret positioning
-// (growing prefixes). A bounded LRU keeps the working set hot while capping
+// every frame: `Input` caret positioning (growing prefixes) and percentage
+// labels. A bounded LRU keeps the working set hot while capping
 // memory (dynamic text would otherwise grow an unbounded map). A `Map` preserves
 // insertion order, so the first key is the least-recently-used.
 const MEASURE_CACHE_MAX = 1000;
@@ -161,7 +161,11 @@ export function measureText(text: string, font: string): number {
   // index map. Two raws that shape identically now occupy two entries — correct,
   // just marginally less dense.
   invalidateOnMetricsChange();
-  const key = `${font} ${text}`;
+  // `\u0000` cannot appear in a CSS font shorthand or in measured text drawn
+  // from a string literal without deliberate effort, so joining on it keeps
+  // `(font, text)` pairs distinct: a plain space aliased
+  // `('16px sans-serif', 'bold 4px x')` onto `('16px sans-serif bold', '4px x')`.
+  const key = `${font}\u0000${text}`;
   const cached = measureCache.get(key);
   if (cached !== undefined) {
     // Promote to most-recently-used (delete + re-insert moves it to the end).
@@ -187,32 +191,4 @@ export function measureText(text: string, font: string): number {
     measureCache.delete(measureCache.keys().next().value!);
   }
   return width;
-}
-
-/**
- * Greedily wrap `text` into lines no wider than `maxWidth`, honoring explicit
- * newlines. Words longer than `maxWidth` are placed on their own line (not split).
- *
- * @param text - The text to wrap (newlines force line breaks).
- * @param font - CSS font shorthand used for measurement.
- * @param maxWidth - Maximum line width in pixels.
- * @returns The wrapped lines.
- */
-export function wrapLines(text: string, font: string, maxWidth: number): string[] {
-  const lines: string[] = [];
-  for (const paragraph of text.split('\n')) {
-    const words = paragraph.split(' ');
-    let current = '';
-    for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
-      if (current && measureText(candidate, font) > maxWidth) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = candidate;
-      }
-    }
-    lines.push(current);
-  }
-  return lines;
 }

@@ -20,11 +20,18 @@ export interface WrappedLine {
 }
 
 /**
- * Greedily wrap `value` into lines no wider than `maxWidth`, tracking each line's
- * absolute character range so a linear caret offset can be mapped to a visual
- * (line, x) position. Honors hard newlines (the `\n` is consumed, so a trailing
- * newline yields a trailing empty line the caret can sit on) and breaks an
- * over-long single word at the character level.
+ * Standalone greedy word-wrap of `value` into lines no wider than `maxWidth`,
+ * tracking each line's absolute character range so a linear caret offset can be
+ * mapped to a visual (line, x) position. Honors hard newlines (the `\n` is
+ * consumed, so a trailing newline yields a trailing empty line the caret can sit
+ * on) and breaks an over-long single word at the character level.
+ *
+ * DIVERGENCE NOTICE: this is NOT the wrapper {@link TextArea} renders with.
+ * TextArea's drawing and caret math go through its internal `computeLines`
+ * (LayoutEngine-based), which handles bidi/RTL and per-line source indices;
+ * this function is a simpler, dependency-free utility whose break points can
+ * differ from the engine's (e.g. no RTL support, different space handling).
+ * Use it only for off-component needs like previews or measurement.
  *
  * @param value - The full text.
  * @param maxWidth - Max line width in the same unit `measure` returns.
@@ -148,6 +155,12 @@ export interface TextAreaOptions {
   height?: number;
   /** Placeholder shown when empty. */
   placeholder?: string;
+  /**
+   * Accessible name. Falls back to `placeholder` when unset — placeholder-as-name
+   * is a classic WCAG anti-pattern (the name disappears on first keystroke), so
+   * set this whenever a visible label is drawn on canvas rather than projected.
+   */
+  label?: string;
   /** Initial value. Default `''`. */
   value?: string;
   /** CSS font shorthand. Default `'16px sans-serif'`. */
@@ -170,6 +183,8 @@ export interface TextAreaOptions {
   padding?: number;
   /** Invoked with the new value whenever the field changes. */
   onChange?: (value: string) => void;
+  /** Whether the field is disabled (no native editing, projected `disabled`). Default `false`. */
+  disabled?: boolean;
 }
 
 /**
@@ -191,6 +206,9 @@ export class TextArea extends UIComponent {
   public value: string;
   private _required = false;
   private _invalid = false;
+  private _disabled = false;
+  /** Accessible name; falls back to the placeholder (see {@link TextAreaOptions.label}). */
+  public label?: string;
   public placeholder: string;
   public font: string;
   public lineHeightFactor: number;
@@ -229,6 +247,8 @@ export class TextArea extends UIComponent {
     this.value = opts.value ?? '';
     this._required = opts.required ?? false;
     this._invalid = opts.invalid ?? false;
+    this._disabled = opts.disabled ?? false;
+    this.label = opts.label;
     this.placeholder = opts.placeholder ?? '';
     this.font = opts.font ?? '16px sans-serif';
     this.lineHeightFactor = opts.lineHeight ?? 1.4;
@@ -264,6 +284,7 @@ export class TextArea extends UIComponent {
         selectionEnd?: number;
         composition?: { start: number; length: number } | null;
       }) => {
+        if (this._disabled) return; // a disabled field must not accept edits
         this.value = e.value;
         this.selectionStart = e.selectionStart ?? this.value.length;
         this.selectionEnd = e.selectionEnd ?? this.value.length;
@@ -319,17 +340,31 @@ export class TextArea extends UIComponent {
     this.scene?.markDirty();
   }
 
+  /** Whether the field is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'textarea',
       placeholder: this.placeholder,
       value: this.value,
-      label: this.placeholder,
+      // Prefer the explicit label; placeholder-as-name is only a fallback
+      // (the name vanishes on first keystroke — WCAG anti-pattern).
+      label: this.label ?? this.placeholder,
       // `undefined` when not set, not `false`: the projection removes an
       // undefined attribute, whereas `aria-invalid="false"` means "explicitly
       // valid" and is deliberately preserved — so only emit these when they hold.
       required: this._required ? true : undefined,
       invalid: this._invalid ? true : undefined,
+      disabled: this._disabled ? true : undefined,
       textInputStyle: {
         font: this.font,
         lineHeight: this.lineHeight(),

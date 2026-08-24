@@ -24,6 +24,8 @@ export interface ToggleOptions {
   onChange?: (checked: boolean) => void;
   /** Focus-ring color, stroked 2px around the track while focused. Default `'#00f0ff'`. */
   focusColor?: string;
+  /** Whether the toggle is disabled (no toggling, projected `disabled`). Default `false`. */
+  disabled?: boolean;
 }
 
 class ToggleKnob extends UIComponent {
@@ -62,6 +64,8 @@ export class Toggle extends UIComponent {
   /** True while the shadow switch holds keyboard focus. */
   public focused = false;
 
+  private _disabled = false;
+
   private knobEntity: ToggleKnob;
 
   constructor(opts: ToggleOptions) {
@@ -75,6 +79,7 @@ export class Toggle extends UIComponent {
     this.accent = opts.accent ?? '#2563eb';
     this.track = opts.track ?? '#475569';
     this.focusColor = opts.focusColor ?? '#00f0ff';
+    this._disabled = opts.disabled ?? false;
     this.interactive = true;
 
     this.height = this.trackH;
@@ -113,10 +118,11 @@ export class Toggle extends UIComponent {
     // both fire. (role="switch" is a div, so the Scene doesn't forward a native
     // change for it — the component emits its own.)
     this.on('click', () => {
+      if (this._disabled) return;
       this.emit('change', { checked: !this.checked });
     });
     this.on('change', (e: { checked: boolean }) => {
-      if (e.checked === this.checked) return;
+      if (this._disabled || e.checked === this.checked) return;
       this.checked = e.checked;
 
       // Snappy physical spring motion targeting the new checked end position
@@ -128,8 +134,25 @@ export class Toggle extends UIComponent {
     });
   }
 
+  /** Whether the toggle is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    if (value) this.focused = false;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
-    return { role: 'switch', checked: this.checked, label: this.label };
+    return {
+      role: 'switch',
+      checked: this.checked,
+      label: this.label,
+      disabled: this._disabled ? true : undefined,
+    };
   }
 
   public render(r: IRenderer): void {

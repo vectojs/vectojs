@@ -29,8 +29,14 @@ describe('Slider descriptor', () => {
   });
 
   it('flags a value that is not on a step boundary', () => {
-    // Renders fine, snaps on next interaction — invisible without a note.
+    // Construction snaps onto the grid (#654), so an off-step value can only
+    // appear via a direct field write afterwards — the descriptor still flags
+    // it because keyboard/drag will snap it on next interaction.
     const slider = new Slider({ min: 0, max: 100, value: 33, step: 10 });
+    expect(slider.value).toBe(30); // snapped at construction
+    expect(slider.getDevtoolsDescriptor().notes).toBeUndefined();
+
+    slider.value = 33; // raw external write
     expect(slider.getDevtoolsDescriptor().notes?.[0]).toContain('not on a step boundary');
   });
 

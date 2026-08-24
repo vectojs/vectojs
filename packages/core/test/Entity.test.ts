@@ -55,6 +55,28 @@ describe('Entity Component System', () => {
     expect(parentA.children).not.toContain(child);
   });
 
+  it('add() rejects re-parenting an ancestor under its own descendant (cycle)', () => {
+    const root = new TestEntity('root');
+    const mid = new TestEntity('mid');
+    const leaf = new TestEntity('leaf');
+    root.add(mid);
+    mid.add(leaf);
+
+    // Direct self-add and deep ancestor re-parenting both close a loop that
+    // would overflow the pre-order update/render walks (DOM throws
+    // HierarchyRequestError for the same operation).
+    expect(() => root.add(root)).toThrow(/cannot add entity/);
+    expect(() => leaf.add(mid)).toThrow(/cannot add entity/);
+    expect(() => leaf.add(root)).toThrow(/cannot add entity/);
+
+    // The rejected adds must leave the tree untouched.
+    expect(mid.parent).toBe(root);
+    expect(leaf.parent).toBe(mid);
+    expect(root.children).toEqual([mid]);
+    expect(mid.children).toEqual([leaf]);
+    expect(leaf.children).toEqual([]);
+  });
+
   it('should compute global position correctly', () => {
     const parent = new TestEntity();
     parent.setPosition(100, 100);

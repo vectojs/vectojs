@@ -1,6 +1,41 @@
 import { UIComponent } from './UIComponent';
 import { type IRenderer, type A11yAttributes, type DevtoolsDescriptor } from '@vectojs/core';
 
+/** Construction options for {@link Slider}. */
+export interface SliderOptions {
+  /** Minimum selectable value. Default `0`. */
+  min?: number;
+  /** Maximum selectable value. Must be >= `min`. Default `100`. */
+  max?: number;
+  /** Initial value; clamped into `[min, max]` and snapped to the step grid. Default `min`. */
+  value?: number;
+  /** Value granularity. Pointer and keyboard input snap to multiples of this. Must be > 0. Default `1`. */
+  step?: number;
+  /**
+   * Accessible name. A `role="slider"` with no name is announced as just
+   * "slider", giving no indication of what it controls (WCAG 4.1.2), so set this
+   * whenever the surrounding visual label is drawn on canvas rather than
+   * projected.
+   */
+  label?: string;
+  /** Track color. Default `'rgba(255, 255, 255, 0.15)'`. */
+  trackColor?: string;
+  /** Filled-portion color. Default `'#00f0ff'`. */
+  progressColor?: string;
+  /** Thumb color. Default `'#fff'`. */
+  handleColor?: string;
+  /** Focus-ring color. Default `'#00f0ff'`. */
+  focusColor?: string;
+  /** Width in pixels. Default `200`. */
+  width?: number;
+  /** Height in pixels. Default `24`. */
+  height?: number;
+  /** Invoked with the snapped value whenever it changes. */
+  onChange?: (value: number) => void;
+  /** Whether the slider is disabled (no pointer/keyboard input, projected `disabled`). Default `false`. */
+  disabled?: boolean;
+}
+
 export class Slider extends UIComponent {
   public min: number;
   public max: number;
@@ -30,21 +65,39 @@ export class Slider extends UIComponent {
   /** True while this slider holds keyboard focus. */
   public focused = false;
 
-  constructor(props: any = {}) {
+  private _disabled = false;
+
+  constructor(props: SliderOptions = {}) {
     super();
+    // Validate range/granularity before anything derives from them: an
+    // inverted range renders nonsense on every frame, and a zero/negative or
+    // non-finite step turns `snapToStep` into NaN poisoning of `value`, the
+    // change stream and the devtools descriptor.
+    const min = props.min ?? 0;
+    const max = props.max ?? 100;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) {
+      throw new Error(
+        `Slider: max must be a finite number >= min (got min ${String(props.min)}, max ${String(props.max)})`,
+      );
+    }
+    this.min = min;
+    this.max = max;
+    this.step = positiveStep(props.step ?? 1);
     this.label = props.label;
-    this.min = props.min ?? 0;
-    this.max = props.max ?? 100;
-    this.value = props.value ?? this.min;
-    this.step = props.step ?? 1;
     this.trackColor = props.trackColor ?? 'rgba(255, 255, 255, 0.15)';
     this.progressColor = props.progressColor ?? '#00f0ff';
     this.handleColor = props.handleColor ?? '#fff';
     this.focusColor = props.focusColor ?? '#00f0ff';
+    this._disabled = props.disabled ?? false;
 
     this.width = props.width ?? 200;
     this.height = props.height ?? 24;
     this.interactive = true;
+
+    // Route the initial value through the same clamp/snap path as every later
+    // mutation: a raw store let `value: 250` render the thumb past the track
+    // with an off-range aria valuenow until the first interaction.
+    this.value = this.snapToStep(props.value ?? this.min);
 
     this.on('focus', () => {
       this.focused = true;
@@ -56,12 +109,13 @@ export class Slider extends UIComponent {
     });
 
     this.on('pointerdown', (e: any) => {
+      if (this._disabled) return;
       this.isDragging = true;
       this.updateValueFromPointer(e.localX);
     });
 
     this.on('pointermove', (e: any) => {
-      if (this.isDragging) {
+      if (this.isDragging && !this._disabled) {
         this.updateValueFromPointer(e.localX);
       }
     });
@@ -75,6 +129,7 @@ export class Slider extends UIComponent {
     });
 
     this.on('keydown', (e: any) => {
+      if (this._disabled) return;
       const key = e.nativeEvent?.key;
       if (!key) return;
       let next: number | null = null;
@@ -105,6 +160,18 @@ export class Slider extends UIComponent {
     });
   }
 
+  /** Whether the slider is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    if (value) this.isDragging = false;
+    this.scene?.markDirty();
+  }
+
   /** Snap to the step grid (anchored at `min`) and clamp into [min, max]. */
   private snapToStep(raw: number): number {
     const stepped = this.min + Math.round((raw - this.min) / this.step) * this.step;
@@ -133,6 +200,10 @@ export class Slider extends UIComponent {
       value: String(this.value),
       valuemin: String(this.min),
       valuemax: String(this.max),
+      // `undefined` when enabled: the projection removes an attribute set to
+      // undefined, and HitTester already treats `disabled === true` as
+      // pointer-transparent, so the canvas path and the shadow node agree.
+      disabled: this._disabled ? true : undefined,
     };
   }
 
@@ -202,4 +273,11 @@ export class Slider extends UIComponent {
       r.stroke(forced ? 'Highlight' : this.focusColor, 2);
     }
   }
+}
+
+function positiveStep(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) {
+    throw new Error(`Slider: step must be a finite number > 0 (received ${String(step)})`);
+  }
+  return step;
 }

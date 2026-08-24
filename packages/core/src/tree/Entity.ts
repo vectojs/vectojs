@@ -1058,6 +1058,24 @@ export abstract class Entity {
 
   /** Attach a single child (the O(1) common path). See {@link add}. */
   private _addOne(child: Entity): void {
+    // Cycle guard: re-parenting one of this entity's own ancestors (or itself)
+    // under it would close a loop that overflows the pre-order update/render
+    // walks on the next frame. The DOM throws HierarchyRequestError for the
+    // same operation; a plain Error keeps core DOM-free. O(depth) — add is
+    // rare next to per-frame work.
+    if (child === this) {
+      throw new Error(`Entity.add(): cannot add entity "${child.id}" under itself.`);
+    }
+    let ancestor: Entity | null = this.parent;
+    while (ancestor) {
+      if (ancestor === child) {
+        throw new Error(
+          `Entity.add(): cannot add entity "${child.id}" under "${this.id}" — ` +
+            'an entity cannot be added under its own descendant.',
+        );
+      }
+      ancestor = ancestor.parent;
+    }
     if (child.parent) child.parent.remove(child);
     child.parent = this;
     this.children.push(child);
@@ -1270,6 +1288,20 @@ export abstract class Entity {
       ? new TweenDriver(from, to, cfg)
       : new SpringDriver(from, to, cfg === 'spring' ? {} : (cfg as SpringConfig));
     (this._drivers ??= new Map()).set(prop, driver);
+    // Mid-walk catch-up: when the batched WASM pass already claimed this
+    // entity earlier this frame, it stamped `_driversTickedFrame`, and this
+    // entity's own `tickDrivers()` will skip its WHOLE driver map for the rest
+    // of the frame — including this brand-new driver — so on the batched path
+    // it would wait until next frame while the pure-JS path (never stamped)
+    // ticks it same-frame. Advance it once here with the walking frame's dt so
+    // both paths agree. Outside the update walk (`_updateWalkDt === null`)
+    // nothing has been claimed-and-pending yet, and an unstamped entity's
+    // `tickDrivers()` picks the new driver up normally.
+    const s = this.scene;
+    if (s && this._driversTickedFrame === s.currentFrame && s._updateWalkDt !== null) {
+      driver.tick(s._updateWalkDt);
+      this._applyDriverTick(prop, driver); // mirror completion/apply/settle logic
+    }
     this.scene?.markDirty({ entity: this.id, reason: 'driver-added' });
     // Register with Scene's batched-driver candidate set (cheap, self-pruning
     // O(1) add — see Scene._registerActiveDriverEntity) so the WASM batch pass
@@ -1385,11 +1417,6 @@ export abstract class Entity {
     } else {
       this._applyAnimated(prop, driver.value);
     }
-  }
-
-  /** Internal: true if this entity currently has any active property driver. */
-  public _hasActiveDrivers(): boolean {
-    return !!this._drivers && this._drivers.size > 0;
   }
 
   /**
@@ -1833,6 +1860,14 @@ export abstract class Entity {
   /**
    * Accumulated world rotation: this entity's own `rotation` plus
    * that of every ancestor.
+   *
+   * Valid only under positive scales: the sum models the composed matrix
+   * `T*S*R` correctly while every ancestor's `scaleX`/`scaleY` is positive,
+   * but a mirrored (negative-scale) ancestor flips handedness, which an
+   * additive sum cannot represent — the result is then off by the mirror.
+   * For mirror-safe rotation, derive the angle from
+   * {@link getWorldTransform}'s matrix (e.g. `atan2(b, a)`), as SVGEntity's
+   * signed-scale handling already does.
    *
    * @returns The accumulated world rotation in radians.
    */
