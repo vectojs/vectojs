@@ -195,7 +195,8 @@ export class MSDFFont {
   /**
    * Lay `text` out at `fontSizePx`. Returns positioned quads (skipping glyphs the
    * font doesn't contain), the widest line's advance, and the total block height.
-   * Honors `\n`, kerning pairs, and `letterSpacing`.
+   * Honors `\n`, `\r\n`, and lone `\r` as line breaks, kerning pairs, and
+   * `letterSpacing`.
    */
   layout(text: string, fontSizePx: number, opts: MSDFLayoutOptions = {}): MSDFLayoutResult {
     const { x = 0, y = 0, letterSpacing = 0 } = opts;
@@ -209,8 +210,14 @@ export class MSDFFont {
     let prevCode = -1;
 
     const chars = Array.from(text); // codepoint-aware (astral-safe)
-    for (const char of chars) {
-      if (char === '\n') {
+    for (let i = 0; i < chars.length; i++) {
+      const char = chars[i];
+      if (char === '\n' || char === '\r') {
+        // Windows-authored text arrives as CRLF and classic Mac output as lone
+        // CR; neither has an atlas glyph, so without this branch both would
+        // take the missing-glyph path below and add phantom width to the line.
+        // A `\r\n` pair is one break — swallow the `\n`.
+        if (char === '\r' && chars[i + 1] === '\n') i++;
         maxAdvance = Math.max(maxAdvance, penX - x);
         penX = x;
         line++;

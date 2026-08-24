@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cssLineBoxBaseline } from '../src/Typography';
 import { clearFontMetrics, registerFontMetrics } from '../src/fontMetrics';
+import { resetSharedMeasuringContext } from '../src/measureContext';
 
 HTMLCanvasElement.prototype.getContext = (() => null) as never;
 
@@ -59,5 +60,27 @@ describe('cssLineBoxBaseline', () => {
       descenderEm: -0.2,
     });
     expect(cssLineBoxBaseline('sans-serif', 24)).toBeCloseTo(19.2);
+  });
+
+  it('stays correct while the bounded baseline cache evicts old entries', () => {
+    // Keys are raw font strings; a session with dynamic sizes used to grow the
+    // map forever. Insert well past the LRU bound with a mocked measuring
+    // context (the only path that populates the cache) and assert every
+    // answer — fresh, cached, and recomputed-after-eviction — is identical.
+    const ctx = {
+      font: '',
+      measureText: () => ({ fontBoundingBoxAscent: 12.8, fontBoundingBoxDescent: 3.2 }),
+    };
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = (() => ctx) as never;
+    resetSharedMeasuringContext(); // drop the null context earlier tests cached
+    try {
+      for (let size = 1; size <= 1200; size++) {
+        expect(cssLineBoxBaseline(`${size}px sans-serif`, 24)).toBeCloseTo(16.8);
+      }
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+      resetSharedMeasuringContext(); // and don't leak the mock into later tests
+    }
   });
 });
