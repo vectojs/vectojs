@@ -104,10 +104,14 @@ export function getSharedMeasuringContext(): CanvasRenderingContext2D | null {
 /**
  * Whether the shared measuring context is currently attached to the document.
  *
- * Exists because attachment is best-effort — a context created before
- * `document.body` existed measures generic families wrong on Firefox, and that
- * is otherwise silent. A caller that has just loaded a webfont, or a test
- * asserting the measure-where-you-paint contract, can check this and re-create.
+ * Attachment is best-effort — a context created before `document.body` existed
+ * measures generic families wrong on Firefox, and that is otherwise silent.
+ * Today this is an introspection/diagnostic helper (tests assert the
+ * measure-where-you-paint contract with it); no in-repo code implements the
+ * check-and-recreate flow yet. If a caller wants to react, the recipe is:
+ * {@link isSharedMeasuringContextAttached} returns `false` → call
+ * {@link resetSharedMeasuringContext} → the next {@link getSharedMeasuringContext}
+ * rebuilds attached.
  *
  * @returns `true` when a shared context exists and its canvas is in the document.
  */

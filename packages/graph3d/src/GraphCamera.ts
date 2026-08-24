@@ -297,6 +297,12 @@ export class GraphCamera {
     if (!this.enabled) return;
     // Primary (0) pans in 2D / orbits in 3D; middle (1) and right (2) always pan.
     if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+    // An active drag owns its pointer until its own up/cancel: a second
+    // contact (two fingers, mouse + pen) must not overwrite dragging,
+    // lastX/lastY or pointerId — that made the next move pan by the
+    // inter-contact distance in one lurch and churned capture between
+    // contacts.
+    if (this.dragging) return;
     this.dragging = true;
     this.button = e.button;
     this.pointerId = e.pointerId;

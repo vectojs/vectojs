@@ -95,6 +95,22 @@ describe('MSDFFont', () => {
     expect(width).toBeCloseTo(60); // widest line (line 0 advance)
   });
 
+  it('treats CRLF as a single break with no phantom CR advance', () => {
+    const font = new MSDFFont(FONT);
+    const { glyphs, width, height } = font.layout('A\r\nB', 100);
+    expect(glyphs.map((g) => g.char)).toEqual(['A', 'B']);
+    expect(height).toBeCloseTo(250); // still 2 lines — \r\n is one break
+    expect(width).toBeCloseTo(60); // no missing-glyph advance added for '\r'
+  });
+
+  it('treats a lone CR as a line break too (classic Mac text)', () => {
+    const font = new MSDFFont(FONT);
+    const { glyphs, width, height } = font.layout('A\rB', 100);
+    expect(glyphs.map((g) => g.char)).toEqual(['A', 'B']);
+    expect(height).toBeCloseTo(250);
+    expect(width).toBeCloseTo(60);
+  });
+
   it('emits no quad for a missing glyph but still reserves its advance', () => {
     const font = new MSDFFont(FONT);
     const { glyphs, width } = font.layout('AZ', 100); // 'Z' not in font

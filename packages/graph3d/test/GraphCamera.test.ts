@@ -12,9 +12,9 @@ const makeDom = (w = 400, h = 300) => {
   return el;
 };
 
-const pointer = (type: string, x: number, y: number, button = 0): PointerEvent => {
+const pointer = (type: string, x: number, y: number, button = 0, pointerId = 1): PointerEvent => {
   const ev = new Event(type, { bubbles: true }) as PointerEvent;
-  Object.assign(ev, { clientX: x, clientY: y, button, pointerId: 1 });
+  Object.assign(ev, { clientX: x, clientY: y, button, pointerId });
   return ev;
 };
 
@@ -52,6 +52,41 @@ describe('GraphCamera', () => {
     el.dispatchEvent(pointer('pointerup', 140, 100, 0));
     // Dragging right should move the world left (camera +target.x decreases content under cursor).
     expect(o.position.x).not.toBe(x0);
+    cam.dispose();
+  });
+
+  it('a second concurrent pointerdown does not hijack an active camera drag', () => {
+    const cam = new GraphCamera({ domElement: makeDom() });
+    const o = cam.camera as THREE.OrthographicCamera;
+    const el = cam['domElement'] as HTMLElement;
+
+    // First contact starts a pan; a second finger lands elsewhere mid-drag.
+    el.dispatchEvent(pointer('pointerdown', 100, 100, 0, 1));
+    el.dispatchEvent(pointer('pointerdown', 300, 100, 0, 2));
+
+    // The active drag keeps its own pointer — the second contact must not
+    // rebind pointerId (its lastX/lastY would make the next move of either
+    // pointer pan by the inter-contact distance in one lurch).
+    expect(cam['pointerId']).toBe(1);
+
+    // Moves from the second contact are ignored.
+    const before = o.position.x;
+    el.dispatchEvent(pointer('pointermove', 500, 100, 0, 2));
+    expect(o.position.x).toBe(before);
+
+    // The first contact still pans from its own last position.
+    el.dispatchEvent(pointer('pointermove', 140, 100, 0, 1));
+    expect(o.position.x).not.toBe(before);
+
+    // Releasing the second contact does not end the drag.
+    el.dispatchEvent(pointer('pointerup', 500, 100, 0, 2));
+    expect(cam['dragging']).toBe(true);
+    el.dispatchEvent(pointer('pointermove', 160, 100, 0, 1));
+    expect(cam['dragging']).toBe(true);
+
+    // Releasing the owning contact ends it.
+    el.dispatchEvent(pointer('pointerup', 160, 100, 0, 1));
+    expect(cam['dragging']).toBe(false);
     cam.dispose();
   });
 

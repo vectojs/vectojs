@@ -10,19 +10,63 @@ const MAX_STEP_DT = 1 / 120; // stable for stiffness/mass ratios up to ~5.7e4
 
 export class SpringPhysics {
   public value: number;
-  public target: number;
   public velocity: number = 0;
 
-  public stiffness: number = 180;
-  public damping: number = 12;
+  private stiffnessValue: number = 180;
+  private dampingValue: number = 12;
 
   private readonly valEpsilon = 0.005;
   private readonly velEpsilon = 0.005;
   private massValue: number = 1;
 
   constructor(initial: number) {
+    // Same policy as the mutation-path validation below: a non-finite initial
+    // value or target poisons every comparison in `isAtRest()` (NaN compares
+    // false), so the spring would never report rest and an await on completion
+    // would hang forever. Throw at construction instead.
+    if (!Number.isFinite(initial)) {
+      throw new Error(`SpringPhysics initial value must be finite (received ${String(initial)})`);
+    }
     this.value = initial;
-    this.target = initial;
+    this.targetValue = initial;
+  }
+
+  /**
+   * Spring constant k. Must be a finite number > 0: negative stiffness inverts
+   * the restoring force (`-k·(x - target)` pushes away from the target) and
+   * zero or non-finite stiffness either freezes the integration or drives the
+   * state to NaN — in every case `isAtRest()` can never turn true again.
+   */
+  public get stiffness(): number {
+    return this.stiffnessValue;
+  }
+
+  public set stiffness(value: number) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(
+        `SpringPhysics.stiffness must be a finite number > 0 (received ${String(value)})`,
+      );
+    }
+    this.stiffnessValue = value;
+  }
+
+  /**
+   * Damping coefficient c. Must be a finite number > 0: damping ≤ 0 removes
+   * the energy drain or actively amplifies oscillation, and a non-finite
+   * coefficient writes NaN into the velocity on the first update — both wedge
+   * the spring permanently.
+   */
+  public get damping(): number {
+    return this.dampingValue;
+  }
+
+  public set damping(value: number) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(
+        `SpringPhysics.damping must be a finite number > 0 (received ${String(value)})`,
+      );
+    }
+    this.dampingValue = value;
   }
 
   /**
@@ -43,6 +87,25 @@ export class SpringPhysics {
     }
     this.massValue = value;
   }
+
+  public get target(): number {
+    return this.targetValue;
+  }
+
+  /**
+   * Rest position. Must be finite: a NaN target makes every `isAtRest()`
+   * comparison false forever (the spring can never settle) and an infinite
+   * target integrates an unbounded runaway. Invalid assignments throw at
+   * mutation time, matching the stiffness/damping/mass policy.
+   */
+  public set target(value: number) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`SpringPhysics.target must be a finite number (received ${String(value)})`);
+    }
+    this.targetValue = value;
+  }
+
+  private targetValue: number;
 
   public update(dt: number): void {
     if (this.isAtRest()) {
