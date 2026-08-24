@@ -595,10 +595,17 @@ export class Markdown extends UIComponent {
    * Resolved once in the constructor and never re-applied: entities capture
    * colors, fonts and sizes at build time, so assigning this after construction
    * would paint blocks built afterwards in the new palette while everything
-   * earlier kept the old one. Readonly to keep that trap unreachable (#657);
-   * pass the palette you want at construction.
+   * earlier kept the old one. Exposed read-only to keep that trap unreachable
+   * (#657); pass the palette you want at construction.
+   *
+   * Backed by {@link currentTheme} rather than a `readonly` field because the
+   * blockquote arm legally swaps the render-time theme for its own subtree and
+   * restores it afterwards — an internal, exception-safe scope, not a re-theme.
    */
-  public readonly theme: Required<MarkdownTheme>;
+  public get theme(): Required<MarkdownTheme> {
+    return this.currentTheme;
+  }
+  private currentTheme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
   /**
@@ -934,7 +941,7 @@ export class Markdown extends UIComponent {
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
     this.maxWidth = opts.maxWidth ?? 800;
-    this.theme = resolvePresetTheme(opts.theme);
+    this.currentTheme = resolvePresetTheme(opts.theme);
     this.onLinkClick = opts.onLinkClick;
     this.selectable = opts.selectable ?? true;
     this._userTiming = opts.userTiming ?? false;
@@ -4212,7 +4219,7 @@ export class Markdown extends UIComponent {
         // into the rest of the document.
         const outerTheme = this.theme;
         if (t.quoteTextColor !== t.textColor) {
-          this.theme = { ...outerTheme, textColor: t.quoteTextColor };
+          this.currentTheme = { ...outerTheme, textColor: t.quoteTextColor };
         }
         try {
           if (bqToken.tokens) {
@@ -4229,7 +4236,7 @@ export class Markdown extends UIComponent {
             }
           }
         } finally {
-          this.theme = outerTheme;
+          this.currentTheme = outerTheme;
         }
 
         // Add the vertical accent bar
