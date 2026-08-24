@@ -187,6 +187,14 @@ export interface InlineImageRaster {
 const inlineImageRasters = new Map<string, InlineImageRaster>();
 
 /**
+ * Upper bound on {@link inlineImageRasters}. A decoded bitmap costs its decoded
+ * pixels in memory, and a long-lived page rendering many documents with distinct
+ * image URLs (a streamed chat or feed) once grew this map without limit while
+ * the inline-math twin capped at 256 — the same defect, fixed the same way.
+ */
+const INLINE_IMAGE_RASTER_LIMIT = 256;
+
+/**
  * Called after an inline image decodes, so the owner can re-measure and repaint.
  *
  * Unlike inline math's equivalent, a notified owner may need a full
@@ -221,10 +229,24 @@ export function unsubscribeInlineImageRaster(notify: () => void): void {
  */
 export function ensureInlineImageRaster(src: string): InlineImageRaster {
   const existing = inlineImageRasters.get(src);
-  if (existing) return existing;
+  if (existing) {
+    // Re-insert so Map iteration order is recency order: a raster that is
+    // still being painted stays recent and is never the eviction candidate.
+    inlineImageRasters.delete(src);
+    inlineImageRasters.set(src, existing);
+    return existing;
+  }
 
   const entry: InlineImageRaster = { decoded: false };
   inlineImageRasters.set(src, entry);
+  // Bound the map like `ensureInlineMathRaster` does: the evicted image
+  // re-decodes on its next paint, which is one empty box for an image that
+  // has not been painted recently.
+  while (inlineImageRasters.size > INLINE_IMAGE_RASTER_LIMIT) {
+    const oldest = inlineImageRasters.keys().next().value;
+    if (oldest === undefined || oldest === src) break;
+    inlineImageRasters.delete(oldest);
+  }
 
   // Guarded exactly as the math raster and `Image` are: jsdom and SSR have no
   // `globalThis.Image`, and an image must degrade to a reserved box rather than
