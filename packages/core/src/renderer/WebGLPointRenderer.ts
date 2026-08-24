@@ -936,6 +936,10 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
     ensureQuadIndices(spriteCount);
     gl.drawElements(gl.TRIANGLES, spriteCount * INDICES_PER_QUAD, gl.UNSIGNED_INT, 0);
     frameDrawCalls++;
+    // Same teardown shape as drawGlyphs(): leave no VAO bound after committing
+    // a batch — documented counterparts should not diverge on teardown-relevant
+    // GL state.
+    gl.bindVertexArray(null);
     spriteCount = 0;
   };
 

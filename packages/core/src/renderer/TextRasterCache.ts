@@ -120,7 +120,11 @@ export class TextRasterCache {
    *   fall back to {@link IRenderer.fillText}).
    */
   get(font: string, color: string, text: string): TextRaster | null {
-    const key = font + '\u0000' + color + '\u0000' + text;
+    // Length-prefixed NUL-separated key. Plain concatenation aliases when a
+    // component itself contains U+0000 (adversarial or binary-ish text):
+    // `fontA\0colorB` + text could collide with a different triple's raster.
+    // Each length prefix makes the split points unambiguous.
+    const key = `${font.length}\u0000${font}${color.length}\u0000${color}${text.length}\u0000${text}`;
     const hit = this.cache.get(key);
     if (hit) {
       this._hits++;

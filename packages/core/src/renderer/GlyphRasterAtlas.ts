@@ -219,7 +219,9 @@ export class GlyphRasterAtlas {
    *   (headless, unrasterizable, or too large to pack).
    */
   get(font: string, color: string, glyph: string): GlyphSlot | null {
-    const key = font + '\u0000' + color + '\u0000' + glyph;
+    // Length-prefixed NUL-separated key, same scheme as TextRasterCache:
+    // plain concatenation aliases when a component contains U+0000.
+    const key = `${font.length}\u0000${font}${color.length}\u0000${color}${glyph.length}\u0000${glyph}`;
     const existing = this.slots.get(key);
     if (existing !== undefined) {
       // A cached `null` is a remembered failure: re-measuring an unpackable glyph

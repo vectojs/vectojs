@@ -126,9 +126,13 @@ export class SVGRenderer implements IRenderer {
   private gradientCounter = 0;
   private gradientCache: Map<string, string> = new Map();
 
-  constructor(width: number, height: number) {
+  /** Root font size used to resolve `em`/`rem` font sizes (default 16px). */
+  private rootFontSize: number;
+
+  constructor(width: number, height: number, options?: { rootFontSize?: number }) {
     this.width = width;
     this.height = height;
+    this.rootFontSize = options?.rootFontSize ?? 16;
     installRendererDevTraps(this, 'SVGRenderer');
   }
 
@@ -363,6 +367,16 @@ export class SVGRenderer implements IRenderer {
     );
   }
 
+  /**
+   * Emit a `<text>` element for a text run.
+   *
+   * Font-size unit handling: `px` sizes pass through; `em` and `rem` are both
+   * scaled against the renderer's `rootFontSize` (constructor option, default
+   * 16 — matching the browser default, not necessarily the host page's root,
+   * so pass `{ rootFontSize }` when exporting against a non-default root).
+   * A percentage size (`'100% Inter'`) has no absolute meaning in this
+   * context and silently falls back to the default 16px font size.
+   */
   public fillText(
     text: string,
     x: number,
@@ -373,8 +387,8 @@ export class SVGRenderer implements IRenderer {
     this.flush();
     const sizeToken = parseFontSizeToken(font);
     let fontSize = sizeToken ? sizeToken.value : 16;
-    if (sizeToken && sizeToken.unit !== 'px') {
-      fontSize = fontSize * 16;
+    if (sizeToken && (sizeToken.unit === 'em' || sizeToken.unit === 'rem')) {
+      fontSize = fontSize * this.rootFontSize;
     }
 
     const lowerFont = font.toLowerCase();
@@ -615,10 +629,10 @@ export class SVGRenderer implements IRenderer {
 
   /**
    * SVGRenderer accumulates strings in memory; nothing external is allocated.
-   * Drop the buffers for GC and become idempotent.
+   * Drop the buffers for GC and become idempotent. `clear()` already empties
+   * the gradient cache, so no second clear is needed here.
    */
   public dispose(): void {
     this.clear();
-    this.gradientCache.clear();
   }
 }
