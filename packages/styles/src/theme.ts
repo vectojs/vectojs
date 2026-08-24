@@ -10,6 +10,16 @@ export const VAR_RE = /^var\(--([\w-]+)\)$/;
  *  derives its global replace form from it. */
 export const HAS_VAR_RE = /var\(--([\w-]+)\)/;
 
+/** A `var(--key, fallback)` reference — the CSS fallback form. Neither
+ *  {@link VAR_RE} nor {@link HAS_VAR_RE} matches it (`\)` must follow the key),
+ *  so pre-#645 it passed through unresolved: the raw string reached mapped
+ *  fields where Canvas2D silently kept the previous paint, and the key went
+ *  untracked for theme switches. Detected explicitly so the apply layer can
+ *  fail loudly instead — fallback resolution is not implemented, and silence
+ *  is the one thing this package must never do with an unrecognized `var()`
+ *  form (the GH-608 doctrine). */
+export const HAS_VAR_FALLBACK_RE = /var\(--[\w-]+\s*,/;
+
 /**
  * A flat token set. Keys are written WITHOUT the `--` prefix and referenced in
  * style objects as `var(--<key>)`, mirroring CSS custom properties:
@@ -45,12 +55,32 @@ const current = { theme: DEFAULT_THEME };
  * tracked style *keys* to the var expression they reference — not the whole
  * style object — so multiple var-referencing styles on one entity accumulate,
  * and a later literal value on the same key replaces the reference instead of
- * being clobbered by it on the next switch. WeakMap on both sides: a destroyed
- * entity or a dropped theme is collected.
+ * being clobbered by it on the next switch.
+ *
+ * Entities are held through {@link WeakRef}s, not strongly: `Entity.destroy()`
+ * has no hook back into this package, so a strong inner map retained every
+ * styled entity for the lifetime of its theme and `setTheme` kept re-resolving
+ * destroyed ones (#644). Dead refs are swept during that walk; callers that
+ * know an entity is gone can release it eagerly with {@link untrackVarStyles}.
+ * The theme side stays a WeakMap: a dropped theme is collected wholesale.
  */
-const varPairs = new WeakMap<Theme, Map<Entity, Map<string, unknown>>>();
+const varPairs = new WeakMap<Theme, Map<WeakRef<Entity>, Map<string, unknown>>>();
 
-const pairsOf = (theme: Theme): Map<Entity, Map<string, unknown>> => {
+/** Stable {@link WeakRef} per entity, so repeated styles on one entity hit the
+ *  same tracking entry instead of orphaning unreachable duplicates. Weakly
+ *  held itself: the ref object dies with the entity. */
+const entityRefs = new WeakMap<Entity, WeakRef<Entity>>();
+
+const refOf = (entity: Entity): WeakRef<Entity> => {
+  let ref = entityRefs.get(entity);
+  if (!ref) {
+    ref = new WeakRef(entity);
+    entityRefs.set(entity, ref);
+  }
+  return ref;
+};
+
+const pairsOf = (theme: Theme): Map<WeakRef<Entity>, Map<string, unknown>> => {
   let pairs = varPairs.get(theme);
   if (!pairs) {
     pairs = new Map();
@@ -86,25 +116,46 @@ export function setTheme(next: Theme): void {
   const pairs = varPairs.get(previous);
   // Dry-run: resolve every tracked style against `next` first. A missing token
   // throws here, before `current.theme` moves or any entity is touched.
-  const resolved = new Map<Entity, Style>();
+  // Entries whose entity is already collected are swept on the way (#644) —
+  // they can neither be re-resolved nor released by any destroy hook.
+  const resolved = new Map<WeakRef<Entity>, Style>();
   if (pairs) {
-    for (const [entity, keys] of pairs) {
+    for (const [ref, keys] of pairs) {
+      const entity = ref.deref();
+      if (entity === undefined) {
+        pairs.delete(ref);
+        continue;
+      }
       const style: Style = {};
       for (const [key, expr] of keys) {
         (style as Record<string, unknown>)[key] = expr;
       }
-      resolved.set(entity, resolveStyle(style, next).style);
+      resolved.set(ref, resolveStyle(style, next).style);
     }
   }
   current.theme = next;
   if (pairs) {
     const nextPairs = pairsOf(next);
-    for (const [entity, style] of resolved) {
+    for (const [ref, style] of resolved) {
+      const entity = ref.deref();
+      if (entity === undefined) continue; // collected between the passes
       applyStyleResolved(entity, style);
-      nextPairs.set(entity, pairs.get(entity)!);
+      nextPairs.set(ref, pairs.get(ref)!);
     }
     varPairs.delete(previous);
   }
+}
+
+/**
+ * Drop every var() reference tracked for `entity` under the active theme, so
+ * {@link setTheme} stops re-resolving its styles. `Entity.destroy()` cannot
+ * call this (core has no dependency on styles), so tracking also releases the
+ * entity weakly and sweeps collected entries on switch — this is the eager,
+ * deterministic path for frameworks that do know when an entity is gone.
+ * Idempotent; safe for entities that never had a tracked style.
+ */
+export function untrackVarStyles(entity: Entity): void {
+  varPairs.get(current.theme)?.delete(refOf(entity));
 }
 
 /**
@@ -120,7 +171,8 @@ export function setTheme(next: Theme): void {
  */
 export function trackVarKeys(entity: Entity, style: Style): void {
   const pairs = pairsOf(current.theme);
-  const keys = pairs.get(entity) ?? new Map<string, unknown>();
+  const ref = refOf(entity);
+  const keys = pairs.get(ref) ?? new Map<string, unknown>();
   for (const [key, value] of Object.entries(style)) {
     if (value === undefined) continue;
     if (typeof value === 'string' && HAS_VAR_RE.test(value)) {
@@ -139,8 +191,8 @@ export function trackVarKeys(entity: Entity, style: Style): void {
     }
     keys.delete(key);
   }
-  if (keys.size === 0) pairs.delete(entity);
-  else pairs.set(entity, keys);
+  if (keys.size === 0) pairs.delete(ref);
+  else pairs.set(ref, keys);
 }
 
 // Re-exported for the apply layer without an import cycle.

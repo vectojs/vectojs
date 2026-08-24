@@ -265,6 +265,64 @@ describe('attachDevtools', () => {
     host.destroy();
   });
 
+  it('re-runs the cached a11y audit when the inspected entity changes', () => {
+    const host = makeHost();
+    const a = new Box('cnt-a');
+    host.add(a);
+    const b = new Box('cnt-b');
+    host.add(b);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(a);
+    const cached = (panel as any).a11yFindings();
+
+    // Property-only state (labels, disabled, opacity, world bounds) never moves
+    // structureVersion, so a version-only key stayed stale indefinitely (#705).
+    // The highlight entity is re-tracked rather than re-added here, so nothing
+    // bumps the version — the inspected-entity change itself must invalidate.
+    panel.select(b);
+    expect((panel as any).a11yFindings()).not.toBe(cached);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('bounds a11y-audit staleness: property-only drift surfaces after the TTL', () => {
+    vi.useFakeTimers();
+    try {
+      const host = makeHost();
+      const btn = new Box('btn', 40, 20);
+      btn.interactive = true; // focusable, no accessible name → audited finding
+      host.add(btn);
+
+      const panel = attachDevtools(host, { refreshInterval: 0 });
+      panel.select(btn);
+      expect(host.structureVersion).toBe((panel as any).a11yAuditVersion);
+      const kinds = () =>
+        ((panel as any).a11yFindings() as { kind: string; entityId: string }[])
+          .filter((f) => f.entityId === 'btn')
+          .map((f) => f.kind);
+      expect(kinds()).toContain('no-accessible-name');
+
+      // Property-only drift (here: the entity stops being focusable; equally a
+      // relabel, disabled toggle, opacity dim or scroll) never bumps
+      // structureVersion. Within the TTL window the cache may stay stale…
+      btn.interactive = false;
+      expect(kinds()).toContain('no-accessible-name');
+
+      // …but past the reconcile-length TTL the next tick re-walks, so the
+      // finding cannot hide behind the version gate forever (#705).
+      vi.advanceTimersByTime(3001);
+      panel.refresh();
+      expect(kinds()).not.toContain('no-accessible-name');
+
+      panel.detach();
+      host.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('audit() on a clean scene reports no findings and refresh restores the tree', () => {
     const host = makeHost();
     host.resize(400, 300);
