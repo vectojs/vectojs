@@ -299,9 +299,11 @@ export class DriverTicker {
           : springsRejected
             ? 'springs-rejected'
             : 'tweens-rejected';
-      // Only a fully-JS frame means the accelerator did no work at all; a
-      // partial rejection still advanced one kind through the kernel.
-      this.backends.animBatchedLastFrame = !(springsRejected && tweensRejected);
+      // Only claim the accelerator ran if some driver ACTUALLY stepped through
+      // the kernel this frame; a declined kind with none of the other kind in
+      // flight means nothing ran and the frame was fully-JS.
+      this.backends.animBatchedLastFrame =
+        (springCount > 0 && !springsRejected) || (tweenCount > 0 && !tweensRejected);
     }
 
     // Finalize every batchable driver this pass touched (completion check +
