@@ -304,11 +304,25 @@ export class MSDFTextEntity extends Entity {
     const actualLineHeight = this.lineHeight ?? this.fontSize * (asc - desc);
     const baseline = asc * this.fontSize;
 
-    // Glyph index → source index. Newlines are not glyphs, so the k-th glyph
-    // is the k-th non-newline source character.
-    const srcIdx: number[] = [];
-    for (let i = 0; i < this.text.length; i++) {
-      if (this.text[i] !== '\n') srcIdx.push(i);
+    // Glyph index → source code-unit range, built PER CODE POINT (glyphs are
+    // laid out per code point too). Mapping per UTF-16 unit instead split
+    // surrogate pairs across line boundaries: a break between the halves of
+    // an astral character projected lone surrogates into the DOM carriers,
+    // so copy/paste, find and screen readers saw replacement characters
+    // (#689). Newlines are not glyphs; astral chars occupy two units.
+    const srcStart: number[] = [];
+    const srcEnd: number[] = [];
+    {
+      let cursor = 0;
+      while (cursor < this.text.length) {
+        const code = this.text.codePointAt(cursor)!;
+        const width = code > 0xffff ? 2 : 1;
+        if (code !== 10) {
+          srcStart.push(cursor);
+          srcEnd.push(cursor + width);
+        }
+        cursor += width;
+      }
     }
 
     const glyphsByLine = new Map<number, number[]>();
@@ -322,15 +336,16 @@ export class MSDFTextEntity extends Entity {
     }
 
     // First pass: each row's source extent (start = first glyph's source
-    // index, end = one past the last glyph's), so a row's separator can pair
-    // with the IMMEDIATE next row's start — blank rows included.
+    // index, end = one past the last glyph's LAST unit, so an astral char is
+    // never cut in half), so a row's separator can pair with the IMMEDIATE
+    // next row's start — blank rows included.
     const starts: number[] = [];
     const ends: number[] = [];
     let previousEnd = 0;
     for (let i = 0; i <= maxIdx; i++) {
       const glyphs = glyphsByLine.get(i) ?? [];
-      const start = glyphs.length > 0 ? srcIdx[glyphs[0]] : previousEnd;
-      const end = glyphs.length > 0 ? srcIdx[glyphs[glyphs.length - 1]] + 1 : start;
+      const start = glyphs.length > 0 ? srcStart[glyphs[0]] : previousEnd;
+      const end = glyphs.length > 0 ? srcEnd[glyphs[glyphs.length - 1]] : start;
       starts.push(start);
       ends.push(end);
       previousEnd = Math.max(previousEnd, end);

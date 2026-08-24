@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Dropdown } from '../src/Dropdown';
 import { Entity, Scene } from '@vectojs/core';
 
@@ -113,6 +113,59 @@ describe('Dropdown', () => {
     const menu = (dropdown as any).activeMenu;
     expect(menu.y + menu.height).toBeLessThanOrEqual(600);
     expect(menu.y).toBeGreaterThanOrEqual(4);
+  });
+
+  it('closes an open menu on Tab and lets focus move out (#693)', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
+    scene.add(dropdown);
+
+    dropdown.emit('click', { stopPropagation() {} });
+    expect((dropdown as any).activeMenu).not.toBeNull();
+
+    // Tab must close the menu AND keep its native default (focus movement).
+    const preventDefault = vi.fn();
+    dropdown.emit('keydown', { nativeEvent: { key: 'Tab' }, preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect((dropdown as any).activeMenu).toBeNull();
+    expect(scene.overlayRoot.children.length).toBe(0);
+  });
+
+  it('closes the menu on document-level Escape after focus moved out (#693)', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
+    scene.add(dropdown);
+
+    dropdown.emit('click', { stopPropagation() {} });
+    expect((dropdown as any).activeMenu).not.toBeNull();
+
+    // Focus has left the combobox (Tab path); Escape anywhere still closes.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect((dropdown as any).activeMenu).toBeNull();
+    expect(scene.overlayRoot.children.length).toBe(0);
+  });
+
+  it('derives unique backdrop ids per instance (#693)', () => {
+    const canvas = document.createElement('canvas');
+    const scene = new Scene(canvas);
+    const a = new Dropdown(['A'], { width: 100, height: 40 });
+    const b = new Dropdown(['B'], { width: 100, height: 40 });
+    scene.add(a);
+    scene.add(b);
+
+    a.emit('click', { stopPropagation() {} });
+    b.emit('click', { stopPropagation() {} });
+
+    const backdropA = (a as any).activeBackdrop as { id: string };
+    const backdropB = (b as any).activeBackdrop as { id: string };
+    expect(backdropA.id).not.toBe(backdropB.id);
+    expect(backdropA.id).toBe(`${a.id}-backdrop`);
+    expect(backdropB.id).toBe(`${b.id}-backdrop`);
+
+    a.destroy();
+    b.destroy();
   });
 });
 

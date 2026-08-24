@@ -241,3 +241,40 @@ describe('Markdown.setMaxWidth', () => {
     expect(md.maxWidth).toBe(0);
   });
 });
+
+// `blockAffordances: true` wraps code blocks and tables in a
+// `BlockWithAffordances` whose own box is assigned once from the inner block
+// at construction. The reflow arms tested above dispatch on
+// `entity instanceof CodeBlock` / `instanceof Table` directly, so under the
+// flag both silently kept their old width while prose rewrapped (#701).
+describe('setMaxWidth with blockAffordances', () => {
+  it('reflows wrapped code and tables and refreshes the wrapper', () => {
+    const source = [
+      '```ts',
+      "const greeting = 'hÉllo';",
+      '```',
+      '',
+      '| name | qty |',
+      '| --- | --- |',
+      '| café | 2 |',
+    ].join('\n');
+    const md = new Markdown(source, { maxWidth: 600, blockAffordances: true });
+
+    const code = find<CodeBlock>(md, (e) => e instanceof CodeBlock);
+    const table = find<Table>(md, (e) => e instanceof Table);
+    expect(code).not.toBeNull();
+    expect(table).not.toBeNull();
+    // The blocks really are wrapped, or this test proves nothing.
+    expect(code!.parent?.constructor.name).toBe('BlockWithAffordances');
+
+    md.setMaxWidth(320);
+
+    expect(code!.width).toBe(320);
+    expect(table!.width).toBe(320);
+    expect(table!.colWidths.reduce((a, b) => a + b, 0)).toBeCloseTo(320, 5);
+
+    // The wrapper's own box follows the inner block it pass-through sizes.
+    const wrapper = code!.parent as unknown as { width: number; height: number };
+    expect(wrapper.width).toBeGreaterThanOrEqual(code!.width);
+  });
+});

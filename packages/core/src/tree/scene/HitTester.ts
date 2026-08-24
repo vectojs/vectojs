@@ -75,11 +75,6 @@ function intersectBounds(a: Bounds, b: Bounds): Bounds {
   };
 }
 
-/** Whether world point `(x, y)` lies within box `b`. */
-function pointInBounds(b: Bounds, x: number, y: number): boolean {
-  return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
-}
-
 export class HitTester {
   private readonly root: Entity;
   private readonly overlayRoot: Entity;
@@ -270,13 +265,13 @@ export class HitTester {
       if (hit) return hit;
     }
 
-    // The node itself is a hit target only if the point is inside it, inside any
-    // clipping ancestor, and it isn't opted out of pointer input (a disabled
-    // control or an explicit `pointerEvents: 'none'`).
+    // The node itself is a hit target only if the point is inside it, inside
+    // every clipping ancestor's EXACT local rect, and it isn't opted out of
+    // pointer input (a disabled control or an explicit `pointerEvents: 'none'`).
     if (
       node.isPointInside &&
       node.isPointInside(x, y) &&
-      (!clip || pointInBounds(clip, x, y)) &&
+      this.isInsideAllClippers(node, x, y) &&
       !this.isPointerTransparent(node)
     ) {
       return node;
@@ -294,6 +289,32 @@ export class HitTester {
   }
 
   /**
+   * Exact rotation-aware `clipChildren` test shared by BOTH hit paths: the
+   * point must lie inside every clipChildren ancestor's local rect — the same
+   * shape rendering clips to — not merely inside the ancestor's world AABB.
+   * For a rotated clipper those disagree, and until both paths used the exact
+   * rect a query's answer depended on which backend was active (#680). The
+   * clip-stack AABB intersection in {@link findHitRecursively} remains purely
+   * as a subtree-pruning pre-filter; this is the authoritative gate.
+   */
+  private isInsideAllClippers(node: Entity, x: number, y: number): boolean {
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (!ancestor.clipChildren) continue;
+      const local = ancestor.worldToLocal(x, y);
+      if (
+        !local ||
+        local.x < 0 ||
+        local.y < 0 ||
+        local.x > ancestor.width ||
+        local.y > ancestor.height
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Whether a confirmed geometric hit on `node` at world `(x, y)` is a REAL hit,
    * applying the same visibility/input gating as {@link findHitRecursively} but
    * from a flat candidate (the WASM grid has no recursion clip-stack): the node
@@ -307,19 +328,7 @@ export class HitTester {
     if (node.opacity <= 0) return false;
     for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
       if (ancestor.opacity <= 0) return false;
-      if (ancestor.clipChildren && ancestor.width > 0 && ancestor.height > 0) {
-        const local = ancestor.worldToLocal(x, y);
-        if (
-          !local ||
-          local.x < 0 ||
-          local.y < 0 ||
-          local.x > ancestor.width ||
-          local.y > ancestor.height
-        ) {
-          return false;
-        }
-      }
     }
-    return true;
+    return this.isInsideAllClippers(node, x, y);
   }
 }
