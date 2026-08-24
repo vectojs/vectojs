@@ -164,6 +164,8 @@ export class DevtoolsPanel {
   private hitSampleStep: number | undefined;
   /** Plugin inspector id → its tab's readout rows. */
   private pluginTabs = new Map<string, { inspector: PluginInspector; lines: Text[] }>();
+  /** Memoized {@link resolvePluginTabId} assignment, per inspector object. */
+  private pluginTabIds = new WeakMap<PluginInspector, string>();
   /** Findings from the last audit that came from plugins, kept for `pluginFindings()`. */
   private pluginFindings: PluginFinding[] = [];
   /** Every finding row of the last {@link audit}, scene then plugin, in display
@@ -873,7 +875,9 @@ export class DevtoolsPanel {
   }
 
   private showTab(id: string): void {
-    if (this.tabs && this.tabs.value !== id) this.tabs.emit('change', { value: id });
+    // Public Tabs path, not a raw `change` emit: selectTab owns the selection
+    // invariant (no-op when already active) and is where focus routing lives.
+    this.tabs?.selectTab(id);
   }
 
   /** The currently selected entity, if any. */
@@ -931,6 +935,7 @@ export class DevtoolsPanel {
    * refresh would dirty it continuously.
    */
   private buildPluginTab(inspector: PluginInspector): TabItem {
+    const tabId = this.resolvePluginTabId(inspector);
     const content = new Container();
     const lines: Text[] = [];
     for (let i = 0; i < PLUGIN_ROWS; i++) {
@@ -942,8 +947,36 @@ export class DevtoolsPanel {
       lines.push(line);
       content.add(line);
     }
-    this.pluginTabs.set(inspector.id, { inspector, lines });
-    return { id: `plugin:${inspector.id}`, label: inspector.label, content };
+    this.pluginTabs.set(tabId, { inspector, lines });
+    return { id: `plugin:${tabId}`, label: inspector.label, content };
+  }
+
+  /**
+   * Stable tab key for an inspector.
+   *
+   * Inspector ids are only unique by convention; two plugins shipping the same
+   * id used to collide on both the tab id and the `pluginTabs` key (the second
+   * entry silently won, leaving the first tab reading rows from the wrong
+   * inspector). Later duplicates get a `#2`/`#3`… suffix and a console warning;
+   * the assignment is memoized per inspector object so repeated `refresh()`
+   * passes keep the same id even after more plugins load.
+   */
+  private resolvePluginTabId(inspector: PluginInspector): string {
+    const existing = this.pluginTabIds.get(inspector);
+    if (existing !== undefined) return existing;
+    let tabId = inspector.id;
+    if (this.pluginTabs.has(tabId)) {
+      let n = 2;
+      while (this.pluginTabs.has(`${inspector.id}#${n}`)) n++;
+      tabId = `${inspector.id}#${n}`;
+      // One warning per colliding inspector, not per refresh: the memo above
+      // makes this branch run once per object for the panel's lifetime.
+      console.warn(
+        `[devtools] duplicate plugin inspector id "${inspector.id}"; registering its tab as "${tabId}"`,
+      );
+    }
+    this.pluginTabIds.set(inspector, tabId);
+    return tabId;
   }
 
   /**
@@ -980,8 +1013,9 @@ export class DevtoolsPanel {
    * its tab appear without remounting the panel.
    */
   private syncPluginTabs(): void {
-    const known = new Set(this.pluginTabs.keys());
-    const added = pluginInspectors().filter((i) => !known.has(i.id));
+    const added = pluginInspectors().filter(
+      (i) => !this.pluginTabs.has(this.resolvePluginTabId(i)),
+    );
     if (added.length === 0) return;
     const settingsIdx = this.tabs.tabs.findIndex((t) => t.id === 'settings');
     const items = added.map((i) => this.buildPluginTab(i));

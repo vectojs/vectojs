@@ -339,7 +339,11 @@ export function highlightGeometry(
       });
     } else {
       const quad = quadOf(clipper, layoutBox(clipper));
-      layers.push({ kind: 'clip', polygons: [quad], divergesFromLayout: true });
+      layers.push({
+        kind: 'clip',
+        polygons: [quad],
+        divergesFromLayout: diverges(boundsOfPolygon(quad), layoutExtent) || undefined,
+      });
     }
   }
 

@@ -81,7 +81,10 @@ function countParticleEntities(scene: Scene): number {
     }
     for (const child of entity.children) walk(child);
   };
+  // The overlay layer is first-class here: particles mounted via showOverlay
+  // drive bind-group allocation exactly like scene-graph ones.
   walk(scene.rootEntity);
+  walk(scene.overlayRootEntity);
   return count;
 }
 
