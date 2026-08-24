@@ -81,6 +81,16 @@ export type AcceleratorReason =
   | 'below-gate'
   /** Installed and gated in, but the kernel rejected the call and wrote nothing. */
   | 'rejected'
+  /**
+   * The spring kernel rejected this frame's call (JS fallback for springs) but
+   * tweens stepped through the kernel — a partial acceleration, not fully-JS.
+   */
+  | 'springs-rejected'
+  /**
+   * The tween kernel rejected this frame's call (JS fallback for tweens) but
+   * springs stepped through the kernel — a partial acceleration, not fully-JS.
+   */
+  | 'tweens-rejected'
   /** Not applicable to this pass (e.g. a non-main renderer, or nothing to do). */
   | 'not-applicable';
 

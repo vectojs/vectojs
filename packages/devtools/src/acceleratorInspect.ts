@@ -70,6 +70,10 @@ function explain(accelerator: string, reason: AcceleratorReason, path: string): 
       return `installed but the workload is below its measured break-even, so the JS path is genuinely faster this frame. Working as designed — not a fault`;
     case 'rejected':
       return `installed and gated in, but the kernel refused its arguments and wrote nothing, so this frame fell back to JS. This is a fault: check the count against the capacity the backend was sized for`;
+    case 'springs-rejected':
+      return `installed and gated in, but the spring kernel refused this frame's call, so springs fell back to JS while tweens still stepped through the kernel. Partial acceleration; a persistent pattern is a fault: check the spring count against the capacity the backend was sized for`;
+    case 'tweens-rejected':
+      return `installed and gated in, but the tween kernel refused this frame's call, so tweens fell back to JS while springs still stepped through the kernel. Partial acceleration; a persistent pattern is a fault: check the tween count against the capacity the backend was sized for`;
     case 'not-applicable':
       return `nothing for it to do this frame${
         accelerator === 'hitTest' ? ' (the grid is built lazily, on a pointer query)' : ''
@@ -97,7 +101,10 @@ export function inspectAccelerators(scene: Scene): AcceleratorInspection {
       activeThisFrame: status.activeThisFrame,
       reason: status.reason,
       path: status.path,
-      faulted: status.reason === 'rejected',
+      faulted:
+        status.reason === 'rejected' ||
+        status.reason === 'springs-rejected' ||
+        status.reason === 'tweens-rejected',
       explanation: explain(String(key), status.reason, status.path),
     };
   });

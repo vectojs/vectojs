@@ -266,14 +266,14 @@ export class ComputeParticleEntity extends Entity {
     const maxVelocity = Math.max(1.0, this.maxVelocity);
 
     for (let i = 0; i < this.maxParticles; i++) {
-      const offset = i * 8;
-      let px = this.particleData[offset];
-      let py = this.particleData[offset + 1];
-      let vx = this.particleData[offset + 2];
-      let vy = this.particleData[offset + 3];
-      const ox = this.particleData[offset + 4];
-      const oy = this.particleData[offset + 5];
-      const life = this.particleData[offset + 7];
+      const offset = i * PARTICLE_STRIDE_FLOATS;
+      let px = this.particleData[offset + PARTICLE_OFFSET_POSITION_X];
+      let py = this.particleData[offset + PARTICLE_OFFSET_POSITION_Y];
+      let vx = this.particleData[offset + PARTICLE_OFFSET_VELOCITY_X];
+      let vy = this.particleData[offset + PARTICLE_OFFSET_VELOCITY_Y];
+      const ox = this.particleData[offset + PARTICLE_OFFSET_ORIGIN_X];
+      const oy = this.particleData[offset + PARTICLE_OFFSET_ORIGIN_Y];
+      const life = this.particleData[offset + PARTICLE_OFFSET_LIFE];
 
       // NaN protection
       if (isNaN(px)) px = ox;
@@ -351,11 +351,11 @@ export class ComputeParticleEntity extends Entity {
         nlife = Math.max(0.0, life - safeDt * 0.5);
       }
 
-      this.particleData[offset] = npx;
-      this.particleData[offset + 1] = npy;
-      this.particleData[offset + 2] = nvx;
-      this.particleData[offset + 3] = nvy;
-      this.particleData[offset + 7] = nlife;
+      this.particleData[offset + PARTICLE_OFFSET_POSITION_X] = npx;
+      this.particleData[offset + PARTICLE_OFFSET_POSITION_Y] = npy;
+      this.particleData[offset + PARTICLE_OFFSET_VELOCITY_X] = nvx;
+      this.particleData[offset + PARTICLE_OFFSET_VELOCITY_Y] = nvy;
+      this.particleData[offset + PARTICLE_OFFSET_LIFE] = nlife;
     }
 
     this.pendingExplosion = null;

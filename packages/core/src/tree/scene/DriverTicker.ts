@@ -245,6 +245,12 @@ export class DriverTicker {
 
     backend.ensure(springCount, tweenCount);
     backend.revalidateViews();
+    // Per-kind rejection tracking: a kernel declining one kind must not report
+    // the whole frame as fully-JS when the other kind stepped through the
+    // kernel. Only both kinds declining (or the only present kind) yields the
+    // plain 'rejected' fault verdict.
+    let springsRejected = false;
+    let tweensRejected = false;
     if (springCount > 0) {
       const sv = backend.springView();
       for (let i = 0; i < springCount; i++) {
@@ -265,8 +271,7 @@ export class DriverTicker {
         // tickDrivers() will skip them for the rest of the frame; tick them in
         // JS now (same dt, same math) or they lose the frame entirely.
         for (let i = 0; i < springCount; i++) sD[i].tick(dt);
-        this.backends.animReason = 'rejected';
-        this.backends.animBatchedLastFrame = false;
+        springsRejected = true;
       }
     }
     if (tweenCount > 0) {
@@ -284,9 +289,19 @@ export class DriverTicker {
         for (let i = 0; i < tweenCount; i++) tD[i].syncExternal(tv.val[i], tv.elapsed[i]);
       } else {
         for (let i = 0; i < tweenCount; i++) tD[i].tick(dt);
-        this.backends.animReason = 'rejected';
-        this.backends.animBatchedLastFrame = false;
+        tweensRejected = true;
       }
+    }
+    if (springsRejected || tweensRejected) {
+      this.backends.animReason =
+        springsRejected && tweensRejected
+          ? 'rejected'
+          : springsRejected
+            ? 'springs-rejected'
+            : 'tweens-rejected';
+      // Only a fully-JS frame means the accelerator did no work at all; a
+      // partial rejection still advanced one kind through the kernel.
+      this.backends.animBatchedLastFrame = !(springsRejected && tweensRejected);
     }
 
     // Finalize every batchable driver this pass touched (completion check +
