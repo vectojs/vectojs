@@ -281,6 +281,23 @@ export class RichText extends UIComponent {
     if (opts.hyphenate) this.engine.hyphenate = opts.hyphenate;
     this.interactive = false;
     this.result = this.layout();
+
+    // Rebuild the engine's measurer when a webfont finishes loading: the
+    // baseMeasurer cache survives `layout()` re-runs (only mutators relayout),
+    // so run positions would keep pre-load pixels until an unrelated edit.
+    // The fresh engine copies the configured behaviour of the one it replaces
+    // (see watchFontMetrics).
+    this.watchFontMetrics(() => {
+      const old = this.engine;
+      const fresh = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, baseMeasurer(this.font));
+      fresh.preserveLeadingSpaces = old.preserveLeadingSpaces;
+      fresh.textAlign = old.textAlign;
+      fresh.hyphenate = old.hyphenate;
+      this.engine = fresh;
+      this.baseFontSize = fontSizePx(this.font);
+      this.result = this.layout();
+      this.scene?.markDirty();
+    });
   }
 
   /** Replace the styled runs and re-lay out. */
