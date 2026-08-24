@@ -395,9 +395,15 @@ export class Table extends UIComponent {
     const rh = this.baseRowHeight;
     const bodyViewport = Math.max(0, this.viewportHeight - this.headerHeight);
     const first = Math.max(0, Math.floor(this._scrollY / rh) - this.overscan);
+    // Exact upper bound. Row i needs mounting iff it meets
+    // [scrollY, scrollY + viewport) widened by `overscan` rows, i.e.
+    // i*rh < scrollY + viewport + overscan*rh  ⇔  i ≤ ⌈x⌉ + overscan − 1 with
+    // x = (scrollY + viewport)/rh. The previous ⌈x⌉ + overscan mounted one
+    // extra fully-invisible row past the budget (harmless direction, but one
+    // wasted mount + projection per window).
     const last = Math.min(
       this.bodyCells.length - 1,
-      Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
+      Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan - 1,
     );
 
     // If the roving tab stop's row is about to unmount, remember whether it
@@ -652,9 +658,10 @@ export class Table extends UIComponent {
     if (this.virtualized) {
       const bodyViewport = Math.max(0, this.viewportHeight - this.headerHeight);
       first = Math.max(0, Math.floor(this._scrollY / rh) - this.overscan);
+      // Same exact bound as reconcileVirtualRows: ⌈x⌉ + overscan − 1.
       last = Math.min(
         this.bodyCells.length - 1,
-        Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan,
+        Math.ceil((this._scrollY + bodyViewport) / rh) + this.overscan - 1,
       );
       rowTopFor = (i) => i * rh - this._scrollY; // clip-relative
       // A window shift unmounted the focused row (flag from

@@ -113,9 +113,4 @@ export class DisplayLayout {
       };
     }
   }
-
-  setTaskbar(height: number, position: 'bottom' | 'top'): void {
-    this.taskbarHeight = height;
-    this.taskbarPosition = position;
-  }
 }

@@ -410,11 +410,15 @@ export class DesktopWindow extends UIComponent {
 
   public updateChrome(chrome: WindowChrome): void {
     Object.assign(this.chrome, chrome);
-    this.shell.bg = chrome.windowBg;
-    this.shell.border = this.focused ? chrome.focusRing : chrome.windowBorder;
-    this.shell.radius = chrome.radius;
-    this.titlebar.bg = chrome.titlebarBg;
-    this.titleLabel.color = chrome.titlebarFg;
+    // Read the MERGED state, not the argument: a partial argument (allowed by
+    // the type only in spirit — both current call sites pass full resolveChrome
+    // objects) would otherwise clobber shell bg/border/radius and titlebar
+    // colors with undefined.
+    this.shell.bg = this.chrome.windowBg;
+    this.shell.border = this.focused ? this.chrome.focusRing : this.chrome.windowBorder;
+    this.shell.radius = this.chrome.radius;
+    this.titlebar.bg = this.chrome.titlebarBg;
+    this.titleLabel.color = this.chrome.titlebarFg;
     this.scene?.markDirty();
   }
 
