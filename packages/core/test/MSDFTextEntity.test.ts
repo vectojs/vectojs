@@ -620,3 +620,30 @@ test('MSDFTextEntity honors color option and post-construction reassignment on C
   expect(fillText.mock.calls[1][4]).toBe('rgb(10,200,40)');
   entity.destroy();
 });
+
+test('MSDFTextEntity falls back to coarse projection for CRLF text', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('a\r\nb', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    lineHeight: 24,
+  });
+  // The layout worker breaks on \n only: the \r survives as a real glyph
+  // (97='a', 13='\r', 98='b'), which used to pass the fine-projection guard
+  // and rendered a phantom ~1em gap at every CRLF line end.
+  const asc = font.data.metrics?.ascender ?? 0.8;
+  const baseline = asc * 24;
+  entity['layoutResult'] = {
+    width: 100,
+    height: 48,
+    codePoints: new Uint32Array([97, 13, 98]),
+    xCoords: new Float32Array([0, 10, 0]),
+    yCoords: new Float32Array([baseline, baseline, baseline + 24]),
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0, (0xffffff << 8) | 0, (0xffffff << 8) | 0]),
+  };
+  entity['rebuildProjectionLines']();
+  // Coarse fallback: no per-line carriers may be emitted.
+  expect(entity.getContentProjection()!.lines).toBeUndefined();
+  entity.destroy();
+});

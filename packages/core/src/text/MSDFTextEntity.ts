@@ -285,6 +285,12 @@ export class MSDFTextEntity extends Entity {
     const sourceWithoutNewlines = this.text.replace(/\n/g, '');
     if (
       this.textAlign !== 'left' ||
+      // The layout worker breaks lines on \n only, so a \r survives as a real
+      // glyph — a phantom ~1em advance at every CRLF line end — yet would
+      // still compare equal below after \n is stripped from both sides. The
+      // contract promises the coarse branch whenever the reply cannot
+      // reproduce the source exactly, and that includes any \r (#692).
+      this.text.includes('\r') ||
       shaped.join('') !== sourceWithoutNewlines ||
       res.yCoords.length !== res.codePoints.length
     ) {
