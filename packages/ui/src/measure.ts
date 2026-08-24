@@ -99,12 +99,37 @@ function measureWithRegisteredMetrics(text: string, font: string): number | unde
 const MEASURE_CACHE_MAX = 1000;
 const measureCache = new Map<string, number>();
 
-if (typeof document !== 'undefined' && document.fonts) {
-  const clearCache = () => measureCache.clear();
-  document.fonts.ready.then(clearCache);
-  document.fonts.addEventListener('loadingdone', clearCache);
+const fontMetricsListeners = new Set<() => void>();
+
+/**
+ * Fire every font-metrics subscriber and clear the shared LRU. Called by the
+ * `document.fonts` listeners below; also exported so environments (and tests)
+ * that detect font availability changes themselves can raise the same signal.
+ */
+export function notifyFontMetricsChanged(): void {
+  measureCache.clear();
+  for (const listener of fontMetricsListeners) listener();
 }
 
+if (typeof document !== 'undefined' && document.fonts) {
+  document.fonts.ready.then(notifyFontMetricsChanged);
+  document.fonts.addEventListener('loadingdone', notifyFontMetricsChanged);
+}
+
+/**
+ * Subscribers notified when the pixels behind any measurement may have changed
+ * — a webfont finishing its load. `measureText`'s LRU above clears itself, but
+ * per-instance caches inside components (Button's intrinsic width, Input's key'd
+ * layout, Text's prepared glyph atlas, …) survive unless each one re-measures;
+ * this is the single signal they all subscribe to instead of six divergent
+ * `document.fonts` listeners. Returns an unsubscribe function.
+ */
+export function onFontMetricsChanged(listener: () => void): () => void {
+  fontMetricsListeners.add(listener);
+  return () => {
+    fontMetricsListeners.delete(listener);
+  };
+}
 // Registering font metrics changes what a measurement should return, exactly as
 // a webfont finishing its load does above — so the cached answers computed
 // before it are stale and must be dropped. Compared lazily rather than
