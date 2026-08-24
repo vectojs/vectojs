@@ -16,7 +16,7 @@ export * from './Dropdown';
 export * from './Slider';
 export * from './Modal';
 export * from './Table';
-export { measureText, wrapLines } from './measure';
+export { measureText } from './measure';
 export * from './Overlay';
 export * from './VirtualList';
 export * from './Tree';

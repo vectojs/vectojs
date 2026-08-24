@@ -20,6 +20,8 @@ export interface CheckboxOptions {
   border?: string;
   /** Focus-ring color, stroked 2px around the box while focused. Default `'#00f0ff'`. */
   focusColor?: string;
+  /** Whether the checkbox is disabled (no toggling, projected `disabled`). Default `false`. */
+  disabled?: boolean;
   /** Invoked with the new checked state whenever it changes. */
   onChange?: (checked: boolean) => void;
 }
@@ -44,6 +46,8 @@ export class Checkbox extends UIComponent {
   /** True while the shadow checkbox holds keyboard focus. */
   public focused = false;
 
+  private _disabled = false;
+
   constructor(opts: CheckboxOptions) {
     super();
     this.checked = opts.checked ?? false;
@@ -54,6 +58,7 @@ export class Checkbox extends UIComponent {
     this.accent = opts.accent ?? '#2563eb';
     this.border = opts.border ?? '#475569';
     this.focusColor = opts.focusColor ?? '#00f0ff';
+    this._disabled = opts.disabled ?? false;
     this.interactive = true;
 
     this.height = this.size;
@@ -71,18 +76,39 @@ export class Checkbox extends UIComponent {
       this.scene?.markDirty();
     });
 
-    this.on('click', () => this.emit('change', { checked: !this.checked }));
+    this.on('click', () => {
+      if (this._disabled) return; // canvas-path clicks; the shadow input is gated by its disabled attr
+      this.emit('change', { checked: !this.checked });
+    });
     // Authoritative native state when the shadow checkbox is toggled directly.
     this.on('change', (e: { checked: boolean }) => {
-      if (e.checked === this.checked) return;
+      if (this._disabled || e.checked === this.checked) return;
       this.checked = e.checked;
       opts.onChange?.(this.checked);
       this.scene?.markDirty();
     });
   }
 
+  /** Whether the checkbox is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    if (value) this.focused = false;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'input', inputType: 'checkbox', checked: this.checked, label: this.label };
+    return {
+      tag: 'input',
+      inputType: 'checkbox',
+      checked: this.checked,
+      label: this.label,
+      disabled: this._disabled ? true : undefined,
+    };
   }
 
   public render(r: IRenderer): void {

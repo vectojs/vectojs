@@ -38,6 +38,17 @@ describe('measureText LRU cache', () => {
     expect(measureCalls).toBe(2);
   });
 
+  it('does not alias (font, text) pairs that a space-join would collide', () => {
+    // `${font} ${text}` joined on a plain space: ('16px sans-serif', 'bold 4px
+    // x') and ('16px sans-serif bold', '4px x') collapsed onto one key.
+    const a = measureText('bold 4px x', '16px sans-serif');
+    const b = measureText('4px x', '16px sans-serif bold');
+    expect(measureCalls).toBe(2); // distinct pairs → both measured
+    // 10*7 vs 5*7 — different answers prove no shared entry was served.
+    expect(a).toBe(70);
+    expect(b).toBe(35);
+  });
+
   it('evicts least-recently-used entries when it grows past the cap', () => {
     measureText('seed', '16px sans-serif'); // 1 measure
     expect(measureCalls).toBe(1);
