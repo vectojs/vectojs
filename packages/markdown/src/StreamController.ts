@@ -220,9 +220,15 @@ class StreamControllerImpl implements BoundStreamController {
   }
 
   public close(): Promise<void> {
+    // A pending or already-settled close attempt wins over every short-circuit.
+    // The state is flipped to `'closed'` *before* the host hook runs, so after a
+    // failed settlement the state reads closed while nothing settled: resolving
+    // here would report success to the natural retry shape
+    // `close().catch(() => close())` (#702). Returning the same promise keeps
+    // every caller observing the original outcome, whatever it was.
+    if (this.closePromise) return this.closePromise;
     if (this.currentState === 'closed') return Promise.resolve();
     if (this.currentState === 'aborted') return Promise.reject(this.terminalReason);
-    if (this.closePromise) return this.closePromise;
 
     let resolveClose!: () => void;
     let rejectClose!: (reason?: unknown) => void;

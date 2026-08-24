@@ -16,7 +16,16 @@ class TabHotspot extends UIComponent {
   ) {
     super();
     this.interactive = true;
-    this.on('click', () => this.group.selectTab(this.tabId, true));
+    this.on('click', () => {
+      // One physical click on × delivers BOTH events: the bubbled pointerdown
+      // that runs `onClose`, and the mirror's own DOM click. When onClose
+      // removes the tab synchronously the mirror is detached before the click
+      // dispatches, but any deferred close (async teardown, confirm dialog)
+      // leaves it alive — and the follow-up click would then select the very
+      // tab the user is closing (#687). Consume the close latch instead.
+      if (this.group._consumeCloseClick(this.tabId)) return;
+      this.group.selectTab(this.tabId, true);
+    });
     this.on('keydown', (e: KeyboardEvent) => this.group.handleTabKey(e, this.tabId));
   }
   /**
@@ -131,6 +140,22 @@ export class Tabs extends UIComponent {
   private _hoverClose: boolean = false;
   private _scrollX: number = 0;
   private readonly _closeBox = 14; // px hit region for the × glyph
+
+  /**
+   * Tab whose × was pressed in the current gesture, consumed by that tab's
+   * hotspot click so the deferred-close follow-up click does not also select
+   * it (#687). Cleared on every fresh pointerdown.
+   */
+  _closeClickedTab: string | null = null;
+
+  /** Returns true once for the close-click of `tabId`, then disarms. */
+  _consumeCloseClick(tabId: string): boolean {
+    if (this._closeClickedTab === tabId) {
+      this._closeClickedTab = null;
+      return true;
+    }
+    return false;
+  }
   /** One `role="tab"` hotspot per tab, kept in sync with the bar layout. */
   private _hotspots: TabHotspot[] = [];
 
@@ -163,10 +188,14 @@ export class Tabs extends UIComponent {
       if (lx === undefined || ly === undefined) return;
       const barH = this._barHeight();
       if (barH === 0 || ly < 0 || ly > barH) return;
+      // Every new gesture re-arms from scratch: a latch left over from a
+      // previous close must not swallow an unrelated later click.
+      this._closeClickedTab = null;
       const idx = this._tabIdxAt(lx);
       if (idx === -1) return;
       const tab = this.tabs[idx];
       if (this.closable && this._isOverClose(lx, idx)) {
+        this._closeClickedTab = tab.id;
         opts.onClose?.(tab.id);
         return;
       }
