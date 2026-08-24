@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { FixedZLayout } from '../src/FixedZLayout';
+import { GraphCamera } from '@vectojs/graph3d';
 import { KnowledgeGraphSession } from '../src/KnowledgeGraphSession';
 import { MemoryDataSource } from '../src/MemoryDataSource';
 import type { KgDataSource, KgGraphData } from '../src/types';
 import * as THREE from 'three';
-
 const SAMPLE: KgGraphData = {
   entities: [
     { id: 'a', type: 'Person', labels: { en: 'Ada' } },
@@ -219,5 +219,67 @@ describe('KnowledgeGraphSession async safety and ownership', () => {
     session.dispose();
     expect(disposeSpy).toHaveBeenCalledTimes(1);
     disposeSpy.mockRestore();
+  });
+});
+
+describe('KnowledgeGraphSession dispose races', () => {
+  /** Source whose getNodes suspends until `release` is called. */
+  const gatedSource = (release: () => void, gate: Promise<void>): KgDataSource => {
+    const inner = new MemoryDataSource(SAMPLE);
+    return {
+      getNodes: (ids) => gate.then(() => inner.getNodes(ids)),
+      getNeighbors: (id, options) => inner.getNeighbors(id, options),
+    };
+  };
+
+  it('bootstrap resolving after dispose does not drive the graph/camera', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const fitSpy = vi.spyOn(GraphCamera.prototype, 'fitToPositions');
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source: gatedSource(release, gate),
+      expandOnSelect: false,
+    });
+    try {
+      const pending = session.bootstrap(['a'], false);
+      // Host tears the session down while the fetch is still in flight.
+      session.dispose();
+      release();
+      await pending;
+      // The late continuation must quiesce: no fit on the disposed camera,
+      // no mirror of emptied model state into the disposed graph.
+      expect(fitSpy).not.toHaveBeenCalled();
+      expect(session.entityCount).toBe(0);
+    } finally {
+      fitSpy.mockRestore();
+    }
+  });
+
+  it('expand resolving after dispose does not re-materialize the renderer', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = new MemoryDataSource(SAMPLE);
+    const source: KgDataSource = {
+      getNodes: (ids) => inner.getNodes(ids),
+      getNeighbors: (id, options) => gate.then(() => inner.getNeighbors(id, options)),
+    };
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source,
+      expandOnSelect: false,
+    });
+    try {
+      await session.bootstrap(['b'], false);
+      const setGraphSpy = vi.spyOn(session.graph, 'setGraphData');
+      const pending = session.expand('a');
+      session.dispose();
+      release();
+      const added = await pending;
+      expect(added).toBe(0);
+      expect(setGraphSpy).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
   });
 });
