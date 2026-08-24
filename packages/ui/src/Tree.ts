@@ -168,6 +168,15 @@ export class TreeView extends UIComponent {
     this._loaded.clear();
     this._selectedId = null;
     this._buildRows();
+    // The old offset can sit past the new content height; `update()` settles
+    // onto the stale `_targetY`, `_visibleRange()` then returns start > end and
+    // `_syncHotspots` pops every hotspot — a blank, untappable control with no
+    // recovery path on touch (wheel/drag are the only other clamp sites).
+    this._clamp();
+    this._scrollY = this._targetY;
+    // The highlight may point at an id that no longer exists; it is guarded on
+    // read but stale — drop it so the first render is consistent.
+    this._activeId = null;
     this.scene?.markDirty();
   }
 
