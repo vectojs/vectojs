@@ -45,12 +45,6 @@ function parentPath(path: string): string {
   return i <= 0 ? '/' : n.slice(0, i);
 }
 
-function baseName(path: string): string {
-  const n = normalizePath(path);
-  if (n === '/') return '';
-  return n.slice(n.lastIndexOf('/') + 1);
-}
-
 /**
  * In-memory VFS for tests and demos. Not durable across reloads.
  */
@@ -149,4 +143,4 @@ export class MemoryVfs implements Vfs {
   }
 }
 
-export { normalizePath, parentPath, baseName };
+export { normalizePath, parentPath };

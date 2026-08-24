@@ -23,15 +23,7 @@ export {
   type WebosConfig,
   type WindowInstancePolicy,
 } from './types';
-export {
-  baseName,
-  MemoryVfs,
-  normalizePath,
-  parentPath,
-  type Vfs,
-  type VfsEntry,
-  type VfsStat,
-} from './Vfs';
+export { MemoryVfs, normalizePath, parentPath, type Vfs, type VfsEntry, type VfsStat } from './Vfs';
 export {
   DEFAULT_WINDOW_HEIGHT,
   DEFAULT_WINDOW_WIDTH,

@@ -105,6 +105,10 @@ export class Taskbar extends UIComponent {
     this.entriesHost.y = 0;
     this.entriesHost.width = Math.max(0, this.width - 150);
     this.entriesHost.height = this.height;
+    // Overflow must clip at the host box: rebuild assigns the overflowing
+    // button's x before breaking the loop, so with many windows the last entry
+    // would otherwise paint past the host over the clock area.
+    this.entriesHost.clipChildren = true;
     this.entriesHost.a11yProjection = 'never';
     this.bar.add(this.entriesHost);
 

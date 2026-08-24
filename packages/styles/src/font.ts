@@ -45,6 +45,13 @@ function parsePrefixes(tokens: string[], parts: FontParts): number {
     const token = tokens[i] ?? '';
     if (parts.weight === undefined && WEIGHT_RE.test(token)) {
       parts.weight = token;
+    } else if (token === 'normal' && (parts.style === undefined || parts.variant === undefined)) {
+      // A second `normal` once the weight slot is taken: CSS allows `normal`
+      // in the style and variant positions too (`font: normal normal 16px Inter`
+      // is a valid shorthand), so fill those slots in order instead of letting
+      // the token fall into the size slot and throw.
+      if (parts.style === undefined) parts.style = token;
+      else parts.variant = token;
     } else if (parts.style === undefined && STYLE_RE.test(token)) {
       parts.style = token;
     } else if (parts.variant === undefined && VARIANT_RE.test(token)) {

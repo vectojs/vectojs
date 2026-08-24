@@ -44,7 +44,6 @@ export class StartMenu extends UIComponent {
   private readonly onLaunch: (appId: string) => void;
   private readonly onClose: () => void;
   private readonly panel: Card;
-  private readonly buttons: Button[] = [];
 
   constructor(opts: StartMenuOptions) {
     super();
@@ -115,7 +114,6 @@ export class StartMenu extends UIComponent {
       btn.x = pad;
       btn.y = y;
       this.panel.add(btn);
-      this.buttons.push(btn);
       y += rowH + 4;
     }
   }
