@@ -59,11 +59,10 @@ export class MemoryDataSource implements KgDataSource {
     options.signal?.throwIfAborted();
     const entity = this.entities.get(id);
     if (!entity) {
-      return {
-        entity: { id, type: 'Unknown', labels: { '': String(id) } },
-        facts: [],
-        neighbors: [],
-      };
+      // No placeholder: an unknown id has no neighborhood. The model treats a
+      // missing entity as a failed expansion rather than fabricating an
+      // 'Unknown' node that would permanently pollute the graph.
+      return { facts: [], neighbors: [] };
     }
     const direction = options.direction ?? 'both';
     const limit = options.limit ?? Infinity;

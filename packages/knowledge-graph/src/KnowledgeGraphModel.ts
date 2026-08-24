@@ -252,6 +252,15 @@ export class KnowledgeGraphModel {
       if (!this.isCurrent(id, request)) {
         return { addedEntities: 0, addedFacts: 0, state: this.getExpansionState(id) };
       }
+      // A source that does not know the id returns no entity. Fail loudly
+      // instead of ingesting a fabricated placeholder — an 'Unknown' node
+      // would render, join the layout and persist in snapshots with no way
+      // to remove it.
+      if (!page.entity) {
+        throw new Error(
+          `KnowledgeGraphModel.expand: source returned no entity for id "${String(id)}"`,
+        );
+      }
       const entityCount = this.entities.size;
       const factCount = this.facts.length;
       this.ingestEntities([page.entity, ...page.neighbors]);

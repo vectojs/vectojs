@@ -68,7 +68,10 @@ export interface KgNeighborOptions {
 }
 
 export interface KgNeighborhood {
-  entity: KgEntity;
+  /** The expanded entity, when the source knows the id. Sources return no
+   * entity for an id they do not know; the model then fails the expansion
+   * instead of materializing a placeholder node. */
+  entity?: KgEntity;
   facts: readonly KgFact[];
   /** Far-end entities referenced by `facts` (may be a subset if truncated). */
   neighbors: readonly KgEntity[];
