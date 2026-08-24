@@ -16,6 +16,14 @@ const SAMPLE: KgGraphData = {
 };
 
 describe('MemoryDataSource', () => {
+  it('returns no entity for an unknown id instead of fabricating a placeholder', () => {
+    const src = new MemoryDataSource(SAMPLE);
+    const hood = src.getNeighbors('missing');
+    expect(hood.entity).toBeUndefined();
+    expect(hood.facts).toEqual([]);
+    expect(hood.neighbors).toEqual([]);
+  });
+
   it('returns seed nodes by id', () => {
     const src = new MemoryDataSource(SAMPLE);
     expect(src.getNodes(['a', 'c']).map((e) => e.id)).toEqual(['a', 'c']);

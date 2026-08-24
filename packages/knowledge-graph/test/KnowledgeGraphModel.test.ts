@@ -232,4 +232,24 @@ describe('KnowledgeGraphModel', () => {
     model.dispose();
     expect(layout.dispose).not.toHaveBeenCalled();
   });
+
+  it('marks an unknown-id expansion failed and never materializes a phantom entity', async () => {
+    const layout = new RecordingLayout();
+    const model = new KnowledgeGraphModel({
+      source: new MemoryDataSource(SAMPLE),
+      layout,
+    });
+    await model.bootstrap(['a'], false);
+    const nodesBefore = model.getGraphData().nodes.length;
+
+    await expect(model.expand('typo')).rejects.toThrow(/no entity/);
+
+    // The failed expansion must not leave a fabricated 'Unknown' node in the
+    // graph, order, or any exported snapshot.
+    expect(model.getExpansionState('typo').status).toBe('failed');
+    const nodes = model.getGraphData().nodes;
+    expect(nodes.length).toBe(nodesBefore);
+    expect(nodes.some((n) => (n as { type?: string }).type === 'Unknown')).toBe(false);
+    model.dispose();
+  });
 });
