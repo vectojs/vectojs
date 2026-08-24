@@ -31,9 +31,9 @@ entry files.
 
 ## Scene contract
 
-The rendered page must expose `window.vectoScene` with callable `stop()` and `step(dt)` methods. The
-first `<canvas>` is resized to the requested output dimensions and captured. The output contract is
-H.264 video with `yuv420p` pixel format in an MP4 container.
+The rendered page must expose `window.vectoScene` with callable `stop()` and `step(dt)` methods.
+The first `<canvas>` is resized to the requested output dimensions and captured. The output
+contract is H.264 video with `yuv420p` pixel format in an MP4 container.
 
 ```typescript
 const scene = new Scene(document.querySelector('canvas')!);
@@ -44,6 +44,13 @@ scene.start();
 
 Fixed steps make VectoJS animation time deterministic. Application code that uses wall-clock time,
 unseeded randomness, network input, or other external state can still vary between exports.
+
+**Frame 0 determinism (#646):** the exporter loads the page with `waitUntil: 'networkidle0'`, and
+between load and the exporter's `stop()` the page's own rAF loop free-runs — so any wall-clock-driven
+state (intro tweens, eased entrances) is arbitrary by capture time. Scenes that render static until
+their first `step(dt)` are unaffected. Scenes that carry load-time state should expose a callable
+`reset()` on `window.vectoScene`; the exporter calls it once right after `stop()`, before frame 0 is
+stepped or captured. A scene without `reset()` is exported as-is.
 
 ## CLI
 

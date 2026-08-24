@@ -74,6 +74,17 @@ export class ExportSession {
       const scene = (window as unknown as { vectoScene: { stop(): void } }).vectoScene;
       scene.stop();
     });
+    // Frame 0 must present a KNOWN state: between page load and this point the
+    // page's own rAF loop free-ran, so any wall-clock-driven state (intro
+    // tweens, eased entrances) is arbitrary by capture time — all later frames
+    // are deterministic only from that nondeterministic base (#646). Scenes
+    // that render static until their first step(dt) need nothing; scenes that
+    // carry load-time state expose `reset()` to return to their t=0
+    // presentation. Optional: a scene without it is exported as-is.
+    await page.evaluate(() => {
+      const scene = (window as unknown as { vectoScene?: { reset?: () => void } }).vectoScene;
+      if (typeof scene?.reset === 'function') scene.reset();
+    });
   }
 
   private async sizeCanvas(page: PageLike): Promise<void> {

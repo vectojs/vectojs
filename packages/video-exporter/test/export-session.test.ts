@@ -53,6 +53,7 @@ function harness(): Harness {
       return { hasStop: true, hasStep: true };
     }
     if (source.includes('scene.stop')) return run('scene.stop', undefined);
+    if (source.includes('scene.reset')) return run('scene.reset', undefined);
     if (source.includes('scene.step')) return run(`scene.step:${String(argument)}`, undefined);
     if (source.includes('toDataURL')) return run('page.capture', PNG_BASE64);
     throw new Error(`Unexpected page evaluation: ${source}`);
@@ -148,6 +149,14 @@ describe('ExportSession', () => {
     expect(fixture.evaluate).toHaveBeenCalled();
     expect(fixture.events).toContain('canvas.size');
     expect(fixture.events.filter((event) => event === 'scene.step:40')).toHaveLength(2);
+    // Frame 0 must start from a known state: the reset evaluation runs once,
+    // after stop() and before the first step (#646).
+    expect(fixture.events.indexOf('scene.reset')).toBeGreaterThan(
+      fixture.events.indexOf('scene.stop'),
+    );
+    expect(fixture.events.indexOf('scene.reset')).toBeLessThan(
+      fixture.events.indexOf('scene.step:40'),
+    );
     expect(fixture.encoderWrite).toHaveBeenCalledTimes(2);
     expect(fixture.encoderWrite).toHaveBeenNthCalledWith(1, Buffer.from('png-frame'));
     expect(fixture.progressUpdate).toHaveBeenNthCalledWith(1, 1);
@@ -249,6 +258,7 @@ describe('ExportSession', () => {
       if (source.includes('canvas.width = width')) throw new Error('No canvas found');
       if (source.includes('hasStop: typeof')) return { hasStop: true, hasStep: true };
       if (source.includes('scene.stop')) return undefined;
+      if (source.includes('scene.reset')) return undefined;
       if (source.includes('scene.step')) {
         fixture.events.push(`scene.step:${String(argument)}`);
         return undefined;
