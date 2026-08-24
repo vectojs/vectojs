@@ -737,10 +737,11 @@ function suppressLineBreaks(words: PreparedWord[]): PreparedWord[] {
         // own glyph indices into the merged word's (they shift by however many
         // glyphs precede them).
         const offset = merged.glyphs.length;
-        if (words[j].breakPoints?.length) {
+        const nextBreakPoints = words[j].breakPoints;
+        if (nextBreakPoints?.length) {
           merged.breakPoints = [
             ...(merged.breakPoints ?? []),
-            ...words[j].breakPoints.map((bp) => bp + offset),
+            ...nextBreakPoints.map((bp) => bp + offset),
           ];
         }
         merged.glyphs = [...merged.glyphs, ...words[j].glyphs];
