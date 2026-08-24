@@ -61,6 +61,59 @@ describe('Dropdown', () => {
     expect(menu.width).toBe(200);
     expect(menu.children[0].width).toBe(200);
   });
+
+  it('flips above the trigger when the menu would overflow the scene bottom (#664)', () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    const dropdown = new Dropdown(['A', 'B', 'C'], { width: 100, height: 40 });
+    dropdown.setPosition(20, 560); // 3 options → menu is 112px tall; nothing fits below
+    scene.add(dropdown);
+
+    dropdown.emit('click', {});
+
+    const menu = (dropdown as any).activeMenu;
+    // Flipped: bottom edge (menu.y + menu.height) stays inside the viewport.
+    expect(menu.y + menu.height).toBeLessThanOrEqual(600);
+    expect(menu.y).toBe(560 - 112 - 4);
+  });
+
+  it('clamps a menu that cannot fit either side into the top edge (#664)', () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    const options = Array.from({ length: 30 }, (_, i) => `opt-${i}`); // 1082px > scene
+    const dropdown = new Dropdown(options, { width: 100, height: 40 });
+    dropdown.setPosition(20, 560);
+    scene.add(dropdown);
+
+    dropdown.emit('click', {});
+
+    const menu = (dropdown as any).activeMenu;
+    // A menu taller than the viewport cannot fully fit anywhere
+    // (Overlay._placeAt has the same property); clamping still keeps its top
+    // edge at the minimum inset instead of leaving it below the trigger.
+    expect(menu.y).toBe(4);
+  });
+
+  it('keeps a fitting menu inside the viewport when space below is short (#664)', () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    const scene = new Scene(canvas, { disableWindowResize: true });
+    const options = Array.from({ length: 8 }, (_, i) => `opt-${i}`); // 302px menu
+    const dropdown = new Dropdown(options, { width: 100, height: 40 });
+    dropdown.setPosition(20, 560); // only ~0px below the trigger
+    scene.add(dropdown);
+
+    dropdown.emit('click', {});
+
+    const menu = (dropdown as any).activeMenu;
+    expect(menu.y + menu.height).toBeLessThanOrEqual(600);
+    expect(menu.y).toBeGreaterThanOrEqual(4);
+  });
 });
 
 describe('Dropdown menu projection', () => {
