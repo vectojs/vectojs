@@ -3,6 +3,7 @@ import {
   type GlyphAtlas,
   type InlineObject,
   LayoutEngine,
+  LayoutResultBuffer,
   OBJECT_REPLACEMENT as OBJ,
   type StyledSpan,
 } from '../src/LayoutEngine';
@@ -243,5 +244,44 @@ describe('inline object baseline alignment', () => {
     expect(a.y).toBeCloseTo(b.y, 5);
     // And the object's bottom lands on that same baseline (ascent 100, depth 0).
     expect(o.y + 100).toBeCloseTo(a.y + 16 * 0.8, 1);
+  });
+});
+
+describe('inline objects across the fast paths', () => {
+  it('measurePrepared grows the line for tall objects like the full path', () => {
+    const e = engine();
+    const spans: StyledSpan[] = [
+      { text: 'a' },
+      { text: OBJ, object: obj(30, 40, 12) },
+      { text: ' b' },
+    ];
+    const prepared = e.prepareRich(spans, ATLAS, 16);
+    const measured = e.measurePrepared(prepared);
+    const laidOut = e.layoutPrepared(prepared);
+    expect(measured.lineCount).toBe(1);
+    // Ascent 28 grows pMax to 35 (lineHeight max(52.5, 40) = 52.5), not the
+    // plain-text 24 a fontSize-only walk reports.
+    expect(measured.height).toBeCloseTo(laidOut.totalHeight, 5);
+    expect(measured.height).toBeGreaterThan(40);
+  });
+
+  it('buffer path sizes and places the object box like the full path', () => {
+    const e = engine();
+    const spans: StyledSpan[] = [{ text: 'a' }, { text: OBJ, object: obj(30, 40, 12) }];
+    const prepared = e.prepareRich(spans, ATLAS, 16);
+    const nodes = e.layoutPrepared(prepared).nodes;
+    const buffer = new LayoutResultBuffer();
+    e.layoutPreparedIntoBuffer(prepared, buffer);
+
+    expect(buffer.count).toBe(nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(buffer.chars[i]).toBe(nodes[i].char);
+      expect(buffer.ws[i]).toBeCloseTo(nodes[i].width, 4);
+      expect(buffer.hs[i]).toBeCloseTo(nodes[i].height, 4);
+      expect(buffer.ys[i]).toBeCloseTo(nodes[i].y, 4);
+    }
+    // The object slot carries the real box height, not the paragraph fontSize.
+    const objIdx = buffer.chars.slice(0, buffer.count).indexOf(OBJ);
+    expect(buffer.hs[objIdx]).toBe(40);
   });
 });

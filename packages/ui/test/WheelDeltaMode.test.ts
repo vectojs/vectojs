@@ -154,6 +154,25 @@ describe('wheel deltaMode conversion in real widgets', () => {
       list.emit('pointermove', { localY: 50 });
       expect(markDirty).toHaveBeenCalled();
     });
+
+    it('does not consume the wheel when content fits — the page keeps it (#679)', () => {
+      // The old handler called preventDefault before asking `_maxScroll()`, so
+      // an empty or fitting list swallowed every wheel tick over it while
+      // contributing no scrolling of its own — the same dead zone ScrollView
+      // fixed in #525.
+      const empty = new VirtualList<string>({
+        items: [],
+        renderItem: () => new Box(100, 20),
+        estimatedRowHeight: 20,
+        width: 100,
+        height: 200,
+        overscan: 0,
+      });
+      const pd = vi.fn();
+      empty.emit('wheel', { deltaY: 500, preventDefault: pd });
+      expect(pd).not.toHaveBeenCalled();
+      expect(targetOf(empty, '_targetY')).toBe(0);
+    });
   });
 
   describe('Table', () => {
