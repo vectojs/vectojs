@@ -207,3 +207,27 @@ test("soft hyphen: falls back to whole-word move when the hyphen can't fit", () 
   const chars = Array.from(res.codePoints).map((c) => String.fromCodePoint(c));
   expect(chars).not.toContain('-');
 });
+
+test('unknown font id replies with an error response instead of silence', () => {
+  // No fontData is attached and the font was never registered, so the worker
+  // has nothing to lay out against. It must still REPLY — a bare return left
+  // the requester's pending callback waiting forever.
+  const request: LayoutWorkerRequest = {
+    id: 'w-unknown',
+    seqId: ++seq,
+    text: 'aa',
+    fontId: 'font-never-posted',
+    maxWidth: 100,
+    maxHeight: 1000,
+    fontSize: 10,
+  };
+  responses = [];
+  handler({ data: request, origin: '' });
+  expect(responses.length).toBe(1);
+  const res = responses[0]!;
+  expect(res.error).toBe('unknown-font:font-never-posted');
+  expect(res.id).toBe('w-unknown');
+  expect(res.seqId).toBe(request.seqId);
+  expect(res.codePoints.length).toBe(0);
+  expect(res.xCoords.length).toBe(0);
+});

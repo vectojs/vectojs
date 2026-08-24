@@ -82,6 +82,14 @@ export function createCanvasMeasurer(
  * alone, rather than disqualifying the whole measurer — a font missing one
  * codepoint still has correct metrics for the rest of the line.
  *
+ * **Bold and italic are ignored by this measurer.** Registered metrics carry a
+ * single advance table per family, so `_bold`/`_italic` are accepted (the
+ * {@link GlyphMeasurer} contract requires the parameters) but discarded. SSR
+ * bold text therefore measures at regular widths, and a headless wrap can
+ * differ from the painted output where weight changes advances materially.
+ * When that matters, measure on a canvas via {@link createCanvasMeasurer},
+ * which resolves per-weight metrics from real font rendering.
+ *
  * @param fontFamily - CSS family to look up.
  * @returns A measurer, or `null` when the family has no registered metrics.
  */
