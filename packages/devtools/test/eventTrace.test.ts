@@ -206,4 +206,41 @@ describe('EventTrace', () => {
     expect(trace.entries).toHaveLength(1);
     host.destroy();
   });
+
+  it('coalesces input-rate pointermove instead of picking per event', async () => {
+    const host = makeHost();
+    const target = new Box('canvas-target');
+    host.add(target);
+    syncA11y(host);
+    const trace = createEventTrace(host);
+
+    const dispatchMove = (t: number) => {
+      const ev = new MouseEvent('pointermove', { bubbles: true, clientX: 20 + t, clientY: 20 });
+      Object.defineProperty(ev, 'timeStamp', { value: t });
+      host.canvas.dispatchEvent(ev);
+    };
+
+    // A five-move burst inside one 16ms window traces exactly one entry —
+    // each untraced move used to pay a full-scene pick plus a panel repaint
+    // at input-event rate (#707).
+    dispatchMove(1000);
+    dispatchMove(1004);
+    dispatchMove(1008);
+    dispatchMove(1012);
+    await Promise.resolve();
+    expect(trace.entries.filter((e) => e.type === 'pointermove')).toHaveLength(1);
+
+    // After the window elapses the next move is traced again.
+    dispatchMove(1020);
+    await Promise.resolve();
+    expect(trace.entries.filter((e) => e.type === 'pointermove')).toHaveLength(2);
+
+    // Discrete events are never coalesced.
+    host.canvas.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'A' }));
+    await Promise.resolve();
+    expect(trace.entries.at(-1)?.type).toBe('keydown');
+
+    trace.destroy();
+    host.destroy();
+  });
 });
