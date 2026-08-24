@@ -325,6 +325,40 @@ test('a pending request with no font metrics anywhere is dropped, not retained',
   expect(cb).not.toHaveBeenCalled();
 });
 
+test('a restarted worker gets stored metrics re-sent for callers that omit fontData', () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  // First request registers 'font-restart' with the live worker.
+  manager.queueLayout('e1', 'aa', {
+    fontId: 'font-restart',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: vi.fn(),
+  });
+  expect(MockWorker.instances[0].posts[0].fontData).toBeDefined();
+
+  // The worker dies: registeredFonts is cleared and a replacement is created.
+  MockWorker.instances[0].onerror?.(new Event('error'));
+
+  const cb = vi.fn();
+  // This caller omits fontData — documented as optional after the first call
+  // because the manager retains the metrics. A restarted worker starts with an
+  // empty font cache, so unless the manager re-sends them the worker's
+  // unknown-fontId guard swallows the request and cb never fires (#672).
+  manager.queueLayout('e2', 'aa', {
+    fontId: 'font-restart',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    callback: cb,
+  });
+
+  const posts = MockWorker.instances[1].posts as LayoutWorkerRequest[];
+  expect(posts).toHaveLength(1);
+  expect(posts[0].fontData).toBe(metricsFont);
+});
+
 test('destroy clears singleton ownership so getInstance returns a live manager', () => {
   const first = LayoutWorkerManager.getInstance();
   const firstWorker = MockWorker.instances[0];

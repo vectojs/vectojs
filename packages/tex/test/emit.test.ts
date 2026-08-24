@@ -358,4 +358,22 @@ describe('emitSVG', () => {
     expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(-1);
     expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(out.svg.indexOf('<path'));
   });
+
+  it('draws array vertical rules ({c|c}) as vertical lines', () => {
+    const out = emitSVG(layout('\\begin{array}{c|c} a & b \\\\ \\hline c & d \\end{array}'));
+
+    // The \hline stays a full-width rect; each `|` separator adds one
+    // vertical line spanning the table height.
+    expect((out.svg.match(/<rect /g) ?? []).length).toBe(1);
+    const lines = [...out.svg.matchAll(/<line [^>]+>/g)].map((m) => m[0]);
+    expect(lines.length).toBe(1);
+
+    // Vertical: x1 === x2, and the rule spans both rows plus the inter-row
+    // gap, i.e. more than a single glyph's ascent (1 em = 1000 units).
+    const [, x1, y1, x2, y2] = lines[0]!
+      .match(/x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/)!
+      .map(Number);
+    expect(x1).toBe(x2);
+    expect(y2 - y1).toBeGreaterThan(1000);
+  });
 });
