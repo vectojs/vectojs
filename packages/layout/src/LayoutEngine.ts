@@ -733,6 +733,16 @@ function suppressLineBreaks(words: PreparedWord[]): PreparedWord[] {
       const merged = { ...cur };
       let j = i + 1;
       while (j < words.length && !words[j].isWhitespace) {
+        // Carry the merged word's hyphenation opportunities, re-based from its
+        // own glyph indices into the merged word's (they shift by however many
+        // glyphs precede them).
+        const offset = merged.glyphs.length;
+        if (words[j].breakPoints?.length) {
+          merged.breakPoints = [
+            ...(merged.breakPoints ?? []),
+            ...words[j].breakPoints.map((bp) => bp + offset),
+          ];
+        }
         merged.glyphs = [...merged.glyphs, ...words[j].glyphs];
         merged.width += words[j].width;
         merged.isWordLike = true;
@@ -758,11 +768,22 @@ function suppressLineBreaks(words: PreparedWord[]): PreparedWord[] {
       while (prevIdx >= 0 && result[prevIdx].isWhitespace) prevIdx--;
       if (prevIdx >= 0) {
         const prev = result[prevIdx];
+        // The literal rebuild must carry hyphenation across the merge: prev's
+        // own breakPoints survive unchanged (its glyphs stay first), and cur's
+        // shift by prev's glyph count.
         result[prevIdx] = {
           glyphs: [...prev.glyphs, ...cur.glyphs],
           width: prev.width + cur.width,
           isWordLike: prev.isWordLike,
           isWhitespace: false,
+          ...(prev.breakPoints?.length || cur.breakPoints?.length
+            ? {
+                breakPoints: [
+                  ...(prev.breakPoints ?? []),
+                  ...(cur.breakPoints ?? []).map((bp) => bp + prev.glyphs.length),
+                ],
+              }
+            : {}),
         };
         i++;
         continue;
