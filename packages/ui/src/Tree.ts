@@ -217,8 +217,19 @@ export class TreeView extends UIComponent {
     } else {
       this._expanded.add(id);
       this._onExpand?.(row.node);
-      // Trigger lazy load on first expand
-      if (typeof row.node.children === 'function' && !this._loaded.has(id)) {
+      // Trigger lazy load on the first expand — and only one fetch per id at
+      // a time: collapsing and re-expanding before the promise resolved used
+      // to pass the same `!loaded` guard again and invoke `children()` a
+      // second time; both continuations then ran `_loaded.set(id, …)`, so
+      // last-writer won and a stale response could overwrite fresh children.
+      // The `finally` below still clears `_loading`, so a retry after a
+      // rejection (or after a resolved load was cleared) stays one click away
+      // — this guard must not outlive the in-flight fetch (#690).
+      if (
+        typeof row.node.children === 'function' &&
+        !this._loaded.has(id) &&
+        !this._loading.has(id)
+      ) {
         // Tracked on the TreeView itself, not the FlatRow object: a sibling
         // lazy load resolving in the meantime calls _buildRows(), which
         // replaces `this._rows` with fresh objects — mutating `row.loading`
