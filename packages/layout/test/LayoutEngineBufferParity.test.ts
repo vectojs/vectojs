@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { LayoutEngine, GlyphAtlas, LayoutResultBuffer, TextRun } from '../src/LayoutEngine';
+import {
+  LayoutEngine,
+  GlyphAtlas,
+  LayoutResultBuffer,
+  TextRun,
+  StyledSpan,
+  InlineObject,
+  OBJECT_REPLACEMENT as OBJ,
+} from '../src/LayoutEngine';
 
 /**
  * The zero-GC buffer path (`layoutPreparedIntoBuffer`) must agree glyph-for-glyph
@@ -141,5 +149,47 @@ describe('LayoutEngine buffer path ↔ allocating path parity', () => {
     expect(tall).toBeGreaterThanOrEqual(0);
     expect(buffer.ys[tall]).toBeLessThan(buffer.ys[0]);
     expect(buffer.hs[0]).toBe(32);
+  });
+
+  it('aligns an inline object on the shared baseline of a taller run (prepareRich)', () => {
+    // Exercises BOTH per-paragraph line-max reads on the buffer path: the text
+    // branch (topOffsets for A/B) and the inline-object branch (bottom at
+    // baseline + depth), where the line max is grown by the 64px run — not the
+    // paragraph fontSize. The atlas deliberately mis-measures U+FFFC so any
+    // regression to sentinel measuring shifts x by 999 and fails parity.
+    const engine = new LayoutEngine(400, 200);
+    const objAtlas: GlyphAtlas = {
+      ...atlas,
+      [OBJ]: { width: 999, baseSize: 16, ast: null },
+    };
+    const box: InlineObject = { width: 40, height: 48, depth: 6 };
+    const runs: StyledSpan[] = [
+      { text: 'A' },
+      { text: OBJ, object: box },
+      { text: 'B', style: { fontSize: 64 } },
+    ];
+    const prepared = engine.prepareRich(runs, objAtlas, 32);
+
+    const nodes = engine.layoutPrepared(prepared).nodes;
+    const buffer = new LayoutResultBuffer();
+    engine.layoutPreparedIntoBuffer(prepared, buffer);
+
+    expect(buffer.count).toBe(nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      expect(buffer.chars[i]).toBe(nodes[i].char);
+      expect(buffer.xs[i]).toBeCloseTo(nodes[i].x, 4);
+      expect(buffer.ys[i]).toBeCloseTo(nodes[i].y, 4);
+      expect(buffer.ws[i]).toBeCloseTo(nodes[i].width, 4);
+      expect(buffer.hs[i]).toBeCloseTo(nodes[i].height, 4);
+    }
+    const objIdx = buffer.chars.slice(0, buffer.count).indexOf(OBJ);
+    expect(objIdx).toBeGreaterThanOrEqual(0);
+    // The object reserved 40, not the atlas's wrong 999.
+    expect(buffer.ws[objIdx]).toBe(40);
+    // Object bottom sits at shared baseline + depth. With the 64px run driving
+    // lineMax: topOffsets(A) = (64-32)*0.8 = 25.6, topOffsets(obj) =
+    // 64*0.8 - (48-6) = 9.2 → the object's top sits 16.4 above A's top.
+    expect(buffer.ys[0]).toBeCloseTo(25.6, 4);
+    expect(buffer.ys[objIdx]).toBeCloseTo(buffer.ys[0] - 16.4, 4);
   });
 });
