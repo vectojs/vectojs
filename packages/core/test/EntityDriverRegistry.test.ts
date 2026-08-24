@@ -117,3 +117,45 @@ describe('Entity.remove and the batched-driver candidate registry', () => {
     expect(active(scene).has(child)).toBe(false);
   });
 });
+
+describe('mid-walk driver spawn catch-up', () => {
+  it('advances a driver spawned onto an entity the batch pass already claimed', () => {
+    const scene = makeScene();
+    const entity = new Box('e');
+    scene.add(entity);
+
+    // Simulate the state mid-update-walk after the batched pass claimed this
+    // entity: stamped with the current frame, walk dt published. tickDrivers()
+    // would skip the whole map for the rest of the frame.
+    entity._driversTickedFrame = scene.currentFrame;
+    scene._updateWalkDt = 1 / 60;
+
+    entity.animateTo({ x: 1000 }, { duration: 10000, easing: 'linear' });
+    // The catch-up tick must have advanced x off its start value — otherwise
+    // this tween waits a full frame on the batched path while the pure-JS
+    // path (never stamped) ticks it same-frame.
+    expect(entity.x).toBeGreaterThan(0);
+    expect(entity.x).toBeLessThan(1000);
+  });
+
+  it('does not pre-tick a spawn on an unstamped entity or outside the walk', () => {
+    const scene = makeScene();
+    const unstamped = new Box('u');
+    const outsideWalk = new Box('o');
+    scene.add(unstamped);
+    scene.add(outsideWalk);
+
+    scene._updateWalkDt = 1 / 60;
+    unstamped.animateTo({ x: 1000 }, { duration: 10000, easing: 'linear' });
+    // Not claimed by the batch pass: its own tickDrivers() ticks it normally,
+    // so a pre-tick here would double-advance.
+    expect(unstamped.x).toBe(0);
+
+    // Claimed earlier but spawned outside the update walk (event handler
+    // between frames): first advance belongs to next frame's batch pass.
+    outsideWalk._driversTickedFrame = scene.currentFrame;
+    scene._updateWalkDt = null;
+    outsideWalk.animateTo({ x: 1000 }, { duration: 10000, easing: 'linear' });
+    expect(outsideWalk.x).toBe(0);
+  });
+});

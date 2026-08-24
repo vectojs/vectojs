@@ -1997,6 +1997,16 @@ export class Scene {
     this._driverTicker.registerSubtree(entity);
   }
 
+  /**
+   * The `dt` of the frame currently executing its update walk (the WASM-mode
+   * pre-pass or the JS-mode interleaved render walk), or `null` outside it.
+   * Read by `Entity._spawnDriver`: a driver spawned mid-walk onto an entity the
+   * batched pass already claimed this frame must be advanced once here, or
+   * `tickDrivers()`'s per-frame stamp would skip it a full frame — a one-frame
+   * JS/WASM divergence. Written in {@link render} next to `_tickBatchedDrivers`.
+   */
+  public _updateWalkDt: number | null = null;
+
   // --- domain: render-scheduler — batched driver tick (extraction 6), reads the anim backend ---
   /**
    * Advance every registered entity's active drivers for this frame, batching
@@ -5638,7 +5648,10 @@ export class Scene {
       this.activePortalsThisFrame.clear();
       // Must run before any entity's update()/tickDrivers() below (JS-mode
       // interleaved walk or WASM-mode transform pre-pass alike) — see
-      // _tickBatchedDrivers's own doc comment for why.
+      // _tickBatchedDrivers's own doc comment for why. The dt is published for
+      // Entity._spawnDriver's mid-walk catch-up tick; it describes exactly the
+      // window in which a spawned driver would otherwise lose this frame.
+      this._updateWalkDt = dt;
       this._tickBatchedDrivers(dt);
     }
 
@@ -5913,6 +5926,9 @@ export class Scene {
       };
       updateWalk(this.root);
       for (const overlay of this.overlayRoot.children) updateWalk(overlay);
+      // WASM-mode updates all ran in this pre-pass; renderNode skips update(),
+      // so no mid-walk spawn can occur past this point this frame.
+      this._updateWalkDt = null;
     }
 
     const transformTiming = this.phases.userTiming
@@ -6194,6 +6210,10 @@ export class Scene {
     for (const overlay of this.overlayRoot.children) {
       renderNode(overlay, 1, 0, 0, 1, 0, 0, 1);
     }
+    // JS-mode updates ran interleaved in the walk above; the mid-walk spawn
+    // window closes here. (In WASM mode this was already nulled after the
+    // pre-pass — clearing twice is harmless.)
+    if (isMainRenderer) this._updateWalkDt = null;
     if (this.phases.enabled) this.phases.record('drawWalk', performance.now() - drawT0);
     if (drawTiming) endVectoUserTiming(drawTiming);
     if (this.phases.userTiming) {
