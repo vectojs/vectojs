@@ -92,7 +92,7 @@ interface Exports {
   p_run_parent(): number;
   p_run_start(): number;
   p_run_len(): number;
-  init_f32(capacity: number, maxRuns: number): void;
+  init_f32(capacity: number, maxRuns: number): number;
   set_run_count_f32(n: number): void;
   compose_simd_f32(): void;
   p_f32_x(): number;
@@ -156,7 +156,10 @@ function cell(ex: Exports, n: number, topo: Topo): Record<string, unknown> {
         './crates/vectojs-core-rs/build.sh --features bench-f32',
     );
   }
-  ex.init_f32(cap, runs);
+  // STATUS_OVERFLOW: the requested capacity/runs cannot be sized on wasm32.
+  if (ex.init_f32(cap, runs) !== 0) {
+    throw new Error(`init_f32 rejected capacity=${cap} runs=${runs}`);
+  }
   const b = ex.memory.buffer;
   const F32 = (ptr: number) => new Float32Array(b, ptr, cap);
   F32(ex.p_f32_x()).set(store.x.subarray(0, cap));
