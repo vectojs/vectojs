@@ -66,6 +66,16 @@ const TRACE_TYPES: readonly EventTraceType[] = [
 
 const isKeyboardType = (type: EventTraceType): boolean => type === 'keydown' || type === 'keyup';
 
+/** Minimum spacing between traced `pointermove` entries. Moves arrive at input
+ *  rate (120–240 Hz on high-refresh panels) while each traced canvas move pays
+ *  an O(n) reverse tree walk (`pickInScene`) and drives a panel repaint — an
+ *  observer effect that skews the frame times the perf HUD reports (#707).
+ *  Coalescing keeps at most one entry per ~60Hz frame, which preserves routing
+ *  fidelity for a development trace. Leading-edge: the FIRST move in a window
+ *  is traced (its coordinates are the freshest at trace time); discrete events
+ *  — pointerdown/up/cancel, wheel, keys — are never coalesced. */
+export const POINTERMOVE_COALESCE_MS = 16;
+
 /**
  * Observes browser inputs without adding VMT listeners or changing dispatch.
  * Target and document-bubble observers sample `defaultPrevented` after projected
@@ -78,6 +88,8 @@ export class EventTrace {
   private readonly records: EventTraceEntry[] = [];
   private readonly listeners = new Set<EventTraceListener>();
   private readonly pendingDefaults = new WeakMap<Event, PendingTrace>();
+  /** `timeStamp` of the most recently traced pointermove, for coalescing. */
+  private lastMoveAt = Number.NEGATIVE_INFINITY;
   private destroyed = false;
 
   private readonly onEventBubbled = (event: Event): void => {
@@ -90,6 +102,14 @@ export class EventTrace {
   private readonly onEvent = (event: Event): void => {
     const type = event.type as EventTraceType;
     if (!TRACE_TYPES.includes(type)) return;
+    // Coalesce pointermove before resolving context: the context resolution is
+    // exactly the per-move cost being avoided (a canvas move pays a full-scene
+    // pick). `timeStamp` shares the performance clock, so this works across
+    // document listeners without any timer bookkeeping.
+    if (type === 'pointermove' && event.timeStamp - this.lastMoveAt < POINTERMOVE_COALESCE_MS) {
+      return;
+    }
+    if (type === 'pointermove') this.lastMoveAt = event.timeStamp;
     const context = this.resolveContext(event, type);
     if (!context) return;
 
