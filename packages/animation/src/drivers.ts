@@ -15,7 +15,10 @@ export interface TweenConfig {
 export type MotionConfig = 'spring' | SpringConfig | TweenConfig;
 
 export function isTweenConfig(c: MotionConfig): c is TweenConfig {
-  return typeof c === 'object' && 'duration' in c;
+  // `typeof null === 'object'`, so the null check must come first — this
+  // discriminator exists for untrusted runtime configs and `'duration' in
+  // null` throws a TypeError.
+  return typeof c === 'object' && c !== null && 'duration' in c;
 }
 
 /** Backs one animating property. Ticked in ms; writes `value`. */
@@ -141,6 +144,11 @@ export class TweenDriver implements PropertyDriver {
   }
 
   tick(dtMs: number): void {
+    // Same guard `SpringPhysics.update` applies: a NaN dt poisons `elapsed`
+    // forever (every later comparison is false, `isDone()` never turns true)
+    // and a negative dt rewinds the monotonic clock, un-completing finished
+    // tweens. Ignore the step instead of integrating garbage.
+    if (!(dtMs > 0)) return;
     this.elapsed += dtMs;
     const active = this.elapsed - this.startAt;
     if (active <= 0) return;

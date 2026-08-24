@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TweenDriver, SpringDriver } from '../src/drivers';
+import { TweenDriver, SpringDriver, isTweenConfig } from '../src/drivers';
 import type { EasingFn } from '../src/easing';
 import type { SpringConfig } from '../src/drivers';
 
@@ -14,6 +14,37 @@ describe('TweenDriver', () => {
     d.tick(100); // full
     expect(d.value).toBeCloseTo(100, 6);
     expect(d.isDone()).toBe(true);
+  });
+
+  it('ignores NaN and negative dt instead of poisoning the elapsed clock', () => {
+    const d = new TweenDriver(0, 100, { duration: 200, easing: 'linear' });
+    // One tick(NaN) used to make `elapsed` NaN forever: every later value was
+    // NaN and `isDone()` never turned true.
+    d.tick(Number.NaN);
+    expect(d.value).toBe(0);
+    expect(d.isDone()).toBe(false);
+    // A negative dt rewound the monotonic clock, un-completing finished tweens.
+    d.tick(100);
+    d.tick(100);
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBeCloseTo(100, 6);
+    d.tick(-50);
+    expect(d.isDone()).toBe(true);
+    expect(d.value).toBeCloseTo(100, 6);
+  });
+
+  describe('isTweenConfig', () => {
+    it('returns false for null instead of throwing on `in null`', () => {
+      // `typeof null === 'object'`, so `'duration' in null` threw a TypeError
+      // in the exact discriminator built for untrusted runtime configs.
+      expect(isTweenConfig(null as never)).toBe(false);
+      expect(isTweenConfig(undefined as never)).toBe(false);
+    });
+
+    it('discriminates springs from tweens', () => {
+      expect(isTweenConfig({ duration: 200 })).toBe(true);
+      expect(isTweenConfig({ stiffness: 180 })).toBe(false);
+    });
   });
 
   it('respects delay before moving', () => {

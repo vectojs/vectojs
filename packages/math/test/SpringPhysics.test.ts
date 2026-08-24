@@ -23,6 +23,45 @@ describe('SpringPhysics', () => {
     expect(spring.velocity).toBe(0);
   });
 
+  describe('Config validation (stiffness/damping/target/initial)', () => {
+    it('rejects non-finite initial values at construction', () => {
+      expect(() => new SpringPhysics(Number.NaN)).toThrow(/initial value must be finite/);
+      expect(() => new SpringPhysics(Number.POSITIVE_INFINITY)).toThrow(
+        /initial value must be finite/,
+      );
+    });
+
+    it('rejects stiffness that would push away from the target or freeze integration', () => {
+      const spring = new SpringPhysics(0);
+      for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() => {
+          spring.stiffness = bad;
+        }).toThrow(/stiffness must be a finite number > 0/);
+      }
+      expect(spring.stiffness).toBe(180); // untouched default
+    });
+
+    it('rejects damping that removes the energy drain', () => {
+      const spring = new SpringPhysics(0);
+      for (const bad of [0, -12, Number.NaN]) {
+        expect(() => {
+          spring.damping = bad;
+        }).toThrow(/damping must be a finite number > 0/);
+      }
+      expect(spring.damping).toBe(12); // untouched default
+    });
+
+    it('rejects a NaN target that would make isAtRest() false forever', () => {
+      const spring = new SpringPhysics(0);
+      expect(() => {
+        spring.target = Number.NaN;
+      }).toThrow(/target must be a finite number/);
+      expect(spring.target).toBe(0); // untouched — spring still settles
+      for (let i = 0; i < 150; i++) spring.update(0.016);
+      expect(spring.isAtRest()).toBe(true);
+    });
+  });
+
   describe('Mass validation (public mutable field)', () => {
     it('rejects zero mass with a thrown error instead of wedging on force/0', () => {
       const spring = new SpringPhysics(0);
