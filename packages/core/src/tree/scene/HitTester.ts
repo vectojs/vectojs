@@ -23,7 +23,8 @@
  * ## What this owns
  *
  * The hit-grid *contents* — the slot→entity table, the boundless list, and the
- * reused fused-gather buffer. The cache *key* (`hitGridFrame`, `hitGridOk`) stays
+ * reused fused-gather buffer. The cache *key* (`hitGridFrame`,
+ * `hitGridStructureVersion`, `hitGridOk`) stays
  * on {@link WasmBackendFacade}, because installing a backend has to invalidate
  * it and that is the facade's business.
  *
@@ -46,7 +47,8 @@
  * `root` and `overlayRoot` are held: `Scene` assigns both once in its constructor
  * and never reassigns them. The facade is held because the hit backend is reached
  * only through its public surface (`hit`, `hitReason`, `hitGridFrame`,
- * `hitGridOk`, `ensureAabbs()`, `slotEntity`, `hitFusedGather`, `transform`).
+ * `hitGridStructureVersion`, `hitGridOk`, `ensureAabbs()`, `slotEntity`,
+ * `hitFusedGather`, `transform`).
  *
  * The frame counter and the viewport size are **per-call arguments** (`DEC-0019`
  * rule 5): `currentFrame` belongs to the render scheduler (extraction 6) and
@@ -138,7 +140,10 @@ export class HitTester {
       this.backends.hitReason = 'not-installed';
       return false;
     }
-    if (this.backends.hitGridFrame === frame) {
+    if (
+      this.backends.hitGridFrame === frame &&
+      this.backends.hitGridStructureVersion === this.backends.structureVersion
+    ) {
       return this.backends.hitGridOk;
     }
 
@@ -187,6 +192,7 @@ export class HitTester {
     this.slotEntity = gathered.slotEntity;
     this.boundless = gathered.boundless;
     this.backends.hitGridFrame = frame;
+    this.backends.hitGridStructureVersion = this.backends.structureVersion;
     this.backends.hitGridOk = ok;
     // `runBuild` returns false when the build overflowed its item budget, which
     // makes the grid untrustworthy — a real decline, not merely "not asked".
