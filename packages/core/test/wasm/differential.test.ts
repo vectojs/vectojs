@@ -186,6 +186,34 @@ describe.skipIf(!haveWasm)('WASM/JS world-AABB differential (G1+, bit-identical 
         backend.computeAabbs(wasm);
         assertAabbsIdentical(js, wasm);
       });
+      it(`${topo} tree, ${count} nodes — compute_aabbs_simd matches JS and scalar bit-for-bit`, () => {
+        // Lane pairing is legal because js_min/js_max are selection ops over a
+        // total order (associative), so the SIMD fold must equal the scalar
+        // fold exactly — including odd counts (scalar tail path) and ±0.
+        const nodes = randomTree(count, topo, rng(count * 47 + topo.length));
+        const { js, wasm } = pair(nodes);
+        composeJS(js);
+        computeAabbsJS(js);
+        backend.compose(wasm, 'simd');
+
+        backend.computeAabbs(wasm, 'simd');
+        const n = count;
+        const simdMinX = Float64Array.from(wasm.aminx.subarray(0, n));
+        const simdMinY = Float64Array.from(wasm.aminy.subarray(0, n));
+        const simdMaxX = Float64Array.from(wasm.amaxx.subarray(0, n));
+        const simdMaxY = Float64Array.from(wasm.amaxy.subarray(0, n));
+        assertAabbsIdentical(js, wasm);
+
+        // Cross-kernel: the scalar kernel over the same inputs must land on
+        // the same bits (Object.is semantics via toBe: ±0 and NaN included).
+        backend.computeAabbs(wasm, 'scalar');
+        for (let i = 0; i < n; i++) {
+          expect(wasm.aminx[i]).toBe(simdMinX[i]);
+          expect(wasm.aminy[i]).toBe(simdMinY[i]);
+          expect(wasm.amaxx[i]).toBe(simdMaxX[i]);
+          expect(wasm.amaxy[i]).toBe(simdMaxY[i]);
+        }
+      });
     }
   }
 

@@ -74,11 +74,34 @@ static mut A: Anim = Anim {
     tween_capacity: 0,
 };
 
+impl Anim {
+    /// The no-store state: `springs_ready()`/`tweens_ready()` reject it, so
+    /// publishing it after a failed init makes later kernels report
+    /// [`STATUS_UNINITIALIZED`] instead of touching freed memory.
+    fn empty() -> Anim {
+        Anim {
+            s_val: ptr::null_mut(),
+            s_target: ptr::null_mut(),
+            s_vel: ptr::null_mut(),
+            s_stiff: ptr::null_mut(),
+            s_damp: ptr::null_mut(),
+            s_mass: ptr::null_mut(),
+            t_from: ptr::null_mut(),
+            t_to: ptr::null_mut(),
+            t_elapsed: ptr::null_mut(),
+            t_dur: ptr::null_mut(),
+            t_delay: ptr::null_mut(),
+            t_ease: ptr::null_mut(),
+            t_val: ptr::null_mut(),
+            spring_capacity: 0,
+            tween_capacity: 0,
+        }
+    }
+}
+
 fn leak_f64(n: usize) -> *mut f64 {
     let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
-    let p = unsafe { alloc_zeroed(layout) } as *mut f64;
-    assert!(!p.is_null(), "allocation failed");
-    p
+    unsafe { alloc_zeroed(layout).cast::<f64>() }
 }
 
 /// Free the SoA the previous `anim_init` allocated, if any. The recorded
@@ -108,10 +131,11 @@ fn free_anim() {
 /// freeing the previous allocation first — the JS side re-inits in place on
 /// growth, so the old SoA must be released or each growth leaks it.
 ///
-/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when a capacity's size
+/// Returns [`STATUS_OK`], [`STATUS_OVERFLOW`] when a capacity's size
 /// arithmetic cannot be represented: a hostile count used to wrap silently in
 /// release (allocating tiny arrays the kernels then overran) and panic in
-/// debug. On rejection the previous allocation is untouched.
+/// debug — or when the allocator refuses an allocation. On rejection the
+/// previous allocation is untouched.
 #[unsafe(no_mangle)]
 pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) -> i32 {
     let Some(s) = spring_cap.checked_add(8) else {
@@ -123,25 +147,70 @@ pub extern "C" fn anim_init(spring_cap: usize, tween_cap: usize) -> i32 {
     if s.checked_mul(size_of::<f64>()).is_none() || t.checked_mul(size_of::<f64>()).is_none() {
         return STATUS_OVERFLOW;
     }
+    // Release BEFORE allocating so dlmalloc reuses the freed block (re-inits
+    // stay flat in linear memory). An allocator failure then frees the partial
+    // set and publishes the empty store, whose `*_ready()` gates reject later
+    // kernels — the JS side sees STATUS_OVERFLOW and falls back.
     free_anim();
-    unsafe {
-        A.s_val = leak_f64(s);
-        A.s_target = leak_f64(s);
-        A.s_vel = leak_f64(s);
-        A.s_stiff = leak_f64(s);
-        A.s_damp = leak_f64(s);
-        A.s_mass = leak_f64(s);
-        A.t_from = leak_f64(t);
-        A.t_to = leak_f64(t);
-        A.t_elapsed = leak_f64(t);
-        A.t_dur = leak_f64(t);
-        A.t_delay = leak_f64(t);
-        A.t_ease = leak_f64(t);
-        A.t_val = leak_f64(t);
-        A.spring_capacity = spring_cap;
-        A.tween_capacity = tween_cap;
+    let mut next = Anim {
+        s_val: leak_f64(s),
+        s_target: leak_f64(s),
+        s_vel: leak_f64(s),
+        s_stiff: leak_f64(s),
+        s_damp: leak_f64(s),
+        s_mass: leak_f64(s),
+        t_from: leak_f64(t),
+        t_to: leak_f64(t),
+        t_elapsed: leak_f64(t),
+        t_dur: leak_f64(t),
+        t_delay: leak_f64(t),
+        t_ease: leak_f64(t),
+        t_val: leak_f64(t),
+        spring_capacity: spring_cap,
+        tween_capacity: tween_cap,
+    };
+    let ok = [
+        next.s_val,
+        next.s_target,
+        next.s_vel,
+        next.s_stiff,
+        next.s_damp,
+        next.s_mass,
+        next.t_from,
+        next.t_to,
+        next.t_elapsed,
+        next.t_dur,
+        next.t_delay,
+        next.t_ease,
+        next.t_val,
+    ]
+    .iter()
+    .all(|p| !p.is_null());
+    if !ok {
+        free_partial_anim(&mut next, s, t);
+        unsafe { A = Anim::empty() };
+        return STATUS_OVERFLOW;
     }
+    unsafe { A = next };
     STATUS_OK
+}
+
+/// Release every pointer of a replacement built by [`anim_init`] that was never
+/// committed. Null-safe, so it also handles a partially allocated set.
+fn free_partial_anim(next: &mut Anim, s: usize, t: usize) {
+    crate::free_f64(next.s_val, s);
+    crate::free_f64(next.s_target, s);
+    crate::free_f64(next.s_vel, s);
+    crate::free_f64(next.s_stiff, s);
+    crate::free_f64(next.s_damp, s);
+    crate::free_f64(next.s_mass, s);
+    crate::free_f64(next.t_from, t);
+    crate::free_f64(next.t_to, t);
+    crate::free_f64(next.t_elapsed, t);
+    crate::free_f64(next.t_dur, t);
+    crate::free_f64(next.t_delay, t);
+    crate::free_f64(next.t_ease, t);
+    crate::free_f64(next.t_val, t);
 }
 
 /// True once `anim_init` has allocated the spring SoA.
