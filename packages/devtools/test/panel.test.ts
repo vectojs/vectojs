@@ -511,6 +511,34 @@ describe('DevtoolsPanel — modern features', () => {
     host.destroy();
   });
 
+  it('clearing an editor field does not snap x/y/opacity to 0 mid-edit', () => {
+    const host = makeHost();
+    const target = new Box('noclear', 40, 20);
+    target.setPosition(120, 80);
+    target.opacity = 0.7;
+    host.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(target);
+
+    // Number('') === 0, so the old parse applied x = 0 / y = 0 / opacity = 0
+    // on every input event that emptied the field — select-all + delete was
+    // enough to corrupt the entity (#704). Empty/whitespace input is ignored.
+    (panel as any).applyEdit('x', '');
+    (panel as any).applyEdit('y', '   ');
+    (panel as any).applyEdit('opacity', '');
+    expect(target.x).toBe(120);
+    expect(target.y).toBe(80);
+    expect(target.opacity).toBeCloseTo(0.7);
+
+    // A fresh numeric value still applies after an ignored empty edit.
+    (panel as any).applyEdit('x', '5');
+    expect(target.x).toBe(5);
+
+    panel.detach();
+    host.destroy();
+  });
+
   it('audit() populates the audit tab and switches to it', () => {
     const host = makeHost();
     host.resize(400, 300);
