@@ -1,0 +1,5 @@
+---
+'@vectojs/ui': patch
+---
+
+Backlog polish for ui composites (#655): removed ContextMenu.hide's redundant interactive re-set; Escape from a submenu now closes one level and refocuses the parent item (matching ArrowLeft) instead of collapsing the whole menu tree; GridCellHotspot/TreeItemHotspot/MenuItemHotspot declare getLayoutControlledProperties like their siblings; RadioGroup caches per-option label widths (invalidated on options/font change and webfont load) instead of re-measuring on every pointermove, keeps the roving tab stop off a checked-but-disabled option, and preserves DOM focus across hotspot pool rebuilds; Tabs dirty-flags its content visibility pass (signature check per frame instead of a full re-derive) and also preserves hotspot DOM focus on rebuild; Tooltip measures its box from real text metrics and wraps long content inside the 320px cap instead of drawing unclipped; Dropdown and Modal constructors take typed option objects and Dropdown validates select paths against the real option list.

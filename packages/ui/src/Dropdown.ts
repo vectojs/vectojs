@@ -3,6 +3,38 @@ import { UIComponent } from './UIComponent';
 import { Button } from './Button';
 import { Stack } from './Stack';
 
+/** Construction options for {@link Dropdown}. */
+export interface DropdownOptions {
+  /** Accessible name for the combobox trigger. */
+  label?: string;
+  /** Initially selected option. Defaults to the first option. */
+  value?: string;
+  /** Open-menu background. Default `'rgba(15, 23, 42, 0.95)'`. */
+  menuBg?: string;
+  /** Option-row text color in the open menu. Default `'#fff'`. */
+  menuColor?: string;
+  /** Selected option row background. Default `'rgba(0, 240, 255, 0.25)'`. */
+  menuSelectedBg?: string;
+  /** Keyboard-highlighted row background. Default `'rgba(0, 240, 255, 0.4)'`. */
+  menuHighlightBg?: string;
+  /** Focus-ring color for trigger and rows. Default `'#00f0ff'`. */
+  focusColor?: string;
+  /** Trigger width in pixels. Default `120`. */
+  width?: number;
+  /** Trigger height in pixels. Default `36`. */
+  height?: number;
+  /** Trigger background. Default `'rgba(30, 41, 59, 0.85)'`. */
+  bg?: string;
+  /** Trigger text color. Default `'#fff'`. */
+  color?: string;
+  /** Trigger corner radius. Default `8`. */
+  radius?: number;
+  /** Trigger font. Default `'14px sans-serif'`. */
+  font?: string;
+  /** Invoked with the newly selected option value. */
+  onChange?: (value: string) => void;
+}
+
 export class Dropdown extends UIComponent {
   private options: string[];
   private selectedValue: string;
@@ -53,7 +85,7 @@ export class Dropdown extends UIComponent {
    */
   public focusColor: string;
 
-  constructor(options: string[], props: any = {}) {
+  constructor(options: string[], props: DropdownOptions = {}) {
     super();
     this.label = props.label;
     this.options = options;
@@ -302,6 +334,9 @@ export class Dropdown extends UIComponent {
   }
 
   private selectOption(opt: string) {
+    // Only real options can be selected — keyboard paths index into
+    // `options`, but a forged/edge event must not set an unknown value.
+    if (!this.options.includes(opt)) return;
     this.selectedValue = opt;
     this.button.label = opt;
     this.emit('change', { value: opt });

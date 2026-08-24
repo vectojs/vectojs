@@ -1,4 +1,11 @@
-import { Entity, IRenderer, A11yAttributes, VectoJSEvent, type Scene } from '@vectojs/core';
+import {
+  Entity,
+  IRenderer,
+  A11yAttributes,
+  VectoJSEvent,
+  type Scene,
+  type LayoutControlledProperty,
+} from '@vectojs/core';
 import { Overlay } from './Overlay';
 import { UIComponent } from './UIComponent';
 import { measureText } from './measure';
@@ -21,6 +28,10 @@ class MenuItemHotspot extends UIComponent {
     this.interactive = true;
     this.on('click', () => this.menu.activateIndex(this.itemIndex));
     this.on('keydown', (e: KeyboardEvent) => this.menu.handleMenuKey(e, this.itemIndex));
+  }
+  /** The ContextMenu positions and sizes one pooled hotspot per visible row. */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
   }
   public getA11yAttributes(): A11yAttributes {
     return this.menu.itemA11y(this.itemIndex);
@@ -371,7 +382,16 @@ export class ContextMenu extends Overlay {
         break;
       case 'Escape':
       case 'Esc':
-        this._rootMenu().hide();
+        // Mirror ArrowLeft: from a submenu, Escape steps back ONE level and
+        // refocuses the parent's item — collapsing the entire menu tree from
+        // three levels deep made an accidental Escape cost the whole
+        // navigation. Only the root menu closes outright.
+        if (this._parentMenu) {
+          this.hide();
+          this._parentMenu._refocusActive();
+        } else {
+          this.hide();
+        }
         break;
     }
   }
@@ -414,8 +434,8 @@ export class ContextMenu extends Overlay {
       this._backdrop = null;
     }
     if (this._submenu) this._submenu.hide();
+    // super.hide() already flips interactive/a11yHidden and detaches a11y.
     super.hide();
-    this.interactive = false;
     for (const h of this._hotspots) scene?.detachA11y?.(h);
     scene?.detachA11y(this);
   }

@@ -4,6 +4,24 @@ import { Text } from './Text';
 import { Button } from './Button';
 import { type A11yAttributes, type Entity, type IRenderer, VectoJSEvent } from '@vectojs/core';
 
+/** Construction options for {@link Modal}. */
+export interface ModalOptions {
+  /** Backdrop width in pixels. Defaults to the window inner width. */
+  width?: number;
+  /** Backdrop height in pixels. Defaults to the window inner height. */
+  height?: number;
+  /** Backdrop fill. Default `'rgba(0, 0, 0, 0.5)'`. */
+  backdropColor?: string;
+  /** Dialog card width in pixels. Default `400`. */
+  modalWidth?: number;
+  /** Dialog card height in pixels. Default `250`. */
+  modalHeight?: number;
+  /** Dialog card background. Default `'rgba(15, 23, 42, 0.95)'`. */
+  cardBg?: string;
+  /** Dialog card border color. Default `'rgba(255, 255, 255, 0.15)'`. */
+  cardBorder?: string;
+}
+
 export class Modal extends UIComponent {
   private card: Card;
   private backdropColor: string;
@@ -14,7 +32,7 @@ export class Modal extends UIComponent {
   /** Dialog title, kept so it can be projected as the accessible name. */
   private readonly _title: string;
 
-  constructor(title: string, props: any = {}) {
+  constructor(title: string, props: ModalOptions = {}) {
     super();
     this._title = title;
     // The backdrop is the full-viewport focus-catching dialog surface.
