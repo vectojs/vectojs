@@ -75,19 +75,6 @@ export function containsImage(tokens: Token[] | undefined): boolean {
 }
 
 /**
- * An inline run with nested images lifted to the top level, in source order.
- *
- * The paragraph arm splits a run into one `Stack` child per image plus one per
- * maximal run of non-image tokens, which requires every image to be a direct
- * member of the array it iterates. An image inside a link or an emphasis is not,
- * so the run is flattened first.
- *
- * A wrapper is replaced by its children rather than dropped, so the text inside a
- * link that also holds an image survives. Only wrappers **containing** an image
- * are opened: a plain link keeps its own token, and therefore keeps the styling
- * and click handling `renderInlineToRichText` gives it.
- */
-/**
  * Every image in an inline run, at any depth, in source order.
  *
  * Pairs with `stripImages`: together they partition a run into the prose a
@@ -130,6 +117,19 @@ export function stripImages<T extends Token>(token: T): T {
   return { ...token, tokens: kept };
 }
 
+/**
+ * An inline run with nested images lifted to the top level, in source order.
+ *
+ * The paragraph arm splits a run into one `Stack` child per image plus one per
+ * maximal run of non-image tokens, which requires every image to be a direct
+ * member of the array it iterates. An image inside a link or an emphasis is not,
+ * so the run is flattened first.
+ *
+ * A wrapper is replaced by its children rather than dropped, so the text inside a
+ * link that also holds an image survives. Only wrappers **containing** an image
+ * are opened: a plain link keeps its own token, and therefore keeps the styling
+ * and click handling `renderInlineToRichText` gives it.
+ */
 export function liftNestedImages(tokens: Token[]): Token[] {
   const lifted: Token[] = [];
   for (const token of tokens) {
@@ -155,15 +155,6 @@ export function lastIndexOfImage(tokens: Token[]): number {
   return -1;
 }
 
-/**
- * How many `Stack` children the paragraph render arm builds for an inline run.
- *
- * One child per image, plus one per *maximal run* of consecutive non-image
- * tokens — the arm merges those into a single `RichText` via `flushText`, so this
- * is not `tokens.length`. Kept in lockstep with that arm; it is what
- * `updateImageParagraph` checks to confirm the entity it was handed is the one
- * built for the old tokens.
- */
 /**
  * A decoding raster for one inline image, keyed by URL.
  *
@@ -293,6 +284,15 @@ export function clearInlineImageRasters(): void {
   inlineImageRasters.clear();
 }
 
+/**
+ * How many `Stack` children the paragraph render arm builds for an inline run.
+ *
+ * One child per image, plus one per *maximal run* of consecutive non-image
+ * tokens — the arm merges those into a single `RichText` via `flushText`, so this
+ * is not `tokens.length`. Kept in lockstep with that arm; it is what
+ * `updateImageParagraph` checks to confirm the entity it was handed is the one
+ * built for the old tokens.
+ */
 export function expectedImageParagraphChildren(tokens: Token[]): number {
   let children = 0;
   let inTextRun = false;

@@ -354,6 +354,7 @@ self.onmessage = (e: MessageEvent) => {
       tail: tokens.slice(matchLen),
       lexerMs,
       sourceCharsLexed: result.charsLexed,
+      stablePrefixChars: result.cache.stableOffset,
     });
   } catch (err) {
     // The cached tokens no longer describe anything the caller can trust.

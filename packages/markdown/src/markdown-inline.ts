@@ -62,6 +62,10 @@ export function applyTypography(text: string): string {
   out = out.replace(/\(tm\)/gi, '\u2122');
   out = out.replace(/\(c\)/gi, '\u00a9');
   out = out.replace(/\(r\)/gi, '\u00ae');
+  // `+-` to the plus-minus sign — documented in the `typographer` theme option
+  // and present in markdown-it's own symbol set, but the live path shipped
+  // without it while a dead duplicate module still carried it (#657).
+  out = out.replace(/\+-/g, '\u00b1');
   // Em dash before en dash: a `---` run must resolve to one em dash, not an
   // em dash's worth of en-dash pairs plus a stray hyphen.
   out = out.replace(/---/g, '\u2014');
