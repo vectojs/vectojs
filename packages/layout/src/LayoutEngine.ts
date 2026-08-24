@@ -1754,7 +1754,22 @@ export class LayoutEngine {
           if (shift !== 0) pMax = shiftedExtent(gfs, shift, pMax);
         }
       }
-      const lineHeight = pMax * 1.5;
+      // An inline object is a fixed box, not a scaled em: grow pMax until the
+      // part of it above the baseline fits, and track how far the deepest one
+      // hangs below the baseline so the line extends for it — the exact loops
+      // `layoutPrepared()` runs, so heights agree with what it produces.
+      let objDescent = 0;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const o = glyph.object;
+          if (!o) continue;
+          const depth = o.depth ?? 0;
+          const ascent = o.height - depth;
+          if (ascent > pMax * 0.8) pMax = ascent / 0.8;
+          if (depth > objDescent) objDescent = depth;
+        }
+      }
+      const lineHeight = Math.max(pMax * 1.5, pMax * 0.8 + objDescent);
 
       let x = 0;
       let lines = 1;
@@ -2246,6 +2261,9 @@ export class LayoutEngine {
             const tb = buffer.baselineShifts[left];
             buffer.baselineShifts[left] = buffer.baselineShifts[right];
             buffer.baselineShifts[right] = tb;
+            const to = buffer.topOffsets[left];
+            buffer.topOffsets[left] = buffer.topOffsets[right];
+            buffer.topOffsets[right] = to;
             left++;
             right--;
           }
@@ -2265,12 +2283,12 @@ export class LayoutEngine {
       let x = rtlShift;
       for (let i = lineStart; i < end; i++) {
         buffer.xs[i] = x;
-        // Canvas text is positioned by baseline while `y` is the local top, so
-        // offset smaller runs by their BASELINE delta (0.8em), not the full
-        // em-box delta — mixed-size glyphs then share one real baseline. A
-        // per-glyph baseline shift (positive = up) moves the glyph along its
-        // own baseline, mirroring the allocating path.
-        buffer.ys[i] = currentY + (lineMax - buffer.hs[i]) * 0.8 - buffer.baselineShifts[i];
+        // The per-slot offset from the line top was computed at write time —
+        // shared-baseline delta for text glyphs (smaller runs sit lower so all
+        // sizes share one real baseline), baseline-shift moves along its own
+        // baseline, and objects sit their bottom at `baseline + depth` — so it
+        // mirrors the allocating path glyph-for-glyph and survives the reversal.
+        buffer.ys[i] = currentY + buffer.topOffsets[i];
         x += buffer.ws[i];
       }
     };
@@ -2287,7 +2305,10 @@ export class LayoutEngine {
       // Tallest run in the paragraph drives line height + the shared baseline
       // (plain single-size text: pMax === fontSize, so every offset below
       // collapses to the original behavior). A baseline-shifted run that would
-      // leave the line box grows it, matching the allocating path.
+      // leave the line box grows it, matching the allocating path. An inline
+      // object grows it too: pMax until its above-baseline part fits, plus an
+      // extension for how far it hangs below — the same two loops as the
+      // allocating path, so both paths report one line height.
       let pMax = fontSize;
       for (const word of paragraph.words) {
         for (const glyph of word.glyphs) {
@@ -2297,7 +2318,18 @@ export class LayoutEngine {
           if (shift !== 0) pMax = shiftedExtent(gfs, shift, pMax);
         }
       }
-      const lineHeight = pMax * 1.5;
+      let objDescent = 0;
+      for (const word of paragraph.words) {
+        for (const glyph of word.glyphs) {
+          const o = glyph.object;
+          if (!o) continue;
+          const depth = o.depth ?? 0;
+          const ascent = o.height - depth;
+          if (ascent > pMax * 0.8) pMax = ascent / 0.8;
+          if (depth > objDescent) objDescent = depth;
+        }
+      }
+      const lineHeight = Math.max(pMax * 1.5, pMax * 0.8 + objDescent);
       lineStart = buffer.count;
       lineMax = pMax;
 
@@ -2342,12 +2374,18 @@ export class LayoutEngine {
 
           // Written in LOGICAL order at a provisional x/y; commitLine assigns
           // the final visual x and the shared-baseline y for the whole line.
+          // Each slot's offset from the line top is precomputed exactly as the
+          // allocating path computes `y`, so it travels with the glyph through
+          // the L2 reversal (see topOffsets on the buffer).
           const idx = buffer.count;
           buffer.chars[idx] = glyph.char;
           buffer.xs[idx] = currentX;
           buffer.ys[idx] = currentY;
           buffer.ws[idx] = charWidth;
-          buffer.hs[idx] = gfs;
+          buffer.hs[idx] = glyph.object ? glyph.object.height : gfs;
+          buffer.topOffsets[idx] = glyph.object
+            ? lineMax * 0.8 - (glyph.object.height - (glyph.object.depth ?? 0))
+            : (lineMax - gfs) * 0.8 - (glyph.style?.baselineShift ?? 0);
           buffer.baselineShifts[idx] = glyph.style?.baselineShift ?? 0;
           buffer.levels[idx] = (glyph.level ?? paragraphBaseLevel) & 0x7f;
           buffer.count++;
@@ -2380,6 +2418,11 @@ export class LayoutResultBuffer {
   hs: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Baseline shift (px, positive = up) of each glyph; 0 for unshifted. */
   baselineShifts: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
+  /** Per-glyph offset from the line top to the glyph's local top — the exact
+   *  `y - currentY` the allocating path computes, precomputed at write time so
+   *  it survives the BiDi slot reversal. Scratch for commitLine's y pass;
+   *  consumers should read `ys` for final positions. */
+  topOffsets: Float32Array = new Float32Array(LayoutResultBuffer.CAPACITY);
   /** Character for each glyph slot. */
   chars: string[] = Array.from({ length: LayoutResultBuffer.CAPACITY });
   /** Resolved BiDi embedding level of each glyph (even = LTR, odd = RTL). Used

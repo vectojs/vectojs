@@ -303,4 +303,77 @@ describe('emitSVG', () => {
       warn.mockRestore();
     }
   });
+
+  it('\\boxed and \\fbox draw their border as four edge rects', () => {
+    for (const tex of ['\\boxed{x^2}', '\\fbox{x}']) {
+      const out = emitSVG(layout(tex));
+      // One rect per border edge: top, bottom, left, right.
+      const rects = out.svg.match(/<rect /g) ?? [];
+      expect(rects.length, tex).toBe(4);
+
+      // The edges resolve against the enclosing vlist extent: every edge
+      // lands inside a viewBox wide enough for the content plus borders.
+      const [, , w] = /viewBox="([^"]+)"/.exec(out.svg)![1].split(' ').map(Number);
+      expect(w).toBeGreaterThan(100);
+
+      // Border thickness comes from `borderWidth` (\fboxrule = 0.04em), so
+      // every edge is at least one axis thin: 40 SVG units at scale 1.
+      const dims = [...out.svg.matchAll(/<rect [^>]*width="([\d.]+)" height="([\d.]+)"\/>/g)].map(
+        (m) => Math.min(Number(m[1]), Number(m[2])),
+      );
+      expect(dims.length, tex).toBe(4);
+      expect(
+        dims.every((thin) => thin > 0 && thin <= 40),
+        tex,
+      ).toBe(true);
+    }
+  });
+
+  it('\\angl draws only its top and right border edges', () => {
+    const out = emitSVG(layout('\\angl{x}'));
+
+    // `.angl { border-top/right: 0.049em solid }` (katex.scss:601-607); no
+    // bottom or left edge.
+    const rects = out.svg.match(/<rect /g) ?? [];
+    expect(rects.length).toBe(2);
+  });
+
+  it('\\colorbox paints its background behind the glyphs', () => {
+    const out = emitSVG(layout('\\colorbox{red}{x}'));
+
+    // No border was requested, so the background fill is the only rect ink.
+    expect((out.svg.match(/<rect /g) ?? []).length).toBe(1);
+    // Background must be painted before the glyph paths it sits behind.
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="red"')).toBeLessThan(out.svg.indexOf('<path'));
+  });
+
+  it('\\fcolorbox paints a blue background behind and a red frame over', () => {
+    const out = emitSVG(layout('\\fcolorbox{red}{blue}{x}'));
+
+    expect(out.svg.indexOf('fill="blue"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="blue"')).toBeLessThan(out.svg.indexOf('<path'));
+    // The frame colour appears after the glyphs: borders are edge rects in
+    // the foreground layer.
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(out.svg.indexOf('<path'));
+  });
+
+  it('draws array vertical rules ({c|c}) as vertical lines', () => {
+    const out = emitSVG(layout('\\begin{array}{c|c} a & b \\\\ \\hline c & d \\end{array}'));
+
+    // The \hline stays a full-width rect; each `|` separator adds one
+    // vertical line spanning the table height.
+    expect((out.svg.match(/<rect /g) ?? []).length).toBe(1);
+    const lines = [...out.svg.matchAll(/<line [^>]+>/g)].map((m) => m[0]);
+    expect(lines.length).toBe(1);
+
+    // Vertical: x1 === x2, and the rule spans both rows plus the inter-row
+    // gap, i.e. more than a single glyph's ascent (1 em = 1000 units).
+    const [, x1, y1, x2, y2] = lines[0]!
+      .match(/x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/)!
+      .map(Number);
+    expect(x1).toBe(x2);
+    expect(y2 - y1).toBeGreaterThan(1000);
+  });
 });

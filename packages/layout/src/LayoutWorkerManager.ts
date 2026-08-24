@@ -224,9 +224,18 @@ export class LayoutWorkerManager {
       // Retain the metrics independently of what the current worker knows, so a
       // main-thread fallback can still lay this font out later.
       if (options.fontData) this.fontDataById.set(options.fontId, options.fontData);
-      if (!this.registeredFonts.has(options.fontId) && options.fontData) {
-        request.fontData = options.fontData;
-        this.registeredFonts.add(options.fontId);
+      if (!this.registeredFonts.has(options.fontId)) {
+        // The current worker doesn't know this font. That is normally a first
+        // registration, but it is also exactly the state right after a worker
+        // restart: `handleWorkerFailure` cleared registeredFonts, and a caller
+        // that omits fontData (documented as optional because of the map above)
+        // would otherwise be swallowed by the worker's unknown-fontId guard,
+        // hanging its callback forever. Re-send whatever metrics we hold.
+        const fontData = options.fontData ?? this.fontDataById.get(options.fontId);
+        if (fontData) {
+          request.fontData = fontData;
+          this.registeredFonts.add(options.fontId);
+        }
       }
 
       const key = `${entityId}-${nextSeqId}`;

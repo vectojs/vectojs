@@ -252,4 +252,70 @@ describe.skipIf(!haveWasm)('G3 spike — hit-test broad-phase', () => {
     // The previous grid is untouched by a rejected init.
     expect(ex.hit_query(55, 55)).toBe(0);
   });
+
+  it('huge-grid queries stay defined where the i32 cell index would wrap (#648)', () => {
+    // cell_size=1e-4 over an 800x600 viewport gives grid_w=8e6,
+    // grid_h=6e6 — gw*gh = 4.8e13, far past i32::MAX. The build path
+    // computes its cell indices in i64 and clamps the materialized cells
+    // to cell_cap; the query path must use the same i64 math so a point
+    // whose true index exceeds 2^32 yields a defined miss instead of a
+    // wrapped index that can read an unrelated (populated) cell.
+    const VW = 800;
+    const VH = 600;
+    const CS = 1e-4;
+    const GW = Math.ceil(VW / CS); // 8_000_000
+    const GH = Math.ceil(VH / CS); // 6_000_000
+    expect(GW * GH).toBeGreaterThan(2 ** 31);
+    // Materialized cells clamp to cell_cap: row 0, columns 0..CELL_CAP-1,
+    // i.e. the region x < CELL_CAP*CS, y < CS.
+    const CELL_CAP = 4096;
+    const { ex, minx, miny, maxx, maxy } = instantiate(48, CELL_CAP, 16384);
+
+    const rand = rng(0x648);
+    const N = 48;
+    for (let i = 0; i < N; i++) {
+      const w = 0.01 + rand() * 0.01; // ~100-200 columns wide
+      const x = rand() * (CELL_CAP * CS - 0.03);
+      minx[i] = x;
+      maxx[i] = x + w;
+      miny[i] = 0;
+      maxy[i] = 9e-5; // stays inside row 0 so every membership fits cell_cap
+    }
+    ex.hit_build(N, VW, VH, CS);
+    expect(ex.hit_overflow()).toBe(0);
+
+    // 1) Across the whole viewport the query agrees with brute force:
+    // exact topmost match inside the populated band, defined -1 elsewhere.
+    for (let t = 0; t < 2000; t++) {
+      const px = rand() * VW;
+      const py = rand() * VH;
+      expect(ex.hit_query(px, py)).toBe(brute(minx, miny, maxx, maxy, N, px, py));
+    }
+
+    // 2) Wrap-zone probes: points whose true cell index exceeds 2^32 and
+    // whose i32-wrapped index lands exactly on a POPULATED cell (wrap
+    // target CELL_CAP-1). These must return a defined miss, never a hit
+    // dredged from the wrong cell's item list.
+    let probes = 0;
+    for (let cy = 600; cy < GH && probes < 50; cy += 7) {
+      const r = (cy * GW) % 2 ** 32; // exact: cy*GW < 4.8e12 < 2^53
+      if (r >= CELL_CAP) continue;
+      const cx = CELL_CAP - 1 - r; // (cy*GW + cx) mod 2^32 == CELL_CAP-1
+      const px = (cx + 0.5) * CS;
+      const py = (cy + 0.5) * CS; // py >= 0.06 — outside every box (y < 9e-5)
+      expect(cx).toBeLessThan(GW);
+      expect(ex.hit_query(px, py)).toBe(-1);
+      expect(ex.hit_query(px, py)).toBe(brute(minx, miny, maxx, maxy, N, px, py));
+      probes++;
+    }
+    expect(probes).toBeGreaterThan(0);
+
+    // 3) Deep wrap-zone sanity: generic far-field points also stay defined.
+    for (let t = 0; t < 200; t++) {
+      const px = rand() * VW;
+      const py = VH * (0.5 + rand() * 0.5); // lower half: true index > 2^31
+      const got = ex.hit_query(px, py);
+      expect(got).toBe(brute(minx, miny, maxx, maxy, N, px, py));
+    }
+  });
 });

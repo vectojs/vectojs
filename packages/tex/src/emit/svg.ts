@@ -154,6 +154,19 @@ interface PlacedRect extends ColoredPlacement {
    * is not known until the container's extent is. Resolved by `stretchRules`.
    */
   fullWidth?: boolean;
+  /**
+   * Which border edge of a full-width container this rect draws (`\angl`'s
+   * top/right rules, enclose boxes). While `fullWidth`, `w` holds the edge
+   * thickness and `h` the container height; `stretchRules` turns that into
+   * final geometry once the container extent is known.
+   */
+  edge?: 'top' | 'right' | 'bottom' | 'left';
+  /**
+   * Painted before every glyph: `\colorbox`/`\fcolorbox` backgrounds sit
+   * behind their content, while all other rect ink (rules, borders) paints
+   * over it.
+   */
+  background?: boolean;
 }
 
 /** One stroked line from a `\cancel` overlay SVG (a `LineNode`). */
@@ -168,6 +181,12 @@ interface PlacedLine extends ColoredPlacement {
   /** Stroke width, internal units. */
   stroke: number;
   fullWidth?: boolean;
+  /**
+   * Renders with a CSS-style dash pattern instead of solid: array `:`
+   * separators write `borderRightStyle: "dashed"`
+   * (environments/array.ts:448).
+   */
+  dashed?: boolean;
 }
 
 /** One placed stretchy path from `svgGeometry`, already in 1000:1 units. */
@@ -257,6 +276,21 @@ function rowAlign(chain: readonly string[]): RowAlign {
   }
   return 'left';
 }
+
+/**
+ * Per-side border widths (em) that container-decoration classes draw even
+ * when the span tree carries no inline `border*Width`, encoding katex.scss
+ * rules. `\fbox`/`\boxed`/`\fcolorbox` always write inline
+ * `borderStyle`/`borderWidth` (functions/enclose.ts:97-99), so only `.angl`
+ * — whose 0.049em top/right rules exist purely in CSS (:601-607), with inline
+ * overrides only under a `minRuleThickness` change (enclose.ts:101-103) —
+ * needs a class entry.
+ */
+const CONTAINER_BORDER_CLASSES: Readonly<
+  Record<string, { top?: number; right?: number; bottom?: number; left?: number }>
+> = {
+  angl: { top: 0.049, right: 0.049 },
+};
 
 /** Parses a CSS length that KaTeX wrote via `makeEm`, returning em. */
 function parseEm(value: string | undefined): number {
@@ -548,6 +582,36 @@ function emitContainer(
   const chain = [...classChain, ...classes];
   const localScale = scale * sizingRatio(classes);
 
+  // Array column separators (`{c|c}`) are empty `.vertical-separator` spans
+  // carrying the rule in CSS: `borderRightWidth` = ruleThickness,
+  // `borderRightStyle` = solid|dashed, negative symmetric margins, and
+  // `verticalAlign` to drop the box across the table
+  // (environments/array.ts:443-451). The border occupies `ruleThickness`
+  // horizontally and the margins pull it back by half that on each side, so
+  // the rule centres on the column boundary — exactly this pen position — and
+  // its net advance is zero. `style.height` is the table's full height and
+  // `verticalAlign` encodes `offset − height`, putting the top `offset` above
+  // this baseline and the bottom `totalHeight − offset` below it.
+  if (classes.includes('vertical-separator')) {
+    const thickness = parseEm(style.borderRightWidth) * UPEM * localScale;
+    const heightEm = parseEm(style.height);
+    // `makeEm(-(totalHeight - offset))`, so `height + verticalAlign`
+    // recovers the offset of the table top above this baseline.
+    const aboveEm = heightEm + parseEm(style.verticalAlign);
+    if (!phantom && thickness > 0 && heightEm > 0) {
+      state.lines.push({
+        x1: state.x,
+        y1: y - aboveEm * UPEM * localScale,
+        x2: state.x,
+        y2: y + (heightEm - aboveEm) * UPEM * localScale,
+        stroke: thickness,
+        dashed: style.borderRightStyle === 'dashed',
+        color,
+      });
+    }
+    return;
+  }
+
   state.x += parseEm(style.marginLeft) * UPEM * localScale;
 
   // `.nulldelimiter { width: $nulldelimiterspace }` (katex.scss:384), where
@@ -605,6 +669,72 @@ function emitContainer(
       });
     }
     return;
+  }
+
+  // Container decorations from functions/enclose.ts: `\fbox`/`\boxed`/
+  // `\fcolorbox` write inline `borderStyle`+`borderWidth`, `\angl` writes
+  // inline `borderTopWidth`/`borderRightWidth` under a `minRuleThickness`
+  // override (the `.angl` class carries the same edges at 0.049em otherwise),
+  // and `\colorbox`/`\fcolorbox` write `backgroundColor`. The decorated span
+  // is an empty `.katex-stretchy { width: 100% }` block (katex.scss:500-511)
+  // that fills its vlist row, so like a fullWidth rule its extent resolves
+  // against the enclosing vlist and it contributes no advance of its own;
+  // `node.height` already carries the padded box height.
+  const classBorders = classes.flatMap((c) =>
+    CONTAINER_BORDER_CLASSES[c] ? [CONTAINER_BORDER_CLASSES[c]] : [],
+  )[0];
+  const shorthand =
+    style.borderStyle === 'solid' ? parseEm(style.borderWidth) || undefined : undefined;
+  const borders = {
+    top: parseEm(style.borderTopWidth) || shorthand || classBorders?.top,
+    right: parseEm(style.borderRightWidth) || shorthand || classBorders?.right,
+    bottom: shorthand ?? classBorders?.bottom,
+    left: shorthand ?? classBorders?.left,
+  };
+  const background = !phantom && style.backgroundColor ? style.backgroundColor : undefined;
+
+  if (
+    !phantom &&
+    (background ||
+      (borders.top ?? 0) > 0 ||
+      (borders.right ?? 0) > 0 ||
+      (borders.bottom ?? 0) > 0 ||
+      (borders.left ?? 0) > 0)
+  ) {
+    const top = y - node.height * UPEM * localScale;
+    const h = (node.height + node.depth) * UPEM * localScale;
+    if (background) {
+      // Behind every glyph: this rect is emitted from the vlist row that
+      // paints before the content row (`enclose.ts:118-131`), but paint order
+      // is decided by layer, not walk order, so flag it explicitly.
+      state.rects.push({
+        x: state.x,
+        y: top,
+        w: 0,
+        h,
+        fullWidth: true,
+        background: true,
+        color: background,
+      });
+    }
+    // Each border edge is a filled rect awaiting the container extent; while
+    // pending, `w` holds the edge thickness and `h` the full box height with
+    // `y` at the box top (`stretchRules` finalizes them).
+    for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+      const t = borders[side];
+      if (!t || t <= 0) {
+        continue;
+      }
+      state.rects.push({
+        x: state.x,
+        y: top,
+        w: t * UPEM * localScale,
+        h,
+        fullWidth: true,
+        edge: side,
+        color: style.borderColor ?? color,
+      });
+    }
   }
 
   // `functions/rule.ts:44` is the one place a Span carries an explicit width,
@@ -816,9 +946,7 @@ function emitVList(
   for (let i = rectStart; i < state.rects.length; i++) {
     const r = state.rects[i];
     if (r.fullWidth) {
-      r.x = startX;
-      r.w = width;
-      r.fullWidth = false;
+      placeRect(r, startX, width);
     }
   }
   // `\cancel` overlay lines span the same row extent.
@@ -832,6 +960,45 @@ function emitVList(
   }
 
   state.x = maxX;
+}
+
+/**
+ * Resolves a pending full-width rectangle against its container extent.
+ *
+ * A plain rule simply takes the extent as its width. A border edge instead
+ * derives both axes from the container box: while pending, `w` holds the edge
+ * thickness and `h` the container height with `y` at the box top, so each
+ * side lands along its own perimeter once `startX`/`width` are known.
+ */
+function placeRect(r: PlacedRect, startX: number, width: number): void {
+  if (r.edge) {
+    const t = r.w;
+    switch (r.edge) {
+      case 'top':
+        r.x = startX;
+        r.w = width;
+        r.h = t;
+        break;
+      case 'bottom':
+        r.x = startX;
+        r.w = width;
+        r.y += r.h - t;
+        r.h = t;
+        break;
+      case 'left':
+        r.x = startX;
+        r.w = t;
+        break;
+      case 'right':
+        r.x = startX + width - t;
+        r.w = t;
+        break;
+    }
+  } else {
+    r.x = startX;
+    r.w = width;
+  }
+  r.fullWidth = false;
 }
 
 /** Formats a number for SVG output, trimming pointless precision. */
@@ -882,9 +1049,7 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
   // Any rule still unresolved was not inside a vlist, so it spans the formula.
   for (const r of state.rects) {
     if (r.fullWidth) {
-      r.x = 0;
-      r.w = state.x;
-      r.fullWidth = false;
+      placeRect(r, 0, state.x);
     }
   }
   // Same fallback for `\cancel` overlay lines not enclosed in a vlist.
@@ -1010,6 +1175,22 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     return out;
   };
 
+  // Rect ink is painted in two layers: `\colorbox`/`\fcolorbox` backgrounds
+  // sit behind every glyph, while rules and border edges paint over them
+  // (matching CSS, where a box's background is under its inline content).
+  const renderRect = (r: PlacedRect): string => {
+    if (r.w <= 0 || r.h <= 0) {
+      return '';
+    }
+    return `<rect x="${fmt(r.x)}" y="${fmt(r.y)}" width="${fmt(r.w)}" height="${fmt(r.h)}"/>`;
+  };
+  body.push(
+    grouped(
+      state.rects.filter((r) => r.background),
+      renderRect,
+    ),
+  );
+
   body.push(
     grouped(state.glyphs, (g) => {
       const glyph = getGlyph(g.font, g.code);
@@ -1034,21 +1215,21 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
   );
 
   body.push(
-    grouped(state.rects, (r) => {
-      if (r.w <= 0 || r.h <= 0) {
-        return '';
-      }
-      return `<rect x="${fmt(r.x)}" y="${fmt(r.y)}" width="${fmt(r.w)}" height="${fmt(r.h)}"/>`;
-    }),
+    grouped(
+      state.rects.filter((r) => !r.background),
+      renderRect,
+    ),
   );
-
   for (const l of state.lines) {
+    // A dashed separator approximates the UA-defined CSS `border-style:
+    // dashed` pattern with dash = gap = twice the stroke width.
+    const dash =
+      l.dashed === true ? ` stroke-dasharray="${fmt(l.stroke * 2)} ${fmt(l.stroke * 2)}"` : '';
     body.push(
       `<line x1="${fmt(l.x1)}" y1="${fmt(l.y1)}" x2="${fmt(l.x2)}" y2="${fmt(l.y2)}" ` +
-        `stroke="${escapeAttr(l.color ?? color)}" stroke-width="${fmt(l.stroke)}"/>`,
+        `stroke="${escapeAttr(l.color ?? color)}" stroke-width="${fmt(l.stroke)}"${dash}/>`,
     );
   }
-
   body.push(
     grouped(state.paths, (p) => {
       const transform = `translate(${fmt(p.x)} ${fmt(p.y)}) scale(${fmt(p.sx)} ${fmt(p.sy)})`;
