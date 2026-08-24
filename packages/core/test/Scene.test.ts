@@ -3148,3 +3148,46 @@ describe('Scene.resize() dimension validation', () => {
     }
   });
 });
+
+it('syncA11y installs keyboard activation when an interactive role is assigned AFTER creation', () => {
+  const parentDiv = document.createElement('div');
+  const canvas = document.createElement('canvas');
+  parentDiv.appendChild(canvas);
+  const scene = new Scene(canvas);
+
+  let role: string | undefined = undefined;
+  class LateRole extends Entity {
+    isPointInside() {
+      return false;
+    }
+    render() {}
+    getA11yAttributes() {
+      return { tag: 'div' as const, role, label: 'Late button' };
+    }
+  }
+  const b = new LateRole('late-btn');
+  b.interactive = true;
+  b.width = 40;
+  b.height = 20;
+  scene.add(b);
+
+  // First pass: no role yet — nothing interactive.
+  (scene as any).syncA11y((scene as any).root);
+  let el = (scene as any).a11yElements.get('late-btn') as HTMLElement;
+  expect(el.hasAttribute('tabindex')).toBe(false);
+
+  // Role assigned after creation: the element must gain BOTH tabindex and a
+  // working Enter/Space activation handler (WCAG 4.1.2 trap #694).
+  role = 'button';
+  (scene as any).syncA11y((scene as any).root);
+  el = (scene as any).a11yElements.get('late-btn') as HTMLElement;
+  expect(el.getAttribute('tabindex')).toBe('0');
+
+  let clicked = false;
+  b.on('click', () => (clicked = true));
+  const event = new KeyboardEvent('keydown', { key: 'Enter' });
+  Object.defineProperty(event, 'preventDefault', { value: vi.fn() });
+  el.dispatchEvent(event);
+  expect(event.preventDefault).toHaveBeenCalled();
+  expect(clicked).toBe(true);
+});
