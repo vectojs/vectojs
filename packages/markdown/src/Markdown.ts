@@ -1396,7 +1396,18 @@ export class Markdown extends UIComponent {
         // available width — so it is already correct at any width and must not be
         // stretched. One that has not typeset yet is a `CodeBlock` showing the TeX
         // source, and reflows as code does.
-        if (entity instanceof CodeBlock) entity.setWidth(availableWidth);
+        //
+        // Under `blockAffordances` the block arrives wrapped in a
+        // `BlockWithAffordances` whose own box was assigned once from the inner
+        // block at construction, so the instanceof test must look through it or
+        // the whole arm no-ops (#701). The wrapper is a pass-through sizer: one
+        // refresh after the inner box moves puts its controls back on the new
+        // right edge.
+        const target = entity instanceof BlockWithAffordances ? entity.block : entity;
+        if (target instanceof CodeBlock) {
+          target.setWidth(availableWidth);
+          if (entity instanceof BlockWithAffordances) entity.refreshAffordances();
+        }
         return;
       }
 
@@ -1483,8 +1494,14 @@ export class Markdown extends UIComponent {
 
       case 'table': {
         // `setWidth`, not `width =`: a Table's cell wrapping and alignment derive
-        // from `colWidths`, which is resolved once at construction.
-        if (entity instanceof Table) entity.setWidth(availableWidth);
+        // from `colWidths`, which is resolved once at construction. Unwrapped
+        // through `BlockWithAffordances` for the same reason as the code arm
+        // above (#701).
+        const target = entity instanceof BlockWithAffordances ? entity.block : entity;
+        if (target instanceof Table) {
+          target.setWidth(availableWidth);
+          if (entity instanceof BlockWithAffordances) entity.refreshAffordances();
+        }
         return;
       }
 

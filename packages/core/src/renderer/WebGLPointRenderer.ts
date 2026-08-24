@@ -686,13 +686,28 @@ export function createWebGLPointRenderer(canvas: HTMLCanvasElement): PointRender
   }) as WebGL2RenderingContext | null;
   if (!gl) return null;
 
-  const pointProgram = link(gl, POINT_VERT, POINT_FRAG);
-  const rectProgram = link(gl, RECT_VERT, RECT_FRAG);
-  const spriteProgram = link(gl, SPRITE_VERT, SPRITE_FRAG);
-  const msdfProgram = link(gl, SPRITE_VERT, MSDF_FRAG); // shares the sprite vertex layout
-  const circleQuadProgram = link(gl, SPRITE_VERT, CIRCLE_QUAD_FRAG);
-  if (!pointProgram || !rectProgram || !spriteProgram || !msdfProgram || !circleQuadProgram)
+  // Track this attempt's programs: a later link failure must release the
+  // ones that already linked, or every init retry after a driver hiccup
+  // leaks another program generation (#686).
+  const programs: WebGLProgram[] = [];
+  const linkTracked = (vsSrc: string, fsSrc: string): WebGLProgram | null => {
+    const program = link(gl, vsSrc, fsSrc);
+    if (program) programs.push(program);
+    return program;
+  };
+
+  const pointProgram = linkTracked(POINT_VERT, POINT_FRAG);
+  const rectProgram = linkTracked(RECT_VERT, RECT_FRAG);
+  const spriteProgram = linkTracked(SPRITE_VERT, SPRITE_FRAG);
+  const msdfProgram = linkTracked(SPRITE_VERT, MSDF_FRAG); // shares the sprite vertex layout
+  const circleQuadProgram = linkTracked(SPRITE_VERT, CIRCLE_QUAD_FRAG);
+  if (!pointProgram || !rectProgram || !spriteProgram || !msdfProgram || !circleQuadProgram) {
+    for (const program of programs) gl.deleteProgram(program);
+    // Hand the context back to the browser as well — a failed init used to
+    // leave it resident across retries. No-op where the extension is missing.
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
     return null;
+  }
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

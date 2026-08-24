@@ -170,6 +170,15 @@ export class Modal extends UIComponent {
   private installFocusTrap(): void {
     if (typeof document === 'undefined' || this._trapHandler) return;
     const handler = (event: KeyboardEvent): void => {
+      // Liveness check first. `scene.hideOverlay(this)` removes the overlay
+      // entity WITHOUT destroying it, so `close()` never runs and neither does
+      // the destroy() teardown — this document-level listener would otherwise
+      // keep preventDefault-ing every Tab into an invisible dialog forever.
+      // If the modal is no longer on the tree, take the trap down with it.
+      if (!this.parent) {
+        this.removeFocusTrap();
+        return;
+      }
       // Escape from anywhere inside the dialog. The entity-level handler above
       // only sees it when the modal surface itself is focused, so once focus moves
       // to a child control Escape stopped working — the dialog pattern requires it

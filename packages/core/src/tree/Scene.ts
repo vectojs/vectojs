@@ -1325,6 +1325,9 @@ export class Scene {
   // server-side (e.g. headless layout / vector export) without jsdom.
   private a11yRoot: HTMLDivElement | null;
   private a11yElements: Map<string, HTMLElement> = new Map();
+  /** Elements that already have the synthetic Enter/Space activation handler
+   *  (see the syncA11y refresh pass) — install-once bookkeeping (#694). */
+  private readonly keyboardActivatedA11y = new WeakSet<HTMLElement>();
 
   // --- domain: content-projection — projected DOM, sync state, calibration, selection ---
   /** DOM nodes mirroring static text content, keyed by entity id. */
@@ -3870,15 +3873,9 @@ export class Scene {
           node.emit('blur', {});
         });
 
-        // Keyboard accessibility for non-natively-focusable interactive controls
-        if (!isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role)) {
-          el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              node.dispatchEvent(new VectoJSEvent('click', node, e));
-            }
-          });
-        }
+        // Keyboard accessibility for non-natively-focusable interactive
+        // controls is installed in the refresh pass below, so a role assigned
+        // after creation gets its activation handler too (#694).
 
         // Initial insertion order placement
         if (node.a11yFullViewport) {
@@ -3901,8 +3898,24 @@ export class Scene {
       if (renderOrder !== undefined && el.style.zIndex !== String(renderOrder)) {
         el.style.zIndex = String(renderOrder);
       }
-      const implicitTabIndex =
-        !isNativelyFocusable(el) && attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role) ? 0 : null;
+      // Keyboard accessibility for non-natively-focusable interactive
+      // controls, (re)checked on every pass like the tabindex below it: a role
+      // assigned AFTER creation used to gain tabindex with no activation
+      // handler — reachable by Tab yet dead to keyboard users (#694). The
+      // handler is installed once per element; if the role is later removed
+      // the stale handler is inert because the element is no longer tabbable.
+      const interactiveRole =
+        !isNativelyFocusable(el) && !!attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role);
+      if (interactiveRole && !this.keyboardActivatedA11y.has(el)) {
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            node.dispatchEvent(new VectoJSEvent('click', node, e));
+          }
+        });
+        this.keyboardActivatedA11y.add(el);
+      }
+      const implicitTabIndex = interactiveRole ? 0 : null;
       const desiredTabIndex = attrs.tabIndex ?? implicitTabIndex;
       if (desiredTabIndex === null) {
         if (el.hasAttribute('tabindex')) el.removeAttribute('tabindex');

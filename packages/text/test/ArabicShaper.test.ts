@@ -58,4 +58,48 @@ describe('ArabicShaper', () => {
 
     expect(res.shapedText).toBe('\uFB90\uFBFE');
   });
+
+  it('passes joining context through tatweel (U+0640) on both sides', () => {
+    // "بـا" (Beh + Tatweel + Alef): the kashida is dual-joining with an
+    // identity mapping, so Beh takes its INITIAL form and Alef its FINAL
+    // form across what is visually one connecting stroke (#700 had both
+    // bases fall back to their isolated forms).
+    const raw = '\u0628\u0640\u0627';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFE91\u0640\uFE8E');
+    expect([...res.indexMap]).toEqual([0, 1, 2]);
+  });
+
+  it('keeps tatweel identity even when flanked by two dual-joining letters', () => {
+    // "بـت": the tatweel sits between two D letters -> MEDIAL slot, which for
+    // tatweel is the same code point; the neighbours still connect through it.
+    const raw = '\u0628\u0640\u062A';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFE91\u0640\uFE96');
+  });
+
+  it('treats honorific and Quranic marks as transparent, not opaque bases', () => {
+    // Beh + U+0610 (Arabic sign) + Teh: the mark is joining-type transparent,
+    // so the two bases shape as if adjacent — initial Beh + final Teh — and
+    // the mark itself is copied through in place (#703 had both bases isolated
+    // around an opaque base glyph).
+    const withSign = ArabicShaper.shapeArabic('\u0628\u0610\u062A');
+    expect(withSign.shapedText).toBe('\uFE91\u0610\uFE96');
+
+    // Same for a Quranic annotation sign (U+06D6).
+    const withQuranic = ArabicShaper.shapeArabic('\u0628\u06D6\u062A');
+    expect(withQuranic.shapedText).toBe('\uFE91\u06D6\uFE96');
+  });
+
+  it('still ligates Lam-Alef across an intervening transparent mark', () => {
+    // Lam + U+0612 + Alef must ligate exactly like Lam + Fatha + Alef does,
+    // emitting the mark after the ligature.
+    const raw = '\u0644\u0612\u0627';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFEFB\u0612');
+    expect([...res.indexMap]).toEqual([0, 1]);
+  });
 });
