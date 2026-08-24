@@ -160,3 +160,24 @@ describe('SVGRenderer', () => {
     expect(xml).not.toContain('<rect x="0" y="0" width="100" height="100"');
   });
 });
+
+describe('SVGRenderer fillText font-size units (#650)', () => {
+  test('em/rem scale against the configurable root font size', () => {
+    const defaultRoot = new SVGRenderer(800, 600);
+    defaultRoot.fillText('a', 0, 0, '1.5em Arial', '#000');
+    expect(defaultRoot.toXMLString()).toContain('font-size="24"');
+
+    const customRoot = new SVGRenderer(800, 600, { rootFontSize: 20 });
+    customRoot.fillText('a', 0, 0, '1.5rem Arial', '#000');
+    expect(customRoot.toXMLString()).toContain('font-size="30"');
+
+    // px passes through unscaled; a percentage size falls back to the
+    // documented 16px default rather than parsing as px.
+    const pct = new SVGRenderer(800, 600, { rootFontSize: 20 });
+    pct.fillText('a', 0, 0, '100% Arial', '#000');
+    expect(pct.toXMLString()).toContain('font-size="16"');
+    const px = new SVGRenderer(800, 600, { rootFontSize: 20 });
+    px.fillText('a', 0, 0, '12px Arial', '#000');
+    expect(px.toXMLString()).toContain('font-size="12"');
+  });
+});

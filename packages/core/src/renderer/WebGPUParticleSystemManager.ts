@@ -2,6 +2,11 @@ import { ComputeParticleEntity } from '../tree/ComputeParticleEntity';
 import type { Entity } from '../tree/Entity';
 import { parseColorToRGBA } from './colorParse';
 
+// Reused uniform upload scratch for recordComputePass(): one entity per frame
+// allocated a fresh 80-byte array before every writeBuffer. Indices 17–19 are
+// shader padding, written once here and never touched again.
+const recordComputePassScratch = new Float32Array(20);
+
 // Fallback definitions for GPUShaderStage and GPUBufferUsage if not present globally in standard DOM types
 declare const GPUShaderStage: {
   readonly VERTEX: number;
@@ -325,8 +330,11 @@ export class WebGPUParticleSystemManager {
   ): void {
     if (!this.computePipeline || !entity.computeBindGroup) return;
 
-    // Update uniform values securely
-    const uniformArray = new Float32Array(20);
+    // Update uniform values securely. Module-level scratch: every field below
+    // is rewritten each call (indices 17–19 are shader padding and stay zero
+    // from initialization), so reusing one array removes a per-entity per-frame
+    // heap allocation from the hot path.
+    const uniformArray = recordComputePassScratch;
     const color = parseColorToRGBA(entity.baseColor);
     let opacity = 1;
     for (let current: Entity | null = entity; current; current = current.parent) {

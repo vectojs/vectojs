@@ -270,3 +270,66 @@ describe('CanvasRenderer', () => {
     expect(mockCtx.globalAlpha).toBe(0.5);
   });
 });
+
+describe('CanvasRenderer backlog hardening (#650)', () => {
+  it('stroke() elides repeated identical style assignments and counts real switches', () => {
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.setDrawCounters(true);
+    renderer.clearDrawCounters();
+
+    renderer.stroke('red', 2);
+    const afterFirst = renderer.getDrawCounters()!.stateSwitches;
+    expect(afterFirst).toBe(1);
+
+    // Same style: fully elided — no new switch, no property writes.
+    renderer.stroke('red', 2);
+    expect(renderer.getDrawCounters()!.stateSwitches).toBe(afterFirst);
+    const strokeStyleWrites = mockCtx.strokeStyle; // still applied once
+    expect(strokeStyleWrites).toBe('red');
+
+    // A real change counts and applies.
+    renderer.stroke('blue', 3);
+    expect(renderer.getDrawCounters()!.stateSwitches).toBe(afterFirst + 1);
+    expect(mockCtx.strokeStyle).toBe('blue');
+    expect(mockCtx.lineWidth).toBe(3);
+  });
+
+  it('restore() invalidates the stroke cache so the next stroke re-applies', () => {
+    const renderer = new CanvasRenderer(mockCanvas as any);
+    renderer.stroke('red', 2);
+    renderer.save();
+    renderer.stroke('blue', 4);
+    renderer.restore();
+    // ctx state popped back to red/2: the cache must not believe blue/4.
+    renderer.stroke('red', 2);
+    expect(mockCtx.strokeStyle).toBe('red');
+    expect(mockCtx.lineWidth).toBe(2);
+  });
+
+  it('dispose() removes the contextloss listeners it registered', () => {
+    const listeners = new Map<string, (e?: unknown) => void>();
+    const canvas = {
+      ...mockCanvas,
+      addEventListener: vi.fn((type: string, fn: (e?: unknown) => void) => listeners.set(type, fn)),
+      removeEventListener: vi.fn((type: string) => listeners.delete(type)),
+      style: { width: '', height: '' },
+    };
+    const renderer = new CanvasRenderer(canvas as any);
+    expect(listeners.has('contextlost')).toBe(true);
+    expect(listeners.has('contextrestored')).toBe(true);
+
+    renderer.dispose();
+    expect(listeners.size).toBe(0);
+    // Idempotent: removing again must not throw.
+    renderer.dispose();
+  });
+
+  it('resize() skips CSS style writes when canvas.style is absent (SSR stub)', () => {
+    const styleless = { ...mockCanvas };
+    delete (styleless as { style?: unknown }).style;
+    const renderer = new CanvasRenderer(styleless as any);
+    expect(() => renderer.resize(320, 240)).not.toThrow();
+    expect(renderer.width).toBe(320);
+    expect(renderer.height).toBe(240);
+  });
+});

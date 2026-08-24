@@ -85,6 +85,17 @@ export class CanvasRenderer implements IRenderer {
 
   private _cachedFont: string = '';
   private _cachedFill: string = '';
+  // Stroke-side counterparts of the fill/font caches, read by stroke()'s
+  // style-elision branch. Reset wherever the context state can change behind
+  // our back: restore(), resize(), contextrestored, dispose().
+  private _cachedStroke: string = '';
+  private _cachedLineWidth: number = -1;
+  private _cachedLineCap: string = '';
+  private _cachedLineJoin: string = '';
+  // Context-loss listeners, held for removal in dispose() so a canvas that
+  // outlives the renderer cannot retain it through these closures.
+  private _onContextLost?: (e: Event) => void;
+  private _onContextRestored?: () => void;
 
   /** Backend discriminator; see {@link IRenderer.kind}. */
   public readonly kind = 'canvas2d';
@@ -157,11 +168,15 @@ export class CanvasRenderer implements IRenderer {
    */
   private setupContextLossRecovery(): void {
     if (typeof this.canvas.addEventListener !== 'function') return;
-    this.canvas.addEventListener('contextlost', (e: Event) => {
+    // Kept as fields so dispose() can remove them: a canvas outliving the
+    // renderer would otherwise retain it via these closures, and a post-dispose
+    // `contextrestored` would re-acquire a context and fire callbacks on a
+    // disposed object.
+    this._onContextLost = (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
-    });
-    this.canvas.addEventListener('contextrestored', () => {
+    };
+    this._onContextRestored = () => {
       const ctx = this.canvas.getContext('2d');
       if (!ctx) return;
       this.ctx = ctx;
@@ -174,11 +189,17 @@ export class CanvasRenderer implements IRenderer {
       ctx.scale(restoredDPR, restoredDPR);
       this._cachedFont = '';
       this._cachedFill = '';
+      this._cachedStroke = '';
+      this._cachedLineWidth = -1;
+      this._cachedLineCap = '';
+      this._cachedLineJoin = '';
       this.batchActive = false;
       this.batchCount = 0;
       this.contextLost = false;
       this.contextRestoredCb?.();
-    });
+    };
+    this.canvas.addEventListener('contextlost', this._onContextLost);
+    this.canvas.addEventListener('contextrestored', this._onContextRestored);
   }
 
   /**
@@ -232,9 +253,13 @@ export class CanvasRenderer implements IRenderer {
     this.height = height;
     this.ctx.canvas.width = width * dpr;
     this.ctx.canvas.height = height * dpr;
-    // Sync CSS size so the logical and physical sizes match on HiDPI screens
-    this.ctx.canvas.style.width = `${width}px`;
-    this.ctx.canvas.style.height = `${height}px`;
+    // Sync CSS size so the logical and physical sizes match on HiDPI screens.
+    // Guarded like the constructor for SSR/stubbed canvases where a 2D context
+    // exists but `style` does not.
+    if (this.ctx.canvas.style) {
+      this.ctx.canvas.style.width = `${width}px`;
+      this.ctx.canvas.style.height = `${height}px`;
+    }
     this.ctx.scale(dpr, dpr);
     // Setting `canvas.width`/`canvas.height` resets the whole 2D context state
     // per spec (font → 10px sans-serif, fillStyle → #000000). Drop the caches so
@@ -243,6 +268,10 @@ export class CanvasRenderer implements IRenderer {
     // defaults — the same reset `contextrestored` performs for a lost context.
     this._cachedFont = '';
     this._cachedFill = '';
+    this._cachedStroke = '';
+    this._cachedLineWidth = -1;
+    this._cachedLineCap = '';
+    this._cachedLineJoin = '';
     this.batchActive = false;
     this.batchCount = 0;
   }
@@ -301,6 +330,10 @@ export class CanvasRenderer implements IRenderer {
     this.ctx.restore();
     this._cachedFont = '';
     this._cachedFill = '';
+    this._cachedStroke = '';
+    this._cachedLineWidth = -1;
+    this._cachedLineCap = '';
+    this._cachedLineJoin = '';
   }
   /** @inheritdoc */
   translate(x: number, y: number): void {
@@ -469,10 +502,26 @@ export class CanvasRenderer implements IRenderer {
   stroke(color: string | any, lineWidth: number = 1): void {
     this.flush();
     if (this.counters) this.counters.strokes++;
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = lineWidth;
-    this.ctx.lineCap = 'round';
-    this.ctx.lineJoin = 'round';
+    // Style-elision pattern, same as fill()/fillText(): assign only on a real
+    // switch and count the switches that were not elided. lineCap/lineJoin are
+    // constants today but cached anyway so a future change to them cannot
+    // silently regress into per-call assignment.
+    if (
+      this._cachedStroke !== color ||
+      this._cachedLineWidth !== lineWidth ||
+      this._cachedLineCap !== 'round' ||
+      this._cachedLineJoin !== 'round'
+    ) {
+      if (this.counters) this.counters.stateSwitches++;
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = lineWidth;
+      this.ctx.lineCap = 'round';
+      this.ctx.lineJoin = 'round';
+      this._cachedStroke = color;
+      this._cachedLineWidth = lineWidth;
+      this._cachedLineCap = 'round';
+      this._cachedLineJoin = 'round';
+    }
     this.ctx.stroke();
   }
 
@@ -520,5 +569,19 @@ export class CanvasRenderer implements IRenderer {
     this.batchActive = false;
     this._cachedFont = '';
     this._cachedFill = '';
+    this._cachedStroke = '';
+    this._cachedLineWidth = -1;
+    this._cachedLineCap = '';
+    this._cachedLineJoin = '';
+    // Drop the context-loss listeners: a canvas outliving the renderer would
+    // otherwise retain it, and a post-dispose `contextrestored` would
+    // re-acquire a context and fire callbacks on a disposed object.
+    if (typeof this.canvas.removeEventListener === 'function') {
+      if (this._onContextLost) this.canvas.removeEventListener('contextlost', this._onContextLost);
+      if (this._onContextRestored)
+        this.canvas.removeEventListener('contextrestored', this._onContextRestored);
+    }
+    this._onContextLost = undefined;
+    this._onContextRestored = undefined;
   }
 }
