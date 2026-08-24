@@ -68,7 +68,17 @@ export class ArabicShaper {
   };
 
   private static isHarakat(code: number): boolean {
-    return (code >= 0x064b && code <= 0x065f) || code === 0x0670;
+    // Core harakat + dagger alef, the honorific signs (U+0610–U+061A) and the
+    // Quranic annotation signs (U+06D6–U+06ED): all combining marks with
+    // joining type TRANSPARENT, so shaping must skip across them exactly like
+    // the core ranges — otherwise they act as opaque bases and disconnect
+    // honorific/Quranic text. Matches MSDFFont's mark classification.
+    return (
+      (code >= 0x064b && code <= 0x065f) ||
+      code === 0x0670 ||
+      (code >= 0x0610 && code <= 0x061a) ||
+      (code >= 0x06d6 && code <= 0x06ed)
+    );
   }
 
   private static getJoiningType(code: number): 'D' | 'R' | 'U' {
