@@ -1,4 +1,5 @@
-// packages/core/src/animation/easing.ts
+// Curated easing curves shared by the JS tween driver and the WASM batched
+// animation kernel — pure functions of normalized time, no state.
 /** An easing function: maps normalized time t in [0,1] to eased progress. */
 export type EasingFn = (t: number) => number;
 

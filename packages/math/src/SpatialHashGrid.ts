@@ -131,6 +131,14 @@ export class SpatialHashGrid {
    * Time complexity: O(k) where k is the number of cells the query AABB spans
    * plus the number of results — O(1) average for small, similarly-sized entities.
    *
+   * Fallback semantics: when the query spans more than
+   * {@link MAX_CELLS_PER_AABB} cells, every registered entity ID is returned
+   * regardless of actual overlap — enumerating the query's own cells would
+   * cost O(area / cellSize²), so the walk goes over occupied cells instead.
+   * The result is therefore a coarse superset for huge queries, bounded by the
+   * grid's real content; callers must re-test candidates precisely (the
+   * oversized-entity branch below already returns an exact-overlap set).
+   *
    * @param x - Left edge of the query AABB.
    * @param y - Top edge of the query AABB.
    * @param w - Width of the query AABB.

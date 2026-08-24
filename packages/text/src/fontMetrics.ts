@@ -105,8 +105,11 @@ export function registerMSDFFontMetrics(
 /**
  * Build a {@link FontMetricsSource} from a loaded {@link MSDFFont}.
  *
- * Unlike {@link createCanvasMeasurer} this never returns `null` — an MSDF font
- * is parsed JSON, so it is available wherever the JSON is.
+ * Public API status: exported and documented on purpose — it is the supported
+ * way to turn an `MSDFFont` into a registrable metrics source
+ * (`registerFontMetrics(family, createMSDFMetricsSource(font))`), and unlike
+ * {@link createCanvasMeasurer} it never returns `null`: an MSDF font is parsed
+ * JSON, so it is available wherever the JSON is.
  */
 export function createMSDFMetricsSource(font: MSDFFont): FontMetricsSource {
   const m = font.data.metrics;
@@ -139,7 +142,15 @@ export function getFontMetrics(family: string): FontMetricsSource | undefined {
   return sources.get(normalizeFamily(family));
 }
 
-/** True when any metrics source is registered. */
+/**
+ * True when any metrics source is registered.
+ *
+ * Public API status: exported on purpose as a cheap probe of the process-wide
+ * registry — a caller about to register fonts can short-circuit, and tests use
+ * it to assert isolation. No in-repo production caller today; if that is still
+ * true at the next major, this (with the whole registry API) is a candidate
+ * for unexport rather than silent growth.
+ */
 export function hasFontMetrics(): boolean {
   return sources.size > 0;
 }

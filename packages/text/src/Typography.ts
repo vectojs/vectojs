@@ -2,6 +2,22 @@ import { getFontMetrics } from './fontMetrics';
 import { getSharedMeasuringContext } from './measureContext';
 
 const baselineCache = new Map<string, number>();
+// Bound on the baseline cache: keys are raw `font` shorthand strings, so a
+// session rendering dynamically-sized text would otherwise grow one entry per
+// distinct (font, lineHeight) pair for the lifetime of the process — evicted
+// only by an explicit `clearCssLineBoxMetrics()`. A plain insertion-order LRU
+// is enough: re-inserting a hit key moves it to the newest end, and the oldest
+// entry is dropped once the bound is exceeded. 512 entries cover every font in
+// a realistic document many times over; a miss merely re-measures one string.
+const BASELINE_CACHE_MAX = 512;
+
+function rememberBaseline(key: string, baseline: number): void {
+  if (baselineCache.size >= BASELINE_CACHE_MAX) {
+    const oldest = baselineCache.keys().next().value;
+    if (oldest !== undefined) baselineCache.delete(oldest);
+  }
+  baselineCache.set(key, baseline);
+}
 
 /**
  * The px size and family out of a CSS font shorthand, for a metrics lookup.
@@ -78,7 +94,12 @@ export function cssLineBoxBaseline(font: string, lineHeight: number): number {
   if (typeof document === 'undefined') return registeredBaseline(font, lineHeight);
   const key = `${font}\u0000${lineHeight}`;
   const cached = baselineCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    // LRU refresh: re-insert so the key counts as recently used.
+    baselineCache.delete(key);
+    baselineCache.set(key, cached);
+    return cached;
+  }
 
   // Attached, not detached — see `measureContext` for why. A detached context
   // reads `fontBoundingBox*` from a different font than the one being painted
@@ -93,7 +114,7 @@ export function cssLineBoxBaseline(font: string, lineHeight: number): number {
   if (!(ascent > 0) || !(descent >= 0)) return lineHeight * 0.8;
 
   const baseline = (lineHeight - ascent - descent) / 2 + ascent;
-  baselineCache.set(key, baseline);
+  rememberBaseline(key, baseline);
   return baseline;
 }
 
