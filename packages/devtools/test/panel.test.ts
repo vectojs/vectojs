@@ -10,8 +10,17 @@ class Box extends Entity {
     this.width = w;
     this.height = h;
   }
-  isPointInside(): boolean {
-    return false;
+  // Rect semantics like a real engine shape — the picker must not need an
+  // AABB fallback (#671).
+  isPointInside(sceneX: number, sceneY: number): boolean {
+    const point = this.worldToLocal(sceneX, sceneY);
+    return (
+      point !== null &&
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x < this.width &&
+      point.y < this.height
+    );
   }
   render(): void {}
 }
