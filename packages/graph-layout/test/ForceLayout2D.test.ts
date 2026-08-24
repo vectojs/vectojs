@@ -37,7 +37,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('appends without changing existing positions, velocities, or pins', () => {
-    const appended = new ForceLayout2D({ seed: 7, alphaDecay: 0 });
+    const appended = new ForceLayout2D({ seed: 7, alphaDecay: 1e-6 });
     appended.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
     appended.step(5);
     appended.pinNode('a', 12, -8);
@@ -52,7 +52,7 @@ describe('ForceLayout2D', () => {
     appended.step();
     expect([...appended.positions.slice(0, 2)]).toEqual([12, -8]);
 
-    const control = new ForceLayout2D({ seed: 7, alphaDecay: 0 });
+    const control = new ForceLayout2D({ seed: 7, alphaDecay: 1e-6 });
     control.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
     control.step(5);
     control.pinNode('a', 12, -8);
@@ -94,7 +94,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('makes link page replay dynamically idempotent', () => {
-    const options = { repulsion: 0, centerStrength: 0, alphaDecay: 0, seed: 11 };
+    const options = { repulsion: 0, centerStrength: 0, alphaDecay: 1e-6, seed: 11 };
     const page: GraphData = {
       nodes: [{ id: 'a' }, { id: 'b' }],
       links: [{ source: 'a', target: 'b' }],
@@ -160,7 +160,7 @@ describe('ForceLayout2D', () => {
       collisionRadius: (node) => Number(node.radius),
       collisionStrength: 1,
       velocityDecay: 0.7,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({
       nodes: [
@@ -186,7 +186,7 @@ describe('ForceLayout2D', () => {
         centerStrength: 0,
         collisionRadius: (node) => Number(node.radius),
         velocityDecay: 0.999999,
-        alphaDecay: 0,
+        alphaDecay: 1e-6,
       });
       layout.setGraph({ nodes, links: [] });
       const state = layout as unknown as {
@@ -217,7 +217,7 @@ describe('ForceLayout2D', () => {
       centerStrength: 0,
       collisionRadius: 10,
       velocityDecay: 0.999999,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({
       nodes: [
@@ -237,7 +237,7 @@ describe('ForceLayout2D', () => {
       repulsion: 0,
       centerStrength: 0.1,
       velocityDecay: 0.9,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({
       nodes: [
@@ -259,7 +259,7 @@ describe('ForceLayout2D', () => {
       repulsion: 0,
       centerStrength: 0.1,
       velocityDecay: 0.9,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({ nodes: [{ id: 'node', x: 5, y: 20 }], links: [] });
 
@@ -280,7 +280,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('clears the corresponding velocity when changing runtime pins', () => {
-    const layout = new ForceLayout2D({ repulsion: 0, centerStrength: 0, alphaDecay: 0 });
+    const layout = new ForceLayout2D({ repulsion: 0, centerStrength: 0, alphaDecay: 1e-6 });
     layout.setGraph({ nodes: [{ id: 'node', x: 0, y: 0 }], links: [] });
     const state = layout as unknown as { velocityX: Float32Array; velocityY: Float32Array };
     state.velocityX[0] = 7;
@@ -303,7 +303,7 @@ describe('ForceLayout2D', () => {
         linkDistance: 20,
         linkStrength: 1,
         velocityDecay: 0.999999,
-        alphaDecay: 0,
+        alphaDecay: 1e-6,
       });
       layout.setGraph({
         nodes: [
@@ -323,7 +323,15 @@ describe('ForceLayout2D', () => {
 
     expect(make(10, 0, true)).toEqual(make(Infinity, 0, true));
 
-    const zero = new ForceLayout2D({ repulsion: 100, repulsionDistanceMax: 0, centerStrength: 0 });
+    // A degenerate cutoff of 0 now means "no cutoff" like Infinity — it must
+    // not silently disable repulsion (the old behavior early-returned out of
+    // the force kernel, freezing the layout in place).
+    const zero = new ForceLayout2D({
+      repulsion: 100,
+      repulsionDistanceMax: 0,
+      centerStrength: 0,
+      alphaDecay: 1e-6,
+    });
     zero.setGraph({
       nodes: [
         { id: 'a', x: 0, y: 0 },
@@ -332,7 +340,7 @@ describe('ForceLayout2D', () => {
       links: [],
     });
     zero.step();
-    expect([...zero.positions]).toEqual([0, 0, 100, 0]);
+    expect([...zero.positions]).not.toEqual([0, 0, 100, 0]);
 
     const collision = new ForceLayout2D({
       repulsion: 100,
@@ -340,7 +348,7 @@ describe('ForceLayout2D', () => {
       centerStrength: 0,
       collisionRadius: 10,
       velocityDecay: 0.999999,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     collision.setGraph({
       nodes: [
@@ -360,7 +368,7 @@ describe('ForceLayout2D', () => {
       centerStrength: 0,
       collisionRadius: 10,
       velocityDecay: 0.999999,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
       seed: 3,
     });
     layout.setGraph({
@@ -379,7 +387,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('removes nodes and their links while preserving survivor state and pins', () => {
-    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    const layout = new ForceLayout2D({ alphaDecay: 1e-6 });
     layout.setGraph(graph);
     layout.step(3);
     layout.pinNode('c', 30, 40);
@@ -396,7 +404,7 @@ describe('ForceLayout2D', () => {
   it('keeps ID-addressed pins on the same node across removeNodes compaction', () => {
     // Index-addressed pins silently retargeted after compaction: an old cached
     // index still passed the range check but named a different node.
-    const layout = new ForceLayout2D({ repulsion: 300, centerStrength: 0, alphaDecay: 0 });
+    const layout = new ForceLayout2D({ repulsion: 300, centerStrength: 0, alphaDecay: 1e-6 });
     layout.setGraph({
       nodes: [
         { id: 'a', x: 0, y: 0 },
@@ -426,7 +434,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('ignores pins for unknown IDs without disturbing real ones', () => {
-    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    const layout = new ForceLayout2D({ alphaDecay: 1e-6 });
     layout.setGraph({ nodes: [{ id: 'a' }], links: [] });
     layout.pinNode('ghost', 99, 99);
     layout.setNodePin('ghost', { x: 1 });
@@ -437,7 +445,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('distinguishes numeric IDs from legacy indices when pinning', () => {
-    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    const layout = new ForceLayout2D({ alphaDecay: 1e-6 });
     layout.setGraph({
       nodes: [
         { id: 10, x: 0, y: 0 },
@@ -547,7 +555,7 @@ describe('ForceLayout2D', () => {
       new ForceLayout2D({
         repulsion: 0,
         centerStrength: 0,
-        alphaDecay: 0,
+        alphaDecay: 1e-6,
         linkDistance: (_link, index) => {
           indices.push(index);
           return 10 + index;
@@ -573,7 +581,7 @@ describe('ForceLayout2D', () => {
 
   it('produces identical degree bias and dynamics for one-shot and paginated stars', () => {
     const star = makeStar(128);
-    const options = { seed: 17, alphaDecay: 0, collisionRadius: 1 };
+    const options = { seed: 17, alphaDecay: 1e-6, collisionRadius: 1 };
     const oneShot = new ForceLayout2D(options);
     oneShot.setGraph(star);
     const paginated = new ForceLayout2D(options);
@@ -618,7 +626,7 @@ describe('ForceLayout2D', () => {
       linkDistance: 20,
       linkStrength: 0.3,
       velocityDecay: 0.6,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({ nodes, links });
     const initial = [...layout.positions];
@@ -639,7 +647,7 @@ describe('ForceLayout2D', () => {
   });
 
   it('recomputes degree bias after node removal', () => {
-    const layout = new ForceLayout2D({ repulsion: 0, centerStrength: 0, alphaDecay: 0 });
+    const layout = new ForceLayout2D({ repulsion: 0, centerStrength: 0, alphaDecay: 1e-6 });
     layout.setGraph({
       nodes: [{ id: 'hub' }, { id: 'a' }, { id: 'b' }, { id: 'tail' }],
       links: [
@@ -667,7 +675,7 @@ describe('ForceLayout2D', () => {
       linkDistance: 10,
       linkStrength: 1,
       velocityDecay: 0.999999,
-      alphaDecay: 0,
+      alphaDecay: 1e-6,
     });
     layout.setGraph({
       nodes: [
@@ -795,6 +803,44 @@ describe('ForceLayout2D', () => {
     expect(() => layout.getNodeIndex('a')).toThrow(/disposed/);
     expect(() => layout.getNodeId(0)).toThrow(/disposed/);
     expect(() => layout.getNodeIds()).toThrow(/disposed/);
+  });
+
+  it('falls back to the default decay when alphaDecay is 0 so host loops terminate', () => {
+    const layout = new ForceLayout2D({ alphaDecay: 0 });
+    // A literal 0 decay never cools alpha — step()'s guard would hold true
+    // forever and hosts driving `while (layout.step()) raf(loop)` would burn
+    // CPU permanently. The option must not survive validation.
+    expect((layout as any).alphaDecay).toBeGreaterThan(0);
+
+    layout.setGraph({ nodes: [{ id: 'a' }, { id: 'b' }], links: [] });
+    let ticks = 0;
+    while (layout.step() && ticks < 5000) ticks++;
+    expect(ticks).toBeLessThan(5000);
+    expect(layout.step()).toBe(false);
+  });
+
+  it('treats repulsionDistanceMax <= 0 as no cutoff, not as disabled repulsion', () => {
+    const layout = new ForceLayout2D({
+      repulsionDistanceMax: 0,
+      centerStrength: 0,
+      alphaDecay: 1e-6,
+    });
+    // A finite cutoff of 0 early-returns out of the force kernel, silently
+    // disabling all repulsion; the types only document non-finite as "no
+    // cutoff", so a degenerate cutoff must mean the same.
+    layout.setGraph({
+      nodes: [
+        { id: 'a', x: 100, y: 100 },
+        { id: 'b', x: 100, y: 100 },
+      ],
+      links: [],
+    });
+    layout.step(10);
+    const distance = Math.hypot(
+      layout.positions[2] - layout.positions[0],
+      layout.positions[3] - layout.positions[1],
+    );
+    expect(distance).toBeGreaterThan(1e-3);
   });
 });
 

@@ -165,6 +165,20 @@ describe('VectoForceLayout — GraphLayout contract', () => {
 });
 
 describe('VectoForceLayout — in-house model specifics', () => {
+  it('falls back to the default decay when alphaDecay is 0 so host loops terminate', () => {
+    const layout = new VectoForceLayout({ alphaDecay: 0 });
+    // Same guard as ForceLayout2D: a literal 0 decay never cools alpha, so
+    // `while (layout.step())` would never terminate.
+    expect((layout as any).alphaDecay).toBeGreaterThan(0);
+
+    layout.setGraph(ring(6));
+    let ticks = 0;
+    while (layout.step() && ticks < 20000) ticks++;
+    expect(ticks).toBeLessThan(20000);
+    expect(layout.step()).toBe(false);
+    layout.dispose();
+  });
+
   it('is deterministic: same seed + graph → identical layout', () => {
     const g = ring(30);
     const a = new VectoForceLayout({ seed: 7 });

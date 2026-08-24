@@ -114,7 +114,11 @@ export class VectoForceLayout implements GraphLayout {
     this.centerStrength = options.centerStrength ?? 0.02;
     this.velocityDecay = options.velocityDecay ?? 0.6;
     this.theta = options.theta ?? 0.9;
-    this.alphaDecay = options.alphaDecay ?? 0.0228;
+    // Same guard as ForceLayout2D: a literal 0 (or non-finite) decay never
+    // cools alpha — step()'s guard would stay true forever and host loops
+    // would never terminate.
+    const decay = options.alphaDecay ?? 0.0228;
+    this.alphaDecay = decay > 0 ? decay : 0.0228;
     this.alphaMin = options.alphaMin ?? 0.001;
     this.seed = options.seed ?? 1;
     this.measurePhases = options.measurePhases ?? false;
