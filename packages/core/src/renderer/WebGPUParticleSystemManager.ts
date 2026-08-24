@@ -200,6 +200,10 @@ export class WebGPUParticleSystemManager {
   private device: GPUDevice;
   private computePipeline: GPUComputePipeline | null = null;
   private renderPipeline: GPURenderPipeline | null = null;
+  // Held so destroy() can release them — modules were previously unreachable
+  // after initPipelines and lived until context loss (#684).
+  private computeModule: GPUShaderModule | { destroy?: () => void } | null = null;
+  private renderModule: GPUShaderModule | { destroy?: () => void } | null = null;
   private computeBindGroupLayout: GPUBindGroupLayout | null = null;
   private renderBindGroupLayout: GPUBindGroupLayout | null = null;
 
@@ -208,8 +212,10 @@ export class WebGPUParticleSystemManager {
   }
 
   public initPipelines(format: GPUTextureFormat): void {
-    const computeModule = this.device.createShaderModule({ code: COMPUTE_SHADER });
-    const renderModule = this.device.createShaderModule({ code: RENDER_SHADER });
+    this.computeModule = this.device.createShaderModule({ code: COMPUTE_SHADER });
+    this.renderModule = this.device.createShaderModule({ code: RENDER_SHADER });
+    const computeModule = this.computeModule;
+    const renderModule = this.renderModule;
 
     this.computeBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
@@ -275,6 +281,11 @@ export class WebGPUParticleSystemManager {
   }
 
   public setupEntityResources(entity: ComputeParticleEntity): void {
+    // Reconfiguration must not leak the previous buffer generation: release
+    // the live handles BEFORE overwriting them (#684).
+    releaseGpuObject(entity.gpuStorageBuffer);
+    releaseGpuObject(entity.gpuUniformBuffer);
+
     const storageSize = entity.maxParticles * 32;
     entity.gpuStorageBuffer = this.device.createBuffer({
       size: storageSize,
@@ -374,9 +385,29 @@ export class WebGPUParticleSystemManager {
   }
 
   public destroy(): void {
+    // Explicit GPU release (mirrors WebGLPointRenderer.destroy): nulling the
+    // JS refs alone kept every pipeline and shader module alive until context
+    // loss (#684). Guarded calls keep the manager testable with plain stubs.
+    releaseGpuObject(this.computePipeline);
+    releaseGpuObject(this.renderPipeline);
+    releaseGpuObject(this.computeModule);
+    releaseGpuObject(this.renderModule);
     this.computePipeline = null;
     this.renderPipeline = null;
+    this.computeModule = null;
+    this.renderModule = null;
     this.computeBindGroupLayout = null;
     this.renderBindGroupLayout = null;
+  }
+}
+
+/**
+ * Call `.destroy()` on a GPU object when its runtime exposes one. The ambient
+ * type lib does not model `destroy` on every resource, and stub-backed tests
+ * may omit it entirely — both must stay non-fatal.
+ */
+function releaseGpuObject(obj: unknown): void {
+  if (obj && typeof (obj as { destroy?: unknown }).destroy === 'function') {
+    (obj as { destroy: () => void }).destroy();
   }
 }
