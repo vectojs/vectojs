@@ -28,8 +28,14 @@ describe('unmeasuredGlyphCount', () => {
   it('counts every glyph sized by the 0.5em guess', () => {
     expect(unmeasuredGlyphCount()).toBe(0);
     widthOf(null, 'Hello');
-    // Six, not five: prepare() also measures '-' once per call for the
-    // wrap-time hyphen width, and that advance is fabricated too.
+    // Five, not six: prepare() measures '-' only when a word carries break
+    // points, and 'Hello' offers none — the phantom hyphen measurement that
+    // used to consume the one-time warning is gone (#653).
+    expect(unmeasuredGlyphCount()).toBe(5);
+  });
+
+  it('counts the wrap-time hyphen again once break points exist', () => {
+    widthOf(null, 'Hel\u00ADlo'); // soft hyphen ⇒ break point ⇒ '-' measured
     expect(unmeasuredGlyphCount()).toBe(6);
   });
 
@@ -66,7 +72,7 @@ describe('unmeasuredGlyphCount', () => {
 
   it('resetUnmeasuredGlyphCount clears the tally', () => {
     widthOf(null, 'Hello');
-    expect(unmeasuredGlyphCount()).toBe(6);
+    expect(unmeasuredGlyphCount()).toBe(5);
     resetUnmeasuredGlyphCount();
     expect(unmeasuredGlyphCount()).toBe(0);
   });
@@ -106,7 +112,7 @@ describe('the unmeasured-glyph warning', () => {
       resetUnmeasuredGlyphCount();
       widthOf(null, 'Hello');
       expect(warn).not.toHaveBeenCalled();
-      expect(unmeasuredGlyphCount()).toBe(6);
+      expect(unmeasuredGlyphCount()).toBe(5);
     } finally {
       warn.mockRestore();
     }

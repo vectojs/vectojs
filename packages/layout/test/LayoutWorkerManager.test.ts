@@ -309,7 +309,7 @@ test('main-thread fallback reuses font metrics from an earlier request', () => {
   expect((cb.mock.calls[0][0] as LayoutWorkerResponse).width).toBeGreaterThan(0);
 });
 
-test('a pending request with no font metrics anywhere is dropped, not retained', () => {
+test('a request with no font metrics anywhere resolves with an error response', () => {
   const manager = (activeManager = LayoutWorkerManager.getInstance());
   const cb = vi.fn();
   manager.queueLayout('nofont', 'aa', {
@@ -319,10 +319,37 @@ test('a pending request with no font metrics anywhere is dropped, not retained',
     maxHeight: 200,
     callback: cb,
   });
-  MockWorker.instances[0].onerror?.(new Event('error'));
 
-  // Nothing to lay out against, so no callback — but also no retained closure.
-  expect(cb).not.toHaveBeenCalled();
+  // Nothing to lay out against, so the pre-flight guard resolves the callback
+  // immediately with an error-shaped response instead of posting it into the
+  // worker's unknown-font drop (which used to hang the caller forever).
+  expect(cb).toHaveBeenCalledTimes(1);
+  const res = cb.mock.calls[0]![0] as LayoutWorkerResponse;
+  expect(res.error).toBe('unknown-font:font-never-supplied');
+  expect(res.id).toBe('nofont');
+  expect(res.codePoints.length).toBe(0);
+});
+
+test('the unknown-font warning fires once per font id, not per request', () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    for (let i = 0; i < 3; i++) {
+      manager.queueLayout('spammy', 'aa', {
+        fontId: 'font-never-supplied',
+        fontSize: 16,
+        maxWidth: 200,
+        maxHeight: 200,
+        callback: () => undefined,
+      });
+    }
+    const unknownFontWarnings = warn.mock.calls.filter((c) =>
+      String(c[0]).includes('font-never-supplied'),
+    );
+    expect(unknownFontWarnings.length).toBe(1);
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test('a restarted worker gets stored metrics re-sent for callers that omit fontData', () => {
@@ -459,6 +486,9 @@ test('cancelLayoutForEntity delegates to the live singleton when one exists', as
     fontSize: 16,
     maxWidth: 100,
     maxHeight: 100,
+    // Servable metrics: the request reaches the worker, so the cancel below
+    // is what actually prevents the callback.
+    fontData: metricsFont,
     callback: cb,
   });
   // Cancel before the (setTimeout-scheduled) worker response would arrive.

@@ -44,6 +44,9 @@ export class LayoutWorkerManager {
    */
   private fontDataById = new Map<string, MSDFFontData>();
   private consecutiveWorkerFailures = 0;
+  /** FontIds whose missing-metrics state has already been warned about, so a
+   *  streaming entity re-queueing every frame does not spam the console. */
+  private warnedUnknownFonts = new Set<string>();
   /** Set once the worker is judged permanently unavailable (see
    *  {@link MAX_CONSECUTIVE_WORKER_FAILURES}). */
   private workerUnavailable = false;
@@ -135,8 +138,8 @@ export class LayoutWorkerManager {
   /**
    * Complete every queued request synchronously using {@link computeMSDFLayout},
    * the same function the worker runs. Requests whose font metrics were never
-   * supplied are dropped (there is nothing to lay out against) rather than
-   * retained.
+   * supplied resolve with an error-shaped response (there is nothing to lay out
+   * against) rather than being retained or silently dropped.
    */
   private resolvePendingOnMainThread(): void {
     if (this.pendingCallbacks.size === 0) return;
@@ -144,9 +147,44 @@ export class LayoutWorkerManager {
     this.pendingCallbacks.clear();
     for (const { request, callback } of pending) {
       const font = request.fontData ?? this.fontDataById.get(request.fontId);
-      if (!font) continue;
+      if (!font) {
+        this.warnUnknownFont(request.fontId);
+        callback(this.errorResponse(request.id, request.seqId, request.fontId));
+        continue;
+      }
       callback(computeMSDFLayout(request, font));
     }
+  }
+
+  /** Warn once per font id about missing metrics. */
+  private warnUnknownFont(fontId: string): void {
+    if (this.warnedUnknownFonts.has(fontId)) return;
+    this.warnedUnknownFonts.add(fontId);
+    console.warn(
+      `[@vectojs/layout] No font metrics available for '${fontId}'; the layout ` +
+        'request cannot be served and resolves with an empty error response. ' +
+        'Pass `fontData` on queueLayout (once is enough — it is retained) so the ' +
+        'text can be laid out.',
+    );
+  }
+
+  /**
+   * A response that reports failure instead of carrying geometry: zero-length
+   * buffers keep the shape consumers read safe, while `error` tells them no
+   * layout happened for this request.
+   */
+  private errorResponse(id: string, seqId: number, fontId: string): LayoutWorkerResponse {
+    return {
+      id,
+      seqId,
+      width: 0,
+      height: 0,
+      codePoints: new Uint32Array(0),
+      xCoords: new Float32Array(0),
+      yCoords: new Float32Array(0),
+      packedStyles: new Uint32Array(0),
+      error: `unknown-font:${fontId}`,
+    };
   }
 
   public destroy(): void {
@@ -159,6 +197,7 @@ export class LayoutWorkerManager {
     this.seqIdCounter.clear();
     this.registeredFonts.clear();
     this.fontDataById.clear();
+    this.warnedUnknownFonts.clear();
     this.worker?.terminate();
     this.worker = null;
     if (LayoutWorkerManager.instance === this) LayoutWorkerManager.instance = undefined;
@@ -207,6 +246,18 @@ export class LayoutWorkerManager {
       this.debounceTimers.delete(entityId);
       const nextSeqId = (this.seqIdCounter.get(entityId) ?? 0) + 1;
       this.seqIdCounter.set(entityId, nextSeqId);
+
+      // A request whose metrics exist NOWHERE cannot be served by the worker
+      // path or the main-thread fallback. Resolve it here with an error-shaped
+      // response instead of posting it into the worker's unknown-font guard,
+      // where it used to be dropped silently — no callback, no error, a hang
+      // indistinguishable from a dead worker.
+      const metrics = options.fontData ?? this.fontDataById.get(options.fontId);
+      if (!metrics) {
+        this.warnUnknownFont(options.fontId);
+        options.callback(this.errorResponse(entityId, nextSeqId, options.fontId));
+        return;
+      }
 
       const request: LayoutWorkerRequest = {
         id: entityId,
