@@ -180,6 +180,11 @@ export class KnowledgeGraphSession {
   async bootstrap(focusIds: readonly NodeId[], expandSeeds = true): Promise<void> {
     this.assertOpen();
     await this.model.bootstrap(focusIds, expandSeeds);
+    // The host may dispose the session while the fetch is in flight (the
+    // constructor's fire-and-forget bootstrap makes this routine); continuing
+    // would drive the disposed Graph3D/camera — quiesce instead, teardown
+    // owns the final state.
+    if (this.disposed) return;
     this.syncFromModel();
     this.camera.fitToPositions(this.layout.positions);
   }
@@ -214,6 +219,10 @@ export class KnowledgeGraphSession {
     // The model drives the layout here (setGraph + reheat); the session only
     // mirrors the result into the renderer.
     const result = await this.model.expand(id);
+    // Post-await disposal check, same race as bootstrap: a host disposing
+    // while the fetch is in flight must not see the mirror run against the
+    // torn-down graph/camera.
+    if (this.disposed) return 0;
     this.syncFromModel();
     if (result.entity) this.onExpandCb?.(result.entity, result.addedEntities);
     return result.addedEntities;
@@ -271,6 +280,9 @@ export class KnowledgeGraphSession {
   // ── internals ────────────────────────────────────────────────────────────
 
   private syncFromModel(): void {
+    // Defense-in-depth for late async continuations: never touch the
+    // torn-down graph after dispose().
+    if (this.disposed) return;
     // The model is the single layout driver and has already called setGraph:
     // mirror its canonical node order into the renderer and picking indexes.
     const data = this.model.getGraphData();
