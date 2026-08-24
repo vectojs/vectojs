@@ -98,7 +98,11 @@ export function auditEntitySelection(
   const toLocal = (clientX: number): number => (clientX - rootRect.left) / scale + 0;
 
   const findings: SelectionAuditFinding[] = [];
-  const sel = typeof getSelection === 'function' ? getSelection() : null;
+  // All measurements below use DETACHED ranges (`document.createRange()` +
+  // `selectNodeContents()`), which never touch the DocumentSelection — so
+  // there is no programmatic selection to clean up, and the audit must leave
+  // the user's live text selection (or a CI driver's interactive state)
+  // exactly as it found it (#708).
 
   for (let i = 0; i < proj.lines.length && i < lineEls.length; i++) {
     const line = proj.lines[i];
@@ -137,8 +141,6 @@ export function auditEntitySelection(
     }
   }
 
-  // Leave no lingering programmatic selection behind.
-  sel?.removeAllRanges();
   return findings;
 }
 
