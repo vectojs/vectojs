@@ -8,10 +8,29 @@ class Box extends Entity {
     this.width = w;
     this.height = h;
   }
-  isPointInside(): boolean {
-    return false; // decorative — picking must fall back to the world AABB
+  // Rect semantics, like every concrete engine shape: a point inside the
+  // local box hits, anything else declines (#671 — no AABB fallback here or
+  // in the picker).
+  isPointInside(sceneX: number, sceneY: number): boolean {
+    const point = this.worldToLocal(sceneX, sceneY);
+    return (
+      point !== null &&
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x < this.width &&
+      point.y < this.height
+    );
   }
   render(): void {}
+}
+
+/** Shape that always declines — a particle (`pointerEvents=false`) or any
+ *  entity whose geometry rejects points inside its world box. Production
+ *  HitTester never returns these; neither may the picker. */
+class DecliningBox extends Box {
+  override isPointInside(): boolean {
+    return false;
+  }
 }
 
 function makeScene(): Scene {
@@ -66,6 +85,30 @@ describe('findEntityAt', () => {
     expect(findEntityAt(root, 130, 130)?.id).toBe('c'); // inside child
     expect(findEntityAt(root, 110, 110)?.id).toBe('p'); // parent only
     expect(findEntityAt(root, 10, 10)).toBeNull(); // outside everything
+  });
+
+  it('does not pick an entity whose shape declines inside its own box', () => {
+    const root = new Box('root');
+    const particle = new DecliningBox('particle', 80, 80);
+    particle.setPosition(10, 10);
+    root.add(particle);
+
+    // Inside the world AABB but rejected by the shape: production
+    // findHitRecursively returns nothing here, so the picker must too —
+    // the old AABB fallback reported a false owner (#671).
+    expect(findEntityAt(root, 50, 50)).toBeNull();
+  });
+
+  it('falls through a declining shape to the hittable entity beneath it', () => {
+    const root = new Box('root');
+    const backdrop = new Box('backdrop', 200, 200);
+    const overlay = new DecliningBox('overlay', 200, 200);
+    overlay.setPosition(0, 0);
+    root.add(backdrop);
+    root.add(overlay); // drawn after → topmost
+
+    // A real click resolves the backdrop; the picker must agree.
+    expect(findEntityAt(root, 150, 150)?.id).toBe('backdrop');
   });
 });
 
