@@ -181,6 +181,12 @@ interface PlacedLine extends ColoredPlacement {
   /** Stroke width, internal units. */
   stroke: number;
   fullWidth?: boolean;
+  /**
+   * Renders with a CSS-style dash pattern instead of solid: array `:`
+   * separators write `borderRightStyle: "dashed"`
+   * (environments/array.ts:448).
+   */
+  dashed?: boolean;
 }
 
 /** One placed stretchy path from `svgGeometry`, already in 1000:1 units. */
@@ -575,6 +581,36 @@ function emitContainer(
 
   const chain = [...classChain, ...classes];
   const localScale = scale * sizingRatio(classes);
+
+  // Array column separators (`{c|c}`) are empty `.vertical-separator` spans
+  // carrying the rule in CSS: `borderRightWidth` = ruleThickness,
+  // `borderRightStyle` = solid|dashed, negative symmetric margins, and
+  // `verticalAlign` to drop the box across the table
+  // (environments/array.ts:443-451). The border occupies `ruleThickness`
+  // horizontally and the margins pull it back by half that on each side, so
+  // the rule centres on the column boundary — exactly this pen position — and
+  // its net advance is zero. `style.height` is the table's full height and
+  // `verticalAlign` encodes `offset − height`, putting the top `offset` above
+  // this baseline and the bottom `totalHeight − offset` below it.
+  if (classes.includes('vertical-separator')) {
+    const thickness = parseEm(style.borderRightWidth) * UPEM * localScale;
+    const heightEm = parseEm(style.height);
+    // `makeEm(-(totalHeight - offset))`, so `height + verticalAlign`
+    // recovers the offset of the table top above this baseline.
+    const aboveEm = heightEm + parseEm(style.verticalAlign);
+    if (!phantom && thickness > 0 && heightEm > 0) {
+      state.lines.push({
+        x1: state.x,
+        y1: y - aboveEm * UPEM * localScale,
+        x2: state.x,
+        y2: y + (heightEm - aboveEm) * UPEM * localScale,
+        stroke: thickness,
+        dashed: style.borderRightStyle === 'dashed',
+        color,
+      });
+    }
+    return;
+  }
 
   state.x += parseEm(style.marginLeft) * UPEM * localScale;
 
@@ -1185,9 +1221,13 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
     ),
   );
   for (const l of state.lines) {
+    // A dashed separator approximates the UA-defined CSS `border-style:
+    // dashed` pattern with dash = gap = twice the stroke width.
+    const dash =
+      l.dashed === true ? ` stroke-dasharray="${fmt(l.stroke * 2)} ${fmt(l.stroke * 2)}"` : '';
     body.push(
       `<line x1="${fmt(l.x1)}" y1="${fmt(l.y1)}" x2="${fmt(l.x2)}" y2="${fmt(l.y2)}" ` +
-        `stroke="${escapeAttr(l.color ?? color)}" stroke-width="${fmt(l.stroke)}"/>`,
+        `stroke="${escapeAttr(l.color ?? color)}" stroke-width="${fmt(l.stroke)}"${dash}/>`,
     );
   }
   body.push(
