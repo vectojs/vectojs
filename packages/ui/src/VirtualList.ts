@@ -609,6 +609,7 @@ export class VirtualList<T = unknown> extends UIComponent {
     };
     this.on('pointerup', end);
     this.on('pointerleave', end);
+    this.on('pointercancel', end);
   }
 
   public override update(dt: number, time: number): void {

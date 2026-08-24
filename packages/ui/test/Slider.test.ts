@@ -28,6 +28,22 @@ describe('Slider', () => {
     expect(markDirty).toHaveBeenCalledTimes(1);
   });
 
+  it('stops dragging on pointercancel so hover does not scrub the value (#678)', () => {
+    const onChange = vi.fn();
+    const slider = new Slider({ min: 0, max: 100, value: 20, width: 200, height: 20, onChange });
+
+    slider.emit('pointerdown', { localX: 0 });
+    slider.emit('pointermove', { localX: 100 });
+    expect(slider.value).toBe(50);
+    onChange.mockClear();
+
+    slider.emit('pointercancel', {});
+
+    slider.emit('pointermove', { localX: 150 });
+    expect(slider.value).toBe(50);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   function pressKey(slider: Slider, key: string) {
     slider.emit('keydown', {
       nativeEvent: { key },

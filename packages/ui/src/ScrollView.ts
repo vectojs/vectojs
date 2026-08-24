@@ -129,6 +129,7 @@ export class ScrollView extends UIComponent {
     };
     this.on('pointerup', endDrag);
     this.on('pointerleave', endDrag);
+    this.on('pointercancel', endDrag);
   }
 
   /** Clamp the scroll target to `[-maxScroll, 0]` (top and content-end edges). */
