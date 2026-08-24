@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { Entity, Scene } from '@vectojs/core';
-import { buildTreeModel, findEntityAt, describeEntity, pickInScene } from '../src/model';
+import {
+  buildTreeModel,
+  findEntityAt,
+  describeEntity,
+  pickInScene,
+  refreshTreeLabels,
+} from '../src/model';
 
 class Box extends Entity {
   constructor(id: string, w = 0, h = 0) {
@@ -69,6 +75,28 @@ describe('buildTreeModel', () => {
     const { nodes } = buildTreeModel(root);
     expect(nodes[0].label).toContain('⚡');
     expect(nodes[0].label).toContain('▶');
+  });
+
+  it('refreshTreeLabels rewrites geometry in place and reports what changed', () => {
+    const root = new Box('root');
+    const moved = new Box('m', 40, 20);
+    moved.setPosition(5, 6);
+    root.add(moved);
+
+    const { nodes, index } = buildTreeModel(root);
+    expect(nodes[0].label).toContain('(5,6)');
+
+    // Transforms never bump the scene's structure version, so the version gate
+    // would otherwise show the coordinates of the last structural change until
+    // the periodic forced reconcile — up to 3s stale (#706).
+    moved.setPosition(90, -4);
+    const changed = refreshTreeLabels(nodes, index);
+    expect(changed).toBe(true);
+    expect(nodes[0].label).toContain('(90,-4)');
+    expect(nodes[0].id).toBe('m'); // same node object, mutated in place
+
+    // Nothing moved: no change to report, callers can skip redraw work.
+    expect(refreshTreeLabels(nodes, index)).toBe(false);
   });
 });
 
