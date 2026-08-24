@@ -65,14 +65,40 @@ static mut H: Hit = Hit {
     item_overflow: 0,
 };
 
+impl Hit {
+    /// The no-store state: `hits_ready()` rejects it, so publishing it after a
+    /// failed init makes later kernels report [`STATUS_UNINITIALIZED`] instead
+    /// of touching freed memory.
+    #[allow(clippy::needless_update)]
+    fn empty() -> Hit {
+        Hit {
+            minx: ptr::null_mut(),
+            miny: ptr::null_mut(),
+            maxx: ptr::null_mut(),
+            maxy: ptr::null_mut(),
+            cell_start: ptr::null_mut(),
+            cell_count: ptr::null_mut(),
+            cursor: ptr::null_mut(),
+            items: ptr::null_mut(),
+            grid_w: 0,
+            grid_h: 0,
+            cell_size: 64.0,
+            entity_cap: 0,
+            cell_cap: 0,
+            item_cap: 0,
+            item_overflow: 0,
+        }
+    }
+}
+
 fn leak_f64(n: usize) -> *mut f64 {
     let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
-    let p = unsafe { alloc_zeroed(layout) } as *mut f64;
-    assert!(!p.is_null(), "allocation failed");
-    p
+    unsafe { alloc_zeroed(layout).cast::<f64>() }
 }
 fn leak_i32(n: usize) -> *mut i32 {
-    Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
+    let layout =
+        Layout::from_size_align(n * size_of::<i32>(), size_of::<i32>()).expect("valid layout");
+    unsafe { alloc_zeroed(layout).cast::<i32>() }
 }
 
 /// Free the arrays the previous `hit_init` allocated, if any. `entity_cap`
@@ -118,21 +144,55 @@ pub extern "C" fn hit_init(entity_cap: usize, cell_cap: usize, item_cap: usize) 
     {
         return STATUS_OVERFLOW;
     }
+    // Release BEFORE allocating so dlmalloc reuses the freed block (re-inits
+    // stay flat in linear memory). An allocator failure then frees the partial
+    // set and publishes the empty store — the JS side sees STATUS_OVERFLOW and
+    // falls back to its reference path.
     free_hit();
-    unsafe {
-        H.minx = leak_f64(e);
-        H.miny = leak_f64(e);
-        H.maxx = leak_f64(e);
-        H.maxy = leak_f64(e);
-        H.cell_start = leak_i32(cell_cap);
-        H.cell_count = leak_i32(cell_cap);
-        H.cursor = leak_i32(cell_cap);
-        H.items = leak_i32(item_cap);
-        H.entity_cap = e;
-        H.cell_cap = cell_cap;
-        H.item_cap = item_cap;
+    let mut next = Hit {
+        minx: leak_f64(e),
+        miny: leak_f64(e),
+        maxx: leak_f64(e),
+        maxy: leak_f64(e),
+        cell_start: leak_i32(cell_cap),
+        cell_count: leak_i32(cell_cap),
+        cursor: leak_i32(cell_cap),
+        items: leak_i32(item_cap),
+        grid_w: 0,
+        grid_h: 0,
+        cell_size: 64.0,
+        entity_cap: e,
+        cell_cap,
+        item_cap,
+        item_overflow: 0,
+    };
+    let f64_ok = [next.minx, next.miny, next.maxx, next.maxy]
+        .iter()
+        .all(|p| !p.is_null());
+    let i32_ok = [next.cell_start, next.cell_count, next.cursor, next.items]
+        .iter()
+        .all(|p| !p.is_null());
+    if !(f64_ok && i32_ok) {
+        free_partial_hit(&mut next);
+        unsafe { H = Hit::empty() };
+        return STATUS_OVERFLOW;
     }
+    unsafe { H = next };
     STATUS_OK
+}
+
+/// Release every pointer of a replacement built by [`hit_init`] that was never
+/// committed. Null-safe, so it also handles a partially allocated set. The
+/// recorded caps describe the replacement's own allocation sizes.
+fn free_partial_hit(next: &mut Hit) {
+    crate::free_f64(next.minx, next.entity_cap);
+    crate::free_f64(next.miny, next.entity_cap);
+    crate::free_f64(next.maxx, next.entity_cap);
+    crate::free_f64(next.maxy, next.entity_cap);
+    crate::free_i32(next.cell_start, next.cell_cap);
+    crate::free_i32(next.cell_count, next.cell_cap);
+    crate::free_i32(next.cursor, next.cell_cap);
+    crate::free_i32(next.items, next.item_cap);
 }
 
 macro_rules! ptr_export_f64 {

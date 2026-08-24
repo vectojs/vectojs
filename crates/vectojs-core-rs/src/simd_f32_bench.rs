@@ -74,14 +74,45 @@ static mut SF: StoreF32 = StoreF32 {
     max_runs: 0,
 };
 
+impl StoreF32 {
+    /// The no-store state, mirroring the other stores: publishing it after a
+    /// failed `init_f32` makes later kernels reject instead of touching freed
+    /// memory.
+    fn empty() -> StoreF32 {
+        StoreF32 {
+            x: ptr::null_mut(),
+            y: ptr::null_mut(),
+            sx: ptr::null_mut(),
+            sy: ptr::null_mut(),
+            cos: ptr::null_mut(),
+            sin: ptr::null_mut(),
+            opacity: ptr::null_mut(),
+            wa: ptr::null_mut(),
+            wb: ptr::null_mut(),
+            wc: ptr::null_mut(),
+            wd: ptr::null_mut(),
+            we: ptr::null_mut(),
+            wf: ptr::null_mut(),
+            wo: ptr::null_mut(),
+            run_parent: ptr::null_mut(),
+            run_start: ptr::null_mut(),
+            run_len: ptr::null_mut(),
+            run_count: 0,
+            capacity: 0,
+            max_runs: 0,
+        }
+    }
+}
+
 fn leak_f32(n: usize) -> *mut f32 {
     let layout = Layout::from_size_align(n * size_of::<f32>(), SIMD_ALIGN).expect("valid layout");
-    let p = unsafe { alloc_zeroed(layout) } as *mut f32;
-    assert!(!p.is_null(), "allocation failed");
-    p
+    unsafe { alloc_zeroed(layout).cast::<f32>() }
 }
+/// Mirrors [`crate::free_i32`]: raw zeroed allocation, null on failure.
 fn leak_i32(n: usize) -> *mut i32 {
-    Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
+    let layout =
+        Layout::from_size_align(n * size_of::<i32>(), size_of::<i32>()).expect("valid layout");
+    unsafe { alloc_zeroed(layout).cast::<i32>() }
 }
 
 /// Free the store the previous `init_f32` allocated, if any. The recorded
@@ -115,11 +146,11 @@ fn free_f32_store() {
 /// 4-lane tail read up to three slots past the logical end without a remainder
 /// loop (the JS side never reads the padding back).
 ///
-/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when the padding addition or a
+/// Returns [`STATUS_OK`], [`STATUS_OVERFLOW`] when the padding addition or a
 /// byte-size multiplication cannot be represented: the unchecked arithmetic
 /// used to wrap silently in release (allocating tiny arrays the kernel then
-/// overruns) and panic in debug. On rejection the previous allocation is
-/// untouched.
+/// overruns) and panic in debug — or when the allocator refuses an allocation.
+/// On rejection the previous allocation is untouched.
 #[unsafe(no_mangle)]
 pub extern "C" fn init_f32(capacity: usize, max_runs: usize) -> i32 {
     let Some(n) = capacity.checked_add(16) else {
@@ -129,29 +160,83 @@ pub extern "C" fn init_f32(capacity: usize, max_runs: usize) -> i32 {
     {
         return STATUS_OVERFLOW;
     }
+    // Release BEFORE allocating so dlmalloc reuses the freed block (re-inits
+    // stay flat in linear memory). An allocator failure then frees the partial
+    // set and publishes the empty store (same OOM-to-status contract as the
+    // other inits).
     free_f32_store();
-    unsafe {
-        SF.x = leak_f32(n);
-        SF.y = leak_f32(n);
-        SF.sx = leak_f32(n);
-        SF.sy = leak_f32(n);
-        SF.cos = leak_f32(n);
-        SF.sin = leak_f32(n);
-        SF.opacity = leak_f32(n);
-        SF.wa = leak_f32(n);
-        SF.wb = leak_f32(n);
-        SF.wc = leak_f32(n);
-        SF.wd = leak_f32(n);
-        SF.we = leak_f32(n);
-        SF.wf = leak_f32(n);
-        SF.wo = leak_f32(n);
-        SF.run_parent = leak_i32(max_runs);
-        SF.run_start = leak_i32(max_runs);
-        SF.run_len = leak_i32(max_runs);
-        SF.capacity = capacity;
-        SF.max_runs = max_runs;
+    let mut next = StoreF32 {
+        x: leak_f32(n),
+        y: leak_f32(n),
+        sx: leak_f32(n),
+        sy: leak_f32(n),
+        cos: leak_f32(n),
+        sin: leak_f32(n),
+        opacity: leak_f32(n),
+        wa: leak_f32(n),
+        wb: leak_f32(n),
+        wc: leak_f32(n),
+        wd: leak_f32(n),
+        we: leak_f32(n),
+        wf: leak_f32(n),
+        wo: leak_f32(n),
+        run_parent: leak_i32(max_runs),
+        run_start: leak_i32(max_runs),
+        run_len: leak_i32(max_runs),
+        run_count: 0,
+        capacity,
+        max_runs,
+    };
+    let f32_ok = [
+        next.x,
+        next.y,
+        next.sx,
+        next.sy,
+        next.cos,
+        next.sin,
+        next.opacity,
+        next.wa,
+        next.wb,
+        next.wc,
+        next.wd,
+        next.we,
+        next.wf,
+        next.wo,
+    ]
+    .iter()
+    .all(|p| !p.is_null());
+    let i32_ok = [next.run_parent, next.run_start, next.run_len]
+        .iter()
+        .all(|p| !p.is_null());
+    if !(f32_ok && i32_ok) {
+        free_partial_f32_store(&mut next, n, max_runs);
+        unsafe { SF = StoreF32::empty() };
+        return STATUS_OVERFLOW;
     }
+    unsafe { SF = next };
     STATUS_OK
+}
+
+/// Release every pointer of a replacement built by [`init_f32`] that was never
+/// committed. Null-safe, so it also handles a partially allocated set.
+fn free_partial_f32_store(next: &mut StoreF32, n: usize, max_runs: usize) {
+    crate::free_f32(next.x, n);
+    crate::free_f32(next.y, n);
+    crate::free_f32(next.sx, n);
+    crate::free_f32(next.sy, n);
+    crate::free_f32(next.cos, n);
+    crate::free_f32(next.sin, n);
+    crate::free_f32(next.opacity, n);
+    crate::free_f32(next.wa, n);
+    crate::free_f32(next.wb, n);
+    crate::free_f32(next.wc, n);
+    crate::free_f32(next.wd, n);
+    crate::free_f32(next.we, n);
+    crate::free_f32(next.wf, n);
+    crate::free_f32(next.wo, n);
+    crate::free_i32(next.run_parent, max_runs);
+    crate::free_i32(next.run_start, max_runs);
+    crate::free_i32(next.run_len, max_runs);
 }
 
 macro_rules! ptr_export_f32 {
