@@ -341,6 +341,12 @@ interface LexCost {
   lexerMs: number;
   /** Characters handed to the lexer — the WHOLE accumulated source, every time. */
   sourceCharsLexed: number;
+  /**
+   * Character offset at which the lex's incrementally stable prefix ends —
+   * `IncrementalLexCache.stableOffset`, computed by the lex itself. Shipping it
+   * spares the callback an O(prefix) resum per streamed chunk (#657).
+   */
+  stablePrefixChars: number;
 }
 
 const workerCallbacks = new Map<
@@ -396,7 +402,16 @@ if (typeof Worker !== 'undefined') {
     });
     markdownWorker = new Worker(URL.createObjectURL(blob));
     markdownWorker.onmessage = (e) => {
-      const { id, matchLen, tail, error, needResync, lexerMs, sourceCharsLexed } = e.data;
+      const {
+        id,
+        matchLen,
+        tail,
+        error,
+        needResync,
+        lexerMs,
+        sourceCharsLexed,
+        stablePrefixChars,
+      } = e.data;
       const entry = workerCallbacks.get(id);
       if (entry) {
         workerCallbacks.delete(id);
@@ -411,6 +426,7 @@ if (typeof Worker !== 'undefined') {
           entry.cb(matchLen as number, tail as TokensList, false, {
             lexerMs: typeof lexerMs === 'number' ? lexerMs : 0,
             sourceCharsLexed: typeof sourceCharsLexed === 'number' ? sourceCharsLexed : 0,
+            stablePrefixChars: typeof stablePrefixChars === 'number' ? stablePrefixChars : 0,
           });
         } else {
           runSyncFallback(entry);
@@ -575,7 +591,21 @@ interface BlockMetrics {
 export class Markdown extends UIComponent {
   public content: Stack;
   public maxWidth: number;
-  public theme: Required<MarkdownTheme>;
+  /**
+   * Resolved once in the constructor and never re-applied: entities capture
+   * colors, fonts and sizes at build time, so assigning this after construction
+   * would paint blocks built afterwards in the new palette while everything
+   * earlier kept the old one. Exposed read-only to keep that trap unreachable
+   * (#657); pass the palette you want at construction.
+   *
+   * Backed by {@link currentTheme} rather than a `readonly` field because the
+   * blockquote arm legally swaps the render-time theme for its own subtree and
+   * restores it afterwards — an internal, exception-safe scope, not a re-theme.
+   */
+  public get theme(): Required<MarkdownTheme> {
+    return this.currentTheme;
+  }
+  private currentTheme: Required<MarkdownTheme>;
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
   /**
@@ -831,8 +861,10 @@ export class Markdown extends UIComponent {
     /** Longest single worker round trip, which is what a dropped frame feels. */
     workerMsMax: 0,
     /**
-     * Source length of the stable prefix on the most recent append: the text the
-     * worker matched and did not re-read.
+     * Source length of the stable prefix on the most recent append: the text
+     * whose tokens the lex did not re-read. Reported by the worker's lex from
+     * its own `IncrementalLexCache.stableOffset` rather than re-summed per
+     * response, which made a stream of n chunks O(n²) in this one stat (#657).
      */
     stablePrefixChars: 0,
     /** Source length of the tail whose tokens changed on the most recent append. */
@@ -909,7 +941,7 @@ export class Markdown extends UIComponent {
   constructor(markdownText: string, opts: MarkdownOptions = {}) {
     super();
     this.maxWidth = opts.maxWidth ?? 800;
-    this.theme = resolvePresetTheme(opts.theme);
+    this.currentTheme = resolvePresetTheme(opts.theme);
     this.onLinkClick = opts.onLinkClick;
     this.selectable = opts.selectable ?? true;
     this._userTiming = opts.userTiming ?? false;
@@ -1631,12 +1663,6 @@ export class Markdown extends UIComponent {
   }
 
   /**
-   * Tear down this Markdown block: drop any in-flight worker callbacks (each
-   * pins `this` via its closure, so a mid-stream destroy would otherwise keep
-   * the whole subtree alive until the worker replied), then recurse into the
-   * content subtree via `super.destroy()` so every block's resources are freed.
-   */
-  /**
    * Repaint this document when an inline formula's raster finishes decoding.
    *
    * Idempotent — called on every render of a math-bearing token, and the set holds
@@ -1784,6 +1810,12 @@ export class Markdown extends UIComponent {
     return checkBlocks(this.tokens);
   }
 
+  /**
+   * Tear down this Markdown block: drop any in-flight worker callbacks (each
+   * pins `this` via its closure, so a mid-stream destroy would otherwise keep
+   * the whole subtree alive until the worker replied), then recurse into the
+   * content subtree via `super.destroy()` so every block's resources are freed.
+   */
   public override destroy(): void {
     // Set before the controller teardown below, which reaches this instance again
     // through the host's `release` hook: settlement work must know the tree is
@@ -2129,9 +2161,17 @@ export class Markdown extends UIComponent {
         this.workerSourceLen = local ? 0 : sentLength;
         // Character counts, not token counts: a stable prefix of 40 tokens says
         // nothing about how much text the worker skipped, and the O(document) vs
-        // O(appended) question is about characters.
+        // O(appended) question is about characters. The worker's lex reports the
+        // stable prefix's own end offset (`IncrementalLexCache.stableOffset`),
+        // so a streamed chunk costs O(1) here; summing `matchLen` raws per
+        // response was quadratic over a stream (#657). The resum remains only
+        // for the lex-less paths, whose `matchLen` is 0 anyway.
         let prefixChars = 0;
-        for (let i = 0; i < matchLen; i++) prefixChars += oldTokensSnapshot[i]?.raw.length ?? 0;
+        if (lex) {
+          prefixChars = lex.stablePrefixChars;
+        } else {
+          for (let i = 0; i < matchLen; i++) prefixChars += oldTokensSnapshot[i]?.raw.length ?? 0;
+        }
         this.streamStats.stablePrefixChars = prefixChars;
         this.streamStats.changedTailChars = this.rawMarkdown.length - prefixChars;
         this.appendInFlight = false;
@@ -2215,30 +2255,6 @@ export class Markdown extends UIComponent {
   }
 
   /**
-   * Update a reused blockquote's tail child in place, or report that it cannot be.
-   *
-   * The render arm builds `container[border, innerStack]` where every inner block
-   * sits in its own single-child `wrapper`, so the tail entity is
-   * `innerStack.children.at(-1).children[0]`. Only the LAST inner block may be
-   * updated: the inner token list is prefix-stable exactly like the top level (a
-   * growing quote keeps its earlier blocks byte-identical), so anything before the
-   * tail is untouched and anything more complicated than a changed tail falls back
-   * to the caller's rebuild.
-   *
-   * Returns `false` without mutating anything when the shape is not the simple
-   * grow-the-tail case, which is the signal for the caller to rebuild. Every early
-   * return has to leave the entity untouched, or a rejected reuse would leave a
-   * half-updated quote on screen.
-   */
-  /**
-   * Build one list item's spans: inline content plus its marker.
-   *
-   * Shared by the `list` render arm and the streamed-reuse path below, because
-   * the two must produce byte-identical spans — a reused list that disagreed with
-   * a rebuilt one about its marker or its entity decoding would make a streamed
-   * document differ from the same source pasted at once.
-   */
-  /**
    * Inline spans for one table cell.
    *
    * Always returns at least one span. A cell whose markup collapses to nothing —
@@ -2294,31 +2310,6 @@ export class Markdown extends UIComponent {
     });
   }
 
-  /**
-   * One image inside a paragraph, sized by a guess until its bitmap decodes.
-   *
-   * Width and height start at a 16:10 guess because the intrinsic size is not
-   * known until the browser has the bitmap; `onLoad` corrects both from
-   * `naturalWidth`/`naturalHeight`. Extracted from the render arm so the streamed
-   * path reuses this exact entity rather than constructing a second variant.
-   *
-   * `markDirty()` is unconditional, matching the display-math sibling. It used
-   * to sit inside the `naturalWidth && naturalHeight` check, which meant a
-   * source that loads successfully while reporting a zero dimension left the
-   * scene un-notified. `Image` sets `loaded` before invoking this callback, so
-   * its `render()` starts drawing the bitmap either way — the cost was not a
-   * stale placeholder but a box frozen at the guess: measured on Chromium and
-   * Firefox, an `<svg width="0" height="0">` paragraph image kept 800x480 of
-   * reserved layout forever while a normal raster corrected to 80x60. An
-   * `onDemand` scene repaints only when marked, so nothing reclaimed it.
-   *
-   * The box is deliberately left at the guess when the bitmap reports zero.
-   * Collapsing it to 0x0 would make the paragraph reflow correctly but would
-   * also silently delete a reserved region on the strength of one browser
-   * quirk, and `Image.render()` still blits whatever the bitmap holds. Sizing
-   * policy for a zero-dimension source is a separate decision from notifying
-   * the scene, which is the actual defect here.
-   */
   /**
    * Wraps a block in its copy / download controls, or returns it untouched.
    *
@@ -2416,6 +2407,31 @@ export class Markdown extends UIComponent {
     };
   }
 
+  /**
+   * One image inside a paragraph, sized by a guess until its bitmap decodes.
+   *
+   * Width and height start at a 16:10 guess because the intrinsic size is not
+   * known until the browser has the bitmap; `onLoad` corrects both from
+   * `naturalWidth`/`naturalHeight`. Extracted from the render arm so the streamed
+   * path reuses this exact entity rather than constructing a second variant.
+   *
+   * `markDirty()` is unconditional, matching the display-math sibling. It used
+   * to sit inside the `naturalWidth && naturalHeight` check, which meant a
+   * source that loads successfully while reporting a zero dimension left the
+   * scene un-notified. `Image` sets `loaded` before invoking this callback, so
+   * its `render()` starts drawing the bitmap either way — the cost was not a
+   * stale placeholder but a box frozen at the guess: measured on Chromium and
+   * Firefox, an `<svg width="0" height="0">` paragraph image kept 800x480 of
+   * reserved layout forever while a normal raster corrected to 80x60. An
+   * `onDemand` scene repaints only when marked, so nothing reclaimed it.
+   *
+   * The box is deliberately left at the guess when the bitmap reports zero.
+   * Collapsing it to 0x0 would make the paragraph reflow correctly but would
+   * also silently delete a reserved region on the strength of one browser
+   * quirk, and `Image.render()` still blits whatever the bitmap holds. Sizing
+   * policy for a zero-dimension source is a separate decision from notifying
+   * the scene, which is the actual defect here.
+   */
   private paragraphImage(imgToken: Tokens.Image, availableWidth: number): Image {
     const initialWidth = Math.min(800, availableWidth);
     const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
@@ -2732,6 +2748,14 @@ export class Markdown extends UIComponent {
     return stack;
   }
 
+  /**
+   * Build one list item's spans: inline content plus its marker.
+   *
+   * Shared by the `list` render arm and the streamed-reuse path below, because
+   * the two must produce byte-identical spans — a reused list that disagreed with
+   * a rebuilt one about its marker or its entity decoding would make a streamed
+   * document differ from the same source pasted at once.
+   */
   private listItemSpans(token: Tokens.List, index: number): StyledSpan[] {
     const item = token.items[index];
     const num = Number(token.start ?? 1) + index;
@@ -3139,6 +3163,22 @@ export class Markdown extends UIComponent {
     return true;
   }
 
+  /**
+   * Update a reused blockquote's tail child in place, or report that it cannot be.
+   *
+   * The render arm builds `container[border, innerStack]` where every inner block
+   * sits in its own single-child `wrapper`, so the tail entity is
+   * `innerStack.children.at(-1).children[0]`. Only the LAST inner block may be
+   * updated: the inner token list is prefix-stable exactly like the top level (a
+   * growing quote keeps its earlier blocks byte-identical), so anything before the
+   * tail is untouched and anything more complicated than a changed tail falls back
+   * to the caller's rebuild.
+   *
+   * Returns `false` without mutating anything when the shape is not the simple
+   * grow-the-tail case, which is the signal for the caller to rebuild. Every early
+   * return has to leave the entity untouched, or a rejected reuse would leave a
+   * half-updated quote on screen.
+   */
   private updateBlockquoteTail(container: Entity, oldInner: Token[], newInner: Token[]): boolean {
     // Only the tail block may differ: every earlier inner token must be
     // byte-identical, and no block may have been added or removed. `space` tokens
@@ -3324,13 +3364,6 @@ export class Markdown extends UIComponent {
   }
 
   /**
-   * Re-render the paragraph currently showing a guess from its own tokens, with
-   * no overlay, and forget it.
-   *
-   * Idempotent and free when no guess is live, which is what lets `close()`,
-   * `abort()`, and a mid-stream staleness check all call it unconditionally.
-   */
-  /**
    * Start the MathJax load, and re-typeset this document once it resolves.
    *
    * Called from two places, for two different reasons:
@@ -3397,6 +3430,13 @@ export class Markdown extends UIComponent {
     this.scene?.markDirty();
   }
 
+  /**
+   * Re-render the paragraph currently showing a guess from its own tokens, with
+   * no overlay, and forget it.
+   *
+   * Idempotent and free when no guess is live, which is what lets `close()`,
+   * `abort()`, and a mid-stream staleness check all call it unconditionally.
+   */
   private unwindOptimisticTail(): void {
     const tail = this.optimisticTail;
     this.optimisticTail = null;
@@ -4179,7 +4219,7 @@ export class Markdown extends UIComponent {
         // into the rest of the document.
         const outerTheme = this.theme;
         if (t.quoteTextColor !== t.textColor) {
-          this.theme = { ...outerTheme, textColor: t.quoteTextColor };
+          this.currentTheme = { ...outerTheme, textColor: t.quoteTextColor };
         }
         try {
           if (bqToken.tokens) {
@@ -4196,7 +4236,7 @@ export class Markdown extends UIComponent {
             }
           }
         } finally {
-          this.theme = outerTheme;
+          this.currentTheme = outerTheme;
         }
 
         // Add the vertical accent bar
