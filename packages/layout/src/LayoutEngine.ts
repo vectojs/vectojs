@@ -2224,7 +2224,8 @@ export class LayoutEngine {
           lvls[i] = buffer.levels[lineStart + i];
         }
         // Reverse each L2 segment in place across ALL parallel arrays, so a
-        // glyph's char/width/height/level travel together into visual order.
+        // glyph's char/width/height/level/baselineShift travel together into
+        // visual order.
         const segments = BidiResolver.reorderSegments(str, lvls, paragraphBaseLevel);
         for (const [segStart, segEnd] of segments) {
           let left = lineStart + segStart;
@@ -2242,6 +2243,9 @@ export class LayoutEngine {
             const tl = buffer.levels[left];
             buffer.levels[left] = buffer.levels[right];
             buffer.levels[right] = tl;
+            const tb = buffer.baselineShifts[left];
+            buffer.baselineShifts[left] = buffer.baselineShifts[right];
+            buffer.baselineShifts[right] = tb;
             left++;
             right--;
           }

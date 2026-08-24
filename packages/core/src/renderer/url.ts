@@ -64,11 +64,24 @@ function hasSafeSchemeOrIsRelative(url: string): boolean {
  */
 const CHAR_REF = /&(?:#\d+|#x[\da-f]+|colon|tab|newline);/i;
 
+const MAX_CODE_POINT = 0x10ffff;
+
+/**
+ * Decode one numeric character reference. Out-of-range values (beyond
+ * U+10FFFF, or a digit run that overflows to `Infinity`) are parse errors in
+ * HTML: browsers map them to U+FFFD rather than throwing, and so do we —
+ * `String.fromCodePoint` would raise a RangeError and break the never-throws
+ * contract documented on {@link sanitizeUrl}.
+ */
+function decodeCodePoint(value: number): string {
+  return value <= MAX_CODE_POINT ? String.fromCodePoint(value) : '\u{FFFD}';
+}
+
 function decodeCharacterReferences(value: string): string {
   if (value.indexOf('&') < 0 || !CHAR_REF.test(value)) return value;
   return value
-    .replace(/&#x([\da-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&#x([\da-f]+);/gi, (_, hex: string) => decodeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec: string) => decodeCodePoint(parseInt(dec, 10)))
     .replace(/&colon;/gi, ':')
     .replace(/&tab;/gi, '\t')
     .replace(/&newline;/gi, '\n');
