@@ -2239,7 +2239,6 @@ export class LayoutEngine {
     // zero-GC path agrees glyph-for-glyph with the allocating one.
     let lineStart = 0;
     let paragraphBaseLevel = 0;
-    let lineMax = fontSize; // tallest glyph on the line → shared baseline
 
     const commitLine = (): void => {
       const end = buffer.count;
@@ -2353,7 +2352,9 @@ export class LayoutEngine {
       }
       const lineHeight = Math.max(pMax * 1.5, pMax * 0.8 + objDescent);
       lineStart = buffer.count;
-      lineMax = pMax;
+      // Tallest glyph on the line → shared baseline. Per-paragraph: always
+      // derived from pMax before the first read below, never across iterations.
+      const lineMax = pMax;
 
       for (const word of paragraph.words) {
         if (currentX + word.width > this.maxWidth && currentX > 0) {
