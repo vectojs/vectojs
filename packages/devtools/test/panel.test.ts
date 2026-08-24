@@ -10,8 +10,17 @@ class Box extends Entity {
     this.width = w;
     this.height = h;
   }
-  isPointInside(): boolean {
-    return false;
+  // Rect semantics like a real engine shape — the picker must not need an
+  // AABB fallback (#671).
+  isPointInside(sceneX: number, sceneY: number): boolean {
+    const point = this.worldToLocal(sceneX, sceneY);
+    return (
+      point !== null &&
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x < this.width &&
+      point.y < this.height
+    );
   }
   render(): void {}
 }
@@ -506,6 +515,34 @@ describe('DevtoolsPanel — modern features', () => {
     // Bad input is ignored.
     (panel as any).applyEdit('y', 'not-a-number');
     expect(target.y).toBe(0);
+
+    panel.detach();
+    host.destroy();
+  });
+
+  it('clearing an editor field does not snap x/y/opacity to 0 mid-edit', () => {
+    const host = makeHost();
+    const target = new Box('noclear', 40, 20);
+    target.setPosition(120, 80);
+    target.opacity = 0.7;
+    host.add(target);
+
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    panel.select(target);
+
+    // Number('') === 0, so the old parse applied x = 0 / y = 0 / opacity = 0
+    // on every input event that emptied the field — select-all + delete was
+    // enough to corrupt the entity (#704). Empty/whitespace input is ignored.
+    (panel as any).applyEdit('x', '');
+    (panel as any).applyEdit('y', '   ');
+    (panel as any).applyEdit('opacity', '');
+    expect(target.x).toBe(120);
+    expect(target.y).toBe(80);
+    expect(target.opacity).toBeCloseTo(0.7);
+
+    // A fresh numeric value still applies after an ignored empty edit.
+    (panel as any).applyEdit('x', '5');
+    expect(target.x).toBe(5);
 
     panel.detach();
     host.destroy();

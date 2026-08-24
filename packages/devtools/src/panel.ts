@@ -1046,6 +1046,11 @@ export class DevtoolsPanel {
 
   private applyEdit(prop: 'x' | 'y' | 'opacity', raw: string): void {
     if (this.syncingEdit || !this.selected) return;
+    // An emptied field is a mid-edit state, not a value: `Number('')` (and
+    // `Number('   ')`) are 0, not NaN, so the numeric parse below used to snap
+    // x/y — and opacity, which also makes the entity invisible and unhittable —
+    // on every input event that cleared the field (#704).
+    if (raw.trim() === '') return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
 
