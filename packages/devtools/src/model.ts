@@ -36,10 +36,13 @@ export function buildTreeModel(root: Entity): {
 }
 
 /**
- * Deepest-first hit test in scene coordinates — the same walk order the Scene
- * uses for input, so the inspector picks exactly what a click would hit.
- * Falls back to the world-AABB when the entity's own `isPointInside` declines,
- * so non-interactive (decorative) entities are still pickable.
+ * Deepest-first hit test in scene coordinates — the same walk order AND the
+ * same acceptance predicate the Scene uses for input (`HitTester.findHitRecursively`),
+ * so the inspector picks exactly what a click would hit. An entity is a hit
+ * target only when its own `isPointInside` accepts the point: there is
+ * deliberately no world-AABB fallback, which used to report false owners for
+ * particles (`pointerEvents: false`) and any shape declining a point inside
+ * its box while `explainHitTest` correctly reported "outside shape" (#671).
  */
 export function findEntityAt(root: Entity, x: number, y: number): Entity | null {
   // The engine's visibility gate (HitTester.findHitRecursively): an invisible
@@ -52,13 +55,9 @@ export function findEntityAt(root: Entity, x: number, y: number): Entity | null 
   }
   if (isPointerTransparent(root)) return null;
   if (!insideClipAncestors(root, x, y)) return null;
+  // An entity without `isPointInside` is not a hit target in production either
+  // (`node.isPointInside && …`); its children are still walked above.
   if (root.isPointInside && root.isPointInside(x, y)) return root;
-  if (root.width > 0 && root.height > 0) {
-    const local = root.worldToLocal(x, y);
-    if (local && local.x >= 0 && local.x <= root.width && local.y >= 0 && local.y <= root.height) {
-      return root;
-    }
-  }
   return null;
 }
 
