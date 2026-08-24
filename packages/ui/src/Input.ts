@@ -106,6 +106,18 @@ export class Input extends UIComponent {
     this.selectionEnd = this.value.length;
     this.interactive = true;
 
+    // Drop the keyed layout cache when a webfont finishes loading: the cache
+    // key is (value, font[, width]), so the same key would hit after the
+    // font's pixels changed and caret x / selection rects / wrap points would
+    // disagree with the painted ink until an edit re-keyed it. getLayout()
+    // re-measures on the next call (see watchFontMetrics).
+    this.watchFontMetrics(() => {
+      this.cachedValue = '';
+      this.cachedFont = '';
+      this.cachedLayout = null;
+      this.scene?.markDirty();
+    });
+
     this.on(
       'change',
       (e: {

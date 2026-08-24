@@ -1,4 +1,5 @@
 import { Entity, Bounds, type AnimatableProp, type MotionConfig } from '@vectojs/core';
+import { onFontMetricsChanged } from './measure';
 
 /** Declares an enter/exit animation: each property travels from `from` to `to`. */
 export interface MotionSpec {
@@ -109,8 +110,26 @@ export abstract class UIComponent extends Entity {
       clearTimeout(this.caretBlinkTimer);
       this.caretBlinkTimer = null;
     }
+    for (const unsub of this.fontMetricsUnsubscribers) unsub();
+    this.fontMetricsUnsubscribers.length = 0;
     super.destroy();
   }
+
+  /**
+   * Register a handler that re-measures and re-lays out this component when
+   * webfonts finish loading. Both invalidation signals already exist —
+   * `measure.ts` clears its LRU on `document.fonts.ready`/`loadingdone`, and
+   * Scene bumps its content font epoch — but per-instance caches (intrinsic
+   * widths, keyed layouts, prepared glyph atlases) survive both unless each
+   * component re-runs them, which is what produced stale measurements after a
+   * webfont load. The subscription is torn down automatically in
+   * {@link destroy}.
+   */
+  protected watchFontMetrics(handler: () => void): void {
+    this.fontMetricsUnsubscribers.push(onFontMetricsChanged(handler));
+  }
+
+  private fontMetricsUnsubscribers: Array<() => void> = [];
 
   /**
    * Axis-aligned hit-test against the component's box in global space.
