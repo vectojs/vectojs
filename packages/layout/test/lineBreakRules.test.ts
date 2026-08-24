@@ -4,7 +4,7 @@
  * Rule 1 — No line may start with trailing/closing punctuation.
  * Rule 2 — '@' must not be separated from the following identifier.
  */
-import { test, expect } from 'vitest';
+import { test, expect, describe } from 'vitest';
 import { LayoutEngine, type GlyphAtlas } from '../src/LayoutEngine';
 import { computeMSDFLayout } from '../src/msdfLayout';
 import type { LayoutWorkerRequest } from '../src/LayoutWorker';
@@ -152,4 +152,63 @@ test('msdfLayout: @ identifier stays together', () => {
     // '@' and 'v' should have same y (same line)
     expect(result.yCoords[atIdx]).toBe(result.yCoords[vIdx]);
   }
+});
+
+/**
+ * GH-#676: the merge must carry the merged words' hyphenation opportunities.
+ * A soft hyphen (U+00AD) records `breakPoints` on its own word; Rule 1 and
+ * Rule 2 both rebuild the merged word and used to drop them, so authored or
+ * hyphenator breaks adjacent to orphan punctuation / '@' silently vanished at
+ * wrap time.
+ */
+describe('suppressLineBreaks carries breakPoints across merges', () => {
+  function softHyphenAtlas(chars: string): GlyphAtlas {
+    const atlas: GlyphAtlas = {};
+    for (const ch of chars) {
+      atlas[ch] = {
+        width: ch === ' ' ? 5 : ch === ',' ? 4 : ch === '@' ? 12 : 9,
+        baseSize: 16,
+        ast: null,
+      };
+    }
+    return atlas;
+  }
+
+  test('Rule 2: a word merged with orphan punctuation keeps its soft-hyphen breaks', () => {
+    // "internal­ly," is one prepared word ("internal\u00ADly") merged with the
+    // orphan ",". At width 80 the prefix "internal" + visible '-' fits (72+4.8)
+    // but the whole 99px word does not — a carried breakPoint must produce the
+    // hyphenated break instead of a silent mid-word overflow.
+    const engine = new LayoutEngine(80, 1000);
+    const result = engine.layoutText(
+      'internal\u00ADly, more',
+      softHyphenAtlas('internal\u00ADly, more'),
+      16,
+    );
+
+    const hyphen = result.nodes.find((n) => n.char === '-');
+    expect(hyphen).toBeDefined();
+    // The remainder continues on the NEXT line below the hyphen (the last
+    // glyphs of the word, past the break).
+    const l = result.nodes.filter((n) => n.char === 'l').at(-1)!;
+    expect(l.y).toBeGreaterThan(hyphen!.y);
+  });
+
+  test('Rule 1: words merged after @ keep their soft-hyphen breaks', () => {
+    // "@inter­nal": the identifier word following '@' carries a soft-hyphen
+    // break; re-based by the '@' glyph it allows "@inter-" to break at width 65
+    // ((12 + 45) + 4.8 ≤ 65) where the full 75px merge cannot fit.
+    const engine = new LayoutEngine(65, 1000);
+    const result = engine.layoutText(
+      '@inter\u00ADnal team',
+      softHyphenAtlas('@inter\u00ADnal team'),
+      16,
+    );
+
+    const hyphen = result.nodes.find((n) => n.char === '-');
+    expect(hyphen).toBeDefined();
+    expect(result.nodes.find((n) => n.char === '@')).toBeDefined();
+    const n = result.nodes.filter((nd) => nd.char === 'n')!.at(-1)!;
+    expect(n.y).toBeGreaterThan(hyphen!.y);
+  });
 });
