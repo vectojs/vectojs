@@ -47,6 +47,10 @@ applyStyle(title, style({ fontFamily: 'Inter', fontSize: '18px', fontWeight: 700
   string (`'rgba(var(--rgb), 0.4)'`) resolve by substitution as well, and
   chains of token-references-token resolve transitively with cycle detection —
   any cycle or missing token throws with the offending chain.
+  The CSS fallback form `var(--key, fallback)` is not supported and throws
+  loudly wherever it appears (directly, inside a composite, or through a
+  token) — an unresolved fallback would silently keep the previous canvas
+  paint and never re-resolve on a theme switch (#645).
 - `fontFamily` / `fontSize` / `fontWeight` compose into the entity's `font`
   shorthand, preserving the segments the style does not change. The parser
   understands the full canvas prefix grammar
