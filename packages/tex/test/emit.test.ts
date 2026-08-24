@@ -376,4 +376,45 @@ describe('emitSVG', () => {
     expect(x1).toBe(x2);
     expect(y2 - y1).toBeGreaterThan(1000);
   });
+
+  it('treats multi-piece stretchy overlays as zero-advance', () => {
+    // Each overlay piece declares `width: "400em"`, but in CSS the pieces are
+    // absolutely positioned percentage overlays contributing no advance; the
+    // construct is as wide as the content it decorates.
+    const cases: Array<[string, string]> = [
+      ['\\overbrace{x+y}', 'x+y'],
+      ['\\underbrace{x+y}', 'x+y'],
+      ['\\overleftrightarrow{xy}', 'xy'],
+    ];
+    for (const [tex, body] of cases) {
+      const out = emitSVG(layout(tex));
+      const bare = emitSVG(layout(body));
+      expect(out.width, tex).toBeCloseTo(bare.width, 3);
+      // The ink still exists and stays within the content extent.
+      expect(out.svg).toContain('<path');
+      const [, , vw] = /viewBox="([^"]+)"/.exec(out.svg)![1].split(' ').map(Number);
+      expect(vw, tex).toBeLessThan(bare.width * UNITS_PER_EM + UNITS_PER_EM);
+    }
+  });
+
+  it('slices multi-piece stretchy ink across its fraction windows', () => {
+    // \overbrace's three pieces draw the left hook, the middle span and the
+    // right hook of the same 400em-wide path; each must be clipped to its own
+    // quarter-window of the content extent.
+    const out = emitSVG(layout('\\overbrace{x+y}'));
+    const paths = [...out.svg.matchAll(/<path[^>]*clip-path[^>]*d="/g)];
+    expect(paths.length).toBe(3);
+
+    const clips = [
+      ...out.svg.matchAll(/<clipPath[^>]*><rect x="([-\d.]+)" y="([^"]+)" width="([\d.]+)"/g),
+    ].map((m) => ({ x: Number(m[1]), w: Number(m[3]) }));
+    clips.sort((a, b) => a.x - b.x);
+    expect(clips.length).toBe(3);
+    // Left window starts at the origin, middle at ~25%, right ends together.
+    expect(clips[0]!.x).toBeLessThan(clips[1]!.x);
+    expect(clips[1]!.x).toBeLessThan(clips[2]!.x);
+    // The three windows tile the extent without a gap.
+    expect(clips[0]!.w).toBeGreaterThan(0);
+    expect(clips[1]!.w).toBeGreaterThan(clips[0]!.w);
+  });
 });
