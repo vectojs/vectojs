@@ -359,6 +359,74 @@ test('a restarted worker gets stored metrics re-sent for callers that omit fontD
   expect(posts[0].fontData).toBe(metricsFont);
 });
 
+test('a stale reply after cancel is not routed to the replacement request', async () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  const cancelledCb = vi.fn();
+  manager.queueLayout('race', 'AAA', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: cancelledCb,
+  });
+
+  // Cancel while the worker is still processing the request above…
+  manager.cancelLayout('race');
+  // …then immediately queue again for the same entity id. With the counter
+  // deleted by cancelLayout, both requests carried seqId 1, so the stale
+  // in-flight reply for 'AAA' matched the NEW pending entry and handed the
+  // old geometry to the new callback (#673).
+  const freshCb = vi.fn();
+  manager.queueLayout('race', 'BB', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: freshCb,
+  });
+
+  // The replacement goes through the normal 50ms debounce (the kept counter no
+  // longer re-arms a leading-edge immediate run), then the mock replies ~10ms
+  // later.
+  await new Promise((r) => setTimeout(r, 120));
+  expect(cancelledCb).not.toHaveBeenCalled();
+  expect(freshCb).toHaveBeenCalledTimes(1);
+  expect((freshCb.mock.calls[0][0] as LayoutWorkerResponse).codePoints).toHaveLength(2);
+});
+
+test('cancelLayout purges only the target entity, not hyphen-prefix siblings', async () => {
+  const manager = (activeManager = LayoutWorkerManager.getInstance());
+  // 'text' + '-' is a hyphen-boundary prefix of sibling id 'text-1': cancelling
+  // 'text' used to purge 'text-1-<seq>' too, silently cancelling the other
+  // entity's in-flight layout (#675).
+  const siblingCb = vi.fn();
+  manager.queueLayout('text-1', 'aa', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: siblingCb,
+  });
+  const cb = vi.fn();
+  manager.queueLayout('text', 'bb', {
+    fontId: 'f',
+    fontSize: 16,
+    maxWidth: 200,
+    maxHeight: 200,
+    fontData: metricsFont,
+    callback: cb,
+  });
+
+  manager.cancelLayout('text');
+  await new Promise((r) => setTimeout(r, 60));
+
+  expect(cb).not.toHaveBeenCalled();
+  expect(siblingCb).toHaveBeenCalledTimes(1);
+});
+
 test('destroy clears singleton ownership so getInstance returns a live manager', () => {
   const first = LayoutWorkerManager.getInstance();
   const firstWorker = MockWorker.instances[0];
