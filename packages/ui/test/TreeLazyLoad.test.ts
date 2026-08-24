@@ -5,7 +5,7 @@
 // than surfacing as an unhandled promise rejection (which is a process-level
 // failure in every modern runtime, not merely a visual glitch).
 import { describe, expect, it, vi } from 'vitest';
-import { TreeView } from '../src/Tree';
+import { TreeView, type TreeNode } from '../src/Tree';
 
 const loadingOf = (tree: TreeView): Set<string> =>
   (tree as unknown as { _loading: Set<string> })._loading;
@@ -21,6 +21,58 @@ function tap(tree: TreeView, localY = 0): void {
 }
 
 describe('TreeView lazy load', () => {
+  it('does not fire a second fetch when a node is re-expanded mid-flight (#690)', async () => {
+    let resolveFetch!: (v: TreeNode[]) => void;
+    const children = vi.fn(
+      () =>
+        new Promise<TreeNode[]>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const tree = new TreeView({
+      nodes: [{ id: 'p', label: 'parent', children }],
+      width: 200,
+      height: 120,
+    });
+
+    tap(tree, 0); // expand → fetch starts
+    expect(children).toHaveBeenCalledTimes(1);
+    tap(tree, 0); // collapse mid-flight
+    tap(tree, 0); // re-expand before resolution — must reuse the in-flight load
+    expect(children).toHaveBeenCalledTimes(1);
+    expect(loadingOf(tree).has('p')).toBe(true);
+
+    resolveFetch([{ id: 'c', label: 'child' }]);
+    await vi.waitFor(() => expect(loadingOf(tree).has('p')).toBe(false));
+
+    // The re-expansion survives the late resolution and the child renders.
+    expect(expandedOf(tree).has('p')).toBe(true);
+    expect(rowsOf(tree).some((r) => r.node.id === 'c')).toBe(true);
+  });
+
+  it('allows a fresh fetch after an earlier load fully resolved (#690 guard must not stick)', async () => {
+    // Guards against "fixing" #690 by latching forever: once `_loading`
+    // clears (here: rejection path from the prior fix), re-expanding must
+    // retry exactly like before.
+    const children = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue([{ id: 'c', label: 'child' }]);
+    const tree = new TreeView({
+      nodes: [{ id: 'p', label: 'parent', children }],
+      width: 200,
+      height: 120,
+    });
+
+    tap(tree, 0);
+    await vi.waitFor(() => expect(loadingOf(tree).has('p')).toBe(false));
+    tap(tree, 0); // collapsed by the rejection handler; expand again
+    await vi.waitFor(() => {
+      expect(children).toHaveBeenCalledTimes(2);
+      expect(rowsOf(tree).some((r) => r.node.id === 'c')).toBe(true);
+    });
+  });
+
   it('clears the loading state when a lazy load rejects', async () => {
     const children = vi.fn().mockRejectedValue(new Error('boom'));
     const tree = new TreeView({
