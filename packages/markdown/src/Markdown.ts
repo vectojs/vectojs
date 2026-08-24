@@ -596,7 +596,8 @@ export class Markdown extends UIComponent {
    * colors, fonts and sizes at build time, so assigning this after construction
    * would paint blocks built afterwards in the new palette while everything
    * earlier kept the old one. Exposed read-only to keep that trap unreachable
-   * (#657); pass the palette you want at construction.
+   * (#657); the supported post-construction path is {@link setTheme}, which
+   * re-renders instead of leaving blocks half-migrated.
    *
    * Backed by {@link currentTheme} rather than a `readonly` field because the
    * blockquote arm legally swaps the render-time theme for its own subtree and
@@ -606,6 +607,34 @@ export class Markdown extends UIComponent {
     return this.currentTheme;
   }
   private currentTheme: Required<MarkdownTheme>;
+  /**
+   * Swap the document theme and rebuild every rendered block.
+   *
+   * Accepts the same shapes as {@link MarkdownOptions.theme}: a preset name or
+   * a full/partial {@link MarkdownTheme}, resolved through
+   * {@link resolvePresetTheme}. This is the only supported way to change theme
+   * after construction — {@link theme} is a read-only view (#657) precisely so
+   * tokens cannot be swapped underneath already-built blocks without the
+   * rebuild performed here.
+   *
+   * The rebuild goes through {@link setContent} rather than an in-place
+   * repaint: entities capture colors and fonts at build time, so nothing short
+   * of re-rendering applies a palette, and an active stream needs the same
+   * teardown an explicit content replacement gets.
+   *
+   * @returns `this` for chaining.
+   */
+  public setTheme(theme: MarkdownThemePresetName | MarkdownTheme): this {
+    this.assertNotInStableCallback('setTheme');
+    const next = resolvePresetTheme(theme);
+    // The content Stack's gap is seeded from `blockGap` in the constructor and
+    // renderMarkdown never revisits it, so carry it across here or a theme with
+    // different inter-block spacing renders with the old stride.
+    if (next.blockGap !== this.currentTheme.blockGap) this.content.gap = next.blockGap;
+    this.currentTheme = next;
+    this.setContent(this.rawMarkdown);
+    return this;
+  }
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
   /**

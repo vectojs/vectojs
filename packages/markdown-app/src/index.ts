@@ -1,9 +1,4 @@
-import {
-  Markdown,
-  PRESET_THEMES,
-  type MarkdownThemePresetName,
-  resolvePresetTheme,
-} from '@vectojs/markdown';
+import { Markdown, PRESET_THEMES, type MarkdownThemePresetName } from '@vectojs/markdown';
 import {
   DOCUMENT_SCROLL_PHYSICS,
   Dropdown,
@@ -151,9 +146,9 @@ export class MarkdownApp extends UIComponent {
     }
     if (this.theme === theme) return this;
     this.theme = theme;
-    this.preview.theme = resolvePresetTheme(theme);
-    // Rebuild so existing blocks receive the new numeric theme tokens too.
-    this.preview.setContent(this.source.value);
+    // Markdown.setTheme re-renders, so existing blocks receive the new numeric
+    // theme tokens too.
+    this.preview.setTheme(theme);
     this.scene?.markDirty();
     return this;
   }
