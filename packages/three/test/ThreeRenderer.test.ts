@@ -356,6 +356,58 @@ describe('ThreeRenderer', () => {
     }
   });
 
+  it('gradient fillText keys the cache on draw position', () => {
+    const created: number[][] = [];
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type: string) {
+      if (type === '2d') {
+        return {
+          font: '',
+          fillStyle: '',
+          measureText: () => ({ width: 100 }),
+          fillText: () => {},
+          scale: () => {},
+          createLinearGradient: (...coords: number[]) => {
+            created.push(coords);
+            return { addColorStop: () => {} };
+          },
+        } as any;
+      }
+      return originalGetContext.apply(this, arguments as any);
+    };
+
+    try {
+      const grad = renderer.createLinearGradient(100, 20, 200, 20, [
+        { stop: 0, color: '#ff0000' },
+        { stop: 1, color: '#0000ff' },
+      ]);
+      renderer.fillText('grad', 100, 50, '16px sans-serif', grad);
+      // Same text/font/gradient at a second location: the gradient axis is
+      // translated per draw, so this must rasterize its own phase — reusing
+      // the first entry would show the first location's colors here.
+      renderer.fillText('grad', 300, 50, '16px sans-serif', grad);
+
+      expect((renderer as any).textTextureCache.size).toBe(2);
+      // The two rasters sampled different axis translations (fontSize 16 →
+      // offset y = 34 for both draws).
+      expect(created[0]).toEqual([0, -14, 100, -14]);
+      expect(created[1]).toEqual([-200, -14, -100, -14]);
+
+      // Redrawing at the first position still hits the existing entry.
+      renderer.fillText('grad', 100, 50, '16px sans-serif', grad);
+      expect((renderer as any).textTextureCache.size).toBe(2);
+      expect(created.length).toBe(2);
+    } finally {
+      HTMLCanvasElement.prototype.getContext = originalGetContext;
+    }
+  });
+
+  it('solid-color fillText shares one texture across draw positions', () => {
+    renderer.fillText('fps: 60', 10, 10, '16px sans-serif', '#fff');
+    renderer.fillText('fps: 60', 200, 80, '16px sans-serif', '#fff');
+    expect((renderer as any).textTextureCache.size).toBe(1);
+  });
+
   it('clip() scales the scissor by the renderer pixel ratio, not window DPR', () => {
     renderer.renderer.setPixelRatio(2); // e.g. ThreeAdapter offscreen at fixed ratio
     (window as any).devicePixelRatio = 3; // must be ignored

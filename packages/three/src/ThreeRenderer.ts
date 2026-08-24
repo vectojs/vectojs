@@ -973,7 +973,17 @@ export class ThreeRenderer implements IRenderer {
     // on HiDPI or waste resolution on a 1x display). Gradient fills key on
     // their full definition so distinct gradients never share a raster.
     const fillKey = gradient ? this.gradientCacheKey(gradient) : fillCol;
-    const cacheKey = `${dpr}|${font}|${fillKey}|${text}`;
+    const fontSize = parseFontSize(font);
+    // A gradient is baked into the raster with its axis translated by the
+    // draw position (createTextGradient), so two draws of the same
+    // text/font/gradient at different positions sample different phases —
+    // the key must carry that offset or the second location silently reuses
+    // the first location's colors. Solid colors are position-independent, so
+    // they keep sharing one raster across draws. Offsets are rounded: sub-pixel
+    // travel shares a raster (phase error ≤ 0.5px, imperceptible) instead of
+    // growing an entry per fractional position.
+    const positionKey = gradient ? `@${Math.round(x)},${Math.round(y - fontSize)}` : '';
+    const cacheKey = `${dpr}|${font}|${fillKey}|${text}${positionKey}`;
     let entry = this.textTextureCache.get(cacheKey);
     if (entry) {
       // Refresh LRU order (Map iteration order is insertion order).
@@ -985,7 +995,6 @@ export class ThreeRenderer implements IRenderer {
       ctx.font = font;
 
       const width = Math.max(1, Math.ceil(ctx.measureText(text).width));
-      const fontSize = parseFontSize(font);
       const height = Math.max(1, Math.ceil(fontSize * 1.5));
       // Rasterize at device-pixel resolution: a CSS-pixel backing store gets
       // upscaled on HiDPI displays and renders the glyphs blurry. The plane
@@ -1018,7 +1027,7 @@ export class ThreeRenderer implements IRenderer {
       }
     }
 
-    const { texture, width, height, fontSize } = entry;
+    const { texture, width, height } = entry;
 
     const material = new THREE.MeshBasicMaterial({
       map: texture,
