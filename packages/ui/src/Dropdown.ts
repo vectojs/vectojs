@@ -9,6 +9,8 @@ export class Dropdown extends UIComponent {
   private button: Button;
   private activeMenu: Stack | null = null;
   private activeBackdrop: Entity | null = null;
+  /** Document-level Escape handler while the menu is open (see openMenu). */
+  private menuKeyHandler: ((event: KeyboardEvent) => void) | null = null;
   private highlightedIndex: number = -1;
 
   /**
@@ -126,6 +128,14 @@ export class Dropdown extends UIComponent {
         if (this.activeMenu) {
           this.closeMenu();
         }
+      } else if (key === 'Tab') {
+        // ARIA combobox: Tab always moves focus out of the combobox and must
+        // close the open menu when there is one. Let the native default run —
+        // swallowing it was what stranded keyboard users on a menu they could
+        // no longer reach by keyboard once focus left (#693).
+        if (this.activeMenu) {
+          this.closeMenu();
+        }
       }
     });
 
@@ -136,6 +146,13 @@ export class Dropdown extends UIComponent {
 
   public getValue(): string {
     return this.selectedValue;
+  }
+
+  public override destroy(): void {
+    // A dropdown destroyed with its menu open must not leave the document-level
+    // Escape listener (or the overlay parts) behind.
+    this.closeMenu();
+    super.destroy();
   }
 
   public getA11yAttributes() {
@@ -173,7 +190,7 @@ export class Dropdown extends UIComponent {
         return true;
       }
       render() {} // Invisible
-    })('dropdown-backdrop');
+    })(`${this.id}-backdrop`);
     backdrop.width = scene.width;
     backdrop.height = scene.height;
     backdrop.interactive = true;
@@ -251,7 +268,23 @@ export class Dropdown extends UIComponent {
     this.activeBackdrop = backdrop;
     this.activeMenu = menu;
     this.highlightedIndex = this.options.indexOf(this.selectedValue);
+    if (this.highlightedIndex === -1) this.highlightedIndex = 0;
     this.updateMenuHighlight();
+
+    // While the menu is open, Escape must close it regardless of where focus
+    // sits: Tab legitimately moves focus out of the combobox (ARIA combobox
+    // requires Tab to close the menu), and once focus is elsewhere the
+    // entity-level handler never sees the key — the full-screen backdrop has
+    // no keyboard path of its own. Same document-level pattern as Modal's trap.
+    if (typeof document !== 'undefined' && !this.menuKeyHandler) {
+      this.menuKeyHandler = (event: KeyboardEvent): void => {
+        if (!this.activeMenu || event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.closeMenu();
+      };
+      document.addEventListener('keydown', this.menuKeyHandler, true);
+    }
   }
 
   private updateMenuHighlight() {
@@ -276,6 +309,12 @@ export class Dropdown extends UIComponent {
   }
 
   private closeMenu() {
+    // Tear the document listener down even without a scene, so an owner that
+    // destroys the dropdown mid-open cannot strand it (Modal-trap shape).
+    if (this.menuKeyHandler && typeof document !== 'undefined') {
+      document.removeEventListener('keydown', this.menuKeyHandler, true);
+      this.menuKeyHandler = null;
+    }
     const scene = this.scene;
     if (!scene) return;
     if (this.activeBackdrop) {

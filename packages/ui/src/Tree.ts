@@ -168,6 +168,15 @@ export class TreeView extends UIComponent {
     this._loaded.clear();
     this._selectedId = null;
     this._buildRows();
+    // The old offset can sit past the new content height; `update()` settles
+    // onto the stale `_targetY`, `_visibleRange()` then returns start > end and
+    // `_syncHotspots` pops every hotspot — a blank, untappable control with no
+    // recovery path on touch (wheel/drag are the only other clamp sites).
+    this._clamp();
+    this._scrollY = this._targetY;
+    // The highlight may point at an id that no longer exists; it is guarded on
+    // read but stale — drop it so the first render is consistent.
+    this._activeId = null;
     this.scene?.markDirty();
   }
 
@@ -208,8 +217,19 @@ export class TreeView extends UIComponent {
     } else {
       this._expanded.add(id);
       this._onExpand?.(row.node);
-      // Trigger lazy load on first expand
-      if (typeof row.node.children === 'function' && !this._loaded.has(id)) {
+      // Trigger lazy load on the first expand — and only one fetch per id at
+      // a time: collapsing and re-expanding before the promise resolved used
+      // to pass the same `!loaded` guard again and invoke `children()` a
+      // second time; both continuations then ran `_loaded.set(id, …)`, so
+      // last-writer won and a stale response could overwrite fresh children.
+      // The `finally` below still clears `_loading`, so a retry after a
+      // rejection (or after a resolved load was cleared) stays one click away
+      // — this guard must not outlive the in-flight fetch (#690).
+      if (
+        typeof row.node.children === 'function' &&
+        !this._loaded.has(id) &&
+        !this._loading.has(id)
+      ) {
         // Tracked on the TreeView itself, not the FlatRow object: a sibling
         // lazy load resolving in the meantime calls _buildRows(), which
         // replaces `this._rows` with fresh objects — mutating `row.loading`
