@@ -1064,9 +1064,28 @@ function emitVList(
   // row first, then place. `\frac` (katex.scss:262), accents (:411),
   // `\sqrt` (:406) and `col-align-c` (:442) all rely on this; without it a
   // narrow numerator sits flush left instead of over the centre of the rule.
+  //
+  // Each aligned row is walked EXACTLY ONCE, into its own holding state at the
+  // row's final baseline. Once the widest row is known, the recorded
+  // placements are translated by the row indent and merged into the real
+  // state — the previous probe-then-reemit pattern walked every row's subtree
+  // twice, an O(rows · depth) nested cost paid on every `\frac`-bearing
+  // formula. Translation is sound because `walk` is affine in its starting
+  // `state.x` at fixed y: glyphs and plain rects/lines shift by dx, while
+  // fullWidth rects / fraction-endpoint lines / overlay windows defer to this
+  // vlist's extent below and ignore absolute x until resolution.
   const rowWidths: number[] = [];
+  const rowProbes: EmitState[] = [];
   if (align !== 'left') {
     for (const row of rows) {
+      const pstrut = (row.children ?? []).find(
+        (c): c is Span<HtmlDomNode> => c instanceof Span && c.hasClass('pstrut'),
+      );
+      const pstrutSize = pstrut ? parseEm(pstrut.style.height) : 0;
+      // Baseline offset above the vlist baseline, in em.
+      const above = -(parseEm(row.style.top) + pstrutSize);
+      const rowY = y - above * UPEM * scale;
+
       const probe: EmitState = {
         x: 0,
         glyphs: [],
@@ -1078,27 +1097,22 @@ function emitVList(
       };
       const rowChain = [...classChain, ...row.classes];
       for (const child of row.children ?? []) {
-        walk(child, probe, rowChain, 0, scale, color);
+        walk(child, probe, rowChain, rowY, scale, color);
       }
       rowWidths.push(probe.x);
+      rowProbes.push(probe);
       // A measuring pass must not lose a genuinely missing glyph.
       for (const m of probe.missing) {
         state.missing.add(m);
+      }
+      for (const w of probe.warnedMetricsMisses) {
+        state.warnedMetricsMisses.add(w);
       }
     }
   }
   const widest = rowWidths.length ? Math.max(...rowWidths) : 0;
 
   for (const [i, row] of rows.entries()) {
-    const pstrut = (row.children ?? []).find(
-      (c): c is Span<HtmlDomNode> => c instanceof Span && c.hasClass('pstrut'),
-    );
-    const pstrutSize = pstrut ? parseEm(pstrut.style.height) : 0;
-
-    // Baseline offset above the vlist baseline, in em.
-    const above = -(parseEm(row.style.top) + pstrutSize);
-    const rowY = y - above * UPEM * scale;
-
     let indent = 0;
     if (align === 'center') {
       indent = (widest - rowWidths[i]) / 2;
@@ -1106,11 +1120,51 @@ function emitVList(
       indent = widest - rowWidths[i];
     }
 
-    state.x = startX + indent + parseEm(row.style.marginLeft) * UPEM * scale;
+    if (align === 'left') {
+      // The common case walks straight into the real state — no per-row
+      // holding arrays to allocate.
+      const pstrut = (row.children ?? []).find(
+        (c): c is Span<HtmlDomNode> => c instanceof Span && c.hasClass('pstrut'),
+      );
+      const pstrutSize = pstrut ? parseEm(pstrut.style.height) : 0;
+      const above = -(parseEm(row.style.top) + pstrutSize);
+      const rowY = y - above * UPEM * scale;
 
-    const rowChain = [...classChain, ...row.classes];
-    for (const child of row.children ?? []) {
-      walk(child, state, rowChain, rowY, scale, color);
+      state.x = startX + indent + parseEm(row.style.marginLeft) * UPEM * scale;
+
+      const rowChain = [...classChain, ...row.classes];
+      for (const child of row.children ?? []) {
+        walk(child, state, rowChain, rowY, scale, color);
+      }
+    } else {
+      // Replay the single walk with the now-known indent.
+      const probe = rowProbes[i];
+      const dx = startX + indent + parseEm(row.style.marginLeft) * UPEM * scale;
+      for (const g of probe.glyphs) {
+        g.x += dx;
+        state.glyphs.push(g);
+      }
+      for (const r of probe.rects) {
+        // fullWidth rects (plain rules + border edges) are resolved against
+        // this vlist's extent below; their pending x is ignored.
+        if (!r.fullWidth) r.x += dx;
+        state.rects.push(r);
+      }
+      for (const l of probe.lines) {
+        // fullWidth line endpoints are width fractions, not coordinates.
+        if (!l.fullWidth) {
+          l.x1 += dx;
+          l.x2 += dx;
+        }
+        state.lines.push(l);
+      }
+      for (const p of probe.paths) {
+        // Overlay windows are extent fractions; ordinary paths are absolute.
+        if (!p.overlay) p.x += dx;
+        state.paths.push(p);
+      }
+      maxX = Math.max(maxX, dx + probe.x + parseEm(row.style.marginRight) * UPEM * scale);
+      continue;
     }
 
     maxX = Math.max(maxX, state.x + parseEm(row.style.marginRight) * UPEM * scale);

@@ -49,6 +49,15 @@ export interface LayoutOptions {
  * Throws `ParseError` for invalid input. Callers that must not throw should catch
  * and degrade to rendering the TeX source verbatim, which is what
  * `@vectojs/markdown` already does for unknown commands.
+ *
+ * `\tag` semantics (display mode only): the tag text is parsed into a `tag`
+ * node whose body carries the equation, and the TAG IS MEASURED INTO THE
+ * FORMULA WIDTH — the laid-out tree advances past the tag as if it were
+ * in-flow content. KaTeX instead places the tag flush-right against the
+ * container with NO advance. This layout cannot express that distinction, so
+ * a caller needing true flush-right tags must render the equation without the
+ * tag and draw the tag itself from the source; it cannot recover the
+ * semantics from this result.
  */
 export function layout(tex: string, options: LayoutOptions = {}): DomSpan {
   const settings = new Settings({
