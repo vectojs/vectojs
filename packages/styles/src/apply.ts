@@ -1,6 +1,6 @@
 import type { Entity } from '@vectojs/core';
 import { composeFont } from './font';
-import { getTheme, trackVarKeys, VAR_RE, type Theme } from './theme';
+import { getTheme, HAS_VAR_RE, trackVarKeys, VAR_RE, type Theme } from './theme';
 import type { AppliedStyle, CssLength, Style } from './types';
 
 type ValueOf<T> = T[keyof T];
@@ -93,32 +93,51 @@ const RULES: Record<string, Rule> = {
 /** Font shorthand segments, special-cased in the apply loop. */
 const FONT_KEYS = ['fontFamily', 'fontSize', 'fontWeight'] as const;
 
-/** Resolve a single value against the theme; non-`var()` values pass through.
- *  A token whose value is itself a `var()` reference resolves transitively;
- *  `seen` carries the keys of the chain so far for cycle detection. */
-function resolveValue(value: unknown, theme: Theme, seen: Set<string> = new Set()): unknown {
-  if (typeof value !== 'string') return value;
-  const match = VAR_RE.exec(value);
-  if (!match) return value;
-  const key = match[1] ?? '';
+/** Global form of {@link HAS_VAR_RE} for substituting every embedded
+ *  `var(--…)` occurrence in one composite string. */
+const VAR_REPLACE_RE = /var\(--([\w-]+)\)/g;
+
+/** Resolve a single `var(--key)` reference to its token value, following
+ *  chains of token-references-token transitively. `seen` carries the keys of
+ *  the resolution path so far: a key re-entering its own path is a cycle and
+ *  fails loudly with the chain. The key is removed again once its subtree has
+ *  resolved, so sibling references to the same token are independent. */
+function resolveToken(key: string, theme: Theme, seen: Set<string>): unknown {
   const token = theme.tokens[key];
   if (token === undefined) {
     throw new TypeError(
       `@vectojs/styles: unknown token 'var(--${key})' — not present in the active theme`,
     );
   }
-  if (typeof token === 'string' && VAR_RE.test(token)) {
-    // A token referencing another token: resolve transitively. A one-level
-    // resolution returned the literal 'var(--b)' here, which Canvas2D
-    // silently ignores — the previous color kept rendering.
-    if (seen.has(key)) {
-      const chain = [...seen, key].map((k) => `var(--${k})`).join(' → ');
-      throw new TypeError(`@vectojs/styles: circular var() reference: ${chain}`);
-    }
-    seen.add(key);
-    return resolveValue(token, theme, seen);
+  if (seen.has(key)) {
+    const chain = [...seen, key].map((k) => `var(--${k})`).join(' → ');
+    throw new TypeError(`@vectojs/styles: circular var() reference: ${chain}`);
   }
-  return token;
+  seen.add(key);
+  try {
+    return resolveValue(token, theme, seen);
+  } finally {
+    seen.delete(key);
+  }
+}
+
+/** Resolve a single value against the theme; non-`var()` values pass through. *  A value that is exactly a `var(--key)` reference resolves to the token's
+ *  own value (a number stays a number). A composite string with `var()`
+ *  embedded somewhere (e.g. `'rgba(var(--rgb), 0.4)'`) resolves every
+ *  occurrence by substituting the stringified token values — leaving such a
+ *  string unresolved used to write literal garbage to the entity field while
+ *  Canvas2D silently kept the old value (GH-608). */
+function resolveValue(value: unknown, theme: Theme, seen: Set<string> = new Set()): unknown {
+  if (typeof value !== 'string') return value;
+  const match = VAR_RE.exec(value);
+  if (match) return resolveToken(match[1] ?? '', theme, seen);
+  if (!HAS_VAR_RE.test(value)) return value;
+  // Reset lastIndex defensively even though VAR_REPLACE_RE is module-local and
+  // replace() always runs it to completion from zero.
+  VAR_REPLACE_RE.lastIndex = 0;
+  return value.replace(VAR_REPLACE_RE, (_whole: string, key: string) =>
+    String(resolveToken(key, theme, seen)),
+  );
 }
 
 /** Resolve `var()` references in a style object, in place of the caller's object. */
@@ -190,7 +209,16 @@ export function applyStyleResolved(entity: Entity, style: Style): AppliedStyle {
               `use a unit-bearing token (e.g. '16px') so the composed font string stays valid`,
           );
         }
-        fontChanges.fontSize = String(value);
+        const size = String(value);
+        // The Style type narrows fontSize to `${number}px`; JS callers and
+        // token values bypass the type, so enforce it at runtime too — '2em'
+        // used to compose a shorthand Canvas2D silently drops (GH-608).
+        if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)px$/.test(size)) {
+          throw new TypeError(
+            `@vectojs/styles: fontSize expects a px string like '16px' (got ${JSON.stringify(size)})`,
+          );
+        }
+        fontChanges.fontSize = size;
       }
       if (key === 'fontWeight') fontChanges.fontWeight = String(value);
       applied.push(key);

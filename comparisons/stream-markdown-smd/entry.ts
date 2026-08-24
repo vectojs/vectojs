@@ -42,10 +42,45 @@
  *   arrived at independently, and the characters-fed columns below show the two
  *   agreeing to the byte.
  *
- * Both are driven through the same counting sink as every other arm, so neither
- * pays for rendering: `streamdown`'s React/remark stage and `markstream`'s Vue
- * stage are outside the measured region on purpose, exactly as our canvas and
- * entity work are.
+ * Three more shipped libraries round out the field (added 2026-08):
+ *
+ * - `incremark` (@incremark/core 0.3.10) — an incremental parser built for AI
+ *   streaming, marked-engine like ours. Its `append()` re-parses the stable
+ *   region between the last boundary and the current one each call, so it sits
+ *   in the same strategy class as `vecto`/`markstream`; its per-call definition
+ *   maps and AST rebuilds are part of what is measured.
+ * - `react-markdown` (10.1.0) — the most common choice for rendering markdown
+ *   in React. It has no separable parser export and no cross-render cache: the
+ *   synchronous `Markdown` component runs remark over the **whole accumulated
+ *   document** every render. This arm calls that exact component function and
+ *   counts the element tree it returns; React reconciliation and DOM commit
+ *   stay outside, exactly as our entity building does.
+ * - `@ant-design/x-markdown` (2.9.0, Ant Design X) — an AI-chat renderer whose
+ *   `useStreaming` hook is genuinely incremental (a per-character recognizer
+ *   caches completed syntax), but whose component then re-runs a full
+ *   marked-based parse to HTML plus sanitisation on every chunk. This arm
+ *   renders the real component per chunk through `flushSync`, so both stages
+ *   are inside the timed region; the React scheduling constant that adds is
+ *   stated here rather than subtracted.
+ *
+ * All marked-based arms (`vecto`, `wholeDocument`, `streamdown`, `incremark`,
+ * `x-markdown`) lex through the SAME workspace copy of `marked`, aliased at
+ * bundle time, so engine constant factors cannot masquerade as strategy
+ * differences. `react-markdown` uses micromark/remark, which is the point of
+ * including it.
+ *
+ * Libraries under references/ that CANNOT run this axis are excluded with a
+ * reason rather than silently dropped: `FluidMarkdown` is native
+ * iOS/Android/HarmonyOS (no browser runtime), and `react-native-streamdown`
+ * is a React Native port whose web twin `streamdown` is already measured
+ * above.
+ *
+ * All are driven through the same counting sink as every other arm, so none
+ * pays for rendering beyond what its own shipped pipeline performs before
+ * producing output: `streamdown`'s per-block remark→React stage is memoised
+ * and therefore outside the measured region, while the two React arms above
+ * are timed at exactly the boundary their own code defines. Neither pays for
+ * our canvas/entity work, exactly as our arm does not pay for their DOM.
  *
  * That is the axis measured here: **cost to stream a document in N chunks**,
  * which is a property of the strategy, not of either parser's constant factor.
@@ -73,6 +108,15 @@
  * `workerParity` arm below quantifies the postMessage overhead that the real
  * pipeline adds on top.
  */
+import { createElement } from 'react';
+// flushSync lives on react-dom, NOT on react-dom/client (which only exports
+// createRoot/hydrateRoot) — importing it from there bundles undefined.
+import { flushSync } from 'react-dom';
+import { createRoot } from 'react-dom/client';
+import XMarkdown from '@ant-design/x-markdown';
+import { createIncremarkParser } from '@incremark/core';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Lexer, marked } from 'marked';
 import remend from 'remend';
 import { getMarkdown, parseMarkdownToStructure } from 'stream-markdown-parser';
@@ -506,6 +550,257 @@ function runMarkstream(chunks: string[]): {
 }
 
 /**
+ * Deep-compare helper for ASTs that carry position metadata. incremark computes
+ * node positions per segment parse, so a block finalised mid-stream carries the
+ * offsets of the segment it was parsed in, which legitimately differ from the
+ * same block one-shot over the whole document. Positions are provenance, not
+ * semantics — they are stripped before comparison so the gate stays structural.
+ */
+function stripPositions(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripPositions);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k !== 'position') out[k] = stripPositions(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * @incremark/core 0.3.10: feed each chunk once into a persistent parser, then
+ * `finalize()`.
+ *
+ * `append()` re-parses the stable region between the previous boundary and the
+ * current one on every call (its `astBuilder.parse(stableText)`), plus the
+ * pending tail, and rebuilds definition maps and an aggregate AST across ALL
+ * completed blocks per call — those O(document) bookkeeping passes are part of
+ * its shipped per-chunk cost and stay inside the timed region.
+ *
+ * The counting sink consumes `IncrementalUpdate`: completed + pending blocks
+ * per update, `rawText` lengths for text characters.
+ */
+function runIncremark(chunks: string[]): { result: ArmResult; sink: Sink; blocks: number } {
+  const samples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+  let lastBlocks = 0;
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const sink: Sink = { tokens: 0, textChars: 0 };
+    // Fresh parser per trial, like every other arm: trial N must never read
+    // trial N-1's incremental state.
+    const parser = createIncremarkParser({ gfm: true });
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      const update = parser.append(c);
+      sink.tokens = update.completed.length + update.pending.length;
+      let chars = 0;
+      for (const b of update.completed) chars += b.rawText.length;
+      for (const b of update.pending) chars += b.rawText.length;
+      sink.textChars = chars;
+    }
+    const fin = parser.finalize();
+    sink.tokens = fin.ast.children.length;
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) samples.push(elapsed);
+    lastSink = sink;
+    lastBlocks = fin.ast.children.length;
+  }
+
+  const ms = median(samples);
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+    blocks: lastBlocks,
+  };
+}
+
+/** Counts elements and text characters in the React element tree an FC returned. */
+function countReactTree(node: unknown): { elements: number; textChars: number } {
+  let elements = 0;
+  let textChars = 0;
+  const walk = (n: unknown): void => {
+    if (n === null || n === undefined || typeof n === 'boolean') return;
+    if (typeof n === 'string' || typeof n === 'number') {
+      textChars += String(n).length;
+      return;
+    }
+    if (Array.isArray(n)) {
+      for (const child of n) walk(child);
+      return;
+    }
+    if (typeof n === 'object') {
+      const el = n as { props?: { children?: unknown } };
+      if (el.props !== undefined && el.props !== null && typeof el.props === 'object') {
+        elements++;
+        walk(el.props.children);
+      }
+    }
+  };
+  walk(node);
+  return { elements, textChars };
+}
+
+/**
+ * react-markdown 10.1.0: call its synchronous `Markdown` component directly per
+ * chunk with the accumulated document.
+ *
+ * This is the library's real per-render work minus only what React itself does
+ * with the return value: `Markdown` builds a fresh unified processor
+ * (remark-parse + remark-gfm + remark-rehype), parses the WHOLE accumulated
+ * document, runs the tree transforms synchronously, and converts hast to React
+ * elements — no cross-render cache exists to exclude anything. There is no
+ * hooks/state in this path, so invoking the function component outside a
+ * renderer is exact, not an approximation.
+ *
+ * The element-tree counting walk is inside the timed loop, mirroring how every
+ * other arm counts its output inside the region.
+ */
+function runReactMarkdown(chunks: string[]): { result: ArmResult; sink: Sink } {
+  const samples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const sink: Sink = { tokens: 0, textChars: 0 };
+    let acc = '';
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      acc += c;
+      const tree = ReactMarkdown({ children: acc, remarkPlugins: [remarkGfm] });
+      const counted = countReactTree(tree);
+      sink.tokens = counted.elements;
+      sink.textChars = counted.textChars;
+    }
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) samples.push(elapsed);
+    lastSink = sink;
+  }
+
+  const ms = median(samples);
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+  };
+}
+
+/**
+ * A detached React root rendering the real `@ant-design/x-markdown` component.
+ *
+ * Detached container: React commits fine without the node being in the
+ * document, and keeping it out of layout keeps the page (and the other arms'
+ * timings) unaffected by this arm's DOM.
+ */
+function createXMarkdownHost(): {
+  step: (acc: string) => void;
+  html: () => string;
+  sink: () => Sink;
+  dispose: () => void;
+} {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  return {
+    step(acc: string): void {
+      // `hasNextChunk: true` enables x-markdown's streaming cache path
+      // (`useStreaming`). flushSync makes each chunk a discrete synchronous
+      // render, so the timing attributes the whole shipped pipeline — cache
+      // update, marked re-parse to HTML, sanitisation, element construction —
+      // to the chunk that triggered it.
+      const el = createElement(XMarkdown, {
+        content: acc,
+        streaming: { hasNextChunk: true },
+      });
+      flushSync(() => {
+        root.render(el);
+      });
+      // useStreaming computes its output inside a passive effect, so the
+      // setStreamingOutput it calls lands AFTER this flushSync has returned and
+      // is only processed by the NEXT render. Left alone, every one of up to
+      // 784 chunks per trial leaves pending work behind and React's nested-
+      // update counter (limit 50) trips with "Maximum update depth exceeded"
+      // around chunk 52 — reproduced standalone before choosing this fix. A
+      // second flushSync re-rendering the SAME element forces that pending
+      // update through synchronously, which both resets the counter and makes
+      // the innerHTML read below see the fully-settled output. The re-render
+      // bails out on identical props (microseconds); it is part of the driver,
+      // not of anything the library does.
+      flushSync(() => {
+        root.render(el);
+      });
+    },
+    html: () => container.innerHTML,
+    sink: () => ({
+      tokens: container.querySelectorAll('*').length,
+      textChars: (container.textContent ?? '').length,
+    }),
+    dispose(): void {
+      root.unmount();
+      container.remove();
+    },
+  };
+}
+
+/**
+ * `@ant-design/x-markdown` 2.9.0: render the real component per chunk.
+ *
+ * Unlike `react-markdown`, this library cannot be driven without a renderer:
+ * its incremental layer lives behind `useState`/`useEffect` in `useStreaming`.
+ * The measured cost therefore includes React's scheduling constant for a
+ * single-component tree — a stated scope difference, not a hidden one. What it
+ * buys is honesty about the rest: their per-chunk work also includes a full
+ * marked re-parse of the completed stream PLUS sanitisation PLUS HTML-to-
+ * element conversion, none of which any internal export allows isolating.
+ */
+function runXMarkdown(chunks: string[]): { result: ArmResult; sink: Sink; html: string } {
+  const samples: number[] = [];
+  let lastSink: Sink = { tokens: 0, textChars: 0 };
+  let lastHtml = '';
+
+  for (let t = 0; t < WARMUPS + TRIALS; t++) {
+    const host = createXMarkdownHost();
+    let acc = '';
+
+    const t0 = performance.now();
+    for (const c of chunks) {
+      acc += c;
+      host.step(acc);
+    }
+    const elapsed = performance.now() - t0;
+    if (t >= WARMUPS) samples.push(elapsed);
+    // Counting happens once per trial, OUTSIDE the timed region: unlike the
+    // other arms there is no cheap handle on the output during the loop, and a
+    // DOM walk per chunk would add our instrumentation cost to their number.
+    lastSink = host.sink();
+    lastHtml = host.html();
+    host.dispose();
+  }
+
+  const ms = median(samples);
+  return {
+    result: {
+      totalMs: ms,
+      perChunkUs: (ms * 1000) / chunks.length,
+      samples,
+      trimmedMeanMs: trimmedMean(samples),
+    },
+    sink: lastSink,
+    html: lastHtml,
+  };
+}
+
+/**
  * Characters each competitor hands to its own tokenizer across the stream.
  *
  * This is the mechanism column, and it is the reason the arms above can be
@@ -523,13 +818,27 @@ function runMarkstream(chunks: string[]): {
  *
  * Each patch asserts it actually fired, because a silently-unpatched arm would
  * report 0 characters and read as infinitely efficient.
+ *
+ * For the 2026-08 arms: `incremark` and `x-markdown` both lex through the same
+ * shared workspace copy of `marked` (see build.ts alias), so a single
+ * `Lexer.prototype.lex` patch observes them exactly — instances are what
+ * `marked.lexer()` itself creates, so instance-level is the safe hook.
+ * `react-markdown` parses through micromark inside remark-parse; there is no
+ * equivalent seam worth patching, so its characters-fed figure is computed
+ * arithmetically from its documented behavior (whole document re-parsed every
+ * chunk), the same way `wholeDocumentCharsLexed` is derived below.
  */
 function measureCompetitorCharsFed(chunks: string[]): {
   streamdownLexChars: number;
   streamdownRemendChars: number;
   markstreamTokenizerChars: number;
+  incremarkLexerChars: number;
+  xmarkdownMarkedChars: number;
+  reactMarkdownParseChars: number;
   streamdownPatchFired: boolean;
   markstreamPatchFired: boolean;
+  incremarkPatchFired: boolean;
+  xmarkdownPatchFired: boolean;
 } {
   let streamdownLexChars = 0;
   let lexCalls = 0;
@@ -583,12 +892,59 @@ function measureCompetitorCharsFed(chunks: string[]): {
     md.block.parse = orig as typeof md.block.parse;
   }
 
+  // incremark: instance-level marked hook. Its MarkedAstBuilder constructs
+  // `new Lexer(...)` per parse and calls `.lex(text)` on it, so prototype-level
+  // is where every parse lands regardless of internal options plumbing.
+  let incremarkLexerChars = 0;
+  let incremarkLexCalls = 0;
+  {
+    const proto = Lexer.prototype as unknown as { lex: (src: string) => unknown };
+    const orig = proto.lex;
+    proto.lex = function (this: unknown, src: string) {
+      if (typeof src === 'string') incremarkLexerChars += src.length;
+      incremarkLexCalls++;
+      return orig.call(this, src);
+    };
+    const parser = createIncremarkParser({ gfm: true });
+    for (const c of chunks) parser.append(c);
+    parser.finalize();
+    proto.lex = orig;
+  }
+
+  // x-markdown: same shared-copy hook. Only its `parser.parse()` stage touches
+  // marked — the useStreaming cache layer is a hand-written recognizer that
+  // never lexes — so this counts exactly the whole-document re-parse cost.
+  let xmarkdownMarkedChars = 0;
+  let xmarkdownLexCalls = 0;
+  {
+    const proto = Lexer.prototype as unknown as { lex: (src: string) => unknown };
+    const orig = proto.lex;
+    proto.lex = function (this: unknown, src: string) {
+      if (typeof src === 'string') xmarkdownMarkedChars += src.length;
+      xmarkdownLexCalls++;
+      return orig.call(this, src);
+    };
+    const host = createXMarkdownHost();
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      host.step(acc);
+    }
+    host.dispose();
+    proto.lex = orig;
+  }
+
   return {
     streamdownLexChars,
     streamdownRemendChars,
     markstreamTokenizerChars,
+    incremarkLexerChars,
+    xmarkdownMarkedChars,
+    reactMarkdownParseChars: chunks.reduce((sum, _c, i) => sum + (i + 1) * CHUNK_CHARS, 0),
     streamdownPatchFired: lexCalls > 0,
     markstreamPatchFired: blockCalls > 0 && markstreamTokenizerChars > 0,
+    incremarkPatchFired: incremarkLexCalls > 0 && incremarkLexerChars > 0,
+    xmarkdownPatchFired: xmarkdownLexCalls > 0 && xmarkdownMarkedChars > 0,
   };
 }
 
@@ -631,6 +987,23 @@ interface Gates {
   streamdownMatchesOneShot: boolean;
   /** `markstream`'s final node structure is identical to a one-shot parse. */
   markstreamMatchesOneShot: boolean;
+  /**
+   * `incremark`'s final AST after streamed append+finalize is structurally
+   * identical to its own public `render()` one-shot over the whole document.
+   * Position metadata is stripped before comparison (see stripPositions).
+   */
+  incremarkMatchesOneShot: boolean;
+  /**
+   * react-markdown's last streamed render (the element tree its synchronous
+   * component returns for the full document) is identical to a direct one-shot
+   * call on the finished document.
+   */
+  reactMarkdownMatchesOneShot: boolean;
+  /**
+   * x-markdown's final rendered innerHTML after streaming equals a fresh
+   * component render of the complete document in one step.
+   */
+  xmarkdownMatchesOneShot: boolean;
   /**
    * Both competitor characters-fed patches actually fired.
    *
@@ -684,6 +1057,42 @@ function evaluateGates(
     parseMarkdownToStructure(doc, getMarkdown('gate-oneshot'), { final: true }),
   );
 
+  // incremark gate: streamed append/finalize vs its own public render() one-shot.
+  const incremarkStreamed = (() => {
+    const parser = createIncremarkParser({ gfm: true });
+    for (const c of chunks) parser.append(c);
+    return parser.finalize();
+  })();
+  const incremarkOneShot = createIncremarkParser({ gfm: true }).render(doc);
+
+  // react-markdown gate: last streamed component output vs a one-shot call.
+  let rmStreamed: unknown;
+  {
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      rmStreamed = ReactMarkdown({ children: acc, remarkPlugins: [remarkGfm] });
+    }
+  }
+  const rmOneShot = ReactMarkdown({ children: doc, remarkPlugins: [remarkGfm] });
+
+  // x-markdown gate: final streamed innerHTML vs a fresh one-step render.
+  let xmStreamedHtml = '';
+  {
+    const host = createXMarkdownHost();
+    let acc = '';
+    for (const c of chunks) {
+      acc += c;
+      host.step(acc);
+    }
+    xmStreamedHtml = host.html();
+    host.dispose();
+  }
+  const xmOneShotHost = createXMarkdownHost();
+  xmOneShotHost.step(doc);
+  const xmOneShotHtml = xmOneShotHost.html();
+  xmOneShotHost.dispose();
+
   return {
     sameSource: chunks.join('') === doc,
     bothParsed: smdSinkResult.tokens > 0 && vectoSink.tokens > 0 && oldSink.tokens > 0,
@@ -697,7 +1106,17 @@ function evaluateGates(
     streamed: chunks.length > 1,
     streamdownMatchesOneShot: JSON.stringify(sdStreamed) === JSON.stringify(sdOneShot),
     markstreamMatchesOneShot: msStreamed === msOneShot,
-    charsFedPatchesFired: charsFed.streamdownPatchFired && charsFed.markstreamPatchFired,
+    incremarkMatchesOneShot:
+      JSON.stringify(stripPositions(incremarkStreamed.ast)) ===
+      JSON.stringify(stripPositions(incremarkOneShot.ast)),
+    reactMarkdownMatchesOneShot:
+      JSON.stringify(rmStreamed) === JSON.stringify(rmOneShot) && rmStreamed !== undefined,
+    xmarkdownMatchesOneShot: xmStreamedHtml === xmOneShotHtml && xmStreamedHtml.length > 0,
+    charsFedPatchesFired:
+      charsFed.streamdownPatchFired &&
+      charsFed.markstreamPatchFired &&
+      charsFed.incremarkPatchFired &&
+      charsFed.xmarkdownPatchFired,
   };
 }
 
@@ -727,6 +1146,17 @@ interface Row {
    * the last safe block boundary. Same strategy class as `vecto`.
    */
   markstream: ArmResult;
+  /**
+   * @incremark/core 0.3.10: persistent parser, boundary-based incremental like
+   * `vecto`, with per-call definition-map/AST bookkeeping included.
+   */
+  incremark: ArmResult;
+  /** Blocks in incremark's final AST (its output unit, for context). */
+  incremarkBlocks: number;
+  /** react-markdown 10.1.0: whole-document remark pipeline per chunk. */
+  reactMarkdown: ArmResult;
+  /** @ant-design/x-markdown 2.9.0: full component render per chunk. */
+  xmarkdown: ArmResult;
   singleLex: ArmResult;
   prefixReuse: number;
   /**
@@ -745,6 +1175,18 @@ interface Row {
   /** Characters `remend()` scans across the stream — also O(document) per chunk. */
   streamdownRemendChars: number;
   markstreamTokenizerChars: number;
+  /** incremark's characters handed to the shared marked lexer across the stream. */
+  incremarkLexerChars: number;
+  /**
+   * x-markdown's characters handed to marked (its whole-document parser.parse
+   * stage; its cache layer reads each chunk once and never lexes).
+   */
+  xmarkdownMarkedChars: number;
+  /**
+   * react-markdown's characters handed to remark-parse, derived arithmetically:
+   * it re-parses the whole accumulated document every chunk.
+   */
+  reactMarkdownParseChars: number;
   /** Whether the boundary held for this document, or the instance degraded. */
   degraded: boolean;
   gates: Gates;
@@ -773,6 +1215,9 @@ async function main(): Promise<void> {
     const oldRun = runWholeDocumentStrategy(chunks);
     const streamdownRun = runStreamdown(chunks);
     const markstreamRun = runMarkstream(chunks);
+    const incremarkRun = runIncremark(chunks);
+    const reactMarkdownRun = runReactMarkdown(chunks);
+    const xmarkdownRun = runXMarkdown(chunks);
     const singleLex = runSingleLex(doc);
 
     // Outside every timed loop: this installs monkey-patches, so timing through
@@ -792,12 +1237,19 @@ async function main(): Promise<void> {
       streamdown: streamdownRun.result,
       streamdownRemendMs: streamdownRun.remendOnlyMs,
       markstream: markstreamRun.result,
+      incremark: incremarkRun.result,
+      incremarkBlocks: incremarkRun.blocks,
+      reactMarkdown: reactMarkdownRun.result,
+      xmarkdown: xmarkdownRun.result,
       singleLex,
       prefixReuse: vectoRun.prefixReuse,
       charsLexed: vectoRun.charsLexed,
       streamdownLexChars: charsFed.streamdownLexChars,
       streamdownRemendChars: charsFed.streamdownRemendChars,
       markstreamTokenizerChars: charsFed.markstreamTokenizerChars,
+      incremarkLexerChars: charsFed.incremarkLexerChars,
+      xmarkdownMarkedChars: charsFed.xmarkdownMarkedChars,
+      reactMarkdownParseChars: charsFed.reactMarkdownParseChars,
       // What the old arm handed the lexer: every chunk saw the whole accumulated
       // document, so this is the sum of the growing prefix lengths.
       wholeDocumentCharsLexed: chunks.reduce((sum, _c, i) => sum + (i + 1) * CHUNK_CHARS, 0),
@@ -841,7 +1293,20 @@ async function main(): Promise<void> {
       '(marked Lexer.lex, markdown-it-ts md.block.parse), not its public API ' +
       "entry point: markstream's stream.parse receives the whole accumulated " +
       'document but internally re-tokenizes only a tail, so the API-level figure ' +
-      'would misreport a boundary parser as a whole-document one.',
+      'would misreport a boundary parser as a whole-document one. The 2026-08 ' +
+      'arms: incremark is driven at its public append/finalize API and includes ' +
+      'its per-call definition-map and aggregate-AST rebuilds; react-markdown ' +
+      'is its synchronous Markdown component called directly per chunk over the ' +
+      'whole accumulated document (whole remark pipeline plus hast-to-element ' +
+      'conversion; React reconciliation and DOM commit outside); x-markdown is ' +
+      'the real component rendered per chunk through flushSync, so its cache ' +
+      'layer, full marked re-parse, sanitisation and element construction are ' +
+      'all inside, and React scheduling for a single-component tree is a stated ' +
+      'overhead. All marked-based arms lex through the same workspace marked ' +
+      'copy (bundle alias), so engine constants cannot masquerade as strategy ' +
+      'differences. FluidMarkdown (native mobile) and react-native-streamdown ' +
+      '(React Native port; web twin already measured) cannot run this axis and ' +
+      'are excluded with reasons in comparisons/README.md.',
     chunkChars: CHUNK_CHARS,
     trials: TRIALS,
     warmups: WARMUPS,
@@ -863,6 +1328,9 @@ async function main(): Promise<void> {
           streamdownExponent: scalingExponent(rows, (r) => r.streamdown.totalMs),
           streamdownRemendExponent: scalingExponent(rows, (r) => r.streamdownRemendMs),
           markstreamExponent: scalingExponent(rows, (r) => r.markstream.totalMs),
+          incremarkExponent: scalingExponent(rows, (r) => r.incremark.totalMs),
+          reactMarkdownExponent: scalingExponent(rows, (r) => r.reactMarkdown.totalMs),
+          xmarkdownExponent: scalingExponent(rows, (r) => r.xmarkdown.totalMs),
           singleLexExponent: scalingExponent(rows, (r) => r.singleLex.totalMs),
           // The exponent is the claim this suite makes, so it is reported for the
           // characters handed to the lexer as well as for wall time. Wall time
@@ -874,6 +1342,9 @@ async function main(): Promise<void> {
             rows,
             (r) => r.markstreamTokenizerChars,
           ),
+          incremarkLexerCharsExponent: scalingExponent(rows, (r) => r.incremarkLexerChars),
+          xmarkdownMarkedCharsExponent: scalingExponent(rows, (r) => r.xmarkdownMarkedChars),
+          reactMarkdownParseCharsExponent: scalingExponent(rows, (r) => r.reactMarkdownParseChars),
         }
       : null,
     versions: {
@@ -882,6 +1353,11 @@ async function main(): Promise<void> {
       remend: '1.3.0',
       streamMarkdownParser: '1.2.0',
       markdownItTs: '1.0.7',
+      incremark: '0.3.10',
+      reactMarkdown: '10.1.0',
+      remarkGfm: '4.0.1',
+      antDesignXMarkdown: '2.9.0',
+      react: '19.2.8',
       marked: (marked as unknown as { defaults?: unknown }) ? 'see package.json' : 'unknown',
     },
   };

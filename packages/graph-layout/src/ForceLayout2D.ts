@@ -167,7 +167,7 @@ export class ForceLayout2D {
     // genuinely unknown endpoint throws before anything mutates. Forward
     // references within one batch stay valid.
     const UNKNOWN_ENDPOINT = Symbol('unknown');
-    const resolveEndpoint = (id: NodeId): number | string => {
+    const resolveEndpoint = (id: NodeId): number | string | typeof UNKNOWN_ENDPOINT => {
       const existing = this.nodeIndex.get(id);
       if (existing !== undefined) return existing;
       if (!seen.has(id)) return UNKNOWN_ENDPOINT;

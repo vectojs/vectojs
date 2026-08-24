@@ -24,6 +24,7 @@ const SAMPLE: KgGraphData = {
 class RecordingLayout implements GraphLayout {
   positions = new Float32Array();
   graphs: GraphData[] = [];
+  reheats: (number | undefined)[] = [];
 
   setGraph(data: GraphData): void {
     this.graphs.push(data);
@@ -35,6 +36,10 @@ class RecordingLayout implements GraphLayout {
 
   step(): boolean {
     return false;
+  }
+
+  reheat(alpha?: number): void {
+    this.reheats.push(alpha);
   }
 
   dispose = vi.fn();
@@ -52,7 +57,7 @@ describe('KnowledgeGraphModel', () => {
     await model.bootstrap(['a'], false);
     layout.positions[0] = 42;
     const first = await model.expand('a');
-    expect(first.state).toMatchObject({ status: 'partial', loaded: 1, total: 2, cursor: '1' });
+    expect(first.state).toMatchObject({ status: 'partial', loaded: 1, total: 2, cursor: '1:1' });
     expect(layout.positions[0]).toBe(42);
 
     const second = await model.expand('a');
@@ -143,5 +148,88 @@ describe('KnowledgeGraphModel', () => {
     resolvePage?.({ entity: SAMPLE.entities[0]!, neighbors: [], facts: [], hasMore: false });
     await pending;
     expect(model.entityCount).toBe(0);
+  });
+
+  it('discards a late page from a source that ignores AbortSignal', async () => {
+    let seenSignal: AbortSignal | undefined;
+    let resolvePage: ((value: KgNeighborhood) => void) | undefined;
+    const source: KgDataSource = {
+      getNodes: () => [],
+      // Deliberately ignores the signal and resolves whenever it pleases.
+      getNeighbors: (_id, options) =>
+        new Promise((resolve) => {
+          seenSignal = options?.signal;
+          resolvePage = resolve;
+        }),
+    };
+    const model = new KnowledgeGraphModel({ source });
+    const pending = model.expand('a');
+    model.cancelExpand('a');
+    expect(seenSignal?.aborted).toBe(true);
+    resolvePage?.({
+      entity: SAMPLE.entities[0]!,
+      neighbors: [SAMPLE.entities[2]!],
+      facts: [SAMPLE.facts[0]!],
+      hasMore: false,
+    });
+    const result = await pending;
+    expect(result.state).toMatchObject({ status: 'cancelled', loaded: 0 });
+    expect(result.addedEntities).toBe(0);
+    expect(result.addedFacts).toBe(0);
+    expect(model.entityCount).toBe(0);
+    expect(model.factCount).toBe(0);
+    model.dispose();
+  });
+
+  it('counts delivered facts per batch so overlapping neighborhoods keep progress', async () => {
+    const sharedFact = SAMPLE.facts[0]!;
+    const source: KgDataSource = {
+      getNodes: () => SAMPLE.entities.slice(0, 2),
+      getNeighbors: (_id, options) =>
+        Promise.resolve({
+          entity: SAMPLE.entities[0]!,
+          neighbors: [],
+          facts: [sharedFact],
+          hasMore: options?.cursor === undefined,
+          nextCursor: options?.cursor === undefined ? 'page-2' : undefined,
+        }),
+    };
+    const model = new KnowledgeGraphModel({ source });
+    await model.bootstrap(['a'], false);
+    const first = await model.expand('a');
+    expect(first.state).toMatchObject({ status: 'partial', loaded: 1 });
+    const second = await model.expand('a');
+    // The second page re-delivers an already-known fact: `loaded` must still
+    // advance by the batch union (net-new facts would report 0 forever).
+    expect(second.state).toMatchObject({ status: 'complete', loaded: 2 });
+    expect(model.factCount).toBe(1);
+    model.dispose();
+  });
+
+  it('drives the layout exactly once per expand (one setGraph + one reheat)', async () => {
+    const layout = new RecordingLayout();
+    const model = new KnowledgeGraphModel({
+      source: new MemoryDataSource(SAMPLE),
+      layout,
+      pageSize: 1,
+    });
+    await model.bootstrap(['a'], false); // initial build
+    const builds = layout.graphs.length;
+    const heats = layout.reheats.length;
+    await model.expand('a');
+    expect(layout.graphs.length).toBe(builds + 1);
+    expect(layout.reheats.length).toBe(heats + 1);
+    model.dispose();
+  });
+
+  it('does not dispose a layout it merely borrows', async () => {
+    const layout = new RecordingLayout();
+    const model = new KnowledgeGraphModel({
+      source: new MemoryDataSource(SAMPLE),
+      layout,
+    });
+    await model.bootstrap(['a'], false);
+    model.dispose();
+    expect(layout.dispose).not.toHaveBeenCalled();
   });
 });

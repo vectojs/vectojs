@@ -260,8 +260,13 @@ export class BarnesHutQuadtree {
       }
     }
 
-    // Counting-sort points by tier so each pass walks contiguous slices.
+    // Counting-sort points by tier so each pass walks contiguous slices. The
+    // offset table must cover the actual tier span, not the point count: f32
+    // radii can legally spread from subnormals to F32_MAX (~280 powers of
+    // two), and a span wider than the table would drop counting-sort
+    // increments on the typed arrays — silently corrupting every slice.
     const tierCount = maxTier - lowest + 1;
+    this.ensureCollisionOffsets(tierCount + 1);
     const offsets = this.collisionOrderOffsets;
     offsets.fill(0, 0, tierCount + 1);
     for (let point = 0; point < pointCount; point++) offsets[tierOf[point]! - lowest + 1]++;
@@ -601,8 +606,18 @@ export class BarnesHutQuadtree {
     while (next < required) next *= 2;
     this.collisionTier = new Int32Array(next);
     this.collisionOrder = new Int32Array(next);
-    this.collisionOrderOffsets = new Int32Array(next + 1);
-    this.collisionOrderCursor = new Int32Array(next + 1);
+    this.ensureCollisionOffsets(next + 1);
+  }
+
+  /** Offset/cursor tables sized by TIER SPAN, which is independent of the
+   * point count (see the counting-sort call site). Both stay equal-length so
+   * `cursor.set(offsets.subarray(...))` can never overflow either side. */
+  private ensureCollisionOffsets(required: number): void {
+    if (required <= this.collisionOrderOffsets.length) return;
+    let next = Math.max(64, this.collisionOrderOffsets.length);
+    while (next < required) next *= 2;
+    this.collisionOrderOffsets = new Int32Array(next);
+    this.collisionOrderCursor = new Int32Array(next);
   }
 
   private collisionSlot(cellX: number, cellY: number, create: boolean): number {

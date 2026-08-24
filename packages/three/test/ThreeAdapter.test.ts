@@ -495,4 +495,55 @@ describe('ThreeAdapter', () => {
     expect(userCanvas.width).toBe(320);
     expect(userCanvas.height).toBe(180);
   });
+
+  describe('activePointers pruning', () => {
+    const hitRaycaster = {
+      intersectObject: () => [{ uv: new THREE.Vector2(0.5, 0.5) }],
+    } as any;
+
+    function pointer(type: string, pointerId: number): PointerEvent {
+      return new PointerEvent(type, { pointerId });
+    }
+
+    it('drops a touch contact on pointerup instead of growing the map forever', () => {
+      // Monotonic touch ids: each tap gets a fresh, larger id.
+      for (const id of [101, 102, 103]) {
+        adapter.updateIntersection(hitRaycaster, 'pointerdown', pointer('pointerdown', id));
+      }
+      expect((adapter as any).activePointers.size).toBe(3);
+
+      adapter.updateIntersection(hitRaycaster, 'pointerup', pointer('pointerup', 102));
+      expect((adapter as any).activePointers.size).toBe(2);
+      expect((adapter as any).activePointers.has(102)).toBe(false);
+
+      // The surviving contacts keep their state.
+      expect((adapter as any).activePointers.get(101)?.isHovering).toBe(true);
+    });
+
+    it('drops a contact on pointercancel as well', () => {
+      adapter.updateIntersection(hitRaycaster, 'pointerdown', pointer('pointerdown', 7));
+      adapter.updateIntersection(hitRaycaster, 'pointercancel', pointer('pointercancel', 7));
+      expect((adapter as any).activePointers.size).toBe(0);
+    });
+
+    it('still dispatches the final event before pruning the entry', () => {
+      let upSeen = false;
+      adapter.canvas.addEventListener('pointerup', () => {
+        upSeen = true;
+      });
+      adapter.updateIntersection(hitRaycaster, 'pointerdown', pointer('pointerdown', 9));
+
+      adapter.updateIntersection(hitRaycaster, 'pointerup', pointer('pointerup', 9));
+
+      expect(upSeen).toBe(true);
+      expect((adapter as any).activePointers.has(9)).toBe(false);
+    });
+
+    it('prunes even when the pointer has left the mesh (miss path)', () => {
+      const missRaycaster = { intersectObject: () => [] } as any;
+      adapter.updateIntersection(hitRaycaster, 'pointerdown', pointer('pointerdown', 5));
+      adapter.updateIntersection(missRaycaster, 'pointerup', pointer('pointerup', 5));
+      expect((adapter as any).activePointers.size).toBe(0);
+    });
+  });
 });

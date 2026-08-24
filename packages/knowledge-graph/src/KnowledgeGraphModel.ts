@@ -38,6 +38,12 @@ export interface KnowledgeGraphExpansionSnapshot {
 
 export interface KnowledgeGraphModelOptions {
   source: KgDataSource;
+  /**
+   * Layout fed on every data change — the model is its **single driver** (one
+   * `setGraph` per rebuild, one `reheat` per expand). Borrowed, not owned:
+   * whoever constructed the layout disposes it; {@link dispose} leaves it
+   * untouched so it can stay shared with a live session.
+   */
   layout?: GraphLayout;
   pageSize?: number;
   direction?: KgNeighborOptions['direction'];
@@ -220,7 +226,8 @@ export class KnowledgeGraphModel {
     if (this.disposed) return;
     this.disposed = true;
     this.invalidateRequests();
-    this.layout?.dispose();
+    // The layout is borrowed, not owned (see {@link KnowledgeGraphModelOptions.layout}):
+    // disposing it here would kill a layout still shared with a live session.
     this.entities.clear();
     this.facts.length = 0;
     this.factKeys.clear();
@@ -251,7 +258,10 @@ export class KnowledgeGraphModel {
       for (const fact of page.facts) this.ingestFact(fact);
       const addedEntities = this.entities.size - entityCount;
       const addedFacts = this.facts.length - factCount;
-      const loaded = previous.loaded + addedFacts;
+      // Progress counts every fact the source delivered for this batch (the
+      // batch union), not net-new facts — overlapping neighborhoods would
+      // otherwise stall `loaded` while pages keep advancing.
+      const loaded = previous.loaded + page.facts.length;
       const hasMore = page.hasMore ?? page.nextCursor !== undefined;
       const state: ExpansionState = {
         status: hasMore ? 'partial' : 'complete',

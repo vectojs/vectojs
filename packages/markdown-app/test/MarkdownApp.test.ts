@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MarkdownApp } from '../src';
+import { PRESET_THEMES } from '@vectojs/markdown';
+import { MarkdownApp, type MarkdownAppTheme } from '../src';
 
 describe('MarkdownApp', () => {
   it('keeps source and preview synchronized', () => {
@@ -53,5 +54,28 @@ describe('MarkdownApp', () => {
     app.setTitle('Published');
 
     expect(app.title).toBe('Published');
+  });
+
+  it('marks the scene dirty when resized so on-demand scenes repaint', () => {
+    const app = new MarkdownApp({ width: 1000, height: 700, initialContent: '# Resize' });
+    const markDirty = vi.fn();
+    (app as unknown as { _scene: unknown })._scene = { markDirty };
+
+    // Height-only change: the preview's maxWidth is unaffected, so no child
+    // entity dirties the scene — only setSize itself can.
+    app.setSize(1000, 500);
+
+    expect(app.previewScroll.height).toBe(500 - app.toolbarHeight);
+    expect(markDirty).toHaveBeenCalled();
+  });
+
+  it('accepts every theme preset exported by @vectojs/markdown', () => {
+    const app = new MarkdownApp({ initialContent: '# Themes' });
+
+    for (const name of Object.keys(PRESET_THEMES)) {
+      app.setTheme(name as MarkdownAppTheme);
+
+      expect(app.theme).toBe(name);
+    }
   });
 });

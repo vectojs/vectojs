@@ -36,6 +36,83 @@ describe('node document model', () => {
     expect(document.nodes[0].position).toEqual({ x: 1, y: 2 });
   });
 
+  it('deep clones nested data records so history snapshots cannot alias them', () => {
+    const document = createDocument({
+      nodes: [
+        {
+          id: 'a',
+          type: 'input',
+          title: 'A',
+          position: { x: 1, y: 2 },
+          data: { nested: { value: 1 } },
+        },
+      ],
+      links: [{ id: 'l1', source: 'a', target: 'a2', data: { inner: { weight: 2 } } }],
+    });
+    const copy = cloneDocument(document);
+    (copy.nodes[0].data as { nested: { value: number } }).nested.value = 99;
+    (copy.links[0].data as { inner: { weight: number } }).inner.weight = 99;
+    expect((document.nodes[0].data as { nested: { value: number } }).nested.value).toBe(1);
+    expect((document.links[0].data as { inner: { weight: number } }).inner.weight).toBe(2);
+  });
+
+  it('rejects duplicate link ids at creation', () => {
+    const document = createDocument({
+      nodes: [
+        {
+          id: 'a',
+          type: 'input',
+          title: 'A',
+          position: { x: 0, y: 0 },
+          ports: [{ id: 'out', direction: 'output' }],
+        },
+        {
+          id: 'b',
+          type: 'output',
+          title: 'B',
+          position: { x: 200, y: 0 },
+          ports: [{ id: 'in', direction: 'input' }],
+        },
+        {
+          id: 'c',
+          type: 'output',
+          title: 'C',
+          position: { x: 400, y: 0 },
+          ports: [{ id: 'in', direction: 'input' }],
+        },
+      ],
+      links: [],
+    });
+    const first = addLink(document, {
+      id: 'l1',
+      source: 'a',
+      sourcePort: 'out',
+      target: 'b',
+      targetPort: 'in',
+    });
+    expect(
+      validateLink(first, {
+        id: 'l1',
+        source: 'a',
+        sourcePort: 'out',
+        target: 'c',
+        targetPort: 'in',
+      }),
+    ).toEqual({
+      valid: false,
+      error: 'duplicate-link-id',
+    });
+    expect(() =>
+      addLink(first, {
+        id: 'l1',
+        source: 'a',
+        sourcePort: 'out',
+        target: 'c',
+        targetPort: 'in',
+      }),
+    ).toThrow(/duplicate-link-id/);
+  });
+
   it('validates typed port direction and capacity', () => {
     const document = createDocument({
       nodes: [

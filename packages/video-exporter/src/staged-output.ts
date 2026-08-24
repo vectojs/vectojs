@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, rename, rm } from 'node:fs/promises';
+import { access, readdir, rename, rm } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 
 export interface StagedOutputDependencies {
@@ -7,6 +7,7 @@ export interface StagedOutputDependencies {
   rename: typeof rename;
   rm: typeof rm;
   access: typeof access;
+  readdir: typeof readdir;
 }
 
 const defaultDependencies: StagedOutputDependencies = {
@@ -14,6 +15,7 @@ const defaultDependencies: StagedOutputDependencies = {
   rename,
   rm,
   access,
+  readdir,
 };
 
 function errorCode(error: unknown): string | undefined {
@@ -29,6 +31,15 @@ export class StagedOutput {
   private committed = false;
   private cleaned = false;
   private backupMoved = false;
+  /**
+   * Reclaim sweep for staging files stranded by a previous run. A kill
+   * landing between the backup-rename and install steps of {@link commit}
+   * leaves the previous output inside a hidden `.vecto-*` path no cleanup
+   * will ever visit (the process died), so the next export start sweeps
+   * them. Started at construction; awaited before any rename so the sweep
+   * can never race this instance's own commit/cleanup.
+   */
+  private readonly staleSweep: Promise<void>;
 
   private constructor(
     targetPath: string,
@@ -41,6 +52,7 @@ export class StagedOutput {
     this.targetPath = targetPath;
     this.path = join(directory, `.${stem}.vecto-${id}.mp4`);
     this.backupPath = join(directory, `.${stem}.vecto-${id}.backup${extension || '.mp4'}`);
+    this.staleSweep = this.sweepStaleFiles();
   }
 
   static create(
@@ -60,8 +72,33 @@ export class StagedOutput {
     }
   }
 
+  /**
+   * Removes `.vecto-*` staging/backup siblings left by a dead previous run.
+   * Assumes one exporter per target path at a time (as before — concurrent
+   * exports to one destination already fought over the same renames); the
+   * prefix is specific enough that unrelated files are never touched.
+   * Best-effort: a failed sweep must not fail the export.
+   */
+  private async sweepStaleFiles(): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await this.dependencies.readdir(dirname(this.targetPath));
+    } catch {
+      return; // directory missing/unreadable: nothing to reclaim
+    }
+    const prefix = `.${basename(this.targetPath, extname(this.targetPath))}.vecto-`;
+    const own = new Set([basename(this.path), basename(this.backupPath)]);
+    const doomed = entries.filter((name) => name.startsWith(prefix) && !own.has(name));
+    await Promise.allSettled(
+      doomed.map((name) =>
+        this.dependencies.rm(join(dirname(this.targetPath), name), { force: true }),
+      ),
+    );
+  }
+
   async commit(): Promise<void> {
     if (this.committed) return;
+    await this.staleSweep;
 
     try {
       await this.dependencies.rename(this.path, this.targetPath);
@@ -101,6 +138,7 @@ export class StagedOutput {
   async cleanup(): Promise<void> {
     if (this.cleaned) return;
     this.cleaned = true;
+    await this.staleSweep;
     const errors: unknown[] = [];
 
     try {

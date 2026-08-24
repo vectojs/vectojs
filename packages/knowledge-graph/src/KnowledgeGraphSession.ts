@@ -11,8 +11,7 @@ import {
 import * as THREE from 'three';
 import { FixedZLayout } from './FixedZLayout';
 import { KnowledgeGraphModel } from './KnowledgeGraphModel';
-import type { KgDataSource, KgEntity, KgFact, KgGraphData, KnowledgeGraphMode } from './types';
-import { pickLabel } from './types';
+import type { KgDataSource, KgEntity, KgGraphData, KnowledgeGraphMode } from './types';
 
 export interface KnowledgeGraphSessionOptions {
   /** Target canvas (or any element GraphCamera/Interaction can bind to). */
@@ -39,6 +38,13 @@ export interface KnowledgeGraphSessionOptions {
   /** Called after each successful expand. */
   onExpand?: (entity: KgEntity, added: number) => void;
   /**
+   * Called when an expand triggered by selecting a node fails, with the entity
+   * that was being expanded (`null` when unknown). The session never lets
+   * these failures escape as unhandled rejections; without this handler they
+   * are logged via `console.error`.
+   */
+  onError?: (error: unknown, entity: KgEntity | null) => void;
+  /**
    * When true (default), a select on a node that still has unloaded edges
    * triggers {@link expand}.
    */
@@ -48,9 +54,12 @@ export interface KnowledgeGraphSessionOptions {
 /**
  * High-level session: data source → layout → Graph3D → camera → interaction.
  *
- * Owns the graph3d objects and a growing in-memory subgraph. The host still
- * owns the Three.js `WebGLRenderer` and the rAF loop — call {@link tick} each
- * frame and {@link render} with your renderer.
+ * Owns the graph3d objects and the layout it constructs, and holds a growing
+ * in-memory subgraph in its {@link model} — the model is the **single layout
+ * driver** (one `setGraph` + one `reheat` per expand); the session only mirrors
+ * model state into the renderer. The host still owns the Three.js
+ * `WebGLRenderer` and the rAF loop — call {@link tick} each frame and
+ * {@link render} with your renderer.
  *
  * Accessibility: this package does **not** project per-node DOM. Pair with an
  * aggregate announcer in the host (onDemand / `role="status"`).
@@ -63,34 +72,28 @@ export class KnowledgeGraphSession {
   readonly layout: GraphLayout;
   private interaction: GraphInteraction | null = null;
 
-  private readonly source: KgDataSource;
   private readonly lang: string;
   private readonly expandOnSelect: boolean;
   private readonly onSelectCb?: (entity: KgEntity | null) => void;
   private readonly onHoverCb?: (entity: KgEntity | null) => void;
   private readonly onExpandCb?: (entity: KgEntity, added: number) => void;
+  private readonly onErrorCb?: (error: unknown, entity: KgEntity | null) => void;
 
-  private readonly entities = new Map<NodeId, KgEntity>();
-  private readonly facts: KgFact[] = [];
-  private readonly factKey = new Set<string>();
   /** Node ids whose neighbors have already been fetched. */
   private readonly expanded = new Set<NodeId>();
-  private readonly idToIndex = new Map<NodeId, number>();
   /** Index-aligned entity list for O(1) hover/select (mirrors layout order). */
   private entityByIndex: KgEntity[] = [];
   private readonly mode: KnowledgeGraphMode;
   private scene: THREE.Scene | null = null;
   private disposed = false;
-  /** Last known xyz per id — warm-starts layout across expand rebuilds. */
-  private readonly lastPos = new Map<NodeId, [number, number, number]>();
 
   constructor(options: KnowledgeGraphSessionOptions) {
-    this.source = options.source;
     this.lang = options.lang ?? 'en';
     this.expandOnSelect = options.expandOnSelect ?? true;
     this.onSelectCb = options.onSelect;
     this.onHoverCb = options.onHover;
     this.onExpandCb = options.onExpand;
+    this.onErrorCb = options.onError;
     this.mode = options.mode ?? '2d';
 
     this.graph = new Graph3D(options.graphOptions);
@@ -113,7 +116,7 @@ export class KnowledgeGraphSession {
           })
         : new VectoForceLayout();
     this.model = new KnowledgeGraphModel({
-      source: this.source,
+      source: options.source,
       layout: this.layout,
       lang: this.lang,
     });
@@ -126,7 +129,9 @@ export class KnowledgeGraphSession {
       layout: this.layout,
       setControlsEnabled: (on) => this.camera.setEnabled(on),
       onSelect: (index) => {
-        void this.handleSelect(index);
+        // handleSelect is sync; background expand failures are routed to
+        // onError, never left as unhandled rejections.
+        this.handleSelect(index);
       },
       onHover: (index) => {
         this.handleHover(index);
@@ -156,11 +161,11 @@ export class KnowledgeGraphSession {
 
   /** Current entity count in the materialised subgraph. */
   get entityCount(): number {
-    return this.entities.size;
+    return this.entityByIndex.length;
   }
 
   get factCount(): number {
-    return this.facts.length;
+    return this.model.factCount;
   }
 
   /** Snapshot of materialised entities (layout index order). */
@@ -206,9 +211,10 @@ export class KnowledgeGraphSession {
   /** Fetch and merge one hop around `id`. Preserves prior node positions. */
   async expand(id: NodeId): Promise<number> {
     this.assertOpen();
+    // The model drives the layout here (setGraph + reheat); the session only
+    // mirrors the result into the renderer.
     const result = await this.model.expand(id);
     this.syncFromModel();
-    this.layout.reheat?.(0.5);
     if (result.entity) this.onExpandCb?.(result.entity, result.addedEntities);
     return result.addedEntities;
   }
@@ -224,10 +230,12 @@ export class KnowledgeGraphSession {
    */
   tick(iterations = 1): boolean {
     this.assertOpen();
-    if (this.entities.size === 0) return true;
+    if (this.entityByIndex.length === 0) return true;
     const stillHot = this.layout.step(iterations);
+    // The model owns warm-start bookkeeping; keep its position cache current
+    // so the next expand does not scatter settled nodes.
+    this.model.captureLayoutPositions();
     this.graph.applyPositions(this.layout.positions);
-    this.capturePositions();
     return !stillHot;
   }
 
@@ -251,120 +259,31 @@ export class KnowledgeGraphSession {
     this.camera.dispose();
     if (this.scene) this.scene.remove(this.graph.group);
     this.graph.dispose();
+    // The session constructed the layout, so it releases it — model.dispose()
+    // deliberately leaves the borrowed layout untouched.
+    this.layout.dispose();
     this.model.dispose();
-    this.entities.clear();
-    this.facts.length = 0;
-    this.factKey.clear();
     this.expanded.clear();
-    this.idToIndex.clear();
     this.entityByIndex = [];
-    this.lastPos.clear();
     this.scene = null;
   }
 
   // ── internals ────────────────────────────────────────────────────────────
 
   private syncFromModel(): void {
+    // The model is the single layout driver and has already called setGraph:
+    // mirror its canonical node order into the renderer and picking indexes.
     const data = this.model.getGraphData();
-    this.entities.clear();
-    this.facts.length = 0;
-    this.factKey.clear();
+    this.entityByIndex = data.nodes as KgEntity[];
     this.expanded.clear();
-    this.entityByIndex = [];
-    this.idToIndex.clear();
-    this.ingestEntities(data.nodes as KgEntity[]);
-    for (const fact of data.links as KgFact[]) this.ingestFact(fact);
     for (const entity of this.entityByIndex) {
       if (this.model.getExpansionState(entity.id).status === 'complete') {
         this.expanded.add(entity.id);
       }
     }
-    this.rebuildGraph();
-  }
-
-  private ingestEntities(list: readonly KgEntity[]): void {
-    for (const e of list) {
-      const prev = this.entities.get(e.id);
-      if (!prev) {
-        this.entities.set(e.id, { ...e, labels: { ...e.labels } });
-      } else {
-        this.entities.set(e.id, {
-          ...prev,
-          ...e,
-          labels: { ...prev.labels, ...e.labels },
-        });
-      }
-    }
-  }
-
-  private ingestFact(f: KgFact): void {
-    const key = `${f.source}|${f.predicate}|${f.target}`;
-    if (this.factKey.has(key)) return;
-    this.factKey.add(key);
-    this.facts.push(f);
-  }
-
-  private capturePositions(): void {
-    const pos = this.layout.positions;
-    for (let i = 0; i < this.entityByIndex.length; i++) {
-      const e = this.entityByIndex[i]!;
-      const x = pos[i * 3]!;
-      const y = pos[i * 3 + 1]!;
-      const z = pos[i * 3 + 2]!;
-      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-        this.lastPos.set(e.id, [x, y, z]);
-      }
-    }
-  }
-
-  private rebuildGraph(): void {
-    // Preserve current simulation coords before tearing down the layout.
-    if (this.entityByIndex.length > 0 && this.layout.positions.length >= 3) {
-      this.capturePositions();
-    }
-
-    // Stable order: keep previous entities in their prior order, append newcomers.
-    const next: KgEntity[] = [];
-    const seen = new Set<NodeId>();
-    for (const e of this.entityByIndex) {
-      const cur = this.entities.get(e.id);
-      if (cur) {
-        next.push(cur);
-        seen.add(cur.id);
-      }
-    }
-    for (const e of this.entities.values()) {
-      if (!seen.has(e.id)) next.push(e);
-    }
-    this.entityByIndex = next;
-    this.idToIndex.clear();
-    for (let i = 0; i < next.length; i++) this.idToIndex.set(next[i]!.id, i);
-
-    // Warm-start: stamp last known x/y/z onto node seeds so setGraph does not
-    // re-scatter existing nodes (expand must not jump the whole graph).
-    const seeded = next.map((e) => {
-      const prev = this.lastPos.get(e.id);
-      const node = {
-        ...e,
-        name: pickLabel(e.labels, this.lang),
-      } as KgEntity & { x?: number; y?: number; z?: number; name?: string };
-      if (prev) {
-        node.x = prev[0];
-        node.y = prev[1];
-        node.z = prev[2];
-      }
-      return node;
-    });
-
-    const g = {
-      nodes: seeded,
-      links: this.facts as import('@vectojs/graph3d').GraphLink[],
-    };
-    this.layout.setGraph(g);
-    this.graph.setGraphData(g);
+    this.graph.setGraphData(data);
     this.graph.applyPositions(this.layout.positions);
-    this.interaction?.setNodeCount(seeded.length);
-    this.capturePositions();
+    this.interaction?.setNodeCount(this.entityByIndex.length);
   }
 
   private entityAt(index: number | null): KgEntity | null {
@@ -376,12 +295,30 @@ export class KnowledgeGraphSession {
     this.onHoverCb?.(this.entityAt(index));
   }
 
-  private async handleSelect(index: number | null): Promise<void> {
+  private handleSelect(index: number | null): void {
     const entity = this.entityAt(index);
     this.onSelectCb?.(entity);
     if (entity && this.expandOnSelect && !this.expanded.has(entity.id)) {
-      await this.expand(entity.id);
+      this.expandInBackground(entity);
     }
+  }
+
+  /**
+   * Fire-and-forget expand behind a user select. Failures go to
+   * {@link onError} (or `console.error` when absent) — never unhandled
+   * rejections.
+   */
+  private expandInBackground(entity: KgEntity): void {
+    this.expand(entity.id).then(
+      () => undefined,
+      (error: unknown) => {
+        if (this.onErrorCb) {
+          this.onErrorCb(error, entity);
+        } else {
+          console.error('[KnowledgeGraphSession] select expand failed:', error);
+        }
+      },
+    );
   }
 
   private assertOpen(): void {

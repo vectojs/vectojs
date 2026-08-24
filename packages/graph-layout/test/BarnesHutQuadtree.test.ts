@@ -284,6 +284,53 @@ describe('BarnesHutQuadtree tiered collision binning', () => {
     expect(Math.abs(momentumY)).toBeLessThan(1e-5);
   });
 
+  it('keeps the counting sort correct when few points span hundreds of tiers', () => {
+    // f32 radii may legally range from subnormals to F32_MAX (~280 powers of
+    // two). The offset/cursor tables were once sized from the POINT count, so
+    // a scene like this one — nine points, tier span 151 — overflowed them and
+    // silently dropped counting-sort increments, corrupting every tier slice.
+    // Every point except the hub participates in at most one overlapping pair,
+    // so per-pair deltas compare against the reference without meaningful
+    // accumulation-order noise even at extreme force magnitudes.
+    const count = 9;
+    const positions = new Float32Array(count * 2);
+    const radii = new Float32Array(count);
+    const place = (i: number, x: number, y: number, r: number) => {
+      positions[i * 2] = x;
+      positions[i * 2 + 1] = y;
+      radii[i] = r;
+    };
+    place(0, 0, 0, 1e6); // tier ~19 pair, deep overlap
+    place(1, 1, 0, 1e6);
+    place(2, 500, 500, 1e-20); // subnormal-adjacent tiers, tiny overlap
+    place(3, 500 + 1e-21, 500, 1e-20);
+    place(4, 900, 0, 3); // cross-tier pair 26 tiers apart
+    place(5, 902, 0, 5e-8);
+    place(6, 2000, 0, 1e15); // hub spanning everything
+    place(7, 2000 + 1e10, 0, 1e-30); // inside the hub: cross-tier overlap
+    place(8, 2000 - 5e9, 0, 0); // zero-radius initiator against the hub
+
+    const tree = new BarnesHutQuadtree();
+    tree.build(positions, new Float32Array(count), count);
+    const velocityX = new Float32Array(count);
+    const velocityY = new Float32Array(count);
+    const pinned = new Uint8Array(count);
+    tree.applyGridCollisions(positions, count, radii, velocityX, velocityY, pinned, pinned, 1, 7);
+
+    const reference = bruteForce(positions, radii, count, 1, 7);
+    for (let i = 0; i < count; i++) {
+      const tolerance = Math.max(1e-6, Math.abs(reference.vx[i]!) * 1e-6);
+      expect(Math.abs(velocityX[i]! - reference.vx[i]!)).toBeLessThanOrEqual(tolerance);
+      expect(Math.abs(velocityY[i]! - reference.vy[i]!)).toBeLessThanOrEqual(
+        Math.max(1e-6, Math.abs(reference.vy[i]!) * 1e-6),
+      );
+    }
+    // At least the deep-overlap pair must have resolved — an all-zero result
+    // would mean every tier slice came out empty, not that the math agreed.
+    expect(Math.abs(velocityX[0]!)).toBeGreaterThan(0);
+    expect(Math.abs(velocityX[1]!)).toBeGreaterThan(0);
+  });
+
   it('bounds the per-tick cost of a hub-and-leaves scene (signal only)', () => {
     // The old single grid sized by the maximum radius packed every leaf into
     // cells spanning the hub: measured 12ms -> 197ms per tick from 3k to 12k

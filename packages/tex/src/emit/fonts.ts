@@ -151,9 +151,10 @@ const AVAILABLE: Record<string, Set<string>> = {
  * The default face for math mode.
  *
  * `.katex` sets `font: normal 1.21em KaTeX_Main`, so a symbol with no font class
- * — a relation, a delimiter, a digit — is Main-Regular.
+ * — a relation, a delimiter, a digit — is Main-Regular. Exported for the
+ * vendoring drift guard in `scripts/vendor-katex.ts`.
  */
-const DEFAULT_FONT: FontName = 'Main-Regular';
+export const DEFAULT_FONT: FontName = 'Main-Regular';
 
 export interface ResolvedFont {
   font: FontName;
