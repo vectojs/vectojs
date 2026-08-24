@@ -274,9 +274,15 @@ export class LayoutWorkerManager {
     // Remove any in-flight callback entries for this entity so we don't
     // pin a closure + `this` reference if the entity is destroyed while
     // the worker is still processing (the worker's response will be
-    // discarded below).
+    // discarded below). Keys are `entityId-<seq>`, so require a purely
+    // numeric remainder: a bare prefix scan would also purge sibling ids
+    // that extend this one across a hyphen boundary (cancelling 'text'
+    // must not kill 'text-1' / 'a-b-c' entries when cancelling 'a-b').
+    const prefix = `${entityId}-`;
     for (const key of this.pendingCallbacks.keys()) {
-      if (key.startsWith(`${entityId}-`)) this.pendingCallbacks.delete(key);
+      if (key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))) {
+        this.pendingCallbacks.delete(key);
+      }
     }
     // The per-entity seqId counter is deliberately NOT reset: replies are
     // keyed `${entityId}-${seqId}`, so restarting at 1 would let a stale reply
