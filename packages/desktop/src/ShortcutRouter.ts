@@ -1,47 +1,10 @@
 import type { ShortcutAction, ShortcutMap } from './types';
+import { normalizeChord } from '@vectojs/core';
 
-/**
- * Normalize a keyboard chord to a stable key used in {@link ShortcutMap}.
- * Order: Ctrl/Control, Alt, Shift, Meta, then the uppercased key.
- *
- * Accepts either a {@link KeyboardEvent} or a pre-written string like
- * `Control+Shift+N`.
- */
-export function normalizeChord(input: KeyboardEvent | string): string {
-  if (typeof input === 'string') {
-    const parts = input
-      .split('+')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    const mods = new Set<string>();
-    let key = '';
-    for (const p of parts) {
-      const low = p.toLowerCase();
-      if (low === 'ctrl' || low === 'control') mods.add('Control');
-      else if (low === 'alt') mods.add('Alt');
-      else if (low === 'shift') mods.add('Shift');
-      else if (low === 'meta' || low === 'cmd' || low === 'super') mods.add('Meta');
-      else key = p.length === 1 ? p.toUpperCase() : p;
-    }
-    const ordered = ['Control', 'Alt', 'Shift', 'Meta'].filter((m) => mods.has(m));
-    return key ? [...ordered, key].join('+') : ordered.join('+');
-  }
-
-  const ordered: string[] = [];
-  if (input.ctrlKey) ordered.push('Control');
-  if (input.altKey) ordered.push('Alt');
-  if (input.shiftKey) ordered.push('Shift');
-  if (input.metaKey) ordered.push('Meta');
-  let key = input.key;
-  if (key === ' ') key = 'Space';
-  else if (key.length === 1) key = key.toUpperCase();
-  // Skip pure modifier presses.
-  if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) {
-    return ordered.join('+');
-  }
-  ordered.push(key);
-  return ordered.join('+');
-}
+// `normalizeChord` was promoted to @vectojs/core so both packages share one
+// implementation; re-exported here to keep desktop's public API unchanged
+// (`src/index.ts` exports it from this module).
+export { normalizeChord };
 
 export type ShortcutHandler = (action: ShortcutAction, chord: string) => void;
 
