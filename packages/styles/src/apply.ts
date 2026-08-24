@@ -1,6 +1,13 @@
 import type { Entity } from '@vectojs/core';
 import { composeFont } from './font';
-import { getTheme, HAS_VAR_RE, trackVarKeys, VAR_RE, type Theme } from './theme';
+import {
+  getTheme,
+  HAS_VAR_FALLBACK_RE,
+  HAS_VAR_RE,
+  trackVarKeys,
+  VAR_RE,
+  type Theme,
+} from './theme';
 import type { AppliedStyle, CssLength, Style } from './types';
 
 type ValueOf<T> = T[keyof T];
@@ -131,6 +138,17 @@ function resolveValue(value: unknown, theme: Theme, seen: Set<string> = new Set(
   if (typeof value !== 'string') return value;
   const match = VAR_RE.exec(value);
   if (match) return resolveToken(match[1] ?? '', theme, seen);
+  // The fallback form matched neither VAR_RE nor HAS_VAR_RE (#645): without
+  // this guard the raw string reached mapped fields, where Canvas2D silently
+  // kept the previous paint, and the key went untracked for theme switches.
+  // Fail loudly instead — also covers fallbacks arriving through a token,
+  // because token resolution recurses back into resolveValue. Runs before the
+  // embedded-substitution path so composite strings are covered too.
+  if (HAS_VAR_FALLBACK_RE.test(value)) {
+    throw new TypeError(
+      `@vectojs/styles: var() fallbacks are not supported — '${value}' would reach the entity field unresolved; set the token in the active theme or pass the literal`,
+    );
+  }
   if (!HAS_VAR_RE.test(value)) return value;
   // Reset lastIndex defensively even though VAR_REPLACE_RE is module-local and
   // replace() always runs it to completion from zero.

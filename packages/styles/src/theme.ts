@@ -10,6 +10,16 @@ export const VAR_RE = /^var\(--([\w-]+)\)$/;
  *  derives its global replace form from it. */
 export const HAS_VAR_RE = /var\(--([\w-]+)\)/;
 
+/** A `var(--key, fallback)` reference — the CSS fallback form. Neither
+ *  {@link VAR_RE} nor {@link HAS_VAR_RE} matches it (`\)` must follow the key),
+ *  so pre-#645 it passed through unresolved: the raw string reached mapped
+ *  fields where Canvas2D silently kept the previous paint, and the key went
+ *  untracked for theme switches. Detected explicitly so the apply layer can
+ *  fail loudly instead — fallback resolution is not implemented, and silence
+ *  is the one thing this package must never do with an unrecognized `var()`
+ *  form (the GH-608 doctrine). */
+export const HAS_VAR_FALLBACK_RE = /var\(--[\w-]+\s*,/;
+
 /**
  * A flat token set. Keys are written WITHOUT the `--` prefix and referenced in
  * style objects as `var(--<key>)`, mirroring CSS custom properties:
