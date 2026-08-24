@@ -765,6 +765,32 @@ describe('incremental tree sync', () => {
     host.destroy();
   });
 
+  it('refreshes tree label geometry per tick without a structural change', () => {
+    const host = makeHost();
+    const moved = new Box('moving', 40, 20);
+    moved.setPosition(5, 6);
+    host.add(moved);
+    const panel = attachDevtools(host, { refreshInterval: 0, defaultTab: 'tree' });
+    const versionBefore = host.structureVersion;
+    const node = ((panel as any).allNodes as { id: string; label: string }[]).find(
+      (n) => n.id === 'moving',
+    );
+    expect(node?.label).toContain('(5,6)');
+
+    // Animate the entity: property-only, no structural edit. The tree's
+    // headline feature is reading geometry without selecting, so the label
+    // must track it on the next tick instead of waiting for the ~3s forced
+    // reconcile (#706).
+    moved.setPosition(77, 12);
+    expect(host.structureVersion).toBe(versionBefore);
+    panel.refresh();
+
+    expect(node?.label).toContain('(77,12)');
+
+    panel.detach();
+    host.destroy();
+  });
+
   it('rebuilds on an explicit forced refresh even with no shape change', () => {
     const host = makeHost();
     host.add(new Box('a'));

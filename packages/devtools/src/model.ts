@@ -9,6 +9,21 @@ export interface DevtoolsTreeNode {
 }
 
 /**
+ * The geometry-bearing label for an entity: `Type (x,y) WxH ⚡▶`. Shared by
+ * {@link buildTreeModel}, which bakes it in at build time, and
+ * {@link refreshTreeLabels}, which rewrites it in place per tick.
+ */
+function geometryLabel(entity: Entity): string {
+  const type = entity.constructor.name;
+  const size =
+    entity.width > 0 || entity.height > 0
+      ? ` ${Math.round(entity.width)}×${Math.round(entity.height)}`
+      : '';
+  const badges = `${entity.interactive ? ' ⚡' : ''}${entity.hasPendingAnimations() ? ' ▶' : ''}`;
+  return `${type} (${Math.round(entity.x)},${Math.round(entity.y)})${size}${badges}`;
+}
+
+/**
  * Build an inspector tree for a scene graph and an id→entity index for
  * resolving selections back to live entities. Labels carry the entity's type
  * and geometry so most questions are answered without selecting anything.
@@ -20,19 +35,39 @@ export function buildTreeModel(root: Entity): {
   const index = new Map<string, Entity>();
   const toNode = (entity: Entity): DevtoolsTreeNode => {
     index.set(entity.id, entity);
-    const type = entity.constructor.name;
-    const size =
-      entity.width > 0 || entity.height > 0
-        ? ` ${Math.round(entity.width)}×${Math.round(entity.height)}`
-        : '';
-    const badges = `${entity.interactive ? ' ⚡' : ''}${entity.hasPendingAnimations() ? ' ▶' : ''}`;
     return {
       id: entity.id,
-      label: `${type} (${Math.round(entity.x)},${Math.round(entity.y)})${size}${badges}`,
+      label: geometryLabel(entity),
       children: entity.children.length > 0 ? entity.children.map(toNode) : undefined,
     };
   };
   return { nodes: root.children.map(toNode), index };
+}
+
+/**
+ * Rewrite the geometry baked into an existing tree model's labels, in place —
+ * no node or index churn. `buildTreeModel` embeds `(x,y) WxH` precisely so
+ * geometry is readable without selecting, but transforms never bump the
+ * scene's structure version, so a purely version-gated refresh showed the
+ * coordinates of the last structural change until the periodic forced
+ * reconcile (#706). Returns true when at least one label changed, so callers
+ * can skip redraw work when nothing moved.
+ */
+export function refreshTreeLabels(nodes: DevtoolsTreeNode[], index: Map<string, Entity>): boolean {
+  let changed = false;
+  const walk = (node: DevtoolsTreeNode): void => {
+    const entity = index.get(node.id);
+    if (entity) {
+      const label = geometryLabel(entity);
+      if (label !== node.label) {
+        node.label = label;
+        changed = true;
+      }
+    }
+    for (const child of node.children ?? []) walk(child);
+  };
+  for (const node of nodes) walk(node);
+  return changed;
 }
 
 /**
