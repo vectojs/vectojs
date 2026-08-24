@@ -155,6 +155,71 @@ describe.skipIf(!haveWasm)('G2 spike — animation kernels', () => {
     }
   });
 
+  it('tween_step snaps completed tweens exactly onto `to` for magnitude-spread pairs (#647)', () => {
+    // TweenDriver.tick ends with `if (active >= this.duration) this.value =
+    // this.to;` — outside Sterbenz range, `from + (to - from)` rounds short of
+    // `to` (e.g. from=1e20, to=7 computes 1e20 + (7 - 1e20) === 0), so the
+    // kernel must mirror the snap or WASM tweens end off-destination while the
+    // JS reference lands exactly. The fixed-seed (-50,50) suite above cannot
+    // see this: there the identity holds by rounding luck.
+    const spreadPairs: Array<[number, number]> = [
+      [1e20, 7], // diff loses `to` entirely; naive sum is 0
+      [7, 1e20],
+      [1e16, 5],
+      [-1e300, 1e-300],
+      [1e-300, 1e300],
+      [Number.MIN_VALUE, Number.MAX_VALUE],
+      [123456789.5, 123456789.75], // near-equal, 2 ulp apart
+      [0, 5e-324], // denormal target
+    ];
+    // Random pairs across independent exponent scales — many land outside
+    // Sterbenz range and diverge without the snap.
+    const rand = rng(0x647);
+    for (let i = 0; i < 40; i++) {
+      const mag = (s: number) => (s - 0.5 > 0 ? 1 : -1) * Math.pow(10, (s - 0.5) * 320);
+      spreadPairs.push([mag(rand()), mag(rand())]);
+    }
+
+    const N = spreadPairs.length;
+    const { ex, view } = instantiate(1, N);
+    const tFrom = view(ex.p_t_from(), N);
+    const tTo = view(ex.p_t_to(), N);
+    const tElapsed = view(ex.p_t_elapsed(), N);
+    const tDur = view(ex.p_t_dur(), N);
+    const tDelay = view(ex.p_t_delay(), N);
+    const tEase = view(ex.p_t_ease(), N);
+    const tVal = view(ex.p_t_val(), N);
+
+    const js: TweenDriver[] = [];
+    for (let i = 0; i < N; i++) {
+      const [from, to] = spreadPairs[i];
+      const duration = 100;
+      tFrom[i] = from;
+      tTo[i] = to;
+      tElapsed[i] = 0;
+      tDur[i] = duration;
+      tDelay[i] = 0;
+      tEase[i] = 0; // linear
+      tVal[i] = from;
+      js.push(new TweenDriver(from, to, { duration, easing: 'linear' }));
+    }
+
+    const dtMs = 1000 / 60;
+    // 40 frames ≈ 666ms >> duration: every tween completes early and the
+    // remaining frames verify the snap persists on both engines bit-for-bit.
+    let doneFrames = 0;
+    for (let frame = 0; frame < 40; frame++) {
+      ex.tween_step(dtMs, N);
+      for (let i = 0; i < N; i++) js[i].tick(dtMs);
+      if (js[0].isDone()) doneFrames++;
+      for (let i = 0; i < N; i++) {
+        expect(tVal[i]).toBe(js[i].value); // bit-for-bit, Object.is semantics
+        if (js[i].isDone()) expect(tVal[i]).toBe(tTo[i]); // terminal invariant
+      }
+    }
+    expect(doneFrames).toBeGreaterThan(0);
+  });
+
   it('spring_step snaps a rested spring exactly to target', () => {
     const { ex, view } = instantiate(1, 1);
     const sVal = view(ex.p_s_val(), 1);
