@@ -857,6 +857,40 @@ describe('UI 0.1.1 Components', () => {
       expect(tabs.value).toBe('a');
     });
 
+    it('does not select a dying tab when a deferred close leaves its hotspot alive (#687)', () => {
+      const onClose = vi.fn();
+      const onChange = vi.fn();
+      const tabs = new Tabs({
+        width: 320,
+        height: 200,
+        closable: true,
+        onClose,
+        onChange,
+        tabs: [
+          { id: 'a', label: 'A', content: new Entity('a') },
+          { id: 'b', label: 'B', content: new Entity('b') },
+        ],
+        value: 'b',
+      });
+
+      // One physical click on × delivers two events: pointerdown (close) then
+      // the mirror's click. With a deferred removal the mirror is still alive
+      // when the browser dispatches that click — it must not select the tab.
+      tabs.emit('pointerdown', { localX: 148, localY: 20 }); // × of tab 'a'
+      expect(onClose).toHaveBeenCalledWith('a');
+      const hotspotA = (
+        tabs as unknown as { _hotspots: Array<{ emit: (t: string, e?: unknown) => void }> }
+      )._hotspots[0];
+      hotspotA.emit('click', {});
+      expect(tabs.value).toBe('b');
+      expect(onChange).not.toHaveBeenCalled();
+
+      // A later genuine click on the hotspot still selects normally.
+      hotspotA.emit('click', {});
+      expect(tabs.value).toBe('a');
+      expect(onChange).toHaveBeenCalledWith('a');
+    });
+
     it('does not stretch tabs beyond tabWidth when the bar has surplus width', () => {
       // Stretched tabs put the right-edge × glyph directly beside the NEXT
       // tab's label — users click the × they see next to a label and close
