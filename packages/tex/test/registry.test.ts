@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HtmlBuilder } from '../src/registry/defineFunction';
+import { setDuplicateRegistryWarnings } from '../src/registry/defineFunction';
 import { _environments, default as defineEnvironment } from '../src/registry/defineEnvironment';
 
 /**
@@ -55,5 +56,30 @@ describe('defineEnvironment', () => {
   it('registers every name against the same spec object', () => {
     register(['__ctx0447-a', '__ctx0447-b'], { numArgs: 0 });
     expect(_environments['__ctx0447-a']).toBe(_environments['__ctx0447-b']);
+  });
+
+  it('warns on a duplicate registration only while the debug flag is on', () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg?: unknown) => {
+      warnings.push(String(msg));
+    };
+    try {
+      // Default: silent overwrite, as upstream KaTeX behaves.
+      register(['__ctx0447-dup'], { numArgs: 0 });
+      expect(warnings).toEqual([]);
+
+      setDuplicateRegistryWarnings(true);
+      register(['__ctx0447-dup'], { numArgs: 1 });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('duplicate environment registration');
+      expect(warnings[0]).toContain('__ctx0447-dup');
+
+      // The overwrite itself still happened.
+      expect(_environments['__ctx0447-dup'].numArgs).toBe(1);
+    } finally {
+      setDuplicateRegistryWarnings(false);
+      console.warn = originalWarn;
+    }
   });
 });

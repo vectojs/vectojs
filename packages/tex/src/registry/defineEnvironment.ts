@@ -16,7 +16,7 @@
 import type { AnyParseNode, NodeType } from '../kernel/types/nodes';
 import type { ArgType, Mode } from '../kernel/types';
 import type Parser from '../kernel/Parser';
-import { _htmlGroupBuilders, type HtmlBuilder } from './defineFunction';
+import { _htmlGroupBuilders, noteDuplicateRegistration, type HtmlBuilder } from './defineFunction';
 
 /**
  * Parse-time context handed to an environment handler.
@@ -126,6 +126,9 @@ export default function defineEnvironment<NODETYPE extends NodeType>({
     handler,
   };
   for (let i = 0; i < names.length; ++i) {
+    if (Object.prototype.hasOwnProperty.call(_environments, names[i])) {
+      noteDuplicateRegistration('environment', names[i]);
+    }
     _environments[names[i]] = data;
   }
   if (htmlBuilder) {

@@ -161,6 +161,27 @@ export const _functions: Record<string, FunctionSpec<NodeType>> = {};
 // oxlint-disable-next-line no-explicit-any
 export const _htmlGroupBuilders: Record<string, HtmlBuilder<any>> = {};
 
+/**
+ * Duplicate-name guard for both registries. Off by default — the built-in tree
+ * is verified collision-free, so the warning exists for debugging plugin or
+ * extension registration, not as runtime noise. A silent overwrite here would
+ * make a second `defineFunction` for an existing name change what every
+ * already-parsed formula means with no signal at all.
+ */
+let warnOnDuplicateRegistryNames = false;
+
+/** Toggle duplicate-name warnings for the function AND environment registries. */
+export function setDuplicateRegistryWarnings(enabled: boolean): void {
+  warnOnDuplicateRegistryNames = enabled;
+}
+
+/** @internal shared by `defineFunction` + `defineEnvironment`. */
+export function noteDuplicateRegistration(kind: 'function' | 'environment', name: string): void {
+  if (warnOnDuplicateRegistryNames && typeof console !== 'undefined') {
+    console.warn(`[@vectojs/tex] duplicate ${kind} registration overwrites existing "${name}"`);
+  }
+}
+
 export default function defineFunction<
   NODETYPE extends NodeType,
   const NAMES extends readonly string[],
@@ -169,6 +190,9 @@ export default function defineFunction<
   for (let i = 0; i < names.length; ++i) {
     // The entire spec is stored rather than a rebuilt subset, to avoid
     // destructuring and reallocating for every one of several hundred names.
+    if (Object.prototype.hasOwnProperty.call(_functions, names[i])) {
+      noteDuplicateRegistration('function', names[i]);
+    }
     _functions[names[i]] = data;
   }
   if (type && htmlBuilder) {
