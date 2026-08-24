@@ -358,4 +358,49 @@ describe.skipIf(!haveWasm)('G3 — findEntityAt reads the WASM hit-test grid', (
     expect(wasmHit).toBe(jsHit);
     expect(wasmHit).toBeNull();
   });
+
+  it('agrees under a ROTATED clipChildren container (AABB-corner divergence)', () => {
+    // Container 100x100 at origin rotated +45deg about its top-left: exact
+    // footprint is the diamond (0,0),(70.71,70.71),(0,141.42),(-70.71,70.71);
+    // its world AABB is [-70.71,70.71] x [0,141.42]. `clipped` lies entirely
+    // outside the exact rect (container-local x <= 0) but its world quad spans
+    // into the AABB's left corner region — the case where the JS walk used to
+    // accept what the WASM gate rejected (#680).
+    setWindow();
+    const scene = sceneWith();
+    enableWasmHit(scene);
+
+    const clip = new RectEntity('clip', 100, 100);
+    clip.clipChildren = true;
+    clip.rotation = Math.PI / 4;
+
+    const clipped = new RectEntity('clipped', 30, 30);
+    clipped.x = -30;
+    clipped.y = 40;
+    clip.add(clipped);
+
+    const inner = new RectEntity('inner', 30, 30);
+    inner.x = 10;
+    inner.y = 10;
+    clip.add(inner);
+
+    scene.add(clip);
+    tick(scene);
+
+    const clippedPoint: [number, number] = [-49.5, 28.28];
+    const innerPoint: [number, number] = [0, 35.36];
+
+    const wasmAtClipped = scene.findEntityAt(...clippedPoint)?.id ?? null;
+    const wasmAtInner = scene.findEntityAt(...innerPoint)?.id ?? null;
+
+    scene.setHitTestBackend(null);
+    tick(scene);
+    const jsAtClipped = scene.findEntityAt(...clippedPoint)?.id ?? null;
+    const jsAtInner = scene.findEntityAt(...innerPoint)?.id ?? null;
+
+    expect(wasmAtClipped).toBe(jsAtClipped);
+    expect(wasmAtClipped).toBeNull();
+    expect(wasmAtInner).toBe(jsAtInner);
+    expect(wasmAtInner).toBe('inner');
+  });
 });
