@@ -224,9 +224,18 @@ export class LayoutWorkerManager {
       // Retain the metrics independently of what the current worker knows, so a
       // main-thread fallback can still lay this font out later.
       if (options.fontData) this.fontDataById.set(options.fontId, options.fontData);
-      if (!this.registeredFonts.has(options.fontId) && options.fontData) {
-        request.fontData = options.fontData;
-        this.registeredFonts.add(options.fontId);
+      if (!this.registeredFonts.has(options.fontId)) {
+        // The current worker doesn't know this font. That is normally a first
+        // registration, but it is also exactly the state right after a worker
+        // restart: `handleWorkerFailure` cleared registeredFonts, and a caller
+        // that omits fontData (documented as optional because of the map above)
+        // would otherwise be swallowed by the worker's unknown-fontId guard,
+        // hanging its callback forever. Re-send whatever metrics we hold.
+        const fontData = options.fontData ?? this.fontDataById.get(options.fontId);
+        if (fontData) {
+          request.fontData = fontData;
+          this.registeredFonts.add(options.fontId);
+        }
       }
 
       const key = `${entityId}-${nextSeqId}`;
@@ -265,10 +274,21 @@ export class LayoutWorkerManager {
     // Remove any in-flight callback entries for this entity so we don't
     // pin a closure + `this` reference if the entity is destroyed while
     // the worker is still processing (the worker's response will be
-    // discarded below).
+    // discarded below). Keys are `entityId-<seq>`, so require a purely
+    // numeric remainder: a bare prefix scan would also purge sibling ids
+    // that extend this one across a hyphen boundary (cancelling 'text'
+    // must not kill 'text-1' / 'a-b-c' entries when cancelling 'a-b').
+    const prefix = `${entityId}-`;
     for (const key of this.pendingCallbacks.keys()) {
-      if (key.startsWith(`${entityId}-`)) this.pendingCallbacks.delete(key);
+      if (key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))) {
+        this.pendingCallbacks.delete(key);
+      }
     }
-    this.seqIdCounter.delete(entityId);
+    // The per-entity seqId counter is deliberately NOT reset: replies are
+    // keyed `${entityId}-${seqId}`, so restarting at 1 would let a stale reply
+    // from a just-cancelled in-flight request match the NEXT request's pending
+    // entry and deliver the old geometry to the new callback. Keeping it
+    // monotonic makes cancelled replies unmatchable; the only cost is one
+    // integer per live entity, cleared by destroy().
   }
 }

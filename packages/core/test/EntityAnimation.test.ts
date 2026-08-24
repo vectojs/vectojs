@@ -153,3 +153,39 @@ describe('Entity animation — reduced motion', () => {
     expect(driverCount(e)).toBe(1); // fade preserved
   });
 });
+
+describe('Entity.animate degenerate durations', () => {
+  it('zero-duration animate snaps to target instead of writing NaN and jamming the queue', () => {
+    const e = new TestEntity();
+    e.animate({ x: 100 }, 0);
+    // The very first update used to compute 0/0 = NaN into x, then the
+    // dequeue guard (NaN >= 1) kept the animation forever.
+    e.update(16, 16);
+    expect(Number.isNaN(e.x)).toBe(false);
+    expect(e.x).toBe(100);
+
+    // The queue must keep running afterwards.
+    e.animate({ x: 200 }, 100);
+    e.update(16, 32); // first tick starts the tween (progress 0)
+    e.update(100, 132); // full duration elapsed
+    expect(e.x).toBe(200);
+  });
+
+  it('negative and non-finite durations also snap to their targets', () => {
+    const e = new TestEntity();
+    e.animate({ opacity: 0.5 }, -10);
+    e.update(16, 16);
+    expect(e.opacity).toBe(0.5);
+
+    const f = new TestEntity();
+    f.animate({ y: 40 }, Infinity);
+    f.update(16, 16);
+    expect(f.y).toBe(40);
+
+    // Both queues stay usable.
+    e.animate({ y: 30 }, 50);
+    e.update(16, 66); // first tick starts the tween (progress 0)
+    e.update(50, 116); // full duration elapsed
+    expect(e.y).toBe(30);
+  });
+});

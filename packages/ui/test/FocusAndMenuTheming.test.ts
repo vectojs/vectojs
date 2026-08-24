@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Button } from '../src/Button';
+import { Checkbox } from '../src/Checkbox';
 import { Dropdown } from '../src/Dropdown';
 import { Slider } from '../src/Slider';
+import { Toggle } from '../src/Toggle';
 
 /**
  * Records every stroke/fill color a component paints, so a focus ring or a menu
@@ -152,6 +154,100 @@ describe('Slider focus ring', () => {
 
     const r = recordingRenderer();
     slider.render(r as never);
+
+    expect(r.strokes.some((s) => s.color === 'Highlight')).toBe(true);
+    expect(r.strokes.some((s) => s.color === '#ff7e5f')).toBe(false);
+  });
+});
+
+describe('Checkbox focus ring (#683)', () => {
+  it('defaults focusColor to cyan and starts unfocused', () => {
+    const cb = new Checkbox({ label: 'Accept' });
+    expect(cb.focusColor).toBe('#00f0ff');
+    expect(cb.focused).toBe(false);
+  });
+
+  it('tracks focus and blur, marking the scene dirty each way', () => {
+    const cb = new Checkbox({ label: 'Accept' });
+    const markDirty = attachScene(cb);
+
+    cb.emit('focus', {});
+    expect(cb.focused).toBe(true);
+    cb.emit('blur', {});
+    expect(cb.focused).toBe(false);
+
+    // Once per state change: an on-demand scene would otherwise not repaint the
+    // ring, which is the whole point of drawing it.
+    expect(markDirty).toHaveBeenCalledTimes(2);
+  });
+
+  it('strokes a ring around the box only while focused', () => {
+    const cb = new Checkbox({ label: 'Accept', focusColor: '#ff7e5f' });
+    attachScene(cb);
+
+    const before = recordingRenderer();
+    cb.render(before as never);
+    expect(before.strokes.some((s) => s.color === '#ff7e5f')).toBe(false);
+
+    cb.emit('focus', {});
+    const after = recordingRenderer();
+    cb.render(after as never);
+    expect(after.strokes.some((s) => s.color === '#ff7e5f' && s.lineWidth === 2)).toBe(true);
+  });
+
+  it('yields to the system Highlight color under forced colors', () => {
+    const cb = new Checkbox({ label: 'Accept', focusColor: '#ff7e5f' });
+    attachScene(cb, true);
+    cb.emit('focus', {});
+
+    const r = recordingRenderer();
+    cb.render(r as never);
+
+    expect(r.strokes.some((s) => s.color === 'Highlight')).toBe(true);
+    expect(r.strokes.some((s) => s.color === '#ff7e5f')).toBe(false);
+  });
+});
+
+describe('Toggle focus ring (#683)', () => {
+  it('defaults focusColor to cyan and starts unfocused', () => {
+    const tg = new Toggle({ label: 'Dark mode' });
+    expect(tg.focusColor).toBe('#00f0ff');
+    expect(tg.focused).toBe(false);
+  });
+
+  it('tracks focus and blur, marking the scene dirty each way', () => {
+    const tg = new Toggle({ label: 'Dark mode' });
+    const markDirty = attachScene(tg);
+
+    tg.emit('focus', {});
+    expect(tg.focused).toBe(true);
+    tg.emit('blur', {});
+    expect(tg.focused).toBe(false);
+
+    expect(markDirty).toHaveBeenCalledTimes(2);
+  });
+
+  it('strokes a ring around the track only while focused', () => {
+    const tg = new Toggle({ label: 'Dark mode', focusColor: '#ff7e5f' });
+    attachScene(tg);
+
+    const before = recordingRenderer();
+    tg.render(before as never);
+    expect(before.strokes.some((s) => s.color === '#ff7e5f')).toBe(false);
+
+    tg.emit('focus', {});
+    const after = recordingRenderer();
+    tg.render(after as never);
+    expect(after.strokes.some((s) => s.color === '#ff7e5f' && s.lineWidth === 2)).toBe(true);
+  });
+
+  it('yields to the system Highlight color under forced colors', () => {
+    const tg = new Toggle({ label: 'Dark mode', focusColor: '#ff7e5f' });
+    attachScene(tg, true);
+    tg.emit('focus', {});
+
+    const r = recordingRenderer();
+    tg.render(r as never);
 
     expect(r.strokes.some((s) => s.color === 'Highlight')).toBe(true);
     expect(r.strokes.some((s) => s.color === '#ff7e5f')).toBe(false);

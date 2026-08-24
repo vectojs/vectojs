@@ -571,6 +571,11 @@ export class VirtualList<T = unknown> extends UIComponent {
   private _bindEvents(): void {
     this.on('wheel', (e) => {
       if (e.ctrlKey) return;
+      // When the content already fits the viewport there is nothing to scroll
+      // (`_maxScroll()` is 0), so consuming the wheel would only turn the list's
+      // band into a page-scroll dead zone. Return before preventDefault and let
+      // the page handle it, mirroring ScrollView (#525; closes #679).
+      if (this._maxScroll() <= 0) return;
       e.preventDefault();
       const deltaY = e.deltaY ?? 0;
       const deltaMode = e.deltaMode ?? 0;

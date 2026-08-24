@@ -303,4 +303,151 @@ describe('emitSVG', () => {
       warn.mockRestore();
     }
   });
+
+  it('\\boxed and \\fbox draw their border as four edge rects', () => {
+    for (const tex of ['\\boxed{x^2}', '\\fbox{x}']) {
+      const out = emitSVG(layout(tex));
+      // One rect per border edge: top, bottom, left, right.
+      const rects = out.svg.match(/<rect /g) ?? [];
+      expect(rects.length, tex).toBe(4);
+
+      // The edges resolve against the enclosing vlist extent: every edge
+      // lands inside a viewBox wide enough for the content plus borders.
+      const [, , w] = /viewBox="([^"]+)"/.exec(out.svg)![1].split(' ').map(Number);
+      expect(w).toBeGreaterThan(100);
+
+      // Border thickness comes from `borderWidth` (\fboxrule = 0.04em), so
+      // every edge is at least one axis thin: 40 SVG units at scale 1.
+      const dims = [...out.svg.matchAll(/<rect [^>]*width="([\d.]+)" height="([\d.]+)"\/>/g)].map(
+        (m) => Math.min(Number(m[1]), Number(m[2])),
+      );
+      expect(dims.length, tex).toBe(4);
+      expect(
+        dims.every((thin) => thin > 0 && thin <= 40),
+        tex,
+      ).toBe(true);
+    }
+  });
+
+  it('\\angl draws only its top and right border edges', () => {
+    const out = emitSVG(layout('\\angl{x}'));
+
+    // `.angl { border-top/right: 0.049em solid }` (katex.scss:601-607); no
+    // bottom or left edge.
+    const rects = out.svg.match(/<rect /g) ?? [];
+    expect(rects.length).toBe(2);
+  });
+
+  it('\\colorbox paints its background behind the glyphs', () => {
+    const out = emitSVG(layout('\\colorbox{red}{x}'));
+
+    // No border was requested, so the background fill is the only rect ink.
+    expect((out.svg.match(/<rect /g) ?? []).length).toBe(1);
+    // Background must be painted before the glyph paths it sits behind.
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="red"')).toBeLessThan(out.svg.indexOf('<path'));
+  });
+
+  it('\\fcolorbox paints a blue background behind and a red frame over', () => {
+    const out = emitSVG(layout('\\fcolorbox{red}{blue}{x}'));
+
+    expect(out.svg.indexOf('fill="blue"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="blue"')).toBeLessThan(out.svg.indexOf('<path'));
+    // The frame colour appears after the glyphs: borders are edge rects in
+    // the foreground layer.
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(-1);
+    expect(out.svg.indexOf('fill="red"')).toBeGreaterThan(out.svg.indexOf('<path'));
+  });
+
+  it('draws array vertical rules ({c|c}) as vertical lines', () => {
+    const out = emitSVG(layout('\\begin{array}{c|c} a & b \\\\ \\hline c & d \\end{array}'));
+
+    // The \hline stays a full-width rect; each `|` separator adds one
+    // vertical line spanning the table height.
+    expect((out.svg.match(/<rect /g) ?? []).length).toBe(1);
+    const lines = [...out.svg.matchAll(/<line [^>]+>/g)].map((m) => m[0]);
+    expect(lines.length).toBe(1);
+
+    // Vertical: x1 === x2, and the rule spans both rows plus the inter-row
+    // gap, i.e. more than a single glyph's ascent (1 em = 1000 units).
+    const [, x1, y1, x2, y2] = lines[0]!
+      .match(/x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/)!
+      .map(Number);
+    expect(x1).toBe(x2);
+    expect(y2 - y1).toBeGreaterThan(1000);
+  });
+
+  it('treats multi-piece stretchy overlays as zero-advance', () => {
+    // Each overlay piece declares `width: "400em"`, but in CSS the pieces are
+    // absolutely positioned percentage overlays contributing no advance; the
+    // construct is as wide as the content it decorates.
+    const cases: Array<[string, string]> = [
+      ['\\overbrace{x+y}', 'x+y'],
+      ['\\underbrace{x+y}', 'x+y'],
+      ['\\overleftrightarrow{xy}', 'xy'],
+    ];
+    for (const [tex, body] of cases) {
+      const out = emitSVG(layout(tex));
+      const bare = emitSVG(layout(body));
+      expect(out.width, tex).toBeCloseTo(bare.width, 3);
+      // The ink still exists and stays within the content extent.
+      expect(out.svg).toContain('<path');
+      const [, , vw] = /viewBox="([^"]+)"/.exec(out.svg)![1].split(' ').map(Number);
+      expect(vw, tex).toBeLessThan(bare.width * UNITS_PER_EM + UNITS_PER_EM);
+    }
+  });
+
+  it('slices multi-piece stretchy ink across its fraction windows', () => {
+    // \overbrace's three pieces draw the left hook, the middle span and the
+    // right hook of the same 400em-wide path; each must be clipped to its own
+    // quarter-window of the content extent.
+    const out = emitSVG(layout('\\overbrace{x+y}'));
+    const paths = [...out.svg.matchAll(/<path[^>]*clip-path[^>]*d="/g)];
+    expect(paths.length).toBe(3);
+
+    const clips = [
+      ...out.svg.matchAll(/<clipPath[^>]*><rect x="([-\d.]+)" y="([^"]+)" width="([\d.]+)"/g),
+    ].map((m) => ({ x: Number(m[1]), w: Number(m[3]) }));
+    clips.sort((a, b) => a.x - b.x);
+    expect(clips.length).toBe(3);
+    // Left window starts at the origin, middle at ~25%, right ends together.
+    expect(clips[0]!.x).toBeLessThan(clips[1]!.x);
+    expect(clips[1]!.x).toBeLessThan(clips[2]!.x);
+    // The three windows tile the extent without a gap.
+    expect(clips[0]!.w).toBeGreaterThan(0);
+    expect(clips[1]!.w).toBeGreaterThan(clips[0]!.w);
+  });
+
+  it('\\phase advances its content extent, not its 400em tail', () => {
+    const out = emitSVG(layout('\\phase{-120}'));
+    const bare = emitSVG(layout('-120'));
+
+    // The angle SVG declares `width: "400em"`; `.hide-tail` without an inline
+    // extent clips it to the content, so the advance is the body plus the
+    // reserved left pad — not four hundred em.
+    expect(out.width).toBeLessThan(5);
+    expect(out.width).toBeGreaterThan(bare.width);
+
+    // The clipped overlay ink still exists.
+    expect(out.svg).toContain('clip-path');
+    expect(out.svg).toContain('<path');
+  });
+
+  it('applies class-carried horizontal padding', () => {
+    // `.x-arrow-pad { padding: 0 0.5em }` sits on the label's *sizing* span
+    // (`reset-size6.size3` = ×0.7), so the padding scales with it: two
+    // 0.35em sides on top of the previously-measured 5.8576em. This
+    // deliberately deviates from #696's "≈6.858" estimate, which forgot that
+    // em paddings resolve against the element's own font-size.
+    const arrow = emitSVG(layout('\\xrightarrow{\\text{very long label here}}'));
+    expect(arrow.width).toBeCloseTo(6.5576, 3);
+
+    // `.cancel-pad` widens the ink window by 0.4em while `.cancel-lap`'s
+    // negative margins cancel the advance, exactly as the CSS pair behaves.
+    expect(emitSVG(layout('\\cancel{xy}')).width).toBeCloseTo(1.0979, 3);
+
+    // `.boxpad` pads boxed content; the border edges resolve across it.
+    const boxed = emitSVG(layout('\\boxed{x}'));
+    expect(boxed.width).toBeCloseTo(emitSVG(layout('x')).width + 0.6, 3);
+  });
 });

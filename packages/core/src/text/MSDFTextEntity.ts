@@ -50,9 +50,7 @@ export class MSDFTextEntity extends Entity {
   // long-lived shared atlas image would retain the whole entity.
   private atlasDecodeTarget: EventTarget | null = null;
   private atlasDecodeHandler: (() => void) | null = null;
-  private rgbColorCache: Map<number, string> = new Map();
   private fontStringCache: string[] = [];
-
   private layoutResult: {
     width: number;
     height: number;
@@ -398,7 +396,6 @@ export class MSDFTextEntity extends Entity {
         const code = this.layoutResult.codePoints[i];
         const nodeX = this.layoutResult.xCoords[i];
         const nodeY = this.layoutResult.yCoords[i];
-        const packedStyle = this.layoutResult.packedStyles[i];
 
         const def = this.font.getGlyph(code);
         if (!def || !def.atlasBounds || !def.planeBounds) continue;
@@ -417,16 +414,9 @@ export class MSDFTextEntity extends Entity {
         const v0 = this.font.data.atlas.yOrigin === 'bottom' ? 1 - ab.top / ah : ab.top / ah;
         const v1 = this.font.data.atlas.yOrigin === 'bottom' ? 1 - ab.bottom / ah : ab.bottom / ah;
 
-        const colorVal = packedStyle >>> 8;
-        let runColor = this.rgbColorCache.get(colorVal);
-        if (!runColor) {
-          const r = (colorVal >> 16) & 0xff;
-          const g = (colorVal >> 8) & 0xff;
-          const b = colorVal & 0xff;
-          runColor = `rgb(${r},${g},${b})`;
-          this.rgbColorCache.set(colorVal, runColor);
-        }
-
+        // Draw-time tint from `color`: the layout worker packs every glyph's
+        // color bits white, so deriving the tint from packedStyle would ignore
+        // the option entirely. Both backends parse any CSS color string.
         scene.pointRenderer.addGlyph(
           glyphX,
           glyphY,
@@ -436,7 +426,7 @@ export class MSDFTextEntity extends Entity {
           v0,
           ab.right / aw,
           v1,
-          runColor,
+          this.color,
           worldOpacity,
           worldRot,
         );
@@ -459,18 +449,11 @@ export class MSDFTextEntity extends Entity {
       const nodeY = this.layoutResult.yCoords[i];
       const packedStyle = this.layoutResult.packedStyles[i];
 
+      // Color bits of packedStyle are worker-packed white (see the WebGL path
+      // comment); bold/italic flags still come from the low two bits.
       const fontString = this.fontStringCache[packedStyle & 3];
-      const colorVal = packedStyle >>> 8;
-      let runColor = this.rgbColorCache.get(colorVal);
-      if (!runColor) {
-        const r = (colorVal >> 16) & 0xff;
-        const g = (colorVal >> 8) & 0xff;
-        const b = colorVal & 0xff;
-        runColor = `rgb(${r},${g},${b})`;
-        this.rgbColorCache.set(colorVal, runColor);
-      }
 
-      renderer.fillText(String.fromCodePoint(code), nodeX, nodeY, fontString, runColor);
+      renderer.fillText(String.fromCodePoint(code), nodeX, nodeY, fontString, this.color);
     }
   }
 

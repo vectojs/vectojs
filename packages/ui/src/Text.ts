@@ -190,6 +190,22 @@ export class Text extends UIComponent {
     // whole line, which one fillText expresses exactly as well as left does.
     this.perGlyph = this.uiAlign === 'justify' || !!opts.hyphenate;
     this.prepared = this.engine.prepare(this.text, EMPTY_GLYPH_ATLAS, this.fontSize);
+    // Re-run the cold pass when a webfont finishes loading: `prepared` and the
+    // measurer's per-char cache were computed against pre-load pixels, so wrap
+    // points and glyph advances would stay stale until an unrelated edit
+    // re-prepared them (see watchFontMetrics). The fresh engine copies the
+    // configured behaviour of the one it replaces.
+    this.watchFontMetrics(() => {
+      const old = this.engine;
+      const fresh = new LayoutEngine(this.maxWidth ?? 1e9, 1e9, fontMeasurer(this.font));
+      fresh.preserveLeadingSpaces = old.preserveLeadingSpaces;
+      fresh.textAlign = old.textAlign;
+      fresh.hyphenate = old.hyphenate;
+      this.engine = fresh;
+      this.prepared = this.engine.prepare(this.text, EMPTY_GLYPH_ATLAS, this.fontSize);
+      this.applyLayout();
+      this.scene?.markDirty();
+    });
     // Not interactive: static text's semantic presence is its content
     // projection. An interactive a11y div would sit ABOVE the selectable
     // projection with pointer-events: auto and eat the mousedown — native
