@@ -81,6 +81,19 @@ export class Button extends UIComponent {
     this.width = opts.width ?? this.textWidth + this.padding * 2;
     this.height = opts.height ?? fontSizePx(this.font) + this.padding * 2;
 
+    // Re-measure once a webfont finishes loading, or the label's centering and
+    // intrinsic width keep the pre-load pixels (see watchFontMetrics).
+    this.watchFontMetrics(() => {
+      const prevText = this.textWidth;
+      this.textWidth = measureText(this.label, this.font);
+      // Same content-driven rule as setLabel: an explicit constructor width
+      // stays fixed; only textWidth (centering) updates.
+      if (Math.abs(this.width - (prevText + this.padding * 2)) < 0.5) {
+        this.width = this.textWidth + this.padding * 2;
+      }
+      this.scene?.markDirty();
+    });
+
     this.on('hover', () => {
       // A disabled control must not react to hover: an affordance that looks
       // interactive while the semantics say otherwise is the same divergence in
