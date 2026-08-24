@@ -232,11 +232,25 @@ export class ScrollView extends UIComponent {
    */
   private driveVirtualizableContent(): void {
     const scrollTop = -this.content.y;
+    // Children can grow or shrink in place (a streaming Text/RichText append)
+    // without any add()/remove(), so the extent computed at mutation time goes
+    // stale: clamping would cap scrolling at the old extent, leaving newly
+    // added bottom content unreachable — or allow scrolling into blank space
+    // after a shrink. Poll the children's extents in this same per-frame loop
+    // (Stack solved the same streaming case with resizeLastChild) and resync
+    // through updateContentSize() — which also re-clamps — when they differ.
+    let maxW = 0;
+    let maxH = 0;
     for (const child of this.content.children) {
+      if (child.x + child.width > maxW) maxW = child.x + child.width;
+      if (child.y + child.height > maxH) maxH = child.y + child.height;
       const virtualizable = child as Partial<ScrollVirtualizable>;
       if (typeof virtualizable.setVisibleRange === 'function') {
         virtualizable.setVisibleRange(scrollTop - child.y, this.height);
       }
+    }
+    if (maxW !== this.content.width || maxH !== this.content.height) {
+      this.updateContentSize();
     }
   }
 
