@@ -278,6 +278,11 @@ export class LayoutWorkerManager {
     for (const key of this.pendingCallbacks.keys()) {
       if (key.startsWith(`${entityId}-`)) this.pendingCallbacks.delete(key);
     }
-    this.seqIdCounter.delete(entityId);
+    // The per-entity seqId counter is deliberately NOT reset: replies are
+    // keyed `${entityId}-${seqId}`, so restarting at 1 would let a stale reply
+    // from a just-cancelled in-flight request match the NEXT request's pending
+    // entry and deliver the old geometry to the new callback. Keeping it
+    // monotonic makes cancelled replies unmatchable; the only cost is one
+    // integer per live entity, cleared by destroy().
   }
 }

@@ -41,6 +41,13 @@ export class Link extends UIComponent {
     this.width = measureText(this.label, this.font);
     this.height = fontSizePx(this.font);
 
+    // Re-measure once a webfont finishes loading, or the link's intrinsic
+    // width keeps the pre-load pixels (see watchFontMetrics).
+    this.watchFontMetrics(() => {
+      this.width = measureText(this.label, this.font);
+      this.scene?.markDirty();
+    });
+
     this.on('click', (e: VectoJSEvent) => {
       // The shadow `<a href target=_blank>` navigates NATIVELY on a real DOM
       // click, and that same click is also forwarded here — calling

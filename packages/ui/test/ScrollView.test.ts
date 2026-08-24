@@ -113,6 +113,44 @@ describe('ScrollView', () => {
     expect(pd()).toBe(false);
   });
 
+  it('reaches bottom content added by in-place child growth (#685)', () => {
+    // updateContentSize() ran only from add()/remove(); a child growing via
+    // append (streaming text) raised its own height without any mutation on
+    // the ScrollView, so clamping kept capping scroll at the old extent and
+    // the newly added bottom was unreachable.
+    const sv = new ScrollView({ width: 200, height: 100 });
+    const child = new Box(50, 140);
+    sv.add(child);
+    sv.emit('wheel', wheelEvent(10000).evt); // scrolled to bottom (-40)
+    settle(sv);
+    expect(sv.content.y).toBeCloseTo(-40, 0);
+
+    child.height = 300; // grows IN PLACE — no add(), no updateContentSize()
+    sv.update(16, 0);
+    sv.content.update(16, 0);
+
+    expect(sv.content.height).toBe(300);
+    sv.emit('wheel', wheelEvent(10000).evt);
+    settle(sv);
+    expect(sv.content.y).toBeCloseTo(-200, 0);
+  });
+
+  it('stops scrolling into blank space after in-place child shrink (#685)', () => {
+    const sv = new ScrollView({ width: 200, height: 100 });
+    const child = new Box(50, 300);
+    sv.add(child);
+    sv.emit('wheel', wheelEvent(10000).evt); // scrolled to bottom (-200)
+    settle(sv);
+    expect(sv.content.y).toBeCloseTo(-200, 0);
+
+    child.height = 120; // shrinks IN PLACE — maxScroll drops to 20
+    sv.update(16, 0);
+    sv.content.update(16, 0);
+    settle(sv);
+
+    expect(sv.content.y).toBeCloseTo(-20, 0);
+  });
+
   it('re-clamps the scroll offset when content shrinks', () => {
     const sv = new ScrollView({ width: 200, height: 100 });
     const tall = new Box(50, 300);
