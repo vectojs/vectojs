@@ -285,7 +285,7 @@
     },
     "packages/ui": {
       "name": "@vectojs/ui",
-      "version": "2.19.2",
+      "version": "2.20.0",
       "devDependencies": {
         "@vectojs/core": "workspace:*",
         "axe-core": "4.13.0",
