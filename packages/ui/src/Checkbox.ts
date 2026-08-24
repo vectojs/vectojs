@@ -18,6 +18,8 @@ export interface CheckboxOptions {
   accent?: string;
   /** Unchecked border. Default `'#475569'`. */
   border?: string;
+  /** Focus-ring color, stroked 2px around the box while focused. Default `'#00f0ff'`. */
+  focusColor?: string;
   /** Invoked with the new checked state whenever it changes. */
   onChange?: (checked: boolean) => void;
 }
@@ -37,6 +39,10 @@ export class Checkbox extends UIComponent {
   public color: string;
   public accent: string;
   public border: string;
+  /** Focus-ring color; stroked 2px around the box while focused. */
+  public focusColor: string;
+  /** True while the shadow checkbox holds keyboard focus. */
+  public focused = false;
 
   constructor(opts: CheckboxOptions) {
     super();
@@ -47,10 +53,23 @@ export class Checkbox extends UIComponent {
     this.color = opts.color ?? '#e2e8f0';
     this.accent = opts.accent ?? '#2563eb';
     this.border = opts.border ?? '#475569';
+    this.focusColor = opts.focusColor ?? '#00f0ff';
     this.interactive = true;
 
     this.height = this.size;
     this.width = this.size + (this.label ? 8 + measureText(this.label, this.font) : 0);
+
+    // Focus ring bookkeeping. The projected `<input type=checkbox>` is painted
+    // at opacity 0, so without a drawn indicator all keyboard focus is invisible
+    // (WCAG 2.4.7) — same pattern as Button/Slider.
+    this.on('focus', () => {
+      this.focused = true;
+      this.scene?.markDirty();
+    });
+    this.on('blur', () => {
+      this.focused = false;
+      this.scene?.markDirty();
+    });
 
     this.on('click', () => this.emit('change', { checked: !this.checked }));
     // Authoritative native state when the shadow checkbox is toggled directly.
@@ -79,6 +98,14 @@ export class Checkbox extends UIComponent {
       r.stroke('#ffffff', 2);
     } else {
       r.stroke(this.border, 2);
+    }
+    // Focus ring. The native shadow input is painted at opacity 0, so a
+    // keyboard user would otherwise get no focus indication (WCAG 2.4.7).
+    if (this.focused) {
+      const forced = this.scene?.forcedColors ?? false;
+      r.beginPath();
+      r.roundRect(-3, -3, this.size + 6, this.size + 6, 7);
+      r.stroke(forced ? 'Highlight' : this.focusColor, 2);
     }
     if (this.label) {
       r.fillText(this.label, this.size + 8, this.size * 0.75, this.font, this.color);

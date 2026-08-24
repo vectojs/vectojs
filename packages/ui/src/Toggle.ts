@@ -22,6 +22,8 @@ export interface ToggleOptions {
   track?: string;
   /** Invoked with the new state whenever it changes. */
   onChange?: (checked: boolean) => void;
+  /** Focus-ring color, stroked 2px around the track while focused. Default `'#00f0ff'`. */
+  focusColor?: string;
 }
 
 class ToggleKnob extends UIComponent {
@@ -55,6 +57,10 @@ export class Toggle extends UIComponent {
   public color: string;
   public accent: string;
   public track: string;
+  /** Focus-ring color; stroked 2px around the track while focused. */
+  public focusColor: string;
+  /** True while the shadow switch holds keyboard focus. */
+  public focused = false;
 
   private knobEntity: ToggleKnob;
 
@@ -68,10 +74,23 @@ export class Toggle extends UIComponent {
     this.color = opts.color ?? '#e2e8f0';
     this.accent = opts.accent ?? '#2563eb';
     this.track = opts.track ?? '#475569';
+    this.focusColor = opts.focusColor ?? '#00f0ff';
     this.interactive = true;
 
     this.height = this.trackH;
     this.width = this.trackW + (this.label ? 8 + measureText(this.label, this.font) : 0);
+
+    // Focus ring bookkeeping. The projected `[role=switch]` node is painted at
+    // opacity 0, so without a drawn indicator all keyboard focus is invisible
+    // (WCAG 2.4.7) — same pattern as Button/Slider.
+    this.on('focus', () => {
+      this.focused = true;
+      this.scene?.markDirty();
+    });
+    this.on('blur', () => {
+      this.focused = false;
+      this.scene?.markDirty();
+    });
 
     const radius = this.trackH / 2;
     const knobR = radius - 3;
@@ -118,6 +137,15 @@ export class Toggle extends UIComponent {
     r.beginPath();
     r.roundRect(0, 0, this.trackW, this.trackH, radius);
     r.fill(this.checked ? this.accent : this.track);
+
+    // Focus ring. The native shadow node is painted at opacity 0, so a
+    // keyboard user would otherwise get no focus indication (WCAG 2.4.7).
+    if (this.focused) {
+      const forced = this.scene?.forcedColors ?? false;
+      r.beginPath();
+      r.roundRect(-3, -3, this.trackW + 6, this.trackH + 6, radius + 3);
+      r.stroke(forced ? 'Highlight' : this.focusColor, 2);
+    }
 
     if (this.label) {
       r.fillText(this.label, this.trackW + 8, this.trackH * 0.7, this.font, this.color);

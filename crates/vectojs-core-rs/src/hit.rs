@@ -346,10 +346,17 @@ pub extern "C" fn hit_query(px: f64, py: f64) -> i32 {
         if cx < 0 || cy < 0 || cx >= gw || cy >= gh {
             return -1;
         }
-        let c = (cy * gw + cx) as usize;
-        if c >= H.cell_cap {
+        // Same i64 cell index as the build path above: the i32
+        // `cy * gw + cx` wraps on a hostile grid (grid dims reach i32::MAX
+        // when `vw/vh` is huge or `cell_size` is a tiny positive) — in
+        // release the wrapped index can slip past the capacity check and
+        // read an unrelated cell, and in debug the multiply panics. Both
+        // dims are < 2^31, so the i64 product cannot overflow.
+        let c = cy as i64 * gw as i64 + cx as i64;
+        if c >= H.cell_cap as i64 {
             return -1;
         }
+        let c = c as usize;
         let start = *H.cell_start.add(c);
         let cnt = *H.cell_count.add(c);
         let mut best = -1i32;
