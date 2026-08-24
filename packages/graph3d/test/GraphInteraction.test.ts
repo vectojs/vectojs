@@ -261,4 +261,27 @@ describe('GraphInteraction', () => {
     window.dispatchEvent(pointer('pointerup', CENTER + 40, CENTER));
     expect(setControlsEnabled).not.toHaveBeenCalled();
   });
+
+  it('dispose during a press below the drag threshold still re-enables host controls', () => {
+    const onDragEnd = vi.fn();
+    const setControlsEnabled = vi.fn();
+    const interaction = new GraphInteraction({
+      ...rig,
+      onDragEnd,
+      setControlsEnabled,
+    });
+
+    // Press on a node without moving: onPointerDown disables the host's
+    // controls eagerly, before the drag threshold is crossed.
+    rig.domElement.dispatchEvent(pointer('pointerdown', CENTER, CENTER));
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(false);
+
+    // Tearing down mid-press — a host disposal with a finger resting on a
+    // node — must still re-enable them: with the listeners removed, no
+    // pointerup/cancel will ever fire to do it.
+    interaction.dispose();
+    expect(setControlsEnabled).toHaveBeenLastCalledWith(true);
+    // An undragged press never began a drag, so onDragEnd must not fire.
+    expect(onDragEnd).not.toHaveBeenCalled();
+  });
 });
