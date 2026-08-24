@@ -19,6 +19,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use crate::SIMD_ALIGN;
+use crate::STATUS_OK;
+use crate::STATUS_OVERFLOW;
 use core::arch::wasm32::*;
 use core::ptr;
 use std::alloc::{Layout, alloc_zeroed};
@@ -42,6 +44,11 @@ struct StoreF32 {
     run_start: *mut i32,
     run_len: *mut i32,
     run_count: usize,
+    /// Slots requested by `init_f32` (excluding the tail pad) and runs,
+    /// recorded so `free_f32_store` can reconstruct each live allocation's
+    /// exact layout — the same reason the production stores keep capacities.
+    capacity: usize,
+    max_runs: usize,
 }
 
 static mut SF: StoreF32 = StoreF32 {
@@ -63,6 +70,8 @@ static mut SF: StoreF32 = StoreF32 {
     run_start: ptr::null_mut(),
     run_len: ptr::null_mut(),
     run_count: 0,
+    capacity: 0,
+    max_runs: 0,
 };
 
 fn leak_f32(n: usize) -> *mut f32 {
@@ -75,12 +84,52 @@ fn leak_i32(n: usize) -> *mut i32 {
     Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
 }
 
+/// Free the store the previous `init_f32` allocated, if any. The recorded
+/// capacities still describe the live pointers' sizes, so this must run before
+/// `init_f32` overwrites either — the JS side re-inits in place on growth, so
+/// the old store must be released or each growth leaks it.
+fn free_f32_store() {
+    unsafe {
+        let n = SF.capacity + 16;
+        crate::free_f32(SF.x, n);
+        crate::free_f32(SF.y, n);
+        crate::free_f32(SF.sx, n);
+        crate::free_f32(SF.sy, n);
+        crate::free_f32(SF.cos, n);
+        crate::free_f32(SF.sin, n);
+        crate::free_f32(SF.opacity, n);
+        crate::free_f32(SF.wa, n);
+        crate::free_f32(SF.wb, n);
+        crate::free_f32(SF.wc, n);
+        crate::free_f32(SF.wd, n);
+        crate::free_f32(SF.we, n);
+        crate::free_f32(SF.wf, n);
+        crate::free_f32(SF.wo, n);
+        crate::free_i32(SF.run_parent, SF.max_runs);
+        crate::free_i32(SF.run_start, SF.max_runs);
+        crate::free_i32(SF.run_len, SF.max_runs);
+    }
+}
+
 /// Allocate for `capacity` entities and `max_runs` runs. `+16` padding lets a
 /// 4-lane tail read up to three slots past the logical end without a remainder
 /// loop (the JS side never reads the padding back).
+///
+/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when the padding addition or a
+/// byte-size multiplication cannot be represented: the unchecked arithmetic
+/// used to wrap silently in release (allocating tiny arrays the kernel then
+/// overruns) and panic in debug. On rejection the previous allocation is
+/// untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn init_f32(capacity: usize, max_runs: usize) {
-    let n = capacity + 16;
+pub extern "C" fn init_f32(capacity: usize, max_runs: usize) -> i32 {
+    let Some(n) = capacity.checked_add(16) else {
+        return STATUS_OVERFLOW;
+    };
+    if n.checked_mul(size_of::<f32>()).is_none() || max_runs.checked_mul(size_of::<i32>()).is_none()
+    {
+        return STATUS_OVERFLOW;
+    }
+    free_f32_store();
     unsafe {
         SF.x = leak_f32(n);
         SF.y = leak_f32(n);
@@ -99,7 +148,10 @@ pub extern "C" fn init_f32(capacity: usize, max_runs: usize) {
         SF.run_parent = leak_i32(max_runs);
         SF.run_start = leak_i32(max_runs);
         SF.run_len = leak_i32(max_runs);
+        SF.capacity = capacity;
+        SF.max_runs = max_runs;
     }
+    STATUS_OK
 }
 
 macro_rules! ptr_export_f32 {
