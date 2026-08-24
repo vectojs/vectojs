@@ -151,7 +151,8 @@ export class Taskbar extends UIComponent {
   }
 
   public rebuild(): void {
-    const windows = this.wm.list();
+    // Shell dialogs are transient prompts, not tasks: never listed.
+    const windows = this.wm.list().filter((w) => !w.isDialog);
     const btnH = Math.max(28, this.height - 8);
     const btnY = (this.height - btnH) / 2;
     const maxW = 160;

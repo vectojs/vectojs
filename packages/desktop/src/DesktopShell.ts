@@ -2,13 +2,13 @@ import { Entity, type IRenderer, type Scene } from '@vectojs/core';
 import { setTheme, tokens } from '@vectojs/styles';
 import { AppRegistry } from './AppRegistry';
 import { DisplayLayout } from './DisplayLayout';
+import { Taskbar } from './Taskbar';
+import { DesktopWindow, type WindowChrome } from './Window';
 import { resolveConfig } from './resolveConfig';
 import { ShortcutRouter } from './ShortcutRouter';
 import { StartMenu, startMenuHeight } from './StartMenu';
-import { Taskbar } from './Taskbar';
 import type { DesktopThemeTokens, ResolvedWebosConfig, ShortcutAction, WebosConfig } from './types';
 import type { Vfs } from './Vfs';
-import { type WindowChrome } from './Window';
 import { WindowManager } from './WindowManager';
 
 /**
@@ -180,6 +180,17 @@ export class DesktopShell {
     if (!this.started) this.start();
     this.closeStartMenu();
     return this.windowManager.open(appId, opts);
+  }
+
+  /**
+   * Open a registry-free shell dialog (see {@link WindowManager.openDialog}).
+   * No AppRegistry entry is required; modal dialogs hold focus while open.
+   */
+  openDialog(opts: Parameters<WindowManager['openDialog']>[0]): DesktopWindow {
+    this.assertLive();
+    if (!this.started) this.start();
+    this.closeStartMenu();
+    return this.windowManager.openDialog(opts);
   }
 
   toggleStartMenu(): void {
