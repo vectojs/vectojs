@@ -85,8 +85,15 @@ export class ForceLayout2D {
     this.centerStrength = finiteOr(options.centerStrength, 0.02, 0);
     this.velocityDecay = finiteOr(options.velocityDecay, 0.6, 0, 0.999999);
     this.theta = finiteOr(options.theta, 0.9, 0);
-    this.repulsionDistanceMax = finiteOr(options.repulsionDistanceMax, Infinity, 0);
-    this.alphaDecay = finiteOr(options.alphaDecay, 0.0228, 0, 1);
+    // A finite cutoff of 0 early-returns out of the force kernel entirely,
+    // silently disabling all repulsion; the documented "no cutoff" value is
+    // non-finite, so any non-positive cutoff means the same.
+    const distanceMax = finiteOr(options.repulsionDistanceMax, Infinity, 0);
+    this.repulsionDistanceMax = distanceMax > 0 ? distanceMax : Infinity;
+    // `finiteOr` clamps inclusively, but a literal 0 decay never cools alpha:
+    // step()'s guard stays true forever and host loops never terminate.
+    const decay = finiteOr(options.alphaDecay, 0.0228, 0, 1);
+    this.alphaDecay = decay > 0 ? decay : 0.0228;
     this.alphaMin = finiteOr(options.alphaMin, 0.001, 0);
     this.seed = Number.isFinite(options.seed) ? Number(options.seed) : 1;
   }

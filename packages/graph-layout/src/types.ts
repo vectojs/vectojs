@@ -59,10 +59,11 @@ export interface ForceLayout2DOptions {
   /**
    * Maximum distance for many-body repulsion. Barnes-Hut aggregates test their
    * center of charge, matching d3-force; `theta: 0` applies the cutoff exactly
-   * per point. Non-finite disables the cutoff.
+   * per point. Non-finite (or non-positive) disables the cutoff.
    */
   repulsionDistanceMax?: number;
-  /** Temperature decay per tick. Default 0.0228. */
+  /** Temperature decay per tick. Must be positive — `0` would never settle,
+   * so it falls back to the default 0.0228. */
   alphaDecay?: number;
   /** Temperature below which the simulation is settled. Default 0.001. */
   alphaMin?: number;
