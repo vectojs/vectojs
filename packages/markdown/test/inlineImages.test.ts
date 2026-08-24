@@ -237,3 +237,43 @@ describe('an image on a line it shares with text', () => {
     expect(spansAfter.height).toBeCloseTo(spansBefore.height, 5);
   });
 });
+
+/**
+ * The store is module-level and lives as long as the page, so a streamed feed
+ * of documents with distinct image URLs once grew it without limit, pinning a
+ * decoded `HTMLImageElement` per URL until tab close (#699). The inline-math
+ * raster store fixed the same defect with an LRU cap; this pins the image
+ * twin to the same behaviour.
+ */
+describe('the inline-image raster store is bounded', () => {
+  const limit = 256;
+  const src = (i: number): string => `https://example.test/img-${i}.png`;
+
+  it('evicts the least-recently-used entry past the cap', () => {
+    // Fill past the cap without ever touching entry 0 again, so it stays the
+    // least-recently-used and is evicted: a fresh call starts a new decode
+    // instead of returning the same pinned entry forever.
+    const first = ensureInlineImageRaster(src(0));
+    for (let i = 1; i <= limit + 8; i++) {
+      ensureInlineImageRaster(src(i));
+    }
+    const redecoded = ensureInlineImageRaster(src(0));
+    expect(redecoded).not.toBe(first);
+    expect(redecoded.decoded).toBe(false);
+  });
+
+  it('a recent hit survives a flood that would otherwise evict it', () => {
+    const survivor = ensureInlineImageRaster(src(0));
+    for (let i = 1; i <= 100; i++) {
+      ensureInlineImageRaster(src(i));
+    }
+
+    // The hit re-inserts, moving entry 0 behind the flood so far.
+    expect(ensureInlineImageRaster(src(0))).toBe(survivor);
+
+    for (let i = 101; i <= 200; i++) {
+      ensureInlineImageRaster(src(i));
+    }
+    expect(ensureInlineImageRaster(src(0))).toBe(survivor);
+  });
+});
