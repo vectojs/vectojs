@@ -99,6 +99,11 @@ class GridCellHotspot extends UIComponent {
     this.label = label;
   }
 
+  /** The Table positions and sizes one pooled hotspot per visible cell. */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       role: this.rowIndex < 0 ? 'columnheader' : 'gridcell',

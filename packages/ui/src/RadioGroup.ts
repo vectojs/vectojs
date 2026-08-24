@@ -96,12 +96,49 @@ export class RadioGroup extends UIComponent {
   public direction: 'horizontal' | 'vertical';
   public gap: number;
   public size: number;
-  public font: string;
   public color: string;
   public accent: string;
   public border: string;
   /** Accessible name for the group. See {@link RadioGroupOptions.label}. */
   public label: string;
+
+  public get font(): string {
+    return this._font;
+  }
+  public set font(value: string) {
+    if (this._font === value) return;
+    this._font = value;
+    // Cached label widths are keyed per font, so a new font invalidates them.
+    this._labelWidths.clear();
+  }
+  private _font: string = '';
+
+  /**
+   * Label widths keyed by `${font}\u0000${label}`. `_idxAt` runs on every
+   * pointermove and `render` on every dirty frame, and each used to re-measure
+   * every option's label through the shared canvas — pure overhead while the
+   * option set is unchanged.
+   */
+  private _labelWidths = new Map<string, number>();
+
+  private _labelWidth(label: string): number {
+    const key = `${this.font}\u0000${label}`;
+    let w = this._labelWidths.get(key);
+    if (w === undefined) {
+      w = measureText(label, this.font);
+      this._labelWidths.set(key, w);
+    }
+    return w;
+  }
+
+  /** The option value whose hotspot currently holds DOM focus, or `null`. */
+  private _domFocusedHotspotValue(): string | null {
+    if (typeof document === 'undefined') return null;
+    const active = document.activeElement;
+    if (!active) return null;
+    const hit = this._hotspots.find((h) => this.scene?.getA11yElement(h.id) === active);
+    return hit ? hit.optionValue : null;
+  }
 
   private _hoverIdx: number = -1;
   /** One `role="radio"` hotspot per option, kept in sync with the layout. */
@@ -124,6 +161,14 @@ export class RadioGroup extends UIComponent {
     this.border = opts.border ?? '#475569';
     this.label = opts.label ?? 'Radio group';
     this.interactive = true;
+
+    // A webfont finishing its load changes what every label measures; cached
+    // widths computed from the fallback font are stale (see watchFontMetrics).
+    this.watchFontMetrics(() => {
+      this._labelWidths.clear();
+      this._layout();
+      this._syncHotspots();
+    });
 
     this._layout();
     this._syncHotspots();
@@ -178,14 +223,19 @@ export class RadioGroup extends UIComponent {
   public set options(value: RadioOption[]) {
     if (value === this._options) return;
     this._options = value;
+    // New option objects can carry new labels — cached widths are invalid.
+    this._labelWidths.clear();
     this._layout();
     this._syncHotspots();
   }
 
   /** Roving-tabindex tab stop: the checked option, or the first enabled option
-   *  when the current value matches none. */
+   *  when nothing checked applies. A checked-but-disabled option must NOT keep
+   *  the tab stop — a disabled radio is not interactive, so the group would
+   *  swallow Tab and strand keyboard users outside the widget. */
   public isTabStop(value: string): boolean {
-    if (this.options.some((o) => o.value === this.value)) return value === this.value;
+    const checked = this.options.find((o) => o.value === this.value);
+    if (checked && !checked.disabled) return value === this.value;
     const firstEnabled = this.options.find((o) => !o.disabled);
     return !!firstEnabled && firstEnabled.value === value;
   }
@@ -257,19 +307,25 @@ export class RadioGroup extends UIComponent {
   private _syncHotspots(): void {
     // Rebuild if the option set changed (add/remove children as needed).
     if (this._hotspots.length !== this.options.length) {
+      // Removing a hotspot that holds DOM focus would drop the user's place
+      // (and with it arrow-key navigation) — remember and restore it after.
+      const focusedValue = this._domFocusedHotspotValue();
       for (const h of this._hotspots) {
         this.scene?.detachA11y?.(h);
         this.remove(h);
       }
       this._hotspots = this.options.map((o) => new RadioHotspot(o.value, this, o.label));
       for (const h of this._hotspots) this.add(h);
+      if (focusedValue !== null) {
+        this._hotspots.find((h) => h.optionValue === focusedValue)?.focus();
+      }
     }
 
     let current = 0;
     const isH = this.direction === 'horizontal';
     for (let i = 0; i < this.options.length; i++) {
       const opt = this.options[i];
-      const labelW = measureText(opt.label, this.font);
+      const labelW = this._labelWidth(opt.label);
       const itemW = this.size + 8 + labelW;
       const hotspot = this._hotspots[i];
       hotspot.setMeta(opt.label);
@@ -296,7 +352,7 @@ export class RadioGroup extends UIComponent {
     const isH = this.direction === 'horizontal';
 
     for (let i = 0; i < this.options.length; i++) {
-      const labelW = measureText(this.options[i].label, this.font);
+      const labelW = this._labelWidth(this.options[i].label);
       const itemW = this.size + 8 + labelW;
       if (isH) {
         totalW += itemW + (i > 0 ? this.gap : 0);
@@ -316,7 +372,7 @@ export class RadioGroup extends UIComponent {
     const isH = this.direction === 'horizontal';
 
     for (let i = 0; i < this.options.length; i++) {
-      const labelW = measureText(this.options[i].label, this.font);
+      const labelW = this._labelWidth(this.options[i].label);
       const itemW = this.size + 8 + labelW;
 
       if (isH) {
@@ -371,7 +427,7 @@ export class RadioGroup extends UIComponent {
         r.stroke('rgba(0,240,255,0.15)', 1);
       }
 
-      const labelW = measureText(opt.label, this.font);
+      const labelW = this._labelWidth(opt.label);
       const itemW = this.size + 8 + labelW;
       current += (isH ? itemW : this.size) + this.gap;
     }

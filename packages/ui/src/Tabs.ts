@@ -287,6 +287,8 @@ export class Tabs extends UIComponent {
   public set tabs(value: TabItem[]) {
     if (value === this._tabs) return;
     this._tabs = value;
+    // Same length but different content entities must still re-derive.
+    this._contentRev++;
     this._syncTabHotspots();
   }
 
@@ -319,12 +321,18 @@ export class Tabs extends UIComponent {
    *  in the bar, matching `_tabIdxAt`'s geometry (`i*w - scrollX`, width `w`). */
   private _syncTabHotspots(): void {
     if (this._hotspots.length !== this.tabs.length) {
+      // Removing a hotspot that holds DOM focus would drop the user's place —
+      // remember and restore it after the pool is rebuilt.
+      const focusedId = this._domFocusedTabId();
       for (const h of this._hotspots) {
         this.scene?.detachA11y?.(h);
         this.remove(h);
       }
       this._hotspots = this.tabs.map((t) => new TabHotspot(t.id, this, t.label));
       for (const h of this._hotspots) this.add(h);
+      if (focusedId !== null) {
+        this._hotspots.find((h) => h.tabId === focusedId)?.focus();
+      }
     }
     const w = this._tabW();
     const barH = this._barHeight();
@@ -399,7 +407,29 @@ export class Tabs extends UIComponent {
     return Math.abs(lx - this._closeCenterX(idx)) <= this._closeBox / 2;
   }
 
+  private _domFocusedTabId(): string | null {
+    if (typeof document === 'undefined') return null;
+    const active = document.activeElement;
+    if (!active) return null;
+    const hit = this._hotspots.find((h) => this.scene?.getA11yElement(h.id) === active);
+    return hit ? hit.tabId : null;
+  }
+
+  /**
+   * Cheap signature of everything {@link _updateContentVisibility} derives
+   * from. The full pass re-positions every content entity and mutates the
+   * child list, so `update()` runs it only when an input actually changed —
+   * previously it re-ran on EVERY frame even while idle.
+   */
+  private _contentSignature(): string {
+    return `${this.value}|${this._contentRev}|${this.width}|${this.height}|${this._barHeight()}`;
+  }
+  private _lastContentSig: string | null = null;
+  /** Bumped on `tabs` reassignment so equal-length swaps still invalidate. */
+  private _contentRev = 0;
+
   private _updateContentVisibility(): void {
+    this._lastContentSig = this._contentSignature();
     const contentY = this._barHeight();
     const contentH = this.height - contentY;
 
@@ -421,14 +451,17 @@ export class Tabs extends UIComponent {
   }
 
   /**
-   * Re-derive content geometry every frame: the active content must follow a
-   * `tabs` reassignment (which re-syncs the hotspot pool via its setter) and
-   * the dynamically-hiding bar (`autoHideTabBar`) without requiring a `change`
-   * emit.
+   * Re-derive content geometry when an input to it changed: the active content
+   * must follow a `tabs` reassignment (which re-syncs the hotspot pool via its
+   * setter), a `value` change, a resize, or the dynamically-hiding bar
+   * (`autoHideTabBar`) — without requiring a `change` emit. The signature
+   * check makes the per-frame call O(1) while idle instead of a full pass.
    */
   public update(dt: number, time: number): void {
     super.update(dt, time);
-    this._updateContentVisibility();
+    if (this._lastContentSig !== this._contentSignature()) {
+      this._updateContentVisibility();
+    }
   }
 
   public render(r: IRenderer): void {

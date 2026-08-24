@@ -1,4 +1,4 @@
-import { IRenderer, A11yAttributes } from '@vectojs/core';
+import { IRenderer, A11yAttributes, type LayoutControlledProperty } from '@vectojs/core';
 import { UIComponent } from './UIComponent';
 
 export interface TreeNode {
@@ -88,6 +88,11 @@ class TreeItemHotspot extends UIComponent {
     this.level = level;
     this.expandable = expandable;
     this.expandedState = expanded;
+  }
+
+  /** The TreeView positions and sizes one pooled hotspot per on-screen row. */
+  public override getLayoutControlledProperties(): ReadonlyArray<LayoutControlledProperty> {
+    return ['x', 'y', 'width', 'height'];
   }
 
   public getA11yAttributes(): A11yAttributes {
