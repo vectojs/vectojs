@@ -21,9 +21,25 @@
 
 use core::cell::RefCell;
 
+/// Status-code vocabulary, numbered identically to `vectojs-core-rs`'s
+/// `lib.rs` exports so a code means the same thing on every WASM backend this
+/// workspace ships. Keep the two lists in sync when editing either — the crates
+/// build standalone (separate cdylibs, no shared crate), which is why this is a
+/// mirrored module and not an import.
+/// `0` is success; any non-zero means the call did nothing and the JS side can
+/// fall back to its reference path.
 const STATUS_OK: i32 = 0;
+/// A count exceeded what `force_init` allocated (`force_step`'s `n` too large).
 const STATUS_CAPACITY: i32 = 1;
+/// A kernel ran before `force_init`, so the buffers are still empty.
 const STATUS_UNINITIALIZED: i32 = 2;
+/// Reserved for parity with core-rs (a run referencing a slot outside the
+/// store). This kernel has no run concept, so nothing returns it today.
+#[allow(dead_code)]
+const STATUS_BAD_RUN: i32 = 3;
+/// A requested capacity could not be represented (its size arithmetic
+/// overflowed) or the allocator refused it. Nothing is written in that case.
+const STATUS_OVERFLOW: i32 = 4;
 
 /// Flat-array Barnes-Hut octree, mirroring the JS `BarnesHutOctree` exactly.
 /// `Vec` is used (not 16-byte-aligned manual alloc) because the force
@@ -102,26 +118,38 @@ impl Octree {
         }
     }
 
-    fn ensure(&mut self, n: usize) {
+    fn ensure(&mut self, n: usize) -> bool {
         // Worst case an octree needs up to ~2N internal nodes; allocate
         // generously. The exact capacity is irrelevant to the results — it only
         // decides when a reallocation happens, never the tree shape.
-        let need = (n * 8 + 8).max(64);
+        // Checked like core-rs's inits: a hostile count used to wrap `n * 8`
+        // into a tiny allocation that the build then overran.
+        let Some(need) = n
+            .checked_mul(8)
+            .and_then(|v| v.checked_add(8))
+            .map(|v| v.max(64))
+        else {
+            return false;
+        };
         if need <= self.capacity {
-            return;
+            return true;
         }
+        let Some(child_len) = need.checked_mul(8) else {
+            return false;
+        };
         self.capacity = need;
         self.cx.resize(need, 0.0);
         self.cy.resize(need, 0.0);
         self.cz.resize(need, 0.0);
         self.mass.resize(need, 0.0);
         self.size.resize(need, 0.0);
-        self.child.resize(need * 8, -1);
+        self.child.resize(child_len, -1);
         self.point_index.resize(need, -1);
         self.px.resize(need, 0.0);
         self.py.resize(need, 0.0);
         self.pz.resize(need, 0.0);
         self.has_point.resize(need, 0);
+        true
     }
 
     fn grow(&mut self) {
@@ -182,6 +210,9 @@ impl Octree {
         let edge = (max - min).max(1e-3);
         let cx_root = (min + max) / 2.0;
 
+        // `ensure`'s failure arm is unreachable here: `force_step` rejects
+        // `n > cap` before calling, and `force_init` already pre-sized the tree
+        // for `cap` (or rejected), so the checked arithmetic always fits.
         self.ensure(n);
         self.node_count = 1;
         self.reset_node(0, cx_root, cx_root, cx_root, edge);
@@ -417,12 +448,15 @@ impl Octree {
 
 /// Allocate the f32 position gather buffer (n*3) and the f64 acceleration
 /// output buffer (n*3) for up to `capacity` nodes, and drop the previous
-/// allocations' contents. Returns [`STATUS_OK`], or [`STATUS_CAPACITY`] when the
-/// size arithmetic overflows (a hostile count).
+/// allocations' contents. Returns [`STATUS_OK`], [`STATUS_OVERFLOW`] when the
+/// size arithmetic overflows or the octree pre-size cannot be represented (a
+/// hostile count — this used to return [`STATUS_CAPACITY`], which per the shared
+/// vocabulary means "n exceeded an existing allocation" in `force_step`, not
+/// "the request itself is unrepresentable").
 #[unsafe(no_mangle)]
 pub extern "C" fn force_init(capacity: usize) -> i32 {
     let Some(n3) = capacity.checked_mul(3) else {
-        return STATUS_CAPACITY;
+        return STATUS_OVERFLOW;
     };
     POS.with(|p| {
         p.borrow_mut().resize(n3, 0.0);
@@ -434,9 +468,10 @@ pub extern "C" fn force_init(capacity: usize) -> i32 {
     // wasm linear memory mid-step (which would detach the JS views laid over
     // it). The pathological over-8n+8 growth path still exists in `grow`, so the
     // JS backend re-validates its views after every step regardless.
-    OCTREE.with(|o| {
-        o.borrow_mut().ensure(capacity);
-    });
+    let ensured = OCTREE.with(|o| o.borrow_mut().ensure(capacity));
+    if !ensured {
+        return STATUS_OVERFLOW;
+    }
     CAPACITY.with(|c| {
         *c.borrow_mut() = capacity;
     });

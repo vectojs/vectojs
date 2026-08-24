@@ -76,6 +76,8 @@ interface CoreExports {
   p_wo(): number;
   /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
   compute_aabbs(count: number): number;
+  /** Returns a status code: 0 = ok, non-zero = rejected (see WASM_STATUS). */
+  compute_aabbs_simd(count: number): number;
   p_bx(): number;
   p_by(): number;
   p_bw(): number;
@@ -264,25 +266,29 @@ export class WasmTransformBackend {
   /**
    * Compute world-space AABBs for `store` in WASM (G1+), writing back into its
    * `aminx/aminy/amaxx/amaxy` arrays. Uploads the local bounds, runs the AABB
-   * pass, reads results back. Result is bit-identical to `computeAabbsJS(store)`.
-   * `compose` (or `runKernel`) must have populated the world matrices first —
-   * this pass reads them. For the resident (no-copy) integration, write bounds
-   * via {@link boundsView} and read via {@link aabbView} + call
-   * {@link runAabbs} instead.
+   * pass, reads results back. Result is bit-identical to `computeAabbsJS(store)`
+   * for both kernels. `compose` (or `runKernel`) must have populated the world
+   * matrices first — this pass reads them. For the resident (no-copy)
+   * integration, write bounds via {@link boundsView} and read via
+   * {@link aabbView} + call {@link runAabbs} instead.
    */
-  computeAabbs(store: TransformStore): void {
+  computeAabbs(store: TransformStore, kernel: Kernel = 'simd'): void {
     this.ensure(store.count, store.runCount);
     const n = store.count;
     this.vbx.set(store.bx.subarray(0, n));
     this.vby.set(store.by.subarray(0, n));
     this.vbw.set(store.bw.subarray(0, n));
     this.vbh.set(store.bh.subarray(0, n));
-    this.lastStatus = this.ex.compute_aabbs(n);
+    // `runAabbs` records the NUMERIC kernel status in `lastStatus` and reports
+    // success as a boolean; keep those separate or the `!== OK` check below
+    // would compare `true !== 0`, always take the rejected branch, and silently
+    // skip every readback (#662).
+    const ok = this.runAabbs(n, kernel);
     // A rejected pass leaves the wasm-side AABB arrays holding the PREVIOUS
     // frame's values, so reading them back would silently publish stale world
     // bounds as if they were current. `ensure` above sizes for `n`, so this is
     // defence in depth rather than an expected path.
-    if (this.lastStatus !== WASM_STATUS.OK) return;
+    if (!ok) return;
     store.aminx.set(this.vaminx.subarray(0, n));
     store.aminy.set(this.vaminy.subarray(0, n));
     store.amaxx.set(this.vamaxx.subarray(0, n));
@@ -294,8 +300,9 @@ export class WasmTransformBackend {
    *  composed). No upload/readback — the per-frame resident path. Returns
    *  `false` if the kernel rejected `count` (beyond capacity, or uninitialized),
    *  in which case {@link aabbView} still holds the previous frame's bounds. */
-  runAabbs(count: number): boolean {
-    this.lastStatus = this.ex.compute_aabbs(count);
+  runAabbs(count: number, kernel: Kernel = 'simd'): boolean {
+    this.lastStatus =
+      kernel === 'scalar' ? this.ex.compute_aabbs(count) : this.ex.compute_aabbs_simd(count);
     return this.lastStatus === WASM_STATUS.OK;
   }
 

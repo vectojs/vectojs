@@ -152,22 +152,65 @@ static mut S: Store = Store {
     run_capacity: 0,
 };
 
+impl Store {
+    /// The no-store state: every kernel's `initialized()` gate rejects it, so
+    /// publishing it after a failed init makes later calls report
+    /// [`STATUS_UNINITIALIZED`] instead of touching freed memory.
+    fn empty() -> Store {
+        Store {
+            x: ptr::null_mut(),
+            y: ptr::null_mut(),
+            sx: ptr::null_mut(),
+            sy: ptr::null_mut(),
+            cos: ptr::null_mut(),
+            sin: ptr::null_mut(),
+            opacity: ptr::null_mut(),
+            wa: ptr::null_mut(),
+            wb: ptr::null_mut(),
+            wc: ptr::null_mut(),
+            wd: ptr::null_mut(),
+            we: ptr::null_mut(),
+            wf: ptr::null_mut(),
+            wo: ptr::null_mut(),
+            bx: ptr::null_mut(),
+            by: ptr::null_mut(),
+            bw: ptr::null_mut(),
+            bh: ptr::null_mut(),
+            aminx: ptr::null_mut(),
+            aminy: ptr::null_mut(),
+            amaxx: ptr::null_mut(),
+            amaxy: ptr::null_mut(),
+            run_parent: ptr::null_mut(),
+            run_start: ptr::null_mut(),
+            run_len: ptr::null_mut(),
+            run_count: 0,
+            capacity: 0,
+            run_capacity: 0,
+        }
+    }
+}
+
 /// Allocate a zeroed, 16-byte-aligned `f64` array of `n` elements. The
 /// allocation is freed by [`free_f64`] when a later `init` replaces the store —
 /// the JS side re-inits **in place** on every growth (`backend.ts::ensure`), so
 /// the previous allocation must be released or each growth leaks a full store
 /// and dlmalloc can never reuse the block. `alloc_zeroed` (not `vec!`) is what
 /// guarantees the 16-byte base — `Vec<f64>` is only 8-byte aligned.
+///
+/// Returns the null pointer when the allocator refuses — never aborts — so the
+/// caller's `*_init` can reject with [`STATUS_OVERFLOW`] and leave the previous
+/// store (and every JS view laid over it) untouched.
 fn leak_f64(n: usize) -> *mut f64 {
     let layout = Layout::from_size_align(n * size_of::<f64>(), SIMD_ALIGN).expect("valid layout");
-    let p = unsafe { alloc_zeroed(layout) } as *mut f64;
-    assert!(!p.is_null(), "allocation failed");
-    p
+    unsafe { alloc_zeroed(layout).cast::<f64>() }
 }
 /// Run tables are read/written scalar (no SIMD), so 4-byte `i32` alignment is
-/// fine; a plain leaked `Vec` suffices. Freed by [`free_i32`] on re-init.
+/// fine; a plain zeroed allocation suffices. Freed by [`free_i32`] on re-init.
+/// Returns null on allocation failure, like [`leak_f64`].
 fn leak_i32(n: usize) -> *mut i32 {
-    Box::leak(vec![0i32; n].into_boxed_slice()).as_mut_ptr()
+    let layout =
+        Layout::from_size_align(n * size_of::<i32>(), size_of::<i32>()).expect("valid layout");
+    unsafe { alloc_zeroed(layout).cast::<i32>() }
 }
 
 /// Free an `f64` array allocated by [`leak_f64`] with `n` elements. The layout
@@ -194,17 +237,18 @@ pub(crate) fn free_f32(p: *mut f32, n: usize) {
     unsafe { dealloc(p.cast(), layout) };
 }
 
-/// Free an `i32` array allocated by [`leak_i32`] with `n` elements: the mirror
-/// image of the `Box` leak, dropping the box to run the allocator's free.
+/// Free an `i32` array allocated by [`leak_i32`] with `n` elements. The
+/// layout is reconstructed exactly from `n` and the 4-byte alignment, so `p`
+/// must be the live pointer `leak_i32(n)` returned.
 pub(crate) fn free_i32(p: *mut i32, n: usize) {
     if p.is_null() {
         return;
     }
-    // SAFETY: `p` came from `leak_i32(n)` (a leaked `Box<[i32; n]>`) and is
-    // dropped exactly once — the caller overwrites the store field after.
-    unsafe {
-        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(p, n)));
-    }
+    let layout =
+        Layout::from_size_align(n * size_of::<i32>(), size_of::<i32>()).expect("valid layout");
+    // SAFETY: `p` came from `leak_i32(n)` and is deallocated exactly once —
+    // the caller overwrites the store field after.
+    unsafe { dealloc(p.cast(), layout) };
 }
 
 /// Free every allocation the previous `init` made, if any. `S.capacity` and
@@ -246,11 +290,12 @@ fn free_store() {
 /// place when the scene grows, so the old store must be released before the new
 /// pointers overwrite it or every growth leaks 24 arrays of linear memory.
 ///
-/// Returns [`STATUS_OK`], or [`STATUS_OVERFLOW`] when `capacity + 8` or the
-/// resulting byte sizes cannot be represented — a hostile count used to wrap
-/// silently in release (allocating a tiny store that kernels then overran,
-/// which is heap corruption) and panic in debug. On rejection the previous
-/// store is untouched.
+/// Returns [`STATUS_OK`], [`STATUS_OVERFLOW`] when `capacity + 8` or the
+/// resulting byte sizes cannot be represented (the previous store is untouched
+/// in that case), or [`STATUS_OVERFLOW`] when the allocator refuses an
+/// allocation mid-init: the previous store is then already released, so the
+/// empty store is published and later kernels report [`STATUS_UNINITIALIZED`]
+/// — the JS side sees the non-zero status and falls back to its reference path.
 #[unsafe(no_mangle)]
 pub extern "C" fn init(capacity: usize, max_runs: usize) -> i32 {
     // Pad so a 2-lane (f64) tail can read one slot past the logical end without
@@ -265,38 +310,111 @@ pub extern "C" fn init(capacity: usize, max_runs: usize) -> i32 {
     {
         return STATUS_OVERFLOW;
     }
+    // Release BEFORE allocating: dlmalloc reuses the just-freed block, which is
+    // what keeps repeated same-capacity re-inits flat in linear memory. With
+    // `panic = "abort"` an OOM used to trap the whole instance instead — no JS
+    // caller can catch that, defeating the status design that lets it fall back
+    // to the JS path per call.
     free_store();
-    unsafe {
-        S.x = leak_f64(n);
-        S.y = leak_f64(n);
-        S.sx = leak_f64(n);
-        S.sy = leak_f64(n);
-        S.cos = leak_f64(n);
-        S.sin = leak_f64(n);
-        S.opacity = leak_f64(n);
-        S.wa = leak_f64(n);
-        S.wb = leak_f64(n);
-        S.wc = leak_f64(n);
-        S.wd = leak_f64(n);
-        S.we = leak_f64(n);
-        S.wf = leak_f64(n);
-        S.wo = leak_f64(n);
-        S.bx = leak_f64(n);
-        S.by = leak_f64(n);
-        S.bw = leak_f64(n);
-        S.bh = leak_f64(n);
-        S.aminx = leak_f64(n);
-        S.aminy = leak_f64(n);
-        S.amaxx = leak_f64(n);
-        S.amaxy = leak_f64(n);
-        S.run_parent = leak_i32(max_runs);
-        S.run_start = leak_i32(max_runs);
-        S.run_len = leak_i32(max_runs);
-        S.capacity = capacity;
-        S.run_capacity = max_runs;
-        S.run_count = 0;
+    let mut next = Store {
+        x: leak_f64(n),
+        y: leak_f64(n),
+        sx: leak_f64(n),
+        sy: leak_f64(n),
+        cos: leak_f64(n),
+        sin: leak_f64(n),
+        opacity: leak_f64(n),
+        wa: leak_f64(n),
+        wb: leak_f64(n),
+        wc: leak_f64(n),
+        wd: leak_f64(n),
+        we: leak_f64(n),
+        wf: leak_f64(n),
+        wo: leak_f64(n),
+        bx: leak_f64(n),
+        by: leak_f64(n),
+        bw: leak_f64(n),
+        bh: leak_f64(n),
+        aminx: leak_f64(n),
+        aminy: leak_f64(n),
+        amaxx: leak_f64(n),
+        amaxy: leak_f64(n),
+        run_parent: leak_i32(max_runs),
+        run_start: leak_i32(max_runs),
+        run_len: leak_i32(max_runs),
+        run_count: 0,
+        capacity,
+        run_capacity: max_runs,
+    };
+    let f64_ok = [
+        next.x,
+        next.y,
+        next.sx,
+        next.sy,
+        next.cos,
+        next.sin,
+        next.opacity,
+        next.wa,
+        next.wb,
+        next.wc,
+        next.wd,
+        next.we,
+        next.wf,
+        next.wo,
+        next.bx,
+        next.by,
+        next.bw,
+        next.bh,
+        next.aminx,
+        next.aminy,
+        next.amaxx,
+        next.amaxy,
+    ]
+    .iter()
+    .all(|p| !p.is_null());
+    let i32_ok = [next.run_parent, next.run_start, next.run_len]
+        .iter()
+        .all(|p| !p.is_null());
+    if !(f64_ok && i32_ok) {
+        // Release exactly what was allocated (the free helpers skip nulls) and
+        // publish the empty store so kernels reject rather than read freed or
+        // half-initialized memory.
+        free_partial_store(&mut next, n, max_runs);
+        unsafe { S = Store::empty() };
+        return STATUS_OVERFLOW;
     }
+    unsafe { S = next };
     STATUS_OK
+}
+
+/// Release every pointer of a replacement store built by [`init`] that was
+/// never committed. Null-safe, so it also handles a partially allocated set.
+fn free_partial_store(next: &mut Store, n: usize, max_runs: usize) {
+    free_f64(next.x, n);
+    free_f64(next.y, n);
+    free_f64(next.sx, n);
+    free_f64(next.sy, n);
+    free_f64(next.cos, n);
+    free_f64(next.sin, n);
+    free_f64(next.opacity, n);
+    free_f64(next.wa, n);
+    free_f64(next.wb, n);
+    free_f64(next.wc, n);
+    free_f64(next.wd, n);
+    free_f64(next.we, n);
+    free_f64(next.wf, n);
+    free_f64(next.wo, n);
+    free_f64(next.bx, n);
+    free_f64(next.by, n);
+    free_f64(next.bw, n);
+    free_f64(next.bh, n);
+    free_f64(next.aminx, n);
+    free_f64(next.aminy, n);
+    free_f64(next.amaxx, n);
+    free_f64(next.amaxy, n);
+    free_i32(next.run_parent, max_runs);
+    free_i32(next.run_start, max_runs);
+    free_i32(next.run_len, max_runs);
 }
 
 /// Status codes returned by the exports that can reject their arguments.
@@ -605,10 +723,8 @@ fn js_max(a: f64, b: f64) -> f64 {
 /// Bit-identical to `soa.ts::computeAabbsJS` (and thus to `Entity.getWorldBounds`):
 /// same corner-selection bit trick, same `a*x + c*y + e` / `b*x + d*y + f` op
 /// order, same min/max accumulation over exactly four corners. Scalar (not SIMD):
-/// the min/max reduction across four corners per entity does not map cleanly onto
-/// two-lane `f64x2` without changing the reduction order (and thus bit-identity),
-/// and the pass is memory-light — the win over the JS reference is avoiding the
-/// per-entity closure/object churn across the whole batch, not lane throughput.
+/// see [`compute_aabbs_simd`] for the lane-paired variant; this body is the
+/// shipped reference shape and the SIMD tail path.
 ///
 /// Must run AFTER a `compose_*` kernel, which fills the world matrices this reads.
 ///
@@ -629,41 +745,132 @@ pub unsafe extern "C" fn compute_aabbs(count: usize) -> i32 {
     }
     unsafe {
         for i in 0..count {
-            let a = *S.wa.add(i);
-            let b = *S.wb.add(i);
-            let c = *S.wc.add(i);
-            let d = *S.wd.add(i);
-            let e = *S.we.add(i);
-            let f = *S.wf.add(i);
-            let bx = *S.bx.add(i);
-            let by = *S.by.add(i);
-            let bw = *S.bw.add(i);
-            let bh = *S.bh.add(i);
+            write_aabb_scalar(i);
+        }
+    }
+    STATUS_OK
+}
 
-            let mut min_x = f64::INFINITY;
-            let mut min_y = f64::INFINITY;
-            let mut max_x = f64::NEG_INFINITY;
-            let mut max_y = f64::NEG_INFINITY;
+/// Transform entity `i`'s local bounds through its world matrix and write its
+/// world-space AABB. Shared body of [`compute_aabbs`]'s loop and the odd-tail
+/// iteration of [`compute_aabbs_simd`]; both must keep the exact op order the
+/// JS reference uses.
+#[inline]
+unsafe fn write_aabb_scalar(i: usize) {
+    unsafe {
+        let a = *S.wa.add(i);
+        let b = *S.wb.add(i);
+        let c = *S.wc.add(i);
+        let d = *S.wd.add(i);
+        let e = *S.we.add(i);
+        let f = *S.wf.add(i);
+        let bx = *S.bx.add(i);
+        let by = *S.by.add(i);
+        let bw = *S.bw.add(i);
+        let bh = *S.bh.add(i);
+
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for k in 0..4 {
+            let local_x = if k & 1 != 0 { bx + bw } else { bx };
+            let local_y = if k & 2 != 0 { by + bh } else { by };
+            let world_x = a * local_x + c * local_y + e;
+            let world_y = b * local_x + d * local_y + f;
+            // js_min/js_max, NOT f64::min/max: `Math.min`/`Math.max`
+            // PROPAGATE NaN (result is NaN if either operand is NaN), while
+            // Rust's f64::min/max IGNORE NaN. A pathological transform (e.g.
+            // a 10k-deep chain whose scale overflows to Infinity, giving an
+            // Infinity*0 = NaN corner) would otherwise diverge from the JS
+            // reference. Matching Math.* keeps the pass bit-identical.
+            min_x = js_min(min_x, world_x);
+            min_y = js_min(min_y, world_y);
+            max_x = js_max(max_x, world_x);
+            max_y = js_max(max_y, world_y);
+        }
+        *S.aminx.add(i) = min_x;
+        *S.aminy.add(i) = min_y;
+        *S.amaxx.add(i) = max_x;
+        *S.amaxy.add(i) = max_y;
+    }
+}
+
+/// Lane-paired variant of [`compute_aabbs`]: two entities per iteration,
+/// lane `j` == entity `i+j`. All SoA arrays are entity-major, so one
+/// `v128_load` fetches both entities' value of a field and one `v128_store`
+/// writes both results — no shuffles anywhere.
+///
+/// Bit-identity (the doc on [`compute_aabbs`] used to object that the reduction
+/// order would change): the corner min/max is a fold of [`js_min`]/[`js_max`],
+/// which are exact selection ops implementing a TOTAL order (NaN absorbs,
+/// `-0 < +0`). A selection over a total order is associative and commutative,
+/// so ANY fold tree — the scalar left fold or a lane-paired
+/// `min([w0,w2],[w1,w3])` then final lane combine — yields identical bits. The
+/// wasm `f64x2_min`/`f64x2_max` instructions have exactly these Math semantics
+/// (NaN-propagating, sign-differentiated zeros), and the transform arithmetic
+/// per lane is the same op sequence as scalar IEEE f64. The differential suite
+/// guards output bits against the JS reference for every topology.
+///
+/// # Safety
+///
+/// Same contract as [`compute_aabbs`].
+#[unsafe(no_mangle)]
+#[target_feature(enable = "simd128")]
+pub unsafe extern "C" fn compute_aabbs_simd(count: usize) -> i32 {
+    if !initialized() {
+        return STATUS_UNINITIALIZED;
+    }
+    if count > unsafe { S.capacity } {
+        return STATUS_CAPACITY;
+    }
+    unsafe {
+        let pos_inf = f64x2_splat(f64::INFINITY);
+        let neg_inf = f64x2_splat(f64::NEG_INFINITY);
+        let mut i = 0;
+        while i + 2 <= count {
+            let wa = v128_load(S.wa.add(i) as *const v128);
+            let wb = v128_load(S.wb.add(i) as *const v128);
+            let wc = v128_load(S.wc.add(i) as *const v128);
+            let wd = v128_load(S.wd.add(i) as *const v128);
+            let we = v128_load(S.we.add(i) as *const v128);
+            let wf = v128_load(S.wf.add(i) as *const v128);
+            let bx = v128_load(S.bx.add(i) as *const v128);
+            let by = v128_load(S.by.add(i) as *const v128);
+            let bw = v128_load(S.bw.add(i) as *const v128);
+            let bh = v128_load(S.bh.add(i) as *const v128);
+
+            let mut min_x = pos_inf;
+            let mut min_y = pos_inf;
+            let mut max_x = neg_inf;
+            let mut max_y = neg_inf;
             for k in 0..4 {
-                let local_x = if k & 1 != 0 { bx + bw } else { bx };
-                let local_y = if k & 2 != 0 { by + bh } else { by };
-                let world_x = a * local_x + c * local_y + e;
-                let world_y = b * local_x + d * local_y + f;
-                // js_min/js_max, NOT f64::min/max: `Math.min`/`Math.max`
-                // PROPAGATE NaN (result is NaN if either operand is NaN), while
-                // Rust's f64::min/max IGNORE NaN. A pathological transform (e.g.
-                // a 10k-deep chain whose scale overflows to Infinity, giving an
-                // Infinity*0 = NaN corner) would otherwise diverge from the JS
-                // reference. Matching Math.* keeps the pass bit-identical.
-                min_x = js_min(min_x, world_x);
-                min_y = js_min(min_y, world_y);
-                max_x = js_max(max_x, world_x);
-                max_y = js_max(max_y, world_y);
+                // Corner selection by bit trick, once per k for BOTH lanes:
+                // lane j transforms entity i+j's k-th corner.
+                let local_x = if k & 1 != 0 { f64x2_add(bx, bw) } else { bx };
+                let local_y = if k & 2 != 0 { f64x2_add(by, bh) } else { by };
+                // Same op order as the scalar kernel: (a*lx + c*ly) + e.
+                let world_x = f64x2_add(
+                    f64x2_add(f64x2_mul(wa, local_x), f64x2_mul(wc, local_y)),
+                    we,
+                );
+                let world_y = f64x2_add(
+                    f64x2_add(f64x2_mul(wb, local_x), f64x2_mul(wd, local_y)),
+                    wf,
+                );
+                min_x = f64x2_min(min_x, world_x);
+                min_y = f64x2_min(min_y, world_y);
+                max_x = f64x2_max(max_x, world_x);
+                max_y = f64x2_max(max_y, world_y);
             }
-            *S.aminx.add(i) = min_x;
-            *S.aminy.add(i) = min_y;
-            *S.amaxx.add(i) = max_x;
-            *S.amaxy.add(i) = max_y;
+            v128_store(S.aminx.add(i) as *mut v128, min_x);
+            v128_store(S.aminy.add(i) as *mut v128, min_y);
+            v128_store(S.amaxx.add(i) as *mut v128, max_x);
+            v128_store(S.amaxy.add(i) as *mut v128, max_y);
+            i += 2;
+        }
+        if i < count {
+            write_aabb_scalar(i);
         }
     }
     STATUS_OK

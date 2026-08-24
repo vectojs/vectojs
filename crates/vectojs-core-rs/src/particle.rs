@@ -73,11 +73,27 @@ static mut P: Particles = Particles {
     capacity: 0,
 };
 
+impl Particles {
+    /// The no-store state: `particles_ready()` rejects it, so publishing it
+    /// after a failed init makes later kernels report [`STATUS_UNINITIALIZED`]
+    /// instead of touching freed memory.
+    fn empty() -> Particles {
+        Particles {
+            px: ptr::null_mut(),
+            py: ptr::null_mut(),
+            vx: ptr::null_mut(),
+            vy: ptr::null_mut(),
+            ox: ptr::null_mut(),
+            oy: ptr::null_mut(),
+            life: ptr::null_mut(),
+            capacity: 0,
+        }
+    }
+}
+
 fn leak_f32(n: usize) -> *mut f32 {
     let layout = Layout::from_size_align(n * size_of::<f32>(), SIMD_ALIGN).expect("valid layout");
-    let p = unsafe { alloc_zeroed(layout) } as *mut f32;
-    assert!(!p.is_null(), "allocation failed");
-    p
+    unsafe { alloc_zeroed(layout).cast::<f32>() }
 }
 
 /// Free the SoA the previous `particle_init` allocated, if any. `capacity`
@@ -111,18 +127,45 @@ pub extern "C" fn particle_init(capacity: usize) -> i32 {
     if n.checked_mul(size_of::<f32>()).is_none() {
         return STATUS_OVERFLOW;
     }
+    // Release BEFORE allocating so dlmalloc reuses the freed block (re-inits
+    // stay flat in linear memory). An allocator failure then frees the partial
+    // set and publishes the empty store — the JS side sees STATUS_OVERFLOW and
+    // falls back to its reference path.
     free_particles();
-    unsafe {
-        P.px = leak_f32(n);
-        P.py = leak_f32(n);
-        P.vx = leak_f32(n);
-        P.vy = leak_f32(n);
-        P.ox = leak_f32(n);
-        P.oy = leak_f32(n);
-        P.life = leak_f32(n);
-        P.capacity = capacity;
+    let mut next = Particles {
+        px: leak_f32(n),
+        py: leak_f32(n),
+        vx: leak_f32(n),
+        vy: leak_f32(n),
+        ox: leak_f32(n),
+        oy: leak_f32(n),
+        life: leak_f32(n),
+        capacity,
+    };
+    let ok = [
+        next.px, next.py, next.vx, next.vy, next.ox, next.oy, next.life,
+    ]
+    .iter()
+    .all(|p| !p.is_null());
+    if !ok {
+        free_partial_particles(&mut next, n);
+        unsafe { P = Particles::empty() };
+        return STATUS_OVERFLOW;
     }
+    unsafe { P = next };
     STATUS_OK
+}
+
+/// Release every pointer of a replacement built by [`particle_init`] that was
+/// never committed. Null-safe, so it also handles a partially allocated set.
+fn free_partial_particles(next: &mut Particles, n: usize) {
+    crate::free_f32(next.px, n);
+    crate::free_f32(next.py, n);
+    crate::free_f32(next.vx, n);
+    crate::free_f32(next.vy, n);
+    crate::free_f32(next.ox, n);
+    crate::free_f32(next.oy, n);
+    crate::free_f32(next.life, n);
 }
 
 /// True once `particle_init` has allocated the SoA.

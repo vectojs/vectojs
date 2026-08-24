@@ -25,6 +25,7 @@ interface RawExports {
   compose_simd(): number;
   compose_scalar(): number;
   compute_aabbs(count: number): number;
+  compute_aabbs_simd(count: number): number;
   p_run_parent(): number;
   p_run_start(): number;
   p_run_len(): number;
@@ -91,6 +92,7 @@ describe.skipIf(!haveWasm)('WASM ABI bounds validation', () => {
     expect(ex.compose_scalar()).toBe(WASM_STATUS.UNINITIALIZED);
     expect(ex.compose_simd()).toBe(WASM_STATUS.UNINITIALIZED);
     expect(ex.compute_aabbs(4)).toBe(WASM_STATUS.UNINITIALIZED);
+    expect(ex.compute_aabbs_simd(4)).toBe(WASM_STATUS.UNINITIALIZED);
     expect(ex.set_run_count(1)).toBe(WASM_STATUS.UNINITIALIZED);
   });
 
@@ -110,6 +112,9 @@ describe.skipIf(!haveWasm)('WASM ABI bounds validation', () => {
     expect(ex.compute_aabbs(32)).toBe(WASM_STATUS.OK);
     expect(ex.compute_aabbs(33)).toBe(WASM_STATUS.CAPACITY);
     expect(ex.compute_aabbs(1 << 24)).toBe(WASM_STATUS.CAPACITY);
+    // The SIMD kernel enforces the identical bounds.
+    expect(ex.compute_aabbs_simd(32)).toBe(WASM_STATUS.OK);
+    expect(ex.compute_aabbs_simd(33)).toBe(WASM_STATUS.CAPACITY);
   });
 
   it('rejects a run whose slots extend past capacity', () => {
