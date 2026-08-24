@@ -322,6 +322,7 @@ export class WasmBackendFacade {
   public setHit(backend: HitTestBackend | null): void {
     this._hit = backend;
     this.hitGridFrame = -1; // force a rebuild under the (possibly new) backend
+    this.hitGridStructureVersion = -1;
     // Installed but not yet queried is 'not-applicable', not 'not-installed' —
     // the grid is built lazily, so an untouched backend has declined nothing.
     this.hitReason = backend ? 'not-applicable' : 'not-installed';
@@ -387,6 +388,13 @@ export class WasmBackendFacade {
   // domain.
   /** Frame the hit grid was last built for; `-1` forces a rebuild. */
   public hitGridFrame = -1;
+  /**
+   * Structure version the hit grid was built for; `-1` forces a rebuild.
+   * Half of the cache key the comment above promises: without it, a pointer
+   * query in the same frame as a structural mutation would resolve against
+   * pre-mutation geometry while the JS walk sees live state.
+   */
+  public hitGridStructureVersion = -1;
   /** Whether that build succeeded (did not overflow its item budget). */
   public hitGridOk = false;
 

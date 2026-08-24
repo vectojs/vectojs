@@ -58,4 +58,25 @@ describe('ArabicShaper', () => {
 
     expect(res.shapedText).toBe('\uFB90\uFBFE');
   });
+
+  it('passes joining context through tatweel (U+0640) on both sides', () => {
+    // "بـا" (Beh + Tatweel + Alef): the kashida is dual-joining with an
+    // identity mapping, so Beh takes its INITIAL form and Alef its FINAL
+    // form across what is visually one connecting stroke (#700 had both
+    // bases fall back to their isolated forms).
+    const raw = '\u0628\u0640\u0627';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFE91\u0640\uFE8E');
+    expect([...res.indexMap]).toEqual([0, 1, 2]);
+  });
+
+  it('keeps tatweel identity even when flanked by two dual-joining letters', () => {
+    // "بـت": the tatweel sits between two D letters -> MEDIAL slot, which for
+    // tatweel is the same code point; the neighbours still connect through it.
+    const raw = '\u0628\u0640\u062A';
+    const res = ArabicShaper.shapeArabic(raw);
+
+    expect(res.shapedText).toBe('\uFE91\u0640\uFE96');
+  });
 });
