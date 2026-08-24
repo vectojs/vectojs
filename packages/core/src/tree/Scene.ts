@@ -68,12 +68,21 @@ import {
   type AcceleratorStatus,
   WasmBackendFacade,
 } from './scene/WasmBackendFacade';
+import { normalizeChord, type SceneKeyEvent, type SceneShortcutSpec } from './scene/keyboard';
 
 // `RenderPhase` and `RenderPhaseEntry` were exported from this module before the
 // phase timer moved out, and `packages/core/src/index.ts` is `export * from
 // './tree/Scene'`, so they are public API and are re-exported to keep it
 // byte-identical (`DEC-0019` rule 3). @vectojs/devtools consumes `renderPhases`.
 export type { RenderPhase, RenderPhaseEntry };
+
+// Scene-level keyboard channel public API. The implementations live in
+// `./scene/keyboard` (module extraction pattern); they are public API of
+// @vectojs/core through this module because `index.ts` does
+// `export * from './tree/Scene'`. @vectojs/desktop's ShortcutRouter imports
+// `normalizeChord` from here instead of forking it.
+export { normalizeChord } from './scene/keyboard';
+export type { SceneKeyEvent, SceneShortcutSpec } from './scene/keyboard';
 
 // --- domain: a11y-projection — role tables, focus predicate, box rebase (extraction 2) ---
 /**
@@ -94,6 +103,45 @@ const INTERACTIVE_A11Y_ROLES = new Set([
   'slider',
   'combobox',
 ]);
+
+/**
+ * Roles whose focused element is considered to own the keyboard, so the
+ * scene-level keydown/keyup channel stays silent while one of them holds
+ * focus (arrow keys must move a slider, typing must reach a textbox, …).
+ *
+ * {@link INTERACTIVE_A11Y_ROLES} plus the text-selection/list roles that are
+ * keyboard-first but not "interactive" in the pointer sense.
+ */
+export const KEYBOARD_OWNING_ROLES: ReadonlySet<string> = new Set([
+  ...INTERACTIVE_A11Y_ROLES,
+  'option',
+  'listbox',
+  'textbox',
+  'searchbox',
+  'spinbutton',
+]);
+
+/**
+ * Whether `el` (typically `document.activeElement`) currently owns the
+ * keyboard and should suppress the scene-level keyboard channel.
+ *
+ * Never owning: `null`, `document.body`, `document.documentElement`, and the
+ * scene's own a11y root. Always owning: `INPUT`/`TEXTAREA`/`SELECT` elements
+ * and anything `contentEditable`. Otherwise owning iff its `role` attribute
+ * is in {@link KEYBOARD_OWNING_ROLES}. The gate is unconditional by design —
+ * even modifier chords (`ctrl+s`) are suppressed while an owner holds focus,
+ * because the page behind the canvas expects to keep them.
+ */
+export function ownsKeyboard(el: Element | null): boolean {
+  if (!el) return false;
+  if (el === document.body || el === document.documentElement) return false;
+  if (el.hasAttribute('data-vecto-a11y-root')) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if ((el as HTMLElement).isContentEditable) return true;
+  const role = el.getAttribute('role');
+  return role !== null && KEYBOARD_OWNING_ROLES.has(role);
+}
 
 /**
  * Container roles whose children ARIA requires to be *DOM-contained*, mapped to
@@ -2038,6 +2086,13 @@ export class Scene {
   /** Element the pointer listeners are bound to (parent container if present,
    *  else the canvas). Stored so `destroy()` detaches from the same element. */
   private pointerEventTarget: HTMLElement | null = null;
+  // --- scene-level keyboard channel state (see on/off/registerShortcut) ---
+  private keydownHandlers: Array<(e: SceneKeyEvent) => void> = [];
+  private keyupHandlers: Array<(e: SceneKeyEvent) => void> = [];
+  /** Chord-normalized shortcut table, matched on keydown only. */
+  private shortcuts: Array<{ chord: string; handler: (e: SceneKeyEvent) => void }> = [];
+  private windowKeyDownHandler: ((e: KeyboardEvent) => void) | null = null;
+  private windowKeyUpHandler: ((e: KeyboardEvent) => void) | null = null;
   private hasWarnedZeroSize: boolean = false;
   /**
    * Latch for {@link Scene.resize}'s invalid-dimension warning.
@@ -2823,6 +2878,22 @@ export class Scene {
       window.removeEventListener('blur', this.contentSelectionEndListener);
       this.contentSelectionEndListener = null;
     }
+    // Scene-level keyboard channel: detach the window bubble-phase listeners
+    // and drop every registered handler/shortcut so a destroyed scene can
+    // never fire again (off()/unregisterShortcut() afterwards are no-ops).
+    if (typeof window !== 'undefined') {
+      if (this.windowKeyDownHandler) {
+        window.removeEventListener('keydown', this.windowKeyDownHandler);
+      }
+      if (this.windowKeyUpHandler) {
+        window.removeEventListener('keyup', this.windowKeyUpHandler);
+      }
+    }
+    this.windowKeyDownHandler = null;
+    this.windowKeyUpHandler = null;
+    this.keydownHandlers.length = 0;
+    this.keyupHandlers.length = 0;
+    this.shortcuts.length = 0;
     if (
       typeof window !== 'undefined' &&
       this.pointerEventTarget &&
@@ -2967,6 +3038,11 @@ export class Scene {
     this.lastTime = typeof performance !== 'undefined' ? performance.now() : 0;
     this.watchCanvasVisibility();
     this.scheduleFrame();
+    // Scene-level keyboard channel: window bubble-phase listeners attach on
+    // first start() and stay attached across stop() (the channel is a scene
+    // property, not a running-state property); only destroy() removes them.
+    // Idempotent via the handler null-guard, so repeated start() is a no-op.
+    this.attachWindowKeyListeners();
 
     const isTextFocused =
       this.focusedA11yElement instanceof HTMLInputElement ||
@@ -3046,6 +3122,143 @@ export class Scene {
     }
     // Assume visible again on next start(); the observer re-establishes truth.
     this._canvasOnScreen = true;
+  }
+
+  // --- domain: input — scene-level keyboard channel ---
+  /**
+   * Register a listener on the scene-level keyboard channel.
+   *
+   * Mirrors {@link Entity.on} minus the options parameter (bubble-only, and
+   * there is no capture phase for a single window tap). Handlers fire only
+   * when ALL of these hold:
+   *
+   * 1. the native event was not already `defaultPrevented`,
+   * 2. it is not an auto-repeat (`e.repeat`),
+   * 3. `document.activeElement` does not own the keyboard
+   *    (see {@link ownsKeyboard}) — typing in an `<input>` or focusing a
+   *    slider-role element suppresses the scene channel, unconditionally,
+   *    including modifier chords.
+   *
+   * The listeners are window-level BUBBLE-phase taps, so an entity handler
+   * that calls `nativeEvent.stopPropagation()` keeps the key from ever
+   * reaching this channel. Deliberately not registered in the capture phase:
+   * a window-capture listener would preempt Modal's document-capture trap.
+   *
+   * Listeners attach at `start()` and survive `stop()`; only `destroy()`
+   * removes them.
+   *
+   * @param event - `'keydown'` or `'keyup'`; anything else is rejected with a
+   *   dev warning (guards JS callers — TypeScript already narrows this).
+   * @param callback - Handler invoked with a {@link SceneKeyEvent}.
+   * @returns `this` for method chaining.
+   */
+  public on(event: 'keydown' | 'keyup', callback: (e: SceneKeyEvent) => void): this {
+    if (event !== 'keydown' && event !== 'keyup') {
+      console.warn(
+        `[VectoJS] Scene.on: unsupported event '${String(event)}'. Only 'keydown' and 'keyup' are supported.`,
+      );
+      return this;
+    }
+    (event === 'keydown' ? this.keydownHandlers : this.keyupHandlers).push(callback);
+    return this;
+  }
+
+  /**
+   * Remove a listener previously registered with {@link Scene.on}. Silent
+   * no-op for unknown handlers, unsupported event names, or after
+   * {@link Scene.destroy}.
+   *
+   * @returns `this` for method chaining.
+   */
+  public off(event: 'keydown' | 'keyup', callback: (e: SceneKeyEvent) => void): this {
+    if (event !== 'keydown' && event !== 'keyup') {
+      console.warn(
+        `[VectoJS] Scene.off: unsupported event '${String(event)}'. Only 'keydown' and 'keyup' are supported.`,
+      );
+      return this;
+    }
+    const handlers = event === 'keydown' ? this.keydownHandlers : this.keyupHandlers;
+    const idx = handlers.indexOf(callback);
+    if (idx !== -1) handlers.splice(idx, 1);
+    return this;
+  }
+
+  /**
+   * Sugar over the keyboard channel: invoke `spec.handler` whenever a
+   * non-repeat `keydown` whose normalized chord matches `spec.chord`
+   * (via {@link normalizeChord}) passes the same gates as {@link Scene.on} —
+   * including the unconditional `ownsKeyboard(activeElement)` suppression.
+   *
+   * @param spec - `{ chord, handler }`; the chord is normalized once at
+   *   registration, so `'ctrl+n'`, `'Control+n'` and `'Ctrl+N'` are aliases.
+   * @returns `this` for method chaining.
+   */
+  public registerShortcut(spec: SceneShortcutSpec): this {
+    this.shortcuts.push({ chord: normalizeChord(spec.chord), handler: spec.handler });
+    return this;
+  }
+
+  /**
+   * Remove a shortcut previously registered with {@link Scene.registerShortcut}.
+   * Matches on normalized chord + exact handler reference; silent no-op when
+   * nothing matches.
+   *
+   * @param spec - The same spec object (chord spelling may differ; it is
+   *   re-normalized before matching).
+   * @returns `this` for method chaining.
+   */
+  public unregisterShortcut(spec: SceneShortcutSpec): this {
+    const chord = normalizeChord(spec.chord);
+    const idx = this.shortcuts.findIndex((s) => s.chord === chord && s.handler === spec.handler);
+    if (idx !== -1) this.shortcuts.splice(idx, 1);
+    return this;
+  }
+
+  /** Attach the window bubble-phase keyboard listeners exactly once. */
+  private attachWindowKeyListeners(): void {
+    if (this.windowKeyDownHandler || typeof window === 'undefined') return;
+    // Bubble phase ONLY. A window capture listener would run BEFORE Modal's
+    // document-capture trap and preempt its ability to intercept keys first;
+    // bubbling also lets per-node entity handlers stop propagation natively
+    // and keep the key scene-local.
+    this.windowKeyDownHandler = (e: KeyboardEvent) => this.dispatchKeyboard(e, 'keydown');
+    this.windowKeyUpHandler = (e: KeyboardEvent) => this.dispatchKeyboard(e, 'keyup');
+    window.addEventListener('keydown', this.windowKeyDownHandler);
+    window.addEventListener('keyup', this.windowKeyUpHandler);
+  }
+
+  /**
+   * Gate a native keyboard event and fan it out to scene handlers +
+   * chord-matched shortcuts. See {@link Scene.on} for the gate contract.
+   */
+  private dispatchKeyboard(e: KeyboardEvent, type: 'keydown' | 'keyup'): void {
+    if (e.defaultPrevented) return;
+    if (e.repeat) return;
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    if (ownsKeyboard(active)) return;
+    const event: SceneKeyEvent = {
+      type,
+      key: e.key,
+      code: e.code,
+      repeat: e.repeat,
+      ctrlKey: e.ctrlKey,
+      altKey: e.altKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      target: e.target,
+      nativeEvent: e,
+      stopPropagation: () => e.stopPropagation(),
+      preventDefault: () => e.preventDefault(),
+    };
+    // Snapshot: a handler may call off()/unregisterShortcut() mid-dispatch.
+    const handlers = type === 'keydown' ? this.keydownHandlers : this.keyupHandlers;
+    for (const handler of [...handlers]) handler(event);
+    if (type === 'keydown') {
+      const chord = normalizeChord(e);
+      for (const shortcut of [...this.shortcuts]) {
+        if (shortcut.chord === chord) shortcut.handler(event);
+      }
+    }
   }
 
   // --- domain: scene-facade — tree accessors ---
