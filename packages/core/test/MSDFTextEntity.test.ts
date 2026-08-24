@@ -265,7 +265,7 @@ test('MSDFTextEntity Canvas2D rendering fallback', () => {
     0,
     18,
     '24px sans-serif',
-    'rgb(255,255,255)',
+    '#ffffff',
   );
   expect(mockRenderer.fillText).toHaveBeenNthCalledWith(
     2,
@@ -273,7 +273,7 @@ test('MSDFTextEntity Canvas2D rendering fallback', () => {
     10,
     18,
     '24px sans-serif',
-    'rgb(255,255,255)',
+    '#ffffff',
   );
 
   entity.setPosition(30, 50);
@@ -556,4 +556,67 @@ test('MSDFTextEntity tolerates a texture with no decode state', () => {
         fontSize: 24,
       }),
   ).not.toThrow();
+});
+
+test('MSDFTextEntity renders glyphs in the configured color on the WebGL path', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('A', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    color: '#ff2800',
+  });
+  entity['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([65]),
+    xCoords: new Float32Array([0]),
+    yCoords: new Float32Array([18]),
+    // The layout worker still packs white; draw time must tint instead.
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0]),
+  };
+  const addGlyph = vi.fn();
+  (entity as any)._scene = {
+    pointRenderer: { setMSDFTexture: vi.fn(), addGlyph },
+    glCanvas: {},
+    markDirty: vi.fn(),
+  };
+
+  entity.render(null);
+
+  expect(addGlyph).toHaveBeenCalledTimes(1);
+  // addGlyph signature: x, y, width, height, u0, v0, u1, v1, color, alpha, rotation
+  expect(addGlyph.mock.calls[0][8]).toBe('#ff2800');
+  entity.destroy();
+});
+
+test('MSDFTextEntity honors color option and post-construction reassignment on Canvas2D', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('AB', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+  });
+  entity['layoutResult'] = {
+    width: 100,
+    height: 24,
+    codePoints: new Uint32Array([65, 66]),
+    xCoords: new Float32Array([0, 10]),
+    yCoords: new Float32Array([18, 18]),
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0, (0xffffff << 8) | 0]),
+  };
+  const fillText = vi.fn();
+
+  // Default stays white.
+  entity.render({ fillText });
+  expect(fillText.mock.calls[0][4]).toBe('#ffffff');
+
+  // Assignment after construction must take effect on the next render.
+  entity.color = 'rgb(10,200,40)';
+  fillText.mockClear();
+  entity.render({ fillText });
+  expect(fillText).toHaveBeenCalledTimes(2);
+  expect(fillText.mock.calls[0][4]).toBe('rgb(10,200,40)');
+  expect(fillText.mock.calls[1][4]).toBe('rgb(10,200,40)');
+  entity.destroy();
 });
