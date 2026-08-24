@@ -112,6 +112,25 @@ const DEFAULT_CORPUS = [
   '\\mathbf{0123456789}',
   '\\mathit{ABCDEFGHIJKLMNOPQRSTUVWXYZ}',
   '\\mathit{abcdefghijklmnopqrstuvwxyz}',
+  // Symbol ranges no structural formula above touches. Layout still advances
+  // when their outline is missing, so each of these shipped as blank ink
+  // until they joined the corpus (#666): `\approx \hbar \ell \Re` and the
+  // ellipsis are Main-Regular code points nothing else asks for.
+  'x \\approx y',
+  '\\hbar \\ell \\Re',
+  'a_{1} + a_{2} + \\cdots + \\ldots',
+  // `\mathscr` routes letters to Script-Regular — a face the alphabets above
+  // never requested, so all 26 shipped missing.
+  '\\mathscr{ABCDEFGHIJKLMNOPQRSTUVWXYZ}',
+  // `\boldsymbol` routes bold italic letters (and digits) to Math-BoldItalic,
+  // absent from the corpus entirely.
+  '\\boldsymbol{ABCDEFGHIJKLMNOPQRSTUVWXYZ}',
+  '\\boldsymbol{abcdefghijklmnopqrstuvwxyz}',
+  '\\boldsymbol{0123456789}',
+  // Italic digits: `\mathit` covered only letters, so Main-Italic numerals
+  // shipped missing; text italics share the face.
+  '\\mathit{0123456789}',
+  '\\textit{0123456789}',
   // Text mode and punctuation.
   '\\text{hello world}',
   '\\text{if } x > 0 \\text{ then } y',

@@ -64,8 +64,10 @@ describe('glyph table binary codec', () => {
     // Guard the guard: an empty source would make the loop below vacuously pass.
     // Exact rather than a lower bound so an unintended *shrink* fails too — the
     // corpus is subset in both display modes, and a regression that dropped one
-    // mode would quietly cut the table back to 561.
-    expect(all.length).toBe(569);
+    // mode would quietly cut the table back to 561. 662 is the count after the
+    // #666 corpus extension (Script-Regular, Math-BoldItalic, italic digits,
+    // the \approx/\hbar/\ell/\Re/… symbols).
+    expect(all.length).toBe(662);
 
     const mismatches: string[] = [];
     for (const want of all) {
