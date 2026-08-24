@@ -70,6 +70,10 @@ export class Slider extends UIComponent {
       this.isDragging = false;
     });
 
+    this.on('pointercancel', () => {
+      this.isDragging = false;
+    });
+
     this.on('keydown', (e: any) => {
       const key = e.nativeEvent?.key;
       if (!key) return;
