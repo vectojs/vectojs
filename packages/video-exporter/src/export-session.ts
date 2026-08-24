@@ -1,3 +1,4 @@
+import { abortError } from './abort-error.js';
 import cliProgress from 'cli-progress';
 import { launchBrowser, type BrowserLike, type PageLike } from './browser.js';
 import { startFfmpeg, type FfmpegOptions } from './ffmpeg-supervisor.js';
@@ -40,16 +41,6 @@ const defaultDependencies: ExportSessionDependencies = {
   createProgress: () => new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic),
   log: (message) => console.log(message),
 };
-
-function abortError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  const error = new Error(
-    reason instanceof Error ? reason.message : reason == null ? 'Export aborted' : String(reason),
-    { cause: reason },
-  );
-  error.name = 'AbortError';
-  return error;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

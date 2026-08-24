@@ -1,5 +1,6 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { abortError } from './abort-error.js';
 
 const STDERR_LIMIT = 64 * 1024;
 
@@ -26,16 +27,6 @@ export interface FfmpegOptions {
   outputPath: string;
   signal?: AbortSignal;
   terminateTimeoutMs?: number;
-}
-
-function abortError(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  const error = new Error(
-    reason instanceof Error ? reason.message : reason == null ? 'Export aborted' : String(reason),
-    { cause: reason },
-  );
-  error.name = 'AbortError';
-  return error;
 }
 
 export class FfmpegSupervisor {
