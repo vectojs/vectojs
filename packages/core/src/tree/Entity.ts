@@ -1158,6 +1158,24 @@ export abstract class Entity {
    * @example entity.animate({ x: 400, opacity: 0 }, 500);
    */
   public animate(targetProps: Partial<this>, durationMs: number): this {
+    // A zero, negative, or non-finite duration cannot interpolate: the first
+    // update would compute progress = 0/duration as NaN or a negative value,
+    // writing NaN into animated properties and never satisfying the
+    // `progress >= 1` dequeue guard (permanently jamming the queue). Treat
+    // degenerate durations as an immediate terminal write of the targets.
+    if (!Number.isFinite(durationMs) || durationMs <= 0) {
+      for (const key in targetProps) {
+        const end = targetProps[key];
+        if (typeof end !== 'number') continue;
+        if (ANIMATABLE_PROPS.has(key as AnimatableProp)) {
+          this._applyAnimated(key as AnimatableProp, end);
+        } else {
+          (this as any)[key] = end;
+        }
+      }
+      this.scene?.markDirty({ entity: this.id, reason: 'animation-start' });
+      return this;
+    }
     (this.animations ??= []).push({
       target: targetProps,
       duration: durationMs,

@@ -340,6 +340,43 @@ const OVERLAY_PIECES: Readonly<
  */
 const FULL_WINDOW = { start: 0, end: 1, align: 'xMinYMin' } as const;
 
+/**
+ * Class-carried horizontal metrics, encoding katex.scss rules where the
+ * kernel writes no inline style. Paddings widen their span's box and ink
+ * window exactly like inline `paddingLeft`/`paddingRight`; margins shift the
+ * pen like inline ones.
+ *
+ * Sources (katex.scss):
+ *
+ * - `.x-arrow-pad { padding: 0 0.5em }` (:555)
+ * - `.cd-arrow-pad { padding: 0 0.55556em 0 0.27778em }` (:559)
+ * - `.boxpad { padding: 0 0.3em }` (:569)
+ * - `.cancel-pad { padding: 0 0.2em }` (:579)
+ * - `.anglpad { padding: 0 0.03889em }` (:601)
+ * - `.cancel-lap { margin-left: -0.2em; margin-right: -0.2em }` (:583-589) —
+ *   exists precisely to cancel `.cancel-pad`, so the pair must be applied
+ *   together or `\cancel{xy}` over-measures by 0.4em while its ink window
+ *   correctly grows.
+ */
+const CLASS_H_METRICS: Readonly<
+  Record<
+    string,
+    {
+      padLeft?: number;
+      padRight?: number;
+      marginLeft?: number;
+      marginRight?: number;
+    }
+  >
+> = {
+  'x-arrow-pad': { padLeft: 0.5, padRight: 0.5 },
+  'cd-arrow-pad': { padLeft: 0.27778, padRight: 0.55556 },
+  boxpad: { padLeft: 0.3, padRight: 0.3 },
+  'cancel-pad': { padLeft: 0.2, padRight: 0.2 },
+  anglpad: { padLeft: 0.03889, padRight: 0.03889 },
+  'cancel-lap': { marginLeft: -0.2, marginRight: -0.2 },
+};
+
 /** Parses a CSS length that KaTeX wrote via `makeEm`, returning em. */
 function parseEm(value: string | undefined): number {
   if (!value) {
@@ -703,7 +740,25 @@ function emitContainer(
     return;
   }
 
-  state.x += parseEm(style.marginLeft) * UPEM * localScale;
+  // Class-carried horizontal metrics (`CLASS_H_METRICS`): paddings and
+  // margins that katex.scss attaches to classes, applied at the same points
+  // as their inline twins below.
+  let padLeftEm = 0;
+  let padRightEm = 0;
+  let marginExtraLeftEm = 0;
+  let marginExtraRightEm = 0;
+  for (const c of classes) {
+    const metric = CLASS_H_METRICS[c];
+    if (!metric) {
+      continue;
+    }
+    padLeftEm += metric.padLeft ?? 0;
+    padRightEm += metric.padRight ?? 0;
+    marginExtraLeftEm += metric.marginLeft ?? 0;
+    marginExtraRightEm += metric.marginRight ?? 0;
+  }
+
+  state.x += (parseEm(style.marginLeft) + marginExtraLeftEm) * UPEM * localScale;
 
   // `.nulldelimiter { width: $nulldelimiterspace }` (katex.scss:384), where
   // `$nulldelimiterspace: calc(1.2em / 10)` (katex.scss:187-188). The span is
@@ -732,7 +787,7 @@ function emitContainer(
 
   // `inner.style.paddingLeft = makeEm(advanceWidth)` (functions/sqrt.ts:73)
   // carries the radical's advance, so the radicand starts clear of it.
-  state.x += parseEm(style.paddingLeft) * UPEM * localScale;
+  state.x += (parseEm(style.paddingLeft) + padLeftEm) * UPEM * localScale;
 
   if (classes.includes('vlist-t')) {
     emitVList(node as Span<HtmlDomNode>, state, chain, y, localScale, rowAlign(chain), color);
@@ -955,7 +1010,7 @@ function emitContainer(
     state.x += -10 * MU * UPEM * localScale;
   }
 
-  state.x += parseEm(style.marginRight) * UPEM * localScale;
+  state.x += (parseEm(style.marginRight) + marginExtraRightEm + padRightEm) * UPEM * localScale;
 }
 
 /**
