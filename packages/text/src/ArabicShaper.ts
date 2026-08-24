@@ -43,6 +43,11 @@ export class ArabicShaper {
     0x0638: { isolated: 0xfec5, initial: 0xfec7, medial: 0xfec8, final: 0xfec6, joining: 'D' }, // Zah
     0x0639: { isolated: 0xfec9, initial: 0xfecb, medial: 0xfecc, final: 0xfeca, joining: 'D' }, // Ain
     0x063a: { isolated: 0xfecd, initial: 0xfecf, medial: 0xfed0, final: 0xfece, joining: 'D' }, // Ghain
+    // Tatweel (kashida) is a dual-joining elongation stroke with no separate
+    // presentation forms: joining context passes THROUGH it in both directions,
+    // so neighbours keep their connected forms and the tatweel itself is
+    // emitted unchanged whatever slot it lands in.
+    0x0640: { isolated: 0x0640, initial: 0x0640, medial: 0x0640, final: 0x0640, joining: 'D' },
     0x0641: { isolated: 0xfed1, initial: 0xfed3, medial: 0xfed4, final: 0xfed2, joining: 'D' }, // Feh
     0x0642: { isolated: 0xfed5, initial: 0xfed7, medial: 0xfed8, final: 0xfed6, joining: 'D' }, // Qaf
     0x0643: { isolated: 0xfed9, initial: 0xfedb, medial: 0xfedc, final: 0xfeda, joining: 'D' }, // Kaf
