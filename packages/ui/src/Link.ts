@@ -12,6 +12,8 @@ export interface LinkOptions {
   font?: string;
   /** Whether to draw an underline. Default `true`. */
   underline?: boolean;
+  /** Whether the link is disabled (no navigation, projected `disabled`). Default `false`. */
+  disabled?: boolean;
 }
 
 /**
@@ -29,6 +31,8 @@ export class Link extends UIComponent {
   public font: string;
   public underline: boolean;
 
+  private _disabled = false;
+
   constructor(label: string, opts: LinkOptions) {
     super();
     this.label = label;
@@ -36,6 +40,7 @@ export class Link extends UIComponent {
     this.color = opts.color ?? '#38bdf8';
     this.font = opts.font ?? '16px sans-serif';
     this.underline = opts.underline ?? true;
+    this._disabled = opts.disabled ?? false;
     this.interactive = true;
 
     this.width = measureText(this.label, this.font);
@@ -49,6 +54,7 @@ export class Link extends UIComponent {
     });
 
     this.on('click', (e: VectoJSEvent) => {
+      if (this._disabled) return;
       // The shadow `<a href target=_blank>` navigates NATIVELY on a real DOM
       // click, and that same click is also forwarded here — calling
       // window.open again would open a SECOND tab. So only open programmatically
@@ -69,12 +75,24 @@ export class Link extends UIComponent {
     });
   }
 
+  /** Whether the link is disabled. Projected so AT reports what the canvas draws. */
+  public get disabled(): boolean {
+    return this._disabled;
+  }
+
+  public set disabled(value: boolean) {
+    if (this._disabled === value) return;
+    this._disabled = value;
+    this.scene?.markDirty();
+  }
+
   public getA11yAttributes(): A11yAttributes {
     return {
       tag: 'a',
-      href: sanitizeUrl(this.href),
+      href: this._disabled ? undefined : sanitizeUrl(this.href),
       label: this.label,
       target: '_blank',
+      disabled: this._disabled ? true : undefined,
     };
   }
 

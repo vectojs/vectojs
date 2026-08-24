@@ -40,7 +40,11 @@ export class ProgressBar extends UIComponent {
 
   constructor(opts: ProgressBarOptions = { value: 0 }) {
     super();
-    this.value = opts.value;
+    this.value = 0;
+    // Route the initial value through the same clamped path as later updates:
+    // a raw store painted a 150% fill and projected aria-valuenow "150", and
+    // NaN projected String(NaN) into both the label and the a11y tree.
+    this.setValue(opts.value);
     this.width = opts.width ?? 200;
     this.height = opts.height ?? 16;
     this.radius = opts.radius ?? 8;
@@ -52,9 +56,16 @@ export class ProgressBar extends UIComponent {
     this.interactive = true; // project the role=progressbar/aria-valuenow shadow node (no pointer handling)
   }
 
-  /** Set new progress value (clamped between `0` and `1`). */
+  /**
+   * Set new progress value (clamped between `0` and `1`).
+   *
+   * A non-finite input (`NaN` included — every comparison against it is false,
+   * so plain min/max clamping would pass it straight through) falls back to `0`
+   * rather than poisoning the fill width and the projected aria value.
+   */
   public setValue(val: number): void {
-    const clamped = Math.max(0, Math.min(val, 1));
+    const finite = Number.isFinite(val) ? val : 0;
+    const clamped = Math.max(0, Math.min(finite, 1));
     if (this.value === clamped) return;
     this.value = clamped;
     this.scene?.markDirty();

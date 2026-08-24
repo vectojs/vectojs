@@ -548,6 +548,10 @@ export class RichText extends UIComponent {
     const mctx = getSharedMeasuringContext();
     let offset = 0;
     for (const span of this.spans) {
+      // Spans are ordered, so once the cursor passes the requested line end
+      // nothing later can overlap it. Without this break a ragged line on a
+      // many-span document paid a full O(spans) scan per relayout.
+      if (offset >= end) break;
       const spanEnd = offset + span.text.length;
       const from = Math.max(start, offset);
       const to = Math.min(end, spanEnd);
