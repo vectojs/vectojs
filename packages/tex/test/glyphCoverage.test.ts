@@ -59,4 +59,55 @@ describe('shipped glyph table covers the subset corpus', () => {
 
     expect([...faces]).toContain('Size2-Regular');
   });
+
+  // Symbols no structural formula touches: layout advances correctly when
+  // their outline is absent, so they rendered as blank gaps (#666) without a
+  // placement or missing entry being obvious. Each pin asserts real ink: the
+  // glyph must resolve from the shipped subset, not merely advance.
+  it('ships outlines for \\approx, \\hbar, \\ell, \\Re and …', () => {
+    for (const tex of ['x \\approx y', '\\hbar', '\\ell', '\\Re', 'a \\ldots b']) {
+      const result = emitSVG(layout(tex));
+      expect(result.missing, tex).toEqual([]);
+    }
+    const ell = emitSVG(layout('\\ell'));
+    expect(ell.placements.some((p) => p.font === 'Main-Regular' && p.char === '\u2113')).toBe(true);
+  });
+
+  it('ships the whole Script-Regular face that \\mathscr needs', () => {
+    const result = emitSVG(layout('\\mathscr{ABCDEFGHIJKLMNOPQRSTUVWXYZ}'));
+
+    expect(result.missing).toEqual([]);
+    const script = result.placements.filter((p) => p.font === 'Script-Regular');
+    expect(new Set(script.map((p) => p.code)).size).toBe(26);
+  });
+
+  it('ships Math-BoldItalic letters for \\boldsymbol', () => {
+    const lower = emitSVG(layout('\\boldsymbol{abcdefghijklmnopqrstuvwxyz}'));
+    const upper = emitSVG(layout('\\boldsymbol{ABCDEFGHIJKLMNOPQRSTUVWXYZ}'));
+
+    expect(lower.missing).toEqual([]);
+    expect(upper.missing).toEqual([]);
+    // Bold digits are not italic variables and may route to a bold text face
+    // instead; they only need ink, not a specific face.
+    const digits = emitSVG(layout('\\boldsymbol{0123456789}'));
+    expect(digits.missing).toEqual([]);
+
+    expect(
+      new Set(lower.placements.filter((p) => p.font === 'Math-BoldItalic').map((p) => p.code)).size,
+    ).toBe(26);
+    expect(
+      new Set(upper.placements.filter((p) => p.font === 'Math-BoldItalic').map((p) => p.code)).size,
+    ).toBe(26);
+  });
+
+  it('ships Main-Italic digits that italic styles need', () => {
+    const mathit = emitSVG(layout('\\mathit{0123456789}'));
+    const textit = emitSVG(layout('\\textit{0123456789}'));
+
+    expect(mathit.missing).toEqual([]);
+    expect(textit.missing).toEqual([]);
+    expect(
+      new Set(mathit.placements.filter((p) => p.font === 'Main-Italic').map((p) => p.code)).size,
+    ).toBe(10);
+  });
 });

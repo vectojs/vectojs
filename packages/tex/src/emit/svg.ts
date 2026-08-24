@@ -330,6 +330,16 @@ const OVERLAY_PIECES: Readonly<
   'brace-right': { start: 0.749, end: 1, align: 'xMaxYMin' },
 };
 
+/**
+ * The single-piece shape of `\phase`'s hide-tail child: one oversized SVG
+ * covering the whole container extent, left-aligned and sliced.
+ */
+/**
+ * The single-piece shape of `\phase`'s hide-tail child: one oversized SVG
+ * covering the whole container extent, left-aligned and sliced.
+ */
+const FULL_WINDOW = { start: 0, end: 1, align: 'xMinYMin' } as const;
+
 /** Parses a CSS length that KaTeX wrote via `makeEm`, returning em. */
 function parseEm(value: string | undefined): number {
   if (!value) {
@@ -887,10 +897,26 @@ function emitContainer(
   state.x += parseEm(style.left) * UPEM * localScale;
 
   // `.hide-tail { width: 100%; overflow: hidden }` (katex.scss:513) clips an
-  // oversized child SVG. `minWidth` is the floor KaTeX sets on it.
+  // oversized child SVG. `minWidth` is the floor KaTeX sets on it — `\sqrt`
+  // always writes one (delimiter.ts), which is what makes the clip extent
+  // known here. `\phase` writes only `height` (functions/enclose.ts:53-66),
+  // so its clip is the *content* extent, unknown until the container
+  // resolves; its child becomes a pending full-window overlay instead of
+  // advancing a literal 400em.
   const clipEm = classes.includes('hide-tail')
     ? parseEm(style.minWidth) || parseEm(style.width) || undefined
     : undefined;
+  const unclippedHideTail = classes.includes('hide-tail') && clipEm === undefined;
+
+  const emitChild = (child: HtmlDomNode, target: EmitState): void => {
+    if (child instanceof SvgNode && unclippedHideTail) {
+      emitOverlayPiece(child, target, childY, localScale, color, FULL_WINDOW);
+    } else if (child instanceof SvgNode && clipEm != null) {
+      emitSvgNode(child, target, childY, localScale, color, clipEm);
+    } else {
+      walk(child, target, chain, childY, localScale, color);
+    }
+  };
 
   if (lapKind === 'llap' || lapKind === 'clap') {
     // Measure the lap content without emitting it, so the shift is by the
@@ -907,11 +933,7 @@ function emitContainer(
       warnedMetricsMisses: new Set(),
     };
     for (const child of node.children ?? []) {
-      if (clipEm != null && child instanceof SvgNode) {
-        emitSvgNode(child, probe, childY, localScale, color, clipEm);
-      } else {
-        walk(child, probe, chain, childY, localScale, color);
-      }
+      emitChild(child, probe);
     }
     const lapWidth = probe.x - state.x;
     state.x -= lapKind === 'llap' ? lapWidth : lapWidth / 2;
@@ -922,11 +944,7 @@ function emitContainer(
   }
 
   for (const child of node.children ?? []) {
-    if (clipEm != null && child instanceof SvgNode) {
-      emitSvgNode(child, state, childY, localScale, color, clipEm);
-    } else {
-      walk(child, state, chain, childY, localScale, color);
-    }
+    emitChild(child, state);
   }
 
   if (lapping) {
