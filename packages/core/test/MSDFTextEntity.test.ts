@@ -620,3 +620,37 @@ test('MSDFTextEntity honors color option and post-construction reassignment on C
   expect(fillText.mock.calls[1][4]).toBe('rgb(10,200,40)');
   entity.destroy();
 });
+
+test('MSDFTextEntity never splits a surrogate pair across projected lines', () => {
+  const font = new MSDFFont(fontJson);
+  const entity = new MSDFTextEntity('\u{1F600}\nab', {
+    font,
+    texture: {} as TexImageSource,
+    fontSize: 24,
+    lineHeight: 24,
+  });
+  // Layout reply for "😀\nab": three glyphs (one per code point, newline
+  // emits none), line 0 holds the emoji, line 1 holds "ab".
+  const asc = font.data.metrics?.ascender ?? 0.8;
+  const baseline = asc * 24;
+  entity['layoutResult'] = {
+    width: 100,
+    height: 48,
+    codePoints: new Uint32Array([0x1f600, 97, 98]),
+    xCoords: new Float32Array([0, 10, 20]),
+    yCoords: new Float32Array([baseline, baseline + 24, baseline + 24]),
+    packedStyles: new Uint32Array([(0xffffff << 8) | 0, (0xffffff << 8) | 0, (0xffffff << 8) | 0]),
+  };
+  entity['rebuildProjectionLines']();
+  const lines = entity.getContentProjection()!.lines!;
+  expect(lines.length).toBe(2);
+  // Line 0 must carry the WHOLE emoji — not its high surrogate half.
+  expect(lines[0].text).toBe('\u{1F600}');
+  expect(lines[1].text).toBe('ab');
+  // And no LONE surrogate may leak into any carrier: strip every well-formed
+  // pair first, then no bare surrogate unit may remain.
+  const all = lines.map((l) => l.text + l.separatorAfter).join('|');
+  const withoutPairs = all.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '');
+  expect(withoutPairs).not.toMatch(/[\uD800-\uDFFF]/);
+  entity.destroy();
+});
