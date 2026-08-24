@@ -421,3 +421,56 @@ describe('StreamController', () => {
     expect(second.state).toBe('aborted');
   });
 });
+
+/**
+ * `close()` flipped the state to `'closed'` *before* invoking the host hook, so
+ * once a hook threw or rejected, the state read closed and a retry hit the
+ * success short-circuit — reporting success although settlement never ran (#702).
+ */
+describe('close after a failed close', () => {
+  function failingController(onClose: () => void): StreamController {
+    return createStreamController(
+      {
+        append: () => {},
+        release: () => {},
+        onClose,
+      },
+      {},
+    );
+  }
+
+  it('propagates the original rejection to a retried close', async () => {
+    let calls = 0;
+    const controller = failingController(() => {
+      calls++;
+      if (calls === 1) throw new Error('settlement failed');
+    });
+    await controller.write('A');
+
+    await expect(controller.close()).rejects.toThrow('settlement failed');
+    expect(controller.state).toBe('closed');
+    // The natural retry shape must not turn the failure into success.
+    await expect(controller.close()).rejects.toThrow('settlement failed');
+    await expect(controller.close().catch(() => controller.close())).rejects.toThrow(
+      'settlement failed',
+    );
+    expect(calls).toBe(1);
+  });
+
+  it('propagates an async hook rejection the same way', async () => {
+    const controller = failingController(() => Promise.reject(new Error('async settle failed')));
+    await controller.write('B');
+
+    await expect(controller.close().catch(() => controller.close())).rejects.toThrow(
+      'async settle failed',
+    );
+  });
+
+  it('still resolves retries after a successful close', async () => {
+    const controller = failingController(() => {});
+    await controller.write('C');
+
+    await controller.close();
+    await expect(controller.close()).resolves.toBeUndefined();
+  });
+});
