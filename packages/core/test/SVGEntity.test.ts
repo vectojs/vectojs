@@ -11,6 +11,29 @@ describe('SVGEntity', () => {
     expect(entity.height).toBe(150);
   });
 
+  it('does not truncate the tag at a `>` inside a quoted attribute value', () => {
+    // The viewBox sits AFTER the quoted `>`, so an early tag end would hide it.
+    const svg = '<svg title="a>b" viewBox="0 0 64 48"><rect/></svg>';
+    const entity = new SVGEntity(svg);
+    expect(entity.width).toBe(64);
+    expect(entity.height).toBe(48);
+  });
+
+  it('ignores a viewBox with non-finite parts instead of producing NaN geometry', () => {
+    const entity = new SVGEntity('<svg viewBox="0 0 100 none"><rect/></svg>');
+    expect(Number.isFinite(entity.width)).toBe(true);
+    expect(Number.isFinite(entity.height)).toBe(true);
+    expect(entity.width).toBe(100);
+    expect(entity.height).toBe(100);
+  });
+
+  it('treats percentage width/height as absent and falls back to the viewBox', () => {
+    const svg = '<svg width="100%" height="100%" viewBox="0 0 80 60"><rect/></svg>';
+    const entity = new SVGEntity(svg);
+    expect(entity.width).toBe(80);
+    expect(entity.height).toBe(60);
+  });
+
   it('falls back to regex parsing when window is undefined', () => {
     const svg = '<svg width="300" height="200"><rect/></svg>';
     // Temporarily delete window
@@ -24,6 +47,29 @@ describe('SVGEntity', () => {
 
     // Restore window
     global.window = originalWindow;
+  });
+
+  it('applies the same quote/percent/viewBox rules to the regex fallback path', () => {
+    const originalWindow = global.window;
+    // @ts-ignore
+    delete global.window;
+    try {
+      const quoted = new SVGEntity('<svg title="a>b" viewBox="0 0 64 48"><rect/></svg>');
+      expect(quoted.width).toBe(64);
+      expect(quoted.height).toBe(48);
+
+      const percent = new SVGEntity(
+        '<svg width="100%" height="100%" viewBox="0 0 80 60"><rect/></svg>',
+      );
+      expect(percent.width).toBe(80);
+      expect(percent.height).toBe(60);
+
+      const nanViewBox = new SVGEntity('<svg viewBox="0 0 100 none"><rect/></svg>');
+      expect(nanViewBox.width).toBe(100);
+      expect(nanViewBox.height).toBe(100);
+    } finally {
+      global.window = originalWindow;
+    }
   });
 
   it('hit-tests through rotation and non-uniform scale', () => {

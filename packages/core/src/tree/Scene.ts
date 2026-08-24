@@ -3918,8 +3918,22 @@ export class Scene {
         !isNativelyFocusable(el) && !!attrs.role && INTERACTIVE_A11Y_ROLES.has(attrs.role);
       if (interactiveRole && !this.keyboardActivatedA11y.has(el)) {
         el.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
+          // Enter activates on PRESS. Space must not: APG expects activation on
+          // RELEASE, and firing here re-sent the click on every key repeat for
+          // as long as the key was held. preventDefault still applies so a
+          // focused projected button does not scroll the page instead.
+          if (e.key === 'Enter') {
             e.preventDefault();
+            node.dispatchEvent(new VectoJSEvent('click', node, e));
+          } else if (e.key === ' ') {
+            e.preventDefault();
+          }
+        });
+        el.addEventListener('keyup', (e) => {
+          if (e.key === ' ') {
+            // The listener lives on the element itself, so releasing Space
+            // elsewhere cannot activate this control; and because focus had to
+            // be here for the keydown, press-and-release is one click.
             node.dispatchEvent(new VectoJSEvent('click', node, e));
           }
         });

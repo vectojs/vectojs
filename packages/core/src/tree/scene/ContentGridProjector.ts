@@ -206,11 +206,27 @@ export class ContentGridProjector {
           lineIndex === 0,
         );
         const reusable = existingLines[domIndex] as HTMLElement | undefined;
-        if (
-          reusable !== undefined &&
-          reusable.dataset.vectoGridLineSig === lineSignature &&
-          reusable.dataset.vectoGridLine === `${lineIndex}`
-        ) {
+        if (reusable !== undefined && reusable.dataset.vectoGridLineSig === lineSignature) {
+          // The signature covers everything that determines the carrier's
+          // subtree, so a match means the rebuild below would produce a
+          // byte-identical node. Keep the existing one.
+          //
+          // What the signature deliberately omits is the absolute line index:
+          // a scrolled window re-slots lines without changing any line's own
+          // DOM, and requiring `vectoGridLine` equality (as this gate once did)
+          // turned every scroll into a full-window rebuild of byte-identical
+          // carriers. Restamp the index instead, plus the one output that can
+          // derive from it: without a projected line there is no explicit `y`,
+          // so `top` falls back to `lineIndex * grid.lineHeight`.
+          const indexLabel = `${lineIndex}`;
+          if (reusable.dataset.vectoGridLine !== indexLabel) {
+            reusable.dataset.vectoGridLine = indexLabel;
+            reusable.style.top = `${
+              (projectedLine?.y ?? lineIndex * grid.lineHeight) +
+              baseline -
+              cssLineBoxBaseline(lineFont, lineHeight)
+            }px`;
+          }
           continue;
         }
 
