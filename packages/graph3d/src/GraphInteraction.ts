@@ -319,10 +319,16 @@ export class GraphInteraction {
     // Disposing mid-drag must still run the finish path: beginDrag disabled
     // the host's controls, and with the listeners gone no pointerup/cancel
     // will ever fire to re-enable them — the host's controls would stay
-    // disabled forever.
+    // disabled forever. The same trap exists for a press still below the
+    // drag threshold: onPointerDown disables the controls eagerly, so an
+    // undragged press needs its own re-enable (without firing onDragEnd,
+    // since no drag ever began).
     if (this.dragging && this.pressIndex !== null) {
       this.finishDrag(this.pressIndex);
+    } else if (this.pressIndex !== null) {
+      this.options.setControlsEnabled?.(true);
     }
+    this.pressIndex = null;
     this.pressActive = false;
   }
 }
