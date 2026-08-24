@@ -208,7 +208,14 @@ export class A11yProjectionManager {
         // then stops receiving keys entirely — measured on `Dropdown`, whose
         // Escape-to-close (Dropdown.ts:95,123) silently died because opening the
         // popup reordered the mirror that held focus. Restore it after the move.
-        const refocus = document.activeElement === expected;
+        //
+        // Focus may sit anywhere INSIDE the moved subtree, not only on the
+        // moved element itself: reordering a composite container deep-blurs
+        // whichever descendant held focus. Capture the exact element BEFORE
+        // the move and restore that (#698).
+        const active = document.activeElement;
+        const refocusTarget =
+          active && (active === expected || expected.contains(active)) ? active : null;
         // Resolved on the first move of the pass and reused for the rest, so the
         // forced layout is paid once per REORDERING pass rather than once per
         // moved element. Inlined rather than factored into a helper closure: an
@@ -241,7 +248,7 @@ export class A11yProjectionManager {
           selectionMoved = true;
         }
         parent.insertBefore(expected, current || null);
-        if (refocus) expected.focus({ preventScroll: true });
+        if (refocusTarget) (refocusTarget as HTMLElement).focus({ preventScroll: true });
       }
     }
 
