@@ -13,11 +13,24 @@ function parseThreeColor(value: string): { color: THREE.Color; alpha: number } {
 const FONT_WEIGHT_RE = /^(normal|bold|bolder|lighter|[1-9]00)$/;
 const FONT_SIZE_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:rem|em|px|pt)$/;
 
+/** Root size assumed when resolving `em`/`rem`. This backend rasterizes
+ * against a WebGL canvas with no DOM to inherit a real root font size from,
+ * so the CSS default of 16px is used; hosts needing another root size should
+ * normalize the font string upstream (Canvas2D honors the same units, so
+ * dropping them here would break parity for inputs the grammar advertises). */
+const DEFAULT_ROOT_FONT_SIZE = 16;
+
 function parseFontSize(font: string): number {
   const tokens = font.trim().split(/\s+/).filter(Boolean);
   const sizeIndex = tokens[0] !== undefined && FONT_WEIGHT_RE.test(tokens[0]) ? 1 : 0;
   const size = tokens[sizeIndex];
-  return size !== undefined && FONT_SIZE_RE.test(size) ? Number.parseFloat(size) : 16;
+  if (size === undefined || !FONT_SIZE_RE.test(size)) return 16;
+  const value = Number.parseFloat(size);
+  // `em` resolves against the element font size and `rem` against the root
+  // size — both fall back to the 16px default here (`rem` ends with `em`).
+  if (size.endsWith('em')) return value * DEFAULT_ROOT_FONT_SIZE;
+  if (size.endsWith('pt')) return value * (4 / 3);
+  return value; // px
 }
 
 /**
