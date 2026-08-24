@@ -438,6 +438,32 @@ describe('ThreeRenderer', () => {
       expect(mesh.position.y).toBeCloseTo(50 - entry.fontSize + entry.height / 2);
     });
 
+    it('converts the advertised rem/em/pt units instead of dropping them', () => {
+      // Canvas2D honors every unit the font-shorthand grammar admits; the
+      // parser used to return the bare number, so '1.5em' rasterized glyphs
+      // at ~24px inside a ceil(1.5*1.5)=3px box — shredded output and a
+      // collapsed baseline.
+      renderer.fillText('Hi', 0, 50, '1.5em Inter', '#ffffff');
+      const em = [...(renderer as any).textTextureCache.values()][0];
+      expect(em.fontSize).toBe(24); // 1.5 × 16px root default
+      expect(em.height).toBe(36); // ceil(24 * 1.5)
+      const emMesh = renderer.scene.children[0] as THREE.Mesh;
+      expect(emMesh.position.y).toBeCloseTo(50 - 24 + 36 / 2); // baseline at y=50
+
+      renderer.fillText('Pt', 0, 50, '12pt Inter', '#ffffff');
+      const pt = [...(renderer as any).textTextureCache.values()][1];
+      expect(pt.fontSize).toBeCloseTo(16, 5); // 12 × 4/3
+
+      renderer.fillText('Rem', 0, 50, '2rem Inter', '#ffffff');
+      const rem = [...(renderer as any).textTextureCache.values()][2];
+      expect(rem.fontSize).toBe(32);
+
+      // px stays identity.
+      renderer.fillText('Px', 0, 50, '20px Inter', '#ffffff');
+      const px = [...(renderer as any).textTextureCache.values()][3];
+      expect(px.fontSize).toBe(20);
+    });
+
     it('keeps the texture unflipped and double-sided so the glyphs stay upright and visible', () => {
       renderer.fillText('Hi', 0, 50, '16px Inter', '#ffffff');
       const mesh = renderer.scene.children[0] as THREE.Mesh;
