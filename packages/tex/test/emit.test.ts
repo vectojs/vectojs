@@ -432,4 +432,22 @@ describe('emitSVG', () => {
     expect(out.svg).toContain('clip-path');
     expect(out.svg).toContain('<path');
   });
+
+  it('applies class-carried horizontal padding', () => {
+    // `.x-arrow-pad { padding: 0 0.5em }` sits on the label's *sizing* span
+    // (`reset-size6.size3` = ×0.7), so the padding scales with it: two
+    // 0.35em sides on top of the previously-measured 5.8576em. This
+    // deliberately deviates from #696's "≈6.858" estimate, which forgot that
+    // em paddings resolve against the element's own font-size.
+    const arrow = emitSVG(layout('\\xrightarrow{\\text{very long label here}}'));
+    expect(arrow.width).toBeCloseTo(6.5576, 3);
+
+    // `.cancel-pad` widens the ink window by 0.4em while `.cancel-lap`'s
+    // negative margins cancel the advance, exactly as the CSS pair behaves.
+    expect(emitSVG(layout('\\cancel{xy}')).width).toBeCloseTo(1.0979, 3);
+
+    // `.boxpad` pads boxed content; the border edges resolve across it.
+    const boxed = emitSVG(layout('\\boxed{x}'));
+    expect(boxed.width).toBeCloseTo(emitSVG(layout('x')).width + 0.6, 3);
+  });
 });
