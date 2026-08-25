@@ -55,6 +55,19 @@ export class D3ForceLayout implements GraphLayout {
     this.assertUsable();
     this.simulation?.stop();
 
+    // Reject unknown link endpoints BEFORE any state mutates: d3-force-3d
+    // would keep the raw string id as the endpoint and its tick reads .x off
+    // it, silently collapsing every position to NaN. Same error text as
+    // Graph3D.setGraphData / VectoForceLayout so one policy spans all three.
+    const knownIds = new Set(data.nodes.map((node) => node.id));
+    for (const link of data.links) {
+      if (!knownIds.has(link.source) || !knownIds.has(link.target)) {
+        throw new Error(
+          `Link ${String(link.source)}→${String(link.target)} references an unknown node id`,
+        );
+      }
+    }
+
     this.simNodes = data.nodes.map((node) => {
       const simNode: SimulationNode = { id: node.id };
       // Position seeds: d3 keeps a pre-set x/y/z instead of its phyllotaxis

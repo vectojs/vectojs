@@ -82,9 +82,17 @@ function buildStrokeRibbon(
   width: number,
 ): { positions: Float32Array; indices: number[] } | null {
   const points: THREE.Vector2[] = [];
-  outer: for (const point of rawPoints) {
-    for (const kept of points) {
-      if (kept.distanceToSquared(point) < STROKE_DEDUPE_EPSILON) continue outer;
+  // O(n) dedupe: jitter hides between CONSECUTIVE samples, and closed shapes
+  // repeat their first point as their last — both are O(1) comparisons. The
+  // previous all-kept-points scan was quadratic per stroke per frame and only
+  // ever caught these two cases in practice (a far-apart coincidence with an
+  // early vertex is real geometry, so keeping it is more faithful anyway).
+  for (const point of rawPoints) {
+    const last = points[points.length - 1];
+    if (last && last.distanceToSquared(point) < STROKE_DEDUPE_EPSILON) continue;
+    const first = points[0];
+    if (first && first !== last && first.distanceToSquared(point) < STROKE_DEDUPE_EPSILON) {
+      continue;
     }
     points.push(point);
   }
@@ -197,14 +205,6 @@ class ThreePath {
 
   public toShapes(): THREE.Shape[] {
     return this.shapes;
-  }
-
-  public getPoints(): THREE.Vector2[] {
-    const allPoints: THREE.Vector2[] = [];
-    for (const shape of this.shapes) {
-      allPoints.push(...shape.getPoints());
-    }
-    return allPoints;
   }
 }
 
@@ -822,18 +822,22 @@ export class ThreeRenderer implements IRenderer {
     const parsed = parseThreeColor(color);
     const shapes = this.currentPath.toShapes();
 
+    // One shared material for every subpath of the same fill — the gradient
+    // path above already does this; per-shape materials paid N create/dispose
+    // cycles per frame on multi-subpath fills.
+    const opacity = this.globalAlpha * parsed.alpha;
+    const material = new THREE.MeshBasicMaterial({
+      color: parsed.color,
+      transparent: opacity < 1,
+      opacity,
+      depthWrite: false,
+      // See fillText: the y-down ortho camera flips winding, so FrontSide
+      // shapes would be culled.
+      side: THREE.DoubleSide,
+    });
+
     for (const shape of shapes) {
       const geometry = new THREE.ShapeGeometry(shape);
-      const opacity = this.globalAlpha * parsed.alpha;
-      const material = new THREE.MeshBasicMaterial({
-        color: parsed.color,
-        transparent: opacity < 1,
-        opacity,
-        depthWrite: false,
-        // See fillText: the y-down ortho camera flips winding, so FrontSide
-        // shapes would be culled.
-        side: THREE.DoubleSide,
-      });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.applyMatrix4(this.matrix);
 
