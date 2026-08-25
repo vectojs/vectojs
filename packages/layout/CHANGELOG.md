@@ -1,5 +1,44 @@
 # @vectojs/layout
 
+## 0.10.0
+
+### Minor Changes
+
+- 9f761f2: Backlog: honest buffer dimensions, unknown-font signaling, hyphen measurement gating, dead-field removal (#653)
+
+  - **Removed the never-written `combining` field** from `LayoutNode` and
+    `PreparedGlyph`. It was declared and copied but assigned nowhere, implying a
+    cluster-attachment capability that does not exist.
+  - **`LayoutResultBuffer.toLayoutResult()` now reports real dimensions**
+    (max glyph right edge / lowest bottom) instead of hard-coded zeros.
+  - **Unknown-font requests resolve instead of hanging.** A queueLayout call whose
+    metrics exist nowhere resolves its callback immediately with an error-shaped
+    response (`error: 'unknown-font:<id>'`, zero-length buffers) and warns once
+    per font id; the worker replies with the same shape rather than returning
+    silently, and the main-thread fallback resolves dropped requests the same way.
+  - **prepare() measures '-' only when a word carries break points**, so text
+    without hyphenation opportunities no longer increments the unmeasured-glyph
+    tally or consumes the one-time warning.
+  - **Worker-bundle freshness is enforced**: a new test regenerates the committed
+    minified blob in memory and fails when `src/LayoutWorker.ts` changed without a
+    rebuild.
+
+  Refs #653
+
+### Patch Changes
+
+- c7c036e: `cancelLayout` no longer resets an entity's seqId counter. Replies are keyed `entityId-seqId`, so restarting at 1 let a stale reply from a just-cancelled in-flight request match the next request's pending entry and deliver the old geometry to the new callback (the genuine reply was then dropped). Counters stay monotonic for the manager's lifetime.
+- a62698e: `cancelLayout` now purges only the cancelled entity's own `id-<seq>` pending entries (numeric suffix required) instead of every key sharing a string prefix, so cancelling one entity can no longer cancel another whose id extends it across a hyphen boundary (`text` vs `text-1`, `a-b` vs `a-b-c`).
+- e83d870: Inline-object metrics are now honored by the fast paths: `measurePrepared` and `layoutPreparedIntoBuffer` run the same object loops as the allocating path (pMax ascent growth + descent line extension), and the buffer path stores `object.height` with the object-based y instead of treating U+FFFC as an ordinary fontSize glyph. Measured rows and buffer-rendered text no longer clip tall inline formulas/images.
+- 8ce1487: Fixed the zero-GC buffer path dropping `baselineShifts` during the BiDi L2 reversal: the RTL swap block now exchanges the shifts array alongside chars/widths/heights/levels, so a shifted glyph in an RTL line keeps its own superscript/subscript offset instead of inheriting another run's. Added an RTL + baselineShift buffer↔allocating parity test.
+- 6999e12: `suppressLineBreaks` merges now carry hyphenation across the merge: Rule 1 (`@` + following identifier words) re-bases each merged word's `breakPoints` by the glyph offset, and Rule 2 (orphan punctuation onto the preceding word) keeps the preceding word's soft-hyphen/hyphenator breaks and shifts the punctuation-side ones. Authored breaks in tokens like `internal\u00ADly,` or `@inter\u00ADnal` are honored at wrap time again.
+- 4275a54: After a layout-worker restart, queued layouts no longer hang when the caller omits `fontData`: the manager now re-attaches its retained font metrics to any request whose font the (new) worker has not registered, instead of letting the worker's unknown-fontId guard swallow it silently.
+- 99e1fb0: Remove the dead `lineMax` initializer in the zero-GC buffer layout path (`layoutPreparedIntoBuffer`). The paragraph line maximum is now derived where it is first used, as a per-iteration constant. No behavior change — flagged by CodeQL (`js/useless-assignment-to-local`).
+- Updated dependencies [ab46bbb]
+- Updated dependencies [cc024c8]
+- Updated dependencies [b767423]
+  - @vectojs/text@0.4.2
+
 ## 0.9.3
 
 ### Patch Changes

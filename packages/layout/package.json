@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/layout",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "publishConfig": {
     "access": "public"
   },
@@ -42,7 +42,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vectojs/text": "^0.4.1"
+    "@vectojs/text": "^0.4.2"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",

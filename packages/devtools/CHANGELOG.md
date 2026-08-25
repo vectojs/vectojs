@@ -1,5 +1,125 @@
 # @vectojs/devtools
 
+## 0.11.2
+
+### Patch Changes
+
+- a516cde: fix(devtools): a11y audit cache no longer goes stale on property-only changes (#705)
+
+  The A11y tab's findings cache keyed only on `structureVersion`, which moves
+  exclusively on add/remove/reparent. Audit inputs include non-structural state —
+  accessible labels, `disabled`, opacity (the disabled-divergence heuristic), tabIndex and world bounds (the focusable-but-clipped check) — so a relabel, dim
+  or scroll changed the audit result while the version stayed put, and the tab
+  re-showed a stale finding list indefinitely. The cache key now also carries the
+  inspected entity (highlight reuse means switching it moves no version) and a
+  staleness TTL bounded by the reconcile interval, so drift surfaces within ~3s
+  instead of never.
+
+- 3e0e451: fix(devtools): a11y audit cache no longer re-walks the scene on selection changes (#785)
+
+  The cache key introduced for #705 also carried the inspected entity id, on the
+  theory that "selection changes must not serve another entity's findings". But
+  `auditA11y(host)` walks the whole scene and takes no selection argument, and its
+  only consumer applies the per-entity ▸ marker by comparing `finding.entityId` at
+  render time — findings are identical for every selection, so the extra key input
+  bought no correctness while paying one O(scene) audit walk per tree-row click,
+  the panel's primary interaction.
+
+  The key is now exactly the inputs that can change the result: the host's
+  structure version plus the staleness TTL. Property-only drift (labels, disabled,
+  opacity, tabIndex, world bounds) still surfaces within the reconcile-length TTL,
+  so the #705 semantics are unchanged.
+
+- 1f528b5: fix(devtools): clear the August review backlog — shadowed exports, plugin id collisions, overlay-blind audits, clip divergence, O(P²) reading order
+
+  Six low-severity findings from the 2026-08 code-review sweep (#660):
+
+  - `index.ts` no longer re-exports `diagnoseDirty` and the accelerator helpers
+    explicitly; the headless star export already carried them, and two export
+    paths for one symbol invited silent drift.
+  - Duplicate plugin inspector ids now warn and suffix (`id#2`, …) instead of
+    colliding on both the tab id and the row map, where the second registration
+    silently won and the first tab read rows from the wrong inspector. Ids are
+    memoized per inspector so repeated refreshes keep the same tab.
+  - `gpuInspect`, `textInspect` and `markdownInspect` audits walk
+    `scene.overlayRootEntity` as well: overlay-mounted particles, atlas-miss text
+    and streaming markdown were invisible to the counters, and webgpu bind-group
+    counts undercounted by 2× missed entities.
+  - The `clip` highlight layer computes `divergesFromLayout` via the shared
+    `diverges()` predicate like every other layer, instead of hardcoding `true`
+    and stroking weight-2 highlights for entities that exactly fill their
+    clipper.
+  - `a11yReadingOrder` builds one document-order element→position map per pass;
+    per-entity lookups previously paid a `querySelectorAll` plus an O(P) scan per
+    projected node (quadratic on document-sized projections). Single-entity
+    `inspectA11y` calls are unchanged.
+  - Minor: one bidi resolution per text inspection (was two), `hitExplain` docs
+    cite `HitTester.findHitRecursively`/`isPointerTransparent` where those methods
+    actually live, and panel `showTab` routes through the public `Tabs.selectTab`.
+
+- d785e5a: fix(devtools): clearing an inspector editor field no longer snaps x/y/opacity to 0 (#704)
+
+  The numeric property editors parsed input with `Number(raw)`, but `Number('')`
+  and `Number('   ')` are `0`, not NaN. The editors fire on every native `input`
+  event, so select-all + delete — or backspacing past the first digit — applied
+  `x = 0` / `y = 0` / `opacity = 0` mid-edit; opacity 0 additionally made the
+  entity invisible and unhittable. Empty/whitespace input is now ignored before
+  the parse; a subsequent numeric value applies as before.
+
+- 2ac3e33: fix(devtools): EventTrace coalesces pointermove instead of picking per event (#707)
+
+  With `traceEvents` enabled every document `pointermove` ran `resolveContext`;
+  for canvas-targeted moves that is `pickInScene` — a full O(n) reverse tree walk
+  — at input-event rate (120–240 Hz), with each accepted entry rewriting trace
+  rows and repainting the panel scene. The observer effect skewed the very frame
+  times the perf HUD reports. Moves are now coalesced to at most one traced entry
+  per 16ms window (leading-edge, on the event `timeStamp` clock); discrete events
+  (pointerdown/up/cancel, wheel, keys) are never coalesced.
+
+- b6897bd: fix(devtools): tree label refresh reaches the filtered view (#786)
+
+  `refresh()`'s version-unchanged fast path rewrote labels on
+  `this.allNodes` — the original node objects. With a filter active,
+  `applyFilterToTree` hands the Tree shallow prune copies (`{...node}`),
+  and the Tree's rows render `row.node.label` from those copies, so the
+  #757 per-tick geometry refresh wrote to objects nothing displayed:
+  animated/moved entities kept the coordinates of the last rebuild or
+  filter edit for as long as the filter stayed on.
+
+  The panel now retains the pruned copies and runs the same in-place
+  label rewrite over them (still no `setNodes` churn, so expansion state
+  survives ticks). Clearing the filter keeps handing the originals.
+
+- f52644f: fix(devtools): picker no longer picks what clicks cannot reach (#671)
+
+  `findEntityAt` claimed engine parity but fell back to world-AABB containment
+  when `isPointInside` declined — production `HitTester.findHitRecursively` has no
+  such fallback. Particles (`pointerEvents: false`) and rounded/clipped shapes
+  acquired false owners in the picker, so clicking selected entities the running
+  app would never resolve at that point, and devtools' own `explainHitTest`
+  reported "outside shape" for the same coordinate. The fallback is gone: an
+  entity is pickable only when its own shape accepts the point, exactly like the
+  engine.
+
+- 9a09d88: fix(devtools): selection audit no longer clears the user's live text selection (#708)
+
+  The selection audit captured `getSelection()` at entry and unconditionally
+  called `removeAllRanges()` on the way out — but its measurements use detached
+  ranges (`document.createRange()` + `selectNodeContents()`), which never touch
+  the DocumentSelection. There was no programmatic selection to clean up, so the
+  trailing call destroyed whatever the user (or a CI/QA driver) had selected as a
+  side effect of a read-only audit. The capture and the call are gone.
+
+- 4127f05: fix(devtools): tree labels track animated geometry instead of going up to 3s stale (#706)
+
+  Tree node labels embed `(x,y) WxH` so geometry is readable without selecting,
+  but `refresh()` skipped the rebuild whenever `structureVersion` was unchanged —
+  and transforms never bump that version. Any animated, dragged or moved entity
+  kept showing the coordinates of its last structural change until the periodic
+  forced reconcile fired (~3s). `refreshTreeLabels` now rewrites the baked-in
+  labels in place on every version-gated tick (no node/index churn), and the
+  rebuild path shares one `geometryLabel` helper.
+
 ## 0.11.1
 
 ### Patch Changes

@@ -1,5 +1,115 @@
 # @vectojs/ui
 
+## 2.20.1
+
+### Patch Changes
+
+- 30c31db: Add visible keyboard focus rings to Checkbox and Toggle (#683)
+
+  Both components project natively-focusable shadow elements painted at
+  `opacity: 0`, so keyboard focus was invisible (WCAG 2.4.7). They now track
+  `focus`/`blur` like Button/Slider and stroke a 2px ring around the box/track,
+  yielding to the system `Highlight` color under forced colors.
+
+  Fixes #683
+
+- 16e595f: Flip and clamp the Dropdown menu at the viewport edges (#664)
+
+  The menu was placed unconditionally below the trigger, so a trigger docked
+  near the scene bottom opened a menu whose rows extended off-canvas and could
+  not be reached by pointer or keyboard. Placement now follows the base-Overlay
+  rule: flip above when there is no room below and more room above, then clamp
+  into view with a 4px inset.
+
+  Fixes #664
+
+- d15f8ac: Close Dropdown menus on Tab; Escape anywhere; unique backdrop ids (#693)
+
+  Tab now closes an open menu and keeps its native default (ARIA combobox
+  behavior) instead of moving focus out and stranding keyboard users on a menu
+  the entity-level handler could no longer see. While the menu is open, a
+  document-level capture listener (same pattern as Modal's trap) closes it on
+  Escape regardless of where focus sits, and is torn down in `closeMenu` and
+  `destroy`. Backdrops are now id'd from the dropdown instance
+  (`${id}-backdrop`) so two open menus no longer collide in the projection.
+
+- bd0d53b: Release the Modal focus trap when dismissed via hideOverlay (#691)
+
+  The document-level Tab trap was removed only by `close()`/`destroy()`, so
+  `scene.hideOverlay(modal)` — which unprojects the overlay without destroying
+  it — stranded the trap: every later Tab was preventDefault'd into the invisible
+  dialog and page keyboard navigation died. The handler now self-checks liveness
+  as its first statement and removes itself once the modal is off the tree.
+
+- ac34e56: Resync ScrollView extent when a child resizes in place (#685)
+
+  `updateContentSize()` ran only from `add()`/`remove()`, so a child growing via
+  `append` (streaming text) raised its own height without the ScrollView noticing:
+  clamping capped scrolling at the old extent, leaving new bottom content
+  unreachable — and a shrink allowed scrolling into blank space. The per-frame
+  content loop now polls children extents and resyncs (with re-clamp) when they
+  differ.
+
+- 2940a12: Fix Slider drag sticking after pointercancel (#678)
+
+  Slider cleared `isDragging` only on `pointerup`, so a canceled touch/pen
+  gesture left the slider in dragging state and every later hover
+  `pointermove` scrubbed the value without a button pressed. The same
+  missing `pointercancel` guard in ScrollView's and VirtualList's
+  drag-scroll end handlers is included.
+
+  Fixes #678
+
+- 318cb3b: Stop Tabs close click from also selecting the tab (#687)
+
+  One physical click on × delivered two events: the bubbled pointerdown that
+  runs `onClose`, then the hotspot mirror's own DOM click which selected the
+  tab. With a synchronous removal the mirror detaches first and hid the defect;
+  any deferred close left it alive, so the dying tab became selected and later
+  removal blanked the panel. The close pointerdown now arms a latch that the
+  hotspot click consumes instead of selecting; every fresh pointerdown re-arms
+  from scratch.
+
+- 617757e: Stop Tree lazy-load duplicate fetches on re-expand (#690)
+
+  Expanding a lazy node starts its fetch; collapsing and re-expanding before
+  the promise resolved passed the same `!loaded` guard again and invoked
+  `children()` a second time, with last-writer-wins on `_loaded` — duplicate
+  work and nondeterministic children for non-idempotent loaders. The toggle now
+  also skips when a load is already in flight; the existing `finally` cleanup
+  keeps retries after rejection working.
+
+- 1059fde: Reset Tree scroll offset in setNodes (#688)
+
+  `setNodes` cleared nodes/expansion/selection but never reset or clamped the
+  scroll offset. With the old offset past the new content height, `update()`
+  settled onto the stale target, `_visibleRange()` returned `start > end`, and
+  `_syncHotspots()` shrank its pool toward a negative count — leaving a blank,
+  untappable control with zero tab stops until a wheel or drag event arrived
+  (touch users had no recovery path). `setNodes` now clamps and syncs the
+  offset, and drops the stale active-id highlight.
+
+- 2ef0da4: Backlog polish for ui composites (#655): removed ContextMenu.hide's redundant interactive re-set; Escape from a submenu now closes one level and refocuses the parent item (matching ArrowLeft) instead of collapsing the whole menu tree; GridCellHotspot/TreeItemHotspot/MenuItemHotspot declare getLayoutControlledProperties like their siblings; RadioGroup caches per-option label widths (invalidated on options/font change and webfont load) instead of re-measuring on every pointermove, keeps the roving tab stop off a checked-but-disabled option, and preserves DOM focus across hotspot pool rebuilds; Tabs dirty-flags its content visibility pass (signature check per frame instead of a full re-derive) and also preserves hotspot DOM focus on rebuild; Tooltip measures its box from real text metrics and wraps long content inside the 320px cap instead of drawing unclipped; Dropdown and Modal constructors take typed option objects and Dropdown validates select paths against the real option list.
+- 25c725d: Backlog hardening for ui primitives (#654): removed the unused `measure.wrapLines` export (its greedy wrapping diverged from the LayoutEngine every component actually uses); `Slider` now takes a typed `SliderOptions`, validates `step > 0` and `max >= min` at construction, and routes its initial value through the same clamp/snap path as mutations; `ProgressBar` clamps its initial value via `setValue`, treating non-finite input as 0; `Input`/`TextArea` gained a `label` option (accessible name, falling back to placeholder) and a projected `disabled` state; `disabled` support was standardized across Checkbox/Toggle/Link following the Button pattern; the measure cache no longer aliases `(font, text)` pairs joined on a space; `RichText.logicalRuns` stops scanning spans past the requested line end.
+- 08b3c17: Fix VirtualList swallowing wheel when content fits (#679)
+
+  The wheel handler called `preventDefault()` before checking `_maxScroll()`,
+  so an empty or fitting list turned its band into a page-scroll dead zone.
+  It now returns before consuming the wheel when there is nothing to scroll,
+  mirroring ScrollView's #525 guard.
+
+  Fixes #679
+
+- 48da715: Re-measure six components after a webfont load (#681)
+
+  Button, Link, Text, Input, TextArea and RichText each measured once at
+  construction and cached per instance, so after a webfont finished loading
+  labels stayed mis-centered, wrap points went stale and carets drifted until an
+  unrelated edit re-measured. A shared `onFontMetricsChanged` signal in `measure.ts`
+  (wired to the existing `document.fonts.ready`/`loadingdone` listeners) now lets
+  each component clear its own caches and re-lay out once per load;
+  subscriptions are torn down on destroy.
+
 ## 2.20.0
 
 ### Minor Changes

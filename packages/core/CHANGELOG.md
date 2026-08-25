@@ -1,5 +1,141 @@
 # @vectojs/core
 
+## 1.39.0
+
+### Minor Changes
+
+- 69bb9fa: Crates kernel consistency sweep (#662): OOM-to-status contract, shared status vocabulary, SIMD AABB pass.
+
+  - **Allocation failure now returns a status instead of aborting.** Every `*_init` in the WASM transform core (`init`, `anim_init`, `hit_init`, `particle_init`, `init_f32`) allocates into a staging store, checks each pointer, and on allocator refusal releases the partial set, publishes the empty store, and returns `STATUS_OVERFLOW`. Previously a failed allocation hit `assert!(!p.is_null())` under `panic = "abort"`, which trapped the whole instance — no JS caller could catch it, defeating the per-call fallback the status design exists for. The JS backend falls back to its reference path on any non-zero status, unchanged.
+  - **`computeAabbs`/`runAabbs` accept a kernel** (`'simd' | 'scalar'`, default `'simd'`). The new lane-paired `compute_aabbs_simd` is bit-identical to the scalar kernel and to the JS reference: `Math.min`/`Math.max` are exact selection ops over a total order (associative), so pairing entities per `f64x2` lane cannot change output bits — including NaN propagation and ±0, which wasm's `f64x2_min`/`f64x2_max` implement with the same Math semantics. Odd counts take the scalar tail path.
+  - Fixed a latent readback bug this exposed: `computeAabbs` compared a boolean kernel result against the numeric `WASM_STATUS.OK` and therefore always took the "rejected" branch, skipping every result copy-out. The differential suite now covers both kernels against JS bit-for-bit.
+
+  The Barnes-Hut force kernel (`@vectojs/graph3d`) shares the status-vocabulary and checked-arithmetic fixes; see its changeset.
+
+- 1d0962c: Scene-level keyboard channel: `scene.on/off('keydown'|'keyup')` with a new
+  `SceneKeyEvent` payload, `registerShortcut`/`unregisterShortcut` chord sugar,
+  and window bubble-phase wiring attached at `start()` and removed only at
+  `destroy()`. Handlers are suppressed by native `defaultPrevented`, key
+  auto-repeat, and keyboard-owning focus (`ownsKeyboard(document.activeElement)`).
+  New exports: `SceneKeyEvent`, `SceneShortcutSpec`, `normalizeChord` (promoted
+  from `@vectojs/desktop`, which now re-imports it from core), `ownsKeyboard`,
+  `KEYBOARD_OWNING_ROLES`.
+
+### Patch Changes
+
+- 01d1141: `WasmTransformBackend.runAabbs` now probes `compute_aabbs_simd` before selecting it.
+
+  The published `.wasm` lives at one fixed URL, so a stale cached module can instantiate cleanly yet predate the SIMD AABB export — the default `'simd'` kernel then called the missing export and threw a `TypeError` mid-render. `runAabbs` now downgrades to the bit-identical scalar kernel when the export is absent, keeping the existing `lastStatus`/boolean rejection telemetry unchanged.
+
+- 2474ab3: `WasmTransformBackend.compose` and `.runKernel` now probe `compose_simd` before selecting it.
+
+  The published `.wasm` lives at one fixed URL, so a stale cached module can instantiate cleanly yet predate the SIMD compose export — the default `'simd'` kernel then called the missing export and threw a `TypeError` mid-render (the same gap #798 closed for `compute_aabbs_simd`, and `runKernel` is the designed per-frame hot path). Both entry points now downgrade to the bit-identical scalar kernel when the export is absent, keeping the existing `lastStatus`/rejection telemetry and compose's skip-readback semantics unchanged.
+
+- b87a455: Clear the core renderer backlog (#650): teardown symmetry, dispose hygiene, stroke elision, export font-size option
+
+  - **`SVGRenderer` accepts a `rootFontSize` option** (constructor, default 16)
+    used to resolve `em`/`rem` sizes in `fillText`, and documents that `em` and
+    `rem` share the root size while a percentage size falls back to the 16px
+    default — exported text metrics no longer silently assume a non-default
+    host page root.
+  - **`CanvasRenderer.stroke()` now elides style assignments** like `fill()`/
+    `fillText()`: repeated identical strokes stop inflating the real-state-switch
+    counter on stroke-heavy scenes.
+  - **`CanvasRenderer.dispose()` removes its `contextlost`/`contextrestored`
+    listeners**, so a canvas outliving the renderer no longer retains it or
+    resurrects disposed state after a GPU reset; `resize()` guards CSS style
+    writes for SSR/stubbed canvases like the constructor already did.
+  - **`drawSprites` unbinds the VAO** at commit, matching its documented
+    counterpart `drawGlyphs`.
+  - **Cache keys are length-prefixed** in `TextRasterCache` and
+    `GlyphRasterAtlas`, so text containing U+0000 can no longer alias another
+    (font, color, text) triple's cached raster/slot pixels.
+  - `recordComputePass` reuses a module-level uniform scratch instead of
+    allocating per entity per frame; `SVGRenderer.dispose()` no longer clears
+    the gradient cache twice.
+
+  Fixes #650
+
+- 6e76253: Clear the core runtime backlog (#649): cycle-safe `add()`, honest accelerator verdicts, mid-walk driver catch-up
+
+  - **`Entity.add()` now rejects cycles.** Re-parenting an entity under its own
+    descendant (`a.add(b); b.add(a)`) threw no error but overflowed the pre-order
+    update/render walks on the next frame; it now throws, matching the DOM's
+    `HierarchyRequestError` behavior.
+  - **Per-kind kernel-rejection verdicts.** When one anim kernel declines a frame,
+    `Scene.accelerators.animation.reason` now reports `springs-rejected` or
+    `tweens-rejected` (with `activeThisFrame: true`, since the other kind still
+    stepped through WASM) instead of the misleading fully-JS `'rejected'`. The
+    plain `'rejected'` remains reserved for both kinds declining.
+  - **Mid-walk driver spawn no longer waits a frame on the batched path.** A
+    driver spawned by an earlier sibling's update onto an entity the batch pass
+    already claimed was skipped by that entity's per-frame stamp until next
+    frame — a one-frame JS/WASM divergence for fixed-step consumers. It is now
+    advanced once at spawn with the walking frame's dt.
+  - **Removed the dead internal helper `Entity._hasActiveDrivers()`** (zero
+    callers in the monorepo). Code reaching for it should use the public
+    `hasPendingAnimations()`.
+  - `ComputeParticleEntity.updateCPU` now addresses its particle buffer through
+    the published `PARTICLE_STRIDE_FLOATS`/`PARTICLE_OFFSET_*` constants instead
+    of hardcoded stride-8 arithmetic, and `getWorldRotation()` documents its
+    positive-scale-only contract.
+
+  Fixes #649
+
+- cb02dad: core: MSDFTextEntity now renders glyphs in the configured `color` on both the WebGL and Canvas2D paths (#663). Color is applied as a draw-time tint instead of being read from the worker-packed style bits (which are always white), so post-construction `entity.color` reassignment also takes effect.
+- 2568021: core: `Entity.animate()` treats zero, negative, and non-finite durations as an immediate terminal write of the target values (#674). They previously computed `0/0 = NaN` progress on the first tick, corrupted animated properties with NaN, and permanently jammed the tween queue.
+- f492f4e: core: the WASM hit-grid reuse gate now keys on structure version in addition to frame number (#677). A pointer query in the same frame as a structural mutation (add/remove) previously resolved against the stale pre-mutation grid while the JS walk saw live state.
+- 1f7e41e: core: both hit-test paths now clip against a `clipChildren` ancestor's exact (rotation-aware) local rect (#680). The JS recursive walk previously clipped to the ancestor's world AABB while the WASM flat gate tested the exact local rect, so a point in the AABB corner of a rotated clip container resolved differently depending on which backend was active. A shared `isInsideAllClippers` gate is now authoritative on both paths, with a differential fixture covering rotated clippers. Zero-size clip containers now consistently reject descendants instead of being skipped by the WASM gate.
+- 592f492: core: clamp out-of-range numeric character references in `sanitizeUrl`/`isSafeUrl` to U+FFFD instead of throwing RangeError (#682).
+- c7290f1: core: `WebGPUParticleSystemManager` now releases GPU resources (#684). `destroy()` explicitly destroys the compute/render pipelines and both shader modules (previously only nulled, and modules were not even retained), and `setupEntityResources` destroys an entity's previous buffer generation before overwriting it, instead of leaking one buffer pair per re-setup.
+- b0955f2: core: `createWebGLPointRenderer` no longer leaks on a failed shader link (#686). Programs that already linked are deleted before returning null, and the GL context is released via `WEBGL_lose_context`, so init retries after a driver hiccup no longer accumulate a program generation plus a resident context per attempt.
+- 488b62b: core: MSDFTextEntity no longer splits astral (surrogate-pair) characters across projected accessibility lines (#689). The glyph→source map is now built per code point with proper pair-aware end offsets, so a line break at an emoji can never project lone surrogates into the DOM carriers — copy/paste, in-page find, and screen readers see exactly the rendered text.
+- 21b0e05: core: CRLF text now takes the coarse a11y projection instead of the fine per-line one (#692). The layout worker breaks lines on `\n` only, so a surviving `\r` glyph passed the fine-projection guard and rendered a phantom ~1em advance at every CRLF line end; any `\r` in the source now forces the coarse fallback, as the guard's contract already promised.
+- e6accf6: core: interactive a11y roles assigned after element creation now receive the synthetic Enter/Space activation handler (#694). The handler was installed only in syncA11y's creation pass while tabindex was refreshed every pass, so late-roled controls were Tab-reachable but keyboard-dead (WCAG 4.1.2).
+- 5ece3e2: core: the a11y DOM-order pass now restores focus when a moved SUBTREE contains it (#698). The refocus guard only matched the moved element itself, so reordering a composite container deep-blurred whichever descendant held focus; the exact focused element is now captured before the move and restored after.
+- 3c08f97: Backlog: in-place grid carrier reuse on window shift, Space-on-keyup activation, hardened SVG dimension parsing (#651)
+
+  - Content-grid carriers whose per-line signature matches are now kept across a
+    scrolled window instead of rebuilt: the absolute line index (and, when no
+    projected line supplies an explicit `y`, the index-derived `top`) is restamped
+    on the existing node. Blank rows in tall code blocks no longer re-create their
+    carriers every frame while scrolling.
+  - Keyboard activation for projected interactive roles follows APG: Enter
+    activates on keydown as before, Space now activates on keyup so press-and-hold
+    no longer multi-fires; keydown Space still preventDefaults page scroll.
+  - `SVGEntity` dimension parsing: the open tag is scanned with quote awareness
+    (`>` inside an attribute value no longer truncates it), viewBox parts must be
+    finite (no NaN flows into rasterization), and percentage width/height is
+    treated as absent so `viewBox` decides.
+
+  Refs #651
+
+- b9bd582: WASM hit-test kernel: `hit_query` now computes its grid cell index in i64 like `hit_build` (#648). On huge viewports or tiny cell sizes the grid dimensions reach `i32::MAX` and the old i32 multiply wrapped — trapping in debug builds and silently reading an unrelated cell in release. Large-grid queries now return a defined miss instead of a wrapped index.
+- 825442e: WASM tween kernel now mirrors `TweenDriver`'s terminal snap (#647): once a tween completes, `tween_step` writes the destination value exactly instead of `from + (to - from) * ease(1)`, which rounds short of `to` for magnitude-spread pairs (e.g. `1e20 → 7`). WASM-advanced tweens now land bit-for-bit on the JS reference's final value.
+- 02447ad: WASM `tween_step` now declines NaN, zero, and negative `dt` exactly like `TweenDriver.tick` (#784).
+
+  One non-positive or NaN `dt` reaching the batched tween kernel used to write `t_elapsed = NaN` through with a success status — poisoning that tween's clock forever in the WASM path (every later comparison false, `isDone()` never true) while pure-JS mode ignored the same step; a negative `dt` additionally rewound finished tweens. The kernel now mirrors the JS guard (`if (!(dtMs > 0)) return;`) before touching any state and reports `STATUS_OK` with nothing written, so both engines decline identically and recover on the next valid frame.
+
+  Fixes #784
+
+- Updated dependencies [d08907c]
+- Updated dependencies [d08907c]
+- Updated dependencies [9f761f2]
+- Updated dependencies [c7c036e]
+- Updated dependencies [a62698e]
+- Updated dependencies [e83d870]
+- Updated dependencies [8ce1487]
+- Updated dependencies [6999e12]
+- Updated dependencies [4275a54]
+- Updated dependencies [99e1fb0]
+- Updated dependencies [ab46bbb]
+- Updated dependencies [cc024c8]
+- Updated dependencies [b767423]
+  - @vectojs/math@0.1.2
+  - @vectojs/animation@0.1.3
+  - @vectojs/layout@0.10.0
+  - @vectojs/text@0.4.2
+
 ## 1.38.1
 
 ### Patch Changes

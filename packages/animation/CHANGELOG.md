@@ -1,5 +1,57 @@
 # @vectojs/animation
 
+## 0.1.3
+
+### Patch Changes
+
+- d08907c: Engines validation sweep (#610): loud boundary validation for math, animation, and graph-layout.
+
+  **@vectojs/math**
+
+  - `SpringPhysics.mass` now validates on assignment: a non-finite or non-positive value throws immediately instead of dividing the acceleration by zero and permanently wedging the integrator (`isAtRest()` could never turn true again).
+  - `SpatialHashGrid.insert` throws on non-finite coordinates or negative width/height. Such boxes previously "registered" while enumerating zero cells, so no query could ever find them.
+  - `SpatialHashGrid.remove` evicts emptied cells from the grid map, keeping incremental insert/remove cycles proportional to live content instead of accumulating every cell ever touched.
+
+  **@vectojs/animation**
+
+  - `SpringDriver` rejects non-finite or non-positive `stiffness`/`damping`/`mass` at construction instead of silently falling back to physics defaults — such springs diverge or never settle, hanging completion awaits forever.
+  - `TweenDriver` rejects unknown easing-name strings at construction; they previously crashed with a bare `TypeError` on the first tick and broke `wasmEasingId`'s `number | null` contract.
+  - `TweenDriver.retarget` no longer re-charges consumed delay: segments run on the monotonic elapsed clock, so rapid retargets can no longer starve an animation indefinitely. Retargeting during the initial delay still waits out only the remaining part.
+
+  **@vectojs/graph-layout** (minor: public pin API changes)
+
+  - Pin APIs (`pinNode`, `unpinNode`, `setNodePin`, `clearNodePin`) are now **ID-addressed** like every other node reference. Index-addressed pins silently retargeted to the wrong node after `removeNodes` compaction.
+  - Link endpoint validation is unified and strict: `setGraph`/`appendGraph` now throw on dangling or self links (matching `updateLinks`) and validate the whole batch before mutating, so failed calls leave state unchanged.
+  - Collision broad-phase bins points into power-of-two radius tiers with per-tier grids, bounding probe cost by local density instead of packing small nodes into cells sized by the largest hub (measured 352M → 2.3M pair-scans over three ticks at 12k points with one large hub; uniform-radius scenes stay within noise at ~1 ms/tick).
+  - The collision tier offset tables are sized by tier span, not point count, so legal-but-extreme radius spreads can no longer overflow the counting sort.
+
+- d08907c: Engines validation sweep (#610): loud boundary validation for math, animation, and graph-layout.
+
+  **@vectojs/math**
+
+  - `SpringPhysics.mass` now validates on assignment: a non-finite or non-positive value throws immediately instead of dividing the acceleration by zero and permanently wedging the integrator (`isAtRest()` could never turn true again).
+  - `SpatialHashGrid.insert` throws on non-finite coordinates or negative width/height. Such boxes previously "registered" while enumerating zero cells, so no query could ever find them.
+  - `SpatialHashGrid.remove` evicts emptied cells from the grid map, keeping incremental insert/remove cycles proportional to live content instead of accumulating every cell ever touched.
+
+  **@vectojs/animation**
+
+  - `SpringDriver` rejects non-finite or non-positive `stiffness`/`damping`/`mass` at construction instead of silently falling back to physics defaults — such springs diverge or never settle, hanging completion awaits forever.
+  - `TweenDriver` rejects unknown easing-name strings at construction; they previously crashed with a bare `TypeError` on the first tick and broke `wasmEasingId`'s `number | null` contract.
+  - `TweenDriver.retarget` no longer re-charges consumed delay: segments run on the monotonic elapsed clock, so rapid retargets can no longer starve an animation indefinitely. Retargeting during the initial delay still waits out only the remaining part.
+
+  **@vectojs/graph-layout** (minor: public pin API changes)
+
+  - Pin APIs (`pinNode`, `unpinNode`, `setNodePin`, `clearNodePin`) are now **ID-addressed** like every other node reference. Index-addressed pins silently retargeted to the wrong node after `removeNodes` compaction.
+  - Link endpoint validation is unified and strict: `setGraph`/`appendGraph` now throw on dangling or self links (matching `updateLinks`) and validate the whole batch before mutating, so failed calls leave state unchanged.
+  - Collision broad-phase bins points into power-of-two radius tiers with per-tier grids, bounding probe cost by local density instead of packing small nodes into cells sized by the largest hub (measured 197ms → 5ms per tick at 12k points with one large hub).
+  - `removeLinks` resolves bare link IDs through a lazily built index, O(links + items) instead of O(items × links).
+
+- ab46bbb: Backlog hardening for text/math/animation (#652): `TweenDriver.tick` ignores NaN/negative dt instead of poisoning the elapsed clock; `isTweenConfig(null)` returns false; `SpringPhysics` validates stiffness/damping/target and the initial value (throw at mutation, matching `mass`); `MSDFFont.layout` treats `\r\n` and lone `\r` as line breaks with no phantom CR advance; the typography baseline cache is LRU-bounded at 512 entries; documented `SpatialHashGrid.query` full-grid fallback semantics and settled public-API status of `createMSDFMetricsSource`/`hasFontMetrics`/`isSharedMeasuringContextAttached`.
+- Updated dependencies [d08907c]
+- Updated dependencies [d08907c]
+- Updated dependencies [ab46bbb]
+  - @vectojs/math@0.1.2
+
 ## 0.1.2
 
 ### Patch Changes

@@ -1,5 +1,128 @@
 # @vectojs/styles
 
+## 0.3.3
+
+### Patch Changes
+
+- c97da27: fix(styles/desktop/table/markdown-app): clear the 2026-08 review backlog (#661)
+
+  **@vectojs/desktop**
+
+  - Remove unused public API: `DisplayLayout.setTaskbar` (DesktopShell reads the
+    config directly; zero callers in src or tests) and `Vfs.baseName` (zero
+    consumers anywhere).
+  - `Window.updateChrome` reads chrome values from the merged `this.chrome` after
+    `Object.assign`, so a partial argument cannot clobber shell bg/border/radius
+    and titlebar colors with undefined (latent today — both call sites pass full
+    resolveChrome objects).
+  - `DesktopShell.setTheme` closes an open StartMenu first: the menu is not
+    remounted by the swap and kept old colors plus a stale taskbar anchor.
+  - Taskbar `entriesHost` clips children, so overflowing entries stop painting
+    over the clock area.
+
+  **@vectojs/styles**
+
+  - Font shorthand accepts a second/third `normal` (`font: normal normal 16px
+Inter`): after the weight slot takes the first (documented compat choice),
+    further `normal`s fill style then variant instead of falling into the size
+    slot and throwing TypeError.
+  - Dropped internal `resolveStyle().hadVar`: computed but never read by any
+    consumer including tests.
+
+  **@vectojs/table**
+
+  - Virtual row window upper bound is exact (`ceil(x) + overscan - 1`, matching
+    `i*rh < scrollY + viewport + overscan*rh`); it previously mounted one extra
+    fully-invisible row past the overscan budget per window.
+
+  **@vectojs/markdown-app**
+
+  - `MarkdownApp.setTheme` throws a TypeError listing valid presets on unknown
+    theme names instead of silently no-oping, matching the fail-loud convention
+    used across these packages.
+
+- baa6a18: Composite `var()` values, font shorthand prefixes, and loud edge failures (GH-608).
+
+  `var()` references embedded inside a larger string — `'rgba(var(--rgb), 0.4)'`
+  — were neither resolved, tracked, nor rejected: the literal garbage was written
+  to the entity field while Canvas2D silently kept the old value. Embedded
+  references now resolve by substitution, chains of token-references-token
+  resolve transitively with path-based cycle detection, and the key is tracked so
+  theme switches re-resolve composites. Unknown tokens and cycles throw with the
+  offending chain.
+
+  The font shorthand parser understands the full canvas prefix grammar
+  `[style || variant || weight]? size[/line-height]? family`. `italic 700 16px
+Georgia` and `16px/24px Inter` used to collapse everything around the size into
+  the family, so a later segment change recomposed an invalid string that
+  Canvas2D drops; size-like segments that cannot be placed now fail loudly, and
+  line-height segments survive a size change.
+
+  `fontSize` enforces its `${number}px` type at runtime: non-px units arriving
+  through tokens or JS callers used to compose a silently-dropped shorthand and
+  now throw.
+
+  `css()` copies per-axis `padding` objects into the merged result, so the
+  documented "fresh plain object / does not mutate inputs" contract holds for
+  nested values too.
+
+- fcd99e2: fix(styles): `var(--token, fallback)` now fails loudly instead of passing through unresolved (#645)
+
+  `HAS_VAR_RE` requires `)` immediately after the key characters, so the CSS
+  fallback form matched no regex: `resolveValue` passed the raw string through to
+  mapped fields (Canvas2D silently kept the previous paint — the exact GH-608
+  failure mode) and `trackVarKeys` never registered it, so theme switches never
+  updated it. A new shared `HAS_VAR_FALLBACK_RE` detects the form anywhere it can
+  arrive — direct value, embedded in a composite string, inside a padding axis,
+  or through a token chain — and throws a targeted `TypeError` naming the
+  offending value. Fallback resolution itself remains unimplemented; silence was
+  the defect. README rules-of-road updated.
+
+- d910402: fix(styles): fallback detector tolerates whitespace after `var(` (#753 follow-up)
+
+  `HAS_VAR_FALLBACK_RE` required the custom property to start immediately after
+  the opening paren, so `var( --accent, #fff)` matched none of the three var()
+  forms and passed through silently unresolved — reaching mapped fields as a
+  literal string while Canvas2D kept the previous paint, exactly what #645's
+  guard exists to prevent.
+
+  The detector now allows whitespace between `var(` and `--key` (`/var\(\s*--/`),
+  kept conservative: whitespace only, not the full CSS token grammar.
+
+- b4b215e: fix(styles): theme var() tracking no longer retains destroyed entities strongly (#644)
+
+  `varPairs` was `WeakMap<Theme, Map<Entity, …>>` — only the outer key was weak,
+  so the inner map held every styled entity strongly for the lifetime of its
+  theme. `Entity.destroy()` has no hook back into styles, so destroyed entities
+  stayed reachable and every `setTheme` re-resolved and re-wrote their styles
+  forever; retention grew unboundedly with styled-entity churn while a theme
+  stayed active. Entities are now tracked through stable `WeakRef`s (dead entries
+  swept during the setTheme walk) and a new exported `untrackVarStyles(entity)`
+  gives frameworks an eager, deterministic release path for destroy teardown.
+
+- Updated dependencies [01d1141]
+- Updated dependencies [2474ab3]
+- Updated dependencies [b87a455]
+- Updated dependencies [6e76253]
+- Updated dependencies [69bb9fa]
+- Updated dependencies [cb02dad]
+- Updated dependencies [2568021]
+- Updated dependencies [f492f4e]
+- Updated dependencies [1f7e41e]
+- Updated dependencies [592f492]
+- Updated dependencies [c7290f1]
+- Updated dependencies [b0955f2]
+- Updated dependencies [488b62b]
+- Updated dependencies [21b0e05]
+- Updated dependencies [e6accf6]
+- Updated dependencies [5ece3e2]
+- Updated dependencies [3c08f97]
+- Updated dependencies [b9bd582]
+- Updated dependencies [1d0962c]
+- Updated dependencies [825442e]
+- Updated dependencies [02447ad]
+  - @vectojs/core@1.39.0
+
 ## 0.3.2
 
 ### Patch Changes
