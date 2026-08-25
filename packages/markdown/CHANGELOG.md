@@ -1,5 +1,46 @@
 # @vectojs/markdown
 
+## 0.23.0
+
+### Minor Changes
+
+- c2dad48: Markdown backlog sweep (#657): dead module removal, doc fixes, streaming-stat cost.
+
+  - Deleted `markdown-typography.ts`, a dead duplicate of the live `applyTypography` that had zero importers and had diverged from it in both directions. The live typographer now performs the one substitution the theme documentation already promised but the shipped code lacked: `+-` → `±`.
+  - Removed the dead `hasAbbrDef()` opener detector from `markdown-abbr.ts`. Unlike its container/footnote siblings it had no caller: an abbreviation definition is strictly single-line, so incremental lexing needs no cheap-reject guard for it.
+  - Moved seven orphaned JSDoc blocks back onto the methods they document (`Markdown.ts`, `markdown-image.ts`); after earlier method extractions the comments had been left stacked above a neighbouring symbol's doc.
+  - `streamStats.stablePrefixChars` is now reported by the worker's lex straight from `IncrementalLexCache.stableOffset` instead of being re-summed over the matched token prefix on every response, which made a stream of n chunks quadratic in that one stat.
+  - `Markdown.theme` is now read-only (a getter over a private field). Entities capture colors, fonts and sizes at build time, so assigning the property after construction painted part of the document in each palette; pass the palette at construction instead.
+
+### Patch Changes
+
+- 7067e54: Fixes #702: `StreamController.close()` no longer resolves success after a previously failed close. The state flipped to `'closed'` before the host `onClose` hook ran, so once the hook threw or rejected, a retried `close()` hit the closed short-circuit and resolved — reporting success although settlement never ran. The pending/settled `closePromise` is now checked before every short-circuit, so all callers observe the original outcome; retries after a successful close still resolve.
+- 9eaec8b: Fixes #699: the inline-image raster store no longer grows unbounded. `inlineImageRasters` was a module-level insert-only `Map`, so a long-lived page rendering documents with distinct image URLs pinned a decoded `HTMLImageElement` per URL until tab close — the exact growth pattern #521 capped on the math side. `ensureInlineImageRaster` now re-inserts on hit (recency order) and evicts the least-recently-used entry past a 256-entry cap; an evicted image simply re-decodes on its next paint.
+- 8035788: Add `Markdown.setTheme(theme)` and keep `theme` read-only (#776)
+
+  `Markdown.theme` is a getter over internal state (PR #776), so the one
+  in-repo consumer that still assigned to it (`MarkdownApp.setTheme`) failed
+  to compile. `setTheme` accepts a preset name or a partial theme — the same
+  shapes as the constructor option — swaps the palette and re-renders through
+  `setContent`, carrying the new `blockGap` onto the content stack. Direct
+  assignment stays a compile-time error and now also throws at runtime for JS
+  callers.
+
+  Refs #776, #657
+
+- 836ff70: Fixes #701: `setMaxWidth` no longer no-ops code blocks and tables under `blockAffordances: true`. Those blocks arrive wrapped in `BlockWithAffordances`, whose own box is assigned once at construction, so the reflow arms' direct `instanceof CodeBlock`/`instanceof Table` tests failed and every rewidth silently kept the old width while prose rewrapped. The reflow now looks through the wrapper, resizes the inner block, and calls `refreshAffordances()` so its controls track the new right edge.
+- c9130a3: Fix streamed in-place reuse for affordance-wrapped code and table blocks (#789): the streaming reconciler's `updateStreamedTable` guard, blockquote-tail code mutator, and mid-stream code arm now look through `BlockWithAffordances` (mirroring #701's setMaxWidth fix) and refresh the wrapper's controls after a mutation moves geometry. With `blockAffordances` enabled, growing fenced blocks and tables take the fast path again instead of rebuilding every chunk.
+- Updated dependencies [3410b81]
+- Updated dependencies [b585bae]
+- Updated dependencies [d1f3c77]
+- Updated dependencies [90ca1aa]
+- Updated dependencies [1796b63]
+- Updated dependencies [ff79c58]
+- Updated dependencies [ec6a80f]
+- Updated dependencies [137b77e]
+- Updated dependencies [d40c54f]
+  - @vectojs/tex@0.1.2
+
 ## 0.22.0
 
 ### Minor Changes

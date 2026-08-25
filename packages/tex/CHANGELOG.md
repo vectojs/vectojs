@@ -1,5 +1,40 @@
 # @vectojs/tex
 
+## 0.1.2
+
+### Patch Changes
+
+- 3410b81: Fixes #697: array vertical rules (`{c|c}`, `{c:c}`) now draw. Separator spans write their rule as `style.borderRightWidth`/`borderRightStyle`, which the emitter dropped — only `borderBottomWidth` rules survived #514's generalization. `.vertical-separator` spans now emit a stroked line centred on the column boundary spanning the table height (recovered from the span's `height` and `verticalAlign`), with a dash pattern for `:` separators, advancing nothing like their CSS border-box geometry.
+- b585bae: Fixes #696: class-carried horizontal padding is now applied when measuring. `.x-arrow-pad`, `.cd-arrow-pad`, `.boxpad`, `.cancel-pad` and `.anglpad` carry their padding purely in katex.scss, so rows measured short by exactly that padding (`\xrightarrow{\text{very long label here}}` 5.858 → 6.558 em; `\boxed{x}` 0.572 → 1.172 em). The padding resolves against the carrying span's sizing ratio like every other em length. `.cancel-lap`'s −0.2em margins are applied with it so `\cancel` keeps its net advance while its ink window grows.
+- d1f3c77: Fix stretchy overlay/clip render windows in SVG emit (#787, #788): `clipPath` rects are now emitted in the referencing path's own coordinate frame (SVG resolves them post-transform), and the aligned-vlist replay translates a recorded clip alongside the path it bounds. `\overbrace`/`\underbrace` middle and right pieces, nested `\phase`, and clipped radicals after a row advance or under a non-1 scale render their full visible window again instead of being displaced or partially eaten.
+- 90ca1aa: Drift guards and edge-case fixes in the TeX emit layer (issue #611).
+
+  `bun run vendor --check` now also verifies the constants `src/emit/`
+  hand-transcribes from files it does not vendor: `$mu`, `$nulldelimiterspace`,
+  both size-multiplier tables (`katex.scss $sizes` and `Options.ts
+sizeMultipliers`), the `.katex` default font shorthand, the class-to-face font
+  tables, and the vlist row-alignment classes. A new SCSS flattener re-derives
+  each value from the upstream checkout on every vendor run in either mode, so a
+  stylesheet change fails the run with a message naming both sides instead of
+  shipping misplaced rules, delimiters or script sizes.
+
+  `defineEnvironment` now passes through `argTypes`, `allowedInText` and
+  `numOptionalArgs` (with upstream's documented defaults) instead of pinning them,
+  so a future KaTeX bump that starts declaring these fields surfaces them in
+  `_environments` rather than dropping them silently.
+
+  Two glyph edge cases: a missing glyph whose font metrics are also missing no
+  longer advances the pen by a non-finite width (which poisoned penX and the whole
+  viewBox) — it degrades to zero advance with a once-per-glyph warning — and the
+  glyph table's negative cache is bounded (FIFO, 1024 entries), so adversarial
+  codepoints cannot grow memory unboundedly in long-lived SSR.
+
+- 1796b63: Fixes #695: enclose boxes, borders and backgrounds now emit ink. `\boxed`, `\fbox`, `\fcolorbox`, `\angl` and `\colorbox` previously drew only their inner glyphs — the emitter handled `borderBottomWidth`/`katex-sout` rules alone and dropped every other border/background style the kernel writes. Border edges (`borderStyle`/`borderWidth` shorthands, `\angl` overrides, and the class-carried `.angl` 0.049em top/right defaults) are emitted as rects resolved against the enclosing vlist extent, and `\colorbox`/`\fcolorbox` backgrounds paint behind the glyphs in a new background layer.
+- ff79c58: Fixes #666: glyph whitelist holes rendered common symbols as blank ink. The shipped subset was missing Main-Regular U+2248/`≈`, U+210F/`\hbar`, U+2113/`\ell`, U+211C/`\Re`, U+2026/`…`, the whole Script-Regular face (`\mathscr`), all Math-BoldItalic letters (`\boldsymbol`) and Main-Italic digits (`\mathit{123}`/`\textit{123}`) — layout advanced correctly, so these emitted correct-width blank gaps. The subset corpus now exercises every one of those ranges (569 → 662 glyphs, +87), and `glyphCoverage` pins each face so future subsetting cannot silently drop them again.
+- ec6a80f: Fixes #667: `\phase` measured 400 em wide. Its angle SVG declares `width: "400em"` and the `hide-tail` wrapper writes only `style.height`, so — unlike `\sqrt`, which inlines a `minWidth` — no clip extent existed and the emitter advanced the full declared width. A hide-tail wrapper without an inline extent now records its child as a pending full-window overlay (left-aligned slice, like `\cancel`) resolved against the container extent: `\phase{-120}` measures 400.000 em → 2.807 em.
+- 137b77e: Pin sliced-radical clip windows with renderer-geometry regression tests (#788): `\sqrt{x^2+y^2}` under a non-1 `sy` and `\frac{\sqrt{x}}{y}` (replayed aligned row, `sx = sy = 0.7`) now assert from the emitted SVG that the effective rendered window coincides with the path's own placement box. Also corrects the vlist replay soundness comment, which claimed clip translation was sound before it actually translated clips.
+- d40c54f: Fixes #665: multi-piece stretchy overlays (`\overbrace`, `\underbrace`, `\xleftrightarrow`, …) measured 800–1200 em because each absolutely-positioned piece's declared `"width: 400em"` was taken as literal advance. Pieces of `.halfarrow-*`/`.brace-*` spans are now recorded as pending overlay paths that advance nothing and resolve their slice window (uniform cover scale, per-piece `preserveAspectRatio` alignment, clipped to the window) against the enclosing container extent once known. `\overbrace{x+y}` measures 1200.000 em → 2.320 em; `\sqrt` and other single-path `hide-tail` constructs are untouched.
+
 ## 0.1.1
 
 ### Patch Changes

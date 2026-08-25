@@ -1,5 +1,25 @@
 # @vectojs/graph3d
 
+## 0.6.1
+
+### Patch Changes
+
+- ddf1fc5: Reject degenerate force-layout options that silently hung or froze simulations (#641).
+
+  - **`alphaDecay: 0` no longer passes validation in `ForceLayout2D`.** The per-tick decay `alpha += (0 - alpha) * alphaDecay` became a no-op, `step()`'s `alpha >= alphaMin` guard stayed true forever, and hosts driving `while (layout.step()) requestAnimationFrame(loop)` never stopped — silent permanent CPU/GPU burn with no error. A non-positive decay now falls back to the default 0.0228.
+  - **`repulsionDistanceMax: 0` no longer silently disables repulsion in `ForceLayout2D`.** A finite cutoff of 0 hit the force kernel's `maxDistance <= 0` early-return, switching repulsion off entirely while the types only documented "non-finite disables the cutoff". Any non-positive cutoff now means the same as `Infinity` (no cutoff).
+  - **`VectoForceLayout` mirrors the decay guard.** It took `alphaDecay` raw with no validation at all; a literal 0 there had the same never-settles failure mode.
+
+- 64c3ca0: Backlog consistency sweep (#658): uniform unknown-link-id policy and disposal hygiene.
+
+  - Unknown link endpoints now throw the same `references an unknown node id` error across all three stacks: `Graph3D.setGraphData` (already threw), `VectoForceLayout.setGraph` (previously silently skipped the link), and `D3ForceLayout.setGraph` (previously let the raw id reach d3-force-3d, whose tick read `.x` off the string and silently collapsed every position to NaN). Validation runs before any state mutates, so a rejected graph leaves the previous one intact.
+  - Self-loops still carry no spring in `VectoForceLayout` (unchanged skip).
+  - `VectoForceLayout.dispose()` now releases the WASM force backend reference and resets the Barnes-Hut octree scratch instead of pinning kernel memory while the disposed layout lingers.
+
+- 40c4bf6: GraphCamera ignores a second pointerdown while a camera drag is active. The active drag keeps its pointer until its own up/cancel; previously the second contact overwrote lastX/lastY and pointerId, panning by the inter-contact distance in one lurch (two fingers, mouse + pen) and churning pointer capture.
+- 14c8e49: GraphInteraction.dispose() during a press below the drag threshold now re-enables the host's controls. onPointerDown disables them eagerly, and with the pointer listeners removed no later pointerup or pointercancel could — the host's camera/pan controls stayed disabled until a full reload.
+- 69bb9fa: WASM force-kernel consistency fixes shared with the core kernels (#662): `force_init` now reports unrepresentable capacity requests as the shared `STATUS_OVERFLOW` code (it used to borrow `STATUS_CAPACITY`, which means "n exceeded an existing allocation" in `force_step`), the status vocabulary is documented to match `vectojs-core-rs` number-for-number, and the octree's worst-case pre-size uses checked arithmetic so a hostile node count can no longer wrap into an undersized allocation.
+
 ## 0.6.0
 
 ### Minor Changes

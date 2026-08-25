@@ -1,5 +1,13 @@
 # @vectojs/text
 
+## 0.4.2
+
+### Patch Changes
+
+- ab46bbb: Backlog hardening for text/math/animation (#652): `TweenDriver.tick` ignores NaN/negative dt instead of poisoning the elapsed clock; `isTweenConfig(null)` returns false; `SpringPhysics` validates stiffness/damping/target and the initial value (throw at mutation, matching `mass`); `MSDFFont.layout` treats `\r\n` and lone `\r` as line breaks with no phantom CR advance; the typography baseline cache is LRU-bounded at 512 entries; documented `SpatialHashGrid.query` full-grid fallback semantics and settled public-API status of `createMSDFMetricsSource`/`hasFontMetrics`/`isSharedMeasuringContextAttached`.
+- cc024c8: Arabic shaping now classifies tatweel (U+0640) as dual-joining with an identity glyph mapping, so joining context passes through kashida elongation: adjacent letters keep their initial/medial/final connected forms instead of falling back to isolated ones across the stroke.
+- b767423: `ArabicShaper.isHarakat` now covers the full set of joining-type-transparent combining marks: beyond the core harakat ranges it recognizes the honorific signs U+0610–U+061A and Quranic annotation signs U+06D6–U+06ED, so shaping skips across them (ligatures form, contextual connections hold) instead of treating them as opaque bases that disconnect adjacent letters.
+
 ## 0.4.1
 
 ### Patch Changes
