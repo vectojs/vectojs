@@ -158,7 +158,10 @@ export class VectoForceLayout implements GraphLayout {
       this.fz[i] = node.fz ?? NaN;
     }
 
-    // Resolve link endpoints (id → index) once.
+    // Resolve link endpoints (id → index) once. Unknown ids throw with the
+    // same error Graph3D.setGraphData raises — one input error used to yield
+    // three different failure modes across the layouts (throw / silent skip /
+    // NaN collapse in d3).
     const indexOf = new Map<GraphData['nodes'][number]['id'], number>();
     for (let i = 0; i < n; i++) indexOf.set(data.nodes[i].id, i);
     const a: number[] = [];
@@ -166,7 +169,13 @@ export class VectoForceLayout implements GraphLayout {
     for (const link of data.links) {
       const ia = indexOf.get(link.source as never);
       const ib = indexOf.get(link.target as never);
-      if (ia === undefined || ib === undefined || ia === ib) continue;
+      if (ia === undefined || ib === undefined) {
+        throw new Error(
+          `Link ${String(link.source)}→${String(link.target)} references an unknown node id`,
+        );
+      }
+      // Self-loops carry no spring force here; skip them like before.
+      if (ia === ib) continue;
       a.push(ia);
       b.push(ib);
     }
@@ -359,6 +368,11 @@ export class VectoForceLayout implements GraphLayout {
     this.fx = this.fy = this.fz = new Float32Array(0);
     this.linkA = this.linkB = new Int32Array(0);
     this.count = 0;
+    // Release the WASM backend reference and drop the octree scratch so the
+    // disposed layout does not pin kernel memory while it lingers; a fresh
+    // empty octree keeps the field's type without resurrecting the old one.
+    this.forceBackend = null;
+    this.tree = new BarnesHutOctree();
   }
 
   private assertUsable(): void {
