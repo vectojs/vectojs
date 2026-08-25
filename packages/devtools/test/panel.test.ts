@@ -694,6 +694,37 @@ describe('DevtoolsPanel — modern features', () => {
     host.destroy();
   });
 
+  it('refreshes displayed labels under an active filter (pruned copies track the originals)', () => {
+    const host = makeHost();
+    const mover = new Box('mover', 40, 20);
+    host.add(mover);
+    host.add(new Box('static'));
+    const panel = attachDevtools(host, { refreshInterval: 0 });
+    try {
+      (panel as any).setFilter('mover');
+      // The Tree renders row.node.label from whatever objects setNodes received;
+      // with a filter active those are prune copies ({...node}), not the
+      // originals that refreshTreeLabels mutates.
+      const rows = (
+        (panel as any).tree as { _rows: Array<{ node: { id: string; label: string } }> }
+      )._rows;
+      const displayedLabel = () => rows.find((r) => r.node.id === 'mover')?.node.label ?? '';
+      expect(rows.some((r) => r.node.id === 'mover')).toBe(true);
+      expect(displayedLabel()).toContain('(0,0)');
+
+      // Transform-only change: no structure bump, so refresh() takes the
+      // version-unchanged fast path whose in-place label rewrite must reach
+      // the filtered view too (#786) — animated entities kept frozen
+      // coordinates for as long as the filter stayed on.
+      mover.x = 123;
+      (panel as any).refresh();
+      expect(displayedLabel()).toContain('(123,');
+    } finally {
+      panel.detach();
+      host.destroy();
+    }
+  });
+
   it('reflows on window resize so the perf strip stays within the viewport', () => {
     const host = makeHost();
     const panel = attachDevtools(host, { refreshInterval: 0, showPerf: true });
