@@ -301,8 +301,13 @@ export class WasmTransformBackend {
    *  `false` if the kernel rejected `count` (beyond capacity, or uninitialized),
    *  in which case {@link aabbView} still holds the previous frame's bounds. */
   runAabbs(count: number, kernel: Kernel = 'simd'): boolean {
-    this.lastStatus =
-      kernel === 'scalar' ? this.ex.compute_aabbs(count) : this.ex.compute_aabbs_simd(count);
+    // The published .wasm lives at one fixed URL, so a stale cached module can
+    // instantiate cleanly yet predate `compute_aabbs_simd`; calling the missing
+    // export would throw a TypeError mid-render. Probe it and downgrade to the
+    // bit-identical scalar kernel instead — same status telemetry either way,
+    // since `lastStatus` reports the pass that actually ran.
+    const simd = kernel === 'simd' && typeof this.ex.compute_aabbs_simd === 'function';
+    this.lastStatus = simd ? this.ex.compute_aabbs_simd(count) : this.ex.compute_aabbs(count);
     return this.lastStatus === WASM_STATUS.OK;
   }
 
