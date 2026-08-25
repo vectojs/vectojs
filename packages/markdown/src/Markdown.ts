@@ -3115,7 +3115,12 @@ export class Markdown extends UIComponent {
     oldToken: Tokens.Table,
     newToken: Tokens.Table,
   ): boolean {
-    if (!(entity instanceof Table)) return false;
+    // Under `blockAffordances` the render arm stores the table wrapped in a
+    // `BlockWithAffordances`; the instanceof test must look through it or the
+    // whole arm no-ops and every streamed chunk pays the Theta(C·N^2) rebuild
+    // (#789), mirroring #701's fix of the setMaxWidth arms.
+    const target = entity instanceof BlockWithAffordances ? entity.block : entity;
+    if (!(target instanceof Table)) return false;
 
     // The column count is fixed when the delimiter row lexes: marked pads short
     // rows and truncates long ones to `header.length`, so this can never fire in
@@ -3138,7 +3143,7 @@ export class Markdown extends UIComponent {
     // first state every streamed table is in and the first reuse opportunity.
     if (newToken.rows.length < oldToken.rows.length) return false;
     // This entity must be the one the render arm built for these tokens.
-    if (entity.rows.length !== oldToken.rows.length) return false;
+    if (target.rows.length !== oldToken.rows.length) return false;
 
     // Every row before the last retained one must be untouched. Probed stable, so
     // this is the cheap correctness net rather than an expected rejection.
@@ -3155,7 +3160,7 @@ export class Markdown extends UIComponent {
     // constructed elsewhere; verify before mutating anything.
     if (lastRetained >= 0) {
       for (let c = 0; c < oldToken.header.length; c++) {
-        const cell = entity.rows[lastRetained]?.[c];
+        const cell = target.rows[lastRetained]?.[c];
         if (!(cell instanceof RichText)) return false;
       }
     }
@@ -3170,7 +3175,7 @@ export class Markdown extends UIComponent {
       const newRow = newToken.rows[lastRetained];
       for (let c = 0; c < oldToken.header.length; c++) {
         if (oldRow[c]?.text === newRow[c]?.text) continue;
-        const cell = entity.rows[lastRetained][c] as RichText;
+        const cell = target.rows[lastRetained][c] as RichText;
         cell.setSpans(this.tableCellSpans(newRow[c], t));
         changed = true;
       }
@@ -3183,10 +3188,10 @@ export class Markdown extends UIComponent {
         .map((row) => row.map((cell) => this.tableCellRichText(cell, false, t)));
       // appendRows() ends in layout(), which also re-measures the cells rewritten
       // above, so no separate relayout is needed on this path.
-      entity.appendRows(added);
+      target.appendRows(added);
     } else if (changed) {
       // Only cells changed, so nothing appended: re-measure them.
-      entity.layout();
+      target.layout();
     }
 
     return true;
@@ -3249,17 +3254,23 @@ export class Markdown extends UIComponent {
       (entity as Entity & { setSpans: (s: StyledSpan[]) => unknown }).setSpans(
         this.headingSpans(newTail as Tokens.Heading),
       );
-    } else if (
-      newTail.type === 'code' &&
-      entity instanceof CodeBlock &&
-      !rendersAsMath(newTail as Tokens.Code)
-    ) {
+    } else if (newTail.type === 'code') {
+      // Look through a `BlockWithAffordances` wrapper (#789): testing the
+      // entity directly always returned false for affordance-wrapped quote
+      // tails, so the whole tail-mutator arm no-opped into a rebuild.
+      const target = entity instanceof BlockWithAffordances ? entity.block : entity;
+      if (!(target instanceof CodeBlock) || rendersAsMath(newTail as Tokens.Code)) {
+        // Any other tail shape has no mutator to call. A math fence whose
+        // closing fence has arrived also lands here: it must become an Image,
+        // and no mutator turns a CodeBlock into one.
+        return false;
+      }
       const codeToken = newTail as Tokens.Code;
-      entity.setCode(codeToken.text, codeToken.lang ?? undefined);
+      target.setCode(codeToken.text, codeToken.lang ?? undefined);
+      if (entity instanceof BlockWithAffordances) entity.refreshAffordances();
     } else {
       // Any other tail type (list, table, nested blockquote) has no mutator to
-      // call. A math fence whose closing fence has arrived also lands here: it
-      // must become an Image, and no mutator turns a CodeBlock into one.
+      // call.
       return false;
     }
 
@@ -3666,21 +3677,30 @@ export class Markdown extends UIComponent {
         // to the point, an SVG re-decode.
         this.streamStats.inPlaceUpdates++;
         matchLen++;
-      } else if (existingEntity instanceof CodeBlock && !isMath) {
-        // Language can change mid-stream: ```` ``` ```` then the info string
-        // arrives on the next chunk, so pass it through rather than assuming it
-        // is stable.
-        //
-        // `!isMath` is what lets a closing fence land: while the fence is open a
-        // math block IS a CodeBlock, and the chunk that closes it must fall
-        // through to the rebuild path to become a formula. Without the guard
-        // `setCode` would keep the CodeBlock and the formula would never typeset.
-        existingEntity.setCode(codeToken.text, codeToken.lang ?? undefined);
-        this.streamStats.inPlaceUpdates++;
-        matchLen++;
-        // Same O(1) tail resync as the paragraph path: the block is still the
-        // Stack's last child, so its own box changed but no sibling moved.
-        this.content.resizeLastChild(existingEntity);
+      } else {
+        // Look through a `BlockWithAffordances` wrapper (#789): the render arm
+        // stores code blocks wrapped, so testing `existingEntity` directly
+        // always returned false and every chunk of a growing fence paid a full
+        // block rebuild.
+        const target =
+          existingEntity instanceof BlockWithAffordances ? existingEntity.block : existingEntity;
+        if (target instanceof CodeBlock && !isMath) {
+          // Language can change mid-stream: ```` ``` ```` then the info string
+          // arrives on the next chunk, so pass it through rather than assuming it
+          // is stable.
+          //
+          // `!isMath` is what lets a closing fence land: while the fence is open a
+          // math block IS a CodeBlock, and the chunk that closes it must fall
+          // through to the rebuild path to become a formula. Without the guard
+          // `setCode` would keep the CodeBlock and the formula would never typeset.
+          target.setCode(codeToken.text, codeToken.lang ?? undefined);
+          if (existingEntity instanceof BlockWithAffordances) existingEntity.refreshAffordances();
+          this.streamStats.inPlaceUpdates++;
+          matchLen++;
+          // Same O(1) tail resync as the paragraph path: the block is still the
+          // Stack's last child, so its own box changed but no sibling moved.
+          this.content.resizeLastChild(existingEntity);
+        }
       }
     } else if (lastTokenSameType && newTokens[matchLen]?.type === 'paragraph') {
       // Update existing paragraph entity in-place via setSpans
@@ -3817,6 +3837,11 @@ export class Markdown extends UIComponent {
       ) {
         this.streamStats.inPlaceUpdates++;
         matchLen++;
+        // Appended rows moved the block's bottom edge, so a wrapper's controls
+        // must follow (#789, mirroring the setMaxWidth arms).
+        if (existingEntity instanceof BlockWithAffordances) {
+          existingEntity.refreshAffordances();
+        }
         this.content.resizeLastChild(existingEntity);
       }
     }

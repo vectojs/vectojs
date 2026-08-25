@@ -690,6 +690,55 @@ Plain paragraph at the end.
       expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
     });
 
+    it('reuses an affordance-wrapped code tail in place (#789)', () => {
+      // With `blockAffordances` the block is stored wrapped in
+      // `BlockWithAffordances`; the streamed reuse arm must look through the
+      // wrapper or every chunk rebuilds, re-introducing exactly the
+      // rebuild-per-chunk cost the fast paths were written to avoid.
+      const md = new Markdown('```js\nconst x', { blockAffordances: true }) as unknown as {
+        streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        appendMarkdown: (s: string) => void;
+      };
+      const before = md.streamStats.inPlaceUpdates;
+      const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+      md.appendMarkdown(' = 1;');
+
+      expect(md.streamStats.inPlaceUpdates).toBe(before + 1);
+      expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+    });
+
+    it('reuses an affordance-wrapped table in place as rows arrive (#789)', () => {
+      // The table fast path exists because a rebuild is Theta(C*N^2) cell
+      // constructions across a stream — forfeiting it for wrapped tables is
+      // the same silent no-op #701 fixed for the reflow arms.
+      const md = new Markdown('| a |\n| --- |', { blockAffordances: true }) as unknown as {
+        streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        appendMarkdown: (s: string) => void;
+      };
+      const before = md.streamStats.inPlaceUpdates;
+      const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+      md.appendMarkdown('\n| 1 |');
+
+      expect(md.streamStats.inPlaceUpdates).toBe(before + 1);
+      expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+    });
+
+    it('reuses an affordance-wrapped code tail inside a growing quote (#789)', () => {
+      const md = new Markdown('> ```js\n> x', { blockAffordances: true }) as unknown as {
+        streamStats: { inPlaceUpdates: number; entitiesRebuilt: number };
+        appendMarkdown: (s: string) => void;
+      };
+      const before = md.streamStats.inPlaceUpdates;
+      const rebuiltBefore = md.streamStats.entitiesRebuilt;
+
+      md.appendMarkdown(' + y');
+
+      expect(md.streamStats.inPlaceUpdates).toBe(before + 1);
+      expect(md.streamStats.entitiesRebuilt).toBe(rebuiltBefore);
+    });
+
     it('updates a growing blockquote in place instead of rebuilding its subtree', () => {
       // A blockquote owns a subtree (border + inner stack of wrapped blocks), so
       // reuse means descending to the tail child rather than calling a mutator on
