@@ -1160,7 +1160,13 @@ function emitVList(
       }
       for (const p of probe.paths) {
         // Overlay windows are extent fractions; ordinary paths are absolute.
-        if (!p.overlay) p.x += dx;
+        // A recorded clip is an absolute root-space window like the path it
+        // bounds, so it travels with the same dx — a clipped radical replayed
+        // into an aligned row (#788) must keep its window glued to its origin.
+        if (!p.overlay) {
+          p.x += dx;
+          if (p.clip) p.clip.x += dx;
+        }
         state.paths.push(p);
       }
       maxX = Math.max(maxX, dx + probe.x + parseEm(row.style.marginRight) * UPEM * scale);
@@ -1510,12 +1516,23 @@ export function emitSVG(tree: Span<HtmlDomNode>, options: EmitOptions = {}): Emi
       const transform = `translate(${fmt(p.x)} ${fmt(p.y)}) scale(${fmt(p.sx)} ${fmt(p.sy)})`;
       let clipAttr = '';
       if (p.clip) {
+        // `clipPath` resolves in the referencing element's POST-transform user
+        // space, so the rect must be written in the path's own local frame:
+        // the transform then maps it back onto the recorded root-space window.
+        // Emitting the root-space values verbatim (#787) made every clipped
+        // stretchy render through `translate(p.x) ∘ scale(sx)` applied a second
+        // time — windows landed at `p.x + sx·clip.x` and pieces whose alignment
+        // shifted the origin disappeared off-canvas. A zero scale is degenerate
+        // (nothing renders); fall back to 1 so the attribute stays finite.
+        const invSx = p.sx !== 0 ? 1 / p.sx : 1;
+        const invSy = p.sy !== 0 ? 1 / p.sy : 1;
         // A same-document fragment reference, which resolves inside a data URI.
         // Only an *external* url() would fail there.
         const id = `c${defs.length}`;
         defs.push(
-          `<clipPath id="${id}"><rect x="${fmt(p.clip.x)}" y="${fmt(p.clip.y)}" ` +
-            `width="${fmt(p.clip.w)}" height="${fmt(p.clip.h)}"/></clipPath>`,
+          `<clipPath id="${id}"><rect x="${fmt((p.clip.x - p.x) * invSx)}" y="${fmt(
+            (p.clip.y - p.y) * invSy,
+          )}" width="${fmt(p.clip.w * invSx)}" height="${fmt(p.clip.h * invSy)}"/></clipPath>`,
         );
         clipAttr = ` clip-path="url(#${id})"`;
       }
