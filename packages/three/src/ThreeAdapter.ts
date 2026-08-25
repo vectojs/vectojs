@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import { Scene as VectoScene, Entity, VectoJSEvent, SceneOptions, VectoEvent } from '@vectojs/core';
+import {
+  Scene as VectoScene,
+  Entity,
+  VectoJSEvent,
+  SceneOptions,
+  VectoEvent,
+  KEYBOARD_OWNING_ROLES,
+} from '@vectojs/core';
 
 export interface ThreeAdapterOptions {
   /** Physical layout width of the 2D UI canvas. */
@@ -10,6 +17,48 @@ export interface ThreeAdapterOptions {
   canvas?: HTMLCanvasElement;
   /** Options passed to the VectoScene constructor. */
   sceneOptions?: SceneOptions;
+}
+
+/** Modifier switches mirroring the `KeyboardEvent` modifier flags. */
+export interface ThreeAdapterKeyModifiers {
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  /**
+   * Physical key (`KeyboardEvent.code`). Inferred from `key` when omitted:
+   * letters map to `` `Key<X>` ``, digits to `` `Digit<N>` ``, `' '` to
+   * `'Space'`, and anything else (already code-shaped keys such as
+   * `'Enter'`/`'ArrowLeft'`) passes through unchanged. The inference is
+   * best-effort by design — `KeyboardEvent.code` is layout-dependent and the
+   * adapter does not know the host's layout.
+   */
+  code?: string;
+}
+
+/** Pointer phases {@link ThreeAdapter.dispatchPointer} accepts. */
+export type ThreeAdapterPointerType =
+  | 'pointerdown'
+  | 'pointerup'
+  | 'pointercancel'
+  | 'pointermove'
+  | 'click';
+
+/**
+ * Extra `PointerEvent` fields for {@link ThreeAdapter.dispatchPointer}. Every
+ * field defaults to the same neutral value the raycaster path produces when no
+ * original event is supplied (`button`/`buttons` 0, modifiers off), so a
+ * programmatic dispatch is indistinguishable downstream unless the caller
+ * populates fields explicitly.
+ */
+export interface ThreeAdapterPointerInit {
+  pointerId?: number;
+  button?: number;
+  buttons?: number;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  metaKey?: boolean;
 }
 
 interface PointerState {
@@ -50,6 +99,16 @@ export class ThreeAdapter {
 
   /** Track hover states independently per pointerId for WebXR / Multi-Touch. */
   private activePointers: Map<number, PointerState> = new Map();
+
+  /**
+   * The entity currently holding panel focus, or `null`. Panel focus is
+   * Three-side state: the adapter canvas is offscreen, so its projected a11y
+   * mirrors can never become `document.activeElement` — the adapter tracks the
+   * focused entity itself and bridges focus transitions through synthetic
+   * `FocusEvent`s so core-side state (entity `focus`/`blur` emits,
+   * `focusedA11yElement`, caret-blink wake) matches a connected canvas.
+   */
+  private _focusedEntity: Entity | null = null;
 
   /**
    * Holds the original `vectoScene.render` reference so {@link dispose} can
@@ -149,6 +208,12 @@ export class ThreeAdapter {
       state.isHovering = false;
       this.dispatchAtUv('pointerleave', state.lastUv, pointerId, originalEvent);
     }
+    // Clicking off-panel blurs, mirroring how a click on page background moves
+    // DOM focus away from a control. Independent of the leave above: a first
+    // click outside also blurs even though nothing was hovered.
+    if (type === 'pointerdown' && this._focusedEntity) {
+      this.setFocusedEntity(null);
+    }
     this.pruneEndedPointer(pointerId, type);
     return false;
   }
@@ -186,7 +251,21 @@ export class ThreeAdapter {
     const px = uv.x * this.vectoScene.width;
     // Map Three.js Y (0 is bottom) to Canvas Y (0 is top)
     const py = (1.0 - uv.y) * this.vectoScene.height;
+    this.dispatchAtPoint(type, px, py, pointerId, originalEvent);
+  }
 
+  /**
+   * Shared dispatch core for both entry paths: {@link updateIntersection}
+   * (raycast UV mapped to logical pixels) and {@link dispatchPointer}
+   * (logical pixels directly). Returns whether an entity was hit.
+   */
+  private dispatchAtPoint(
+    type: VectoEvent,
+    px: number,
+    py: number,
+    pointerId: number,
+    originalEvent?: Event,
+  ): boolean {
     // Trigger markDirty so the scene repaints immediately in onDemand mode
     this.vectoScene.markDirty();
 
@@ -222,7 +301,7 @@ export class ThreeAdapter {
       // received its pointerleave above — delivering again duplicates the
       // event, and the canvas fallback would leak a leave the host never
       // initiated.
-      return;
+      return false;
     }
 
     if (hitEntity) {
@@ -232,6 +311,17 @@ export class ThreeAdapter {
       const fallbackEvent = this.createDOMEvent(type, px, py, pointerId, originalEvent);
       this.canvas.dispatchEvent(fallbackEvent);
     }
+
+    // Pointer interaction drives panel focus, mirroring how clicking a control
+    // moves DOM focus on a connected canvas. The hit entity is focused when it
+    // (or an ancestor) projects keyboard reachability; clicking dead space
+    // blurs. Runs AFTER the event so handlers observe the pre-click focus
+    // world, matching native pointerdown-then-focus ordering.
+    if (type === 'pointerdown') {
+      if (hitEntity) this.focusNearestFocusable(hitEntity);
+      else this.setFocusedEntity(null);
+    }
+    return hitEntity !== null;
   }
 
   /**
@@ -335,6 +425,288 @@ export class ThreeAdapter {
     return null;
   }
 
+  // --- domain: input — panel focus management ---
+
+  /**
+   * The entity currently holding panel focus, or `null`.
+   *
+   * Panel focus is Three-side state (see {@link _focusedEntity}): the adapter
+   * canvas is offscreen, so its projected a11y mirrors can never become
+   * `document.activeElement` and the browser's focus model does not reach
+   * them. The adapter fills that gap — pointer interaction and
+   * {@link ThreeAdapter.focus} drive it, key routing consumes it, and every
+   * transition is bridged through synthetic `FocusEvent`s so core-side state
+   * matches a connected canvas.
+   */
+  public get focusedEntity(): Entity | null {
+    return this._disposed ? null : this._focusedEntity;
+  }
+
+  /**
+   * Move panel focus to `entity`, or blur with `null`.
+   *
+   * Unlike the pointer path (which focuses only what the projection declares
+   * reachable), this accepts any entity so tests and automation can force
+   * focus onto a specific node. Focus transitions are bridged through the
+   * projection when a mirror exists, so entities receive `focus`/`blur`
+   * emits, core tracks `focusedA11yElement`, and text fields wake their caret
+   * blink exactly as they do on a connected canvas. No-op when the state
+   * already matches.
+   *
+   * @param entity - The entity to focus, or `null` to blur.
+   */
+  public focus(entity: Entity | null): void {
+    if (this._disposed || entity === this._focusedEntity) return;
+    this.setFocusedEntity(entity);
+  }
+
+  /** Blur the currently focused panel entity, if any. See {@link ThreeAdapter.focus}. */
+  public blur(): void {
+    this.focus(null);
+  }
+
+  /**
+   * Whether `entity` projects as keyboard-reachable — the panel-side analog of
+   * DOM tabbability. True when the projected mirror carries a `tabindex`
+   * attribute (explicit `tabIndex`, or the implicit `0` core adds for
+   * interactive ARIA roles) or renders as a natively-focusable tag
+   * (`button`/`input`/`textarea`/`select`/`a[href]`). Falls back to the raw
+   * {@link Entity.getA11yAttributes} values before the first projection sync.
+   *
+   * @param entity - The entity to query.
+   */
+  public isFocusable(entity: Entity): boolean {
+    if (this._disposed || !entity.getA11yAttributes) return false;
+    const attrs = entity.getA11yAttributes();
+    const el = this.vectoScene.getA11yElement(entity.id);
+    const tag = (el ? el.tagName.toLowerCase() : (attrs.tag ?? 'div')).toLowerCase();
+    const href = el?.getAttribute('href') ?? attrs.href;
+    const nativelyFocusable =
+      tag === 'button' ||
+      tag === 'input' ||
+      tag === 'textarea' ||
+      tag === 'select' ||
+      (tag === 'a' && !!href);
+    if (nativelyFocusable) return true;
+    return el ? el.hasAttribute('tabindex') : attrs.tabIndex !== undefined;
+  }
+
+  /**
+   * Focus the nearest focusable ancestor of `hit` (including itself), or blur
+   * when the hit chain projects nothing reachable — the analog of clicking a
+   * `<span>` inside a `<button>`, which focuses the button.
+   */
+  private focusNearestFocusable(hit: Entity): void {
+    for (let node: Entity | null = hit; node; node = node.parent) {
+      if (this.isFocusable(node)) {
+        this.setFocusedEntity(node);
+        return;
+      }
+    }
+    this.setFocusedEntity(null);
+  }
+
+  /**
+   * Apply a focus transition through the projection: synthetic `focus`/
+   * `blur` `FocusEvent`s on the mirrors let core's own listeners run (entity
+   * emits, `focusedA11yElement` tracking, caret-blink wake/cleanup); entities
+   * without a mirror get direct `emit`s. Always schedules a repaint so focus
+   * visuals (caret, highlight) draw immediately in onDemand mode.
+   */
+  private setFocusedEntity(next: Entity | null): void {
+    const prev = this._focusedEntity;
+    this._focusedEntity = next;
+    if (prev) {
+      const prevEl = this.vectoScene.getA11yElement(prev.id);
+      if (prevEl) prevEl.dispatchEvent(new FocusEvent('blur'));
+      else prev.emit('blur', {});
+    }
+    if (next) {
+      const nextEl = this.vectoScene.getA11yElement(next.id);
+      if (nextEl) nextEl.dispatchEvent(new FocusEvent('focus'));
+      else next.emit('focus', {});
+    }
+    this.vectoScene.markDirty();
+  }
+
+  // --- domain: input — keyboard routing ---
+
+  /**
+   * Synthesize keyboard input and route it through the adapter's dispatch
+   * path — the keyboard counterpart of {@link updateIntersection}.
+   *
+   * Routing rules, mirroring how keys behave on a connected canvas:
+   *
+   * 1. **Panel focus** — when an entity holds panel focus (via
+   *    {@link updateIntersection} pointer interaction or {@link ThreeAdapter.focus}),
+   *    the synthesized event is dispatched at that entity's projected mirror,
+   *    so core's own listeners run unchanged: entity `keydown`/`keyup`
+   *    handlers receive it, and projected controls keep their activation
+   *    contract (`Enter` activates on press, `Space` on release).
+   * 2. **Ownership** — while the focused entity projects a keyboard-owning
+   *    role, the panel owns the keys exclusively and nothing leaks to the
+   *    page: `input`, `textarea`, `select` tags, and anything whose role is in
+   *    core's {@link KEYBOARD_OWNING_ROLES} (`textbox`, `searchbox`,
+   *    `spinbutton`, `option`, `listbox`, plus the interactive roles
+   *    `button`, `link`, `tab`, `menuitem`, `slider`, `combobox`). This is the
+   *    same set `ownsKeyboard` gates the scene channel by — here applied to
+   *    panel-side state because a disconnected mirror can never become
+   *    `document.activeElement`.
+   * 3. **Channel forwarding** — otherwise the event continues to
+   *    `window`, where the #636 scene-level channel applies its native gates
+   *    (`defaultPrevented`, auto-repeat, `ownsKeyboard(document.activeElement)`):
+   *    scene shortcuts and page-level consumers see it unless a page-level
+   *    keyboard owner holds focus, so orbit-camera consumers and host inputs
+   *    are never starved. An entity handler that calls
+   *    `nativeEvent.preventDefault()` (or stops propagation on the synthetic
+   *    event) suppresses the forward, matching connected-canvas bubbling.
+   * 4. **No panel focus** — the event goes straight to `window` and the same
+   *    gates decide.
+   *
+   * @param key - `KeyboardEvent.key` value (`'a'`, `'Enter'`, `'ArrowLeft'`, …).
+   * @param mods - Optional modifier switches and physical `code`; see
+   *   {@link ThreeAdapterKeyModifiers}.
+   * @param phase - `'press'` (default) synthesizes the full keydown+keyup
+   *   pair; `'keydown'`/`'keyup'` synthesize a single phase for automation
+   *   that models held keys explicitly.
+   */
+  public dispatchKey(
+    key: string,
+    mods: ThreeAdapterKeyModifiers = {},
+    phase: 'press' | 'keydown' | 'keyup' = 'press',
+  ): void {
+    if (this._disposed || !key) return;
+    const init: KeyboardEventInit = {
+      key,
+      code: mods.code ?? ThreeAdapter.codeFor(key),
+      ctrlKey: mods.ctrlKey ?? false,
+      altKey: mods.altKey ?? false,
+      shiftKey: mods.shiftKey ?? false,
+      metaKey: mods.metaKey ?? false,
+      bubbles: true,
+      cancelable: true,
+    };
+    if (phase !== 'keyup') this.routeKeyEvent(new KeyboardEvent('keydown', init));
+    if (phase !== 'keydown') this.routeKeyEvent(new KeyboardEvent('keyup', init));
+  }
+
+  /**
+   * Best-effort `KeyboardEvent.code` inference for synthesized events; see
+   * {@link ThreeAdapterKeyModifiers.code} to override.
+   */
+  private static codeFor(key: string): string {
+    if (key === ' ') return 'Space';
+    if (/^[a-z]$/.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^[0-9]$/.test(key)) return `Digit${key}`;
+    return key;
+  }
+
+  /**
+   * Deliver one synthesized keyboard event along the panel dispatch path:
+   * focused mirror first (core's projection listeners run), then the window
+   * hop into the #636 scene channel unless ownership or prevention says
+   * otherwise. See {@link ThreeAdapter.dispatchKey} for the full contract.
+   */
+  private routeKeyEvent(native: KeyboardEvent): void {
+    if (this._disposed) return;
+    this.vectoScene.markDirty();
+    const focused = this._focusedEntity;
+    if (!focused) {
+      // No panel owner: the scene-level channel applies all of its own gates
+      // (defaultPrevented / repeat / ownsKeyboard(activeElement)).
+      if (typeof window !== 'undefined') window.dispatchEvent(native);
+      return;
+    }
+    const mirror = this.vectoScene.getA11yElement(focused.id);
+    if (mirror) {
+      // Drive the SAME listeners a connected canvas would: generic key
+      // forwarding, #694 Enter/Space activation, everything core attaches.
+      mirror.dispatchEvent(native);
+    } else {
+      focused.dispatchEvent(new VectoJSEvent(native.type as VectoEvent, focused, native));
+    }
+    if (this.entityOwnsKeyboard(focused)) return;
+    // Mirror connected-canvas bubbling: a prevented default keeps the scene
+    // channel silent (its first gate), as does a handler that stopped
+    // propagation on the synthetic event itself.
+    if (native.defaultPrevented) return;
+    if ((native as { cancelBubble?: boolean }).cancelBubble) return;
+    if (typeof window !== 'undefined') window.dispatchEvent(native);
+  }
+
+  /**
+   * Whether `entity`'s projection makes it a keyboard owner whose keys must
+   * not leak past the panel. Tag-based owners match `ownsKeyboard`'s
+   * INPUT/TEXTAREA/SELECT clause; role-based owners use core's exported
+   * {@link KEYBOARD_OWNING_ROLES} so the two definitions cannot drift.
+   */
+  private entityOwnsKeyboard(entity: Entity): boolean {
+    const attrs = entity.getA11yAttributes();
+    const el = this.vectoScene.getA11yElement(entity.id);
+    const tag = (el ? el.tagName.toLowerCase() : (attrs.tag ?? '')).toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+    const role = attrs.role;
+    return role !== undefined && KEYBOARD_OWNING_ROLES.has(role);
+  }
+
+  // --- domain: input — programmatic driving ---
+
+  /**
+   * Synthesize pointer input at LOGICAL SCENE coordinates (the space entity
+   * layout and `findEntityAt` speak — the same values `clientX`/`clientY`
+   * carry on dispatched events). The event flows through the identical
+   * downstream path as a raycast-driven {@link updateIntersection}: hover
+   * transitions, entity dispatch (or canvas fallback), pointerdown-driven
+   * focus, and texture-dirty scheduling all behave the same, which makes this
+   * the entry point for tests and automation that have no raycaster.
+   *
+   * Wheel input is deliberately not covered — wheel deltas have no neutral
+   * defaults, so route those through {@link updateIntersection} with the real
+   * `WheelEvent`.
+   *
+   * @param type - Pointer phase to synthesize.
+   * @param x - Logical scene-space X (pixels, origin top-left).
+   * @param y - Logical scene-space Y (pixels, origin top-left).
+   * @param init - Optional pointerId/button/modifier overrides; see
+   *   {@link ThreeAdapterPointerInit}.
+   * @returns Whether the point hit an entity (mirrors the `updateIntersection`
+   *   hit contract).
+   */
+  public dispatchPointer(
+    type: ThreeAdapterPointerType,
+    x: number,
+    y: number,
+    init: ThreeAdapterPointerInit = {},
+  ): boolean {
+    if (this._disposed) return false;
+    const pointerId = init.pointerId ?? 1;
+    if (!this.activePointers.has(pointerId)) {
+      this.activePointers.set(pointerId, {
+        isHovering: false,
+        lastUv: new THREE.Vector2(),
+        lastTargetId: null,
+      });
+    }
+    const originalEvent = new PointerEvent(type, {
+      pointerId,
+      clientX: x,
+      clientY: y,
+      button: init.button ?? 0,
+      buttons: init.buttons ?? 0,
+      ctrlKey: init.ctrlKey ?? false,
+      altKey: init.altKey ?? false,
+      shiftKey: init.shiftKey ?? false,
+      metaKey: init.metaKey ?? false,
+      bubbles: true,
+      cancelable: true,
+    });
+    const hit = this.dispatchAtPoint(type, x, y, pointerId, originalEvent);
+    if (type === 'pointerup' || type === 'pointercancel') {
+      this.activePointers.delete(pointerId);
+    }
+    return hit;
+  }
+
   /**
    * Resizes the offscreen canvas and VectoScene dimensions.
    */
@@ -370,6 +742,9 @@ export class ThreeAdapter {
     }
     this.vectoScene.destroy();
     this.activePointers.clear();
+    // Focus died with the scene; drop the reference without emitting — the
+    // mirrors and listeners this bridge talks to no longer exist.
+    this._focusedEntity = null;
     // Only mutate the canvas dimensions when we created it; otherwise the user
     // may still be using the canvas they passed in.
     if (this._ownsCanvas) {
