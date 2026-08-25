@@ -69,6 +69,18 @@ describe('GH-645: var() fallback form', () => {
     );
   });
 
+  it('rejects a fallback with whitespace after the opening paren', () => {
+    setTheme(theme);
+    const e = stub({ bg: 'previous' });
+    // Authors do write stray spaces inside var(); the fallback detector used
+    // to require `--` immediately after the paren, so 'var( --accent, #fff)'
+    // matched nothing and passed through silently unresolved (#753 follow-up).
+    expect(() => applyStyle(e, style({ backgroundColor: 'var( --accent, #fff)' }))).toThrow(
+      /fallback/,
+    );
+    expect(e.bg).toBe('previous');
+  });
+
   it('still resolves plain references and composites without fallbacks', () => {
     setTheme(theme);
     const e = stub({ bg: '', color: '' });
