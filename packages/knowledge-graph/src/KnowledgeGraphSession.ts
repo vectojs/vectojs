@@ -81,6 +81,8 @@ export class KnowledgeGraphSession {
 
   /** Node ids whose neighbors have already been fetched. */
   private readonly expanded = new Set<NodeId>();
+  /** Node ids with an expansion fetch currently in flight (select dedupe). */
+  private readonly inFlightExpansions = new Set<NodeId>();
   /** Index-aligned entity list for O(1) hover/select (mirrors layout order). */
   private entityByIndex: KgEntity[] = [];
   private readonly mode: KnowledgeGraphMode;
@@ -242,8 +244,10 @@ export class KnowledgeGraphSession {
     if (this.entityByIndex.length === 0) return true;
     const stillHot = this.layout.step(iterations);
     // The model owns warm-start bookkeeping; keep its position cache current
-    // so the next expand does not scatter settled nodes.
-    this.model.captureLayoutPositions();
+    // so the next expand does not scatter settled nodes. The warm-start cache
+    // only needs the settled snapshot: capturing every hot frame wrote one Map
+    // entry per node per frame.
+    if (!stillHot) this.model.captureLayoutPositions();
     this.graph.applyPositions(this.layout.positions);
     return !stillHot;
   }
@@ -273,6 +277,7 @@ export class KnowledgeGraphSession {
     this.layout.dispose();
     this.model.dispose();
     this.expanded.clear();
+    this.inFlightExpansions.clear();
     this.entityByIndex = [];
     this.scene = null;
   }
@@ -319,18 +324,28 @@ export class KnowledgeGraphSession {
    * Fire-and-forget expand behind a user select. Failures go to
    * {@link onError} (or `console.error` when absent) — never unhandled
    * rejections.
+   *
+   * One fetch per id: repeated selects on an id whose expansion is still in
+   * flight return early, so onExpand/onError fire once per shared expansion
+   * instead of once per click.
    */
   private expandInBackground(entity: KgEntity): void {
-    this.expand(entity.id).then(
-      () => undefined,
-      (error: unknown) => {
-        if (this.onErrorCb) {
-          this.onErrorCb(error, entity);
-        } else {
-          console.error('[KnowledgeGraphSession] select expand failed:', error);
-        }
-      },
-    );
+    if (this.inFlightExpansions.has(entity.id)) return;
+    this.inFlightExpansions.add(entity.id);
+    this.expand(entity.id)
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          if (this.onErrorCb) {
+            this.onErrorCb(error, entity);
+          } else {
+            console.error('[KnowledgeGraphSession] select expand failed:', error);
+          }
+        },
+      )
+      .finally(() => {
+        this.inFlightExpansions.delete(entity.id);
+      });
   }
 
   private assertOpen(): void {

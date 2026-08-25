@@ -382,6 +382,13 @@ export class ForceLayout2D {
    * they keep pointing at the same node across {@link removeNodes}
    * compaction — an index-addressed pin would silently retarget to whichever
    * node moved into that slot. Unknown IDs are ignored.
+   *
+   * Divergence note for code ported between stacks: the 3D
+   * {@link GraphLayout}-family contract (packages/graph3d) pins by node
+   * INDEX instead, and parallel-edge handling differs too — this package's
+   * consumers reject duplicate endpoint quadruples (node-editor
+   * `duplicate-link`) while the graph/knowledge stacks treat parallel links
+   * as distinct edges. Translate pins and link identity when crossing over.
    */
   public pinNode(id: NodeId, x: number, y: number): void {
     this.assertUsable();
@@ -595,6 +602,7 @@ export class ForceLayout2D {
       this.pinnedY,
       this.collisionStrength,
       this.seed,
+      maximumRadius,
     );
   }
 

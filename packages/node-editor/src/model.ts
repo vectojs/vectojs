@@ -169,3 +169,15 @@ export function addLink(document: NodeDocument, link: LinkData): NodeDocument {
 export function removeLink(document: NodeDocument, id: string): NodeDocument {
   return { nodes: document.nodes, links: document.links.filter((link) => link.id !== id) };
 }
+
+/**
+ * Remove a node and every link touching it (`source` or `target`), so the
+ * remaining document stays referentially valid. Same copy semantics as
+ * {@link removeLink}: fresh arrays, node/link objects shared with the input.
+ */
+export function removeNode(document: NodeDocument, id: string): NodeDocument {
+  return {
+    nodes: document.nodes.filter((node) => node.id !== id),
+    links: document.links.filter((link) => link.source !== id && link.target !== id),
+  };
+}
