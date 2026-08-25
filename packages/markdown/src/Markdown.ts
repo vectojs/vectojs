@@ -595,8 +595,9 @@ export class Markdown extends UIComponent {
    * Resolved once in the constructor and never re-applied: entities capture
    * colors, fonts and sizes at build time, so assigning this after construction
    * would paint blocks built afterwards in the new palette while everything
-   * earlier kept the old one. Exposed read-only to keep that trap unreachable
-   * (#657); pass the palette you want at construction.
+   * earlier kept the old one. Exposed read-only so the only way to re-theme is
+   * {@link Markdown.setTheme}, which rebuilds through the same path a fresh
+   * construction takes (#657, restored by the #781 follow-up).
    *
    * Backed by {@link currentTheme} rather than a `readonly` field because the
    * blockquote arm legally swaps the render-time theme for its own subtree and
@@ -606,6 +607,26 @@ export class Markdown extends UIComponent {
     return this.currentTheme;
   }
   private currentTheme: Required<MarkdownTheme>;
+
+  /**
+   * Restyle in place. Accepts a preset name or a full/partial theme object —
+   * the same shapes {@link MarkdownOptions.theme} takes; presets resolve through
+   * {@link resolvePresetTheme}, partial objects merge over the active theme.
+   *
+   * The content Stack's gap tracks the theme's `blockGap`, and the document
+   * rebuilds through {@link setContent} so an active stream tears down safely
+   * and existing blocks pick up the new numeric tokens — the same end state as
+   * fresh construction. Assigning the {@link theme} getter directly remains a
+   * compile-time error (and a runtime TypeError under ESM strictness) on purpose:
+   * silent field writes were the trap #657 closed.
+   */
+  public setTheme(theme: MarkdownThemePresetName | MarkdownTheme): this {
+    this.currentTheme =
+      typeof theme === 'string' ? resolvePresetTheme(theme) : { ...this.theme, ...theme };
+    this.content.gap = this.theme.blockGap;
+    this.setContent(this.rawMarkdown);
+    return this;
+  }
   public onLinkClick?: (url: string) => void;
   public selectable: boolean;
   /**
