@@ -156,6 +156,15 @@ export class DevtoolsPanel {
   private eventTrace: EventTrace | null = null;
   private index: Map<string, Entity> = new Map();
   private allNodes: DevtoolsTreeNode[] = [];
+  /**
+   * The filter-pruned copies currently handed to the Tree, or null when no
+   * filter is set. `applyFilterToTree` builds shallow `{...node}` copies so the
+   * originals keep their full child lists, and the Tree's rows render
+   * `row.node.label` from those copies — so the version-unchanged fast path in
+   * {@link DevtoolsPanel.refresh} must rewrite labels on BOTH arrays, not just
+   * `allNodes`, or filtered rows freeze at the last rebuild's geometry (#786).
+   */
+  private filteredNodes: DevtoolsTreeNode[] | null = null;
   private filterText = '';
   private selected: Entity | null = null;
   private highlight: HighlightEntity | null = null;
@@ -725,6 +734,10 @@ export class DevtoolsPanel {
       // version — rewrite them in place per tick so animated/moved entities
       // don't show coordinates from the last structural change (#706).
       refreshTreeLabels(this.allNodes, this.index);
+      // With a filter active the Tree renders the pruned copies, not these
+      // originals — rewrite those too, or filtered rows keep showing geometry
+      // from the last rebuild/filter edit (#786).
+      if (this.filteredNodes) refreshTreeLabels(this.filteredNodes, this.index);
       if (this.selected) this.writeDetails(this.selected);
       // Plugin readouts follow the same rule as the selection details: component
       // state changes without the tree's shape changing.
@@ -756,6 +769,7 @@ export class DevtoolsPanel {
 
   private applyFilterToTree(): void {
     if (!this.filterText) {
+      this.filteredNodes = null;
       this.tree.setNodes(this.allNodes);
       return;
     }
@@ -770,7 +784,8 @@ export class DevtoolsPanel {
       }
       return null;
     };
-    this.tree.setNodes(this.allNodes.map(prune).filter((n): n is DevtoolsTreeNode => n !== null));
+    this.filteredNodes = this.allNodes.map(prune).filter((n): n is DevtoolsTreeNode => n !== null);
+    this.tree.setNodes(this.filteredNodes);
   }
 
   private writeCounts(): void {
