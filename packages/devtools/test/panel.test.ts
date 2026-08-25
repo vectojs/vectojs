@@ -4,6 +4,21 @@ import { Button, Stack } from '@vectojs/ui';
 import { attachDevtools } from '../src/index';
 import { clearDevtoolsPlugins, registerDevtoolsPlugin } from '../src/plugin';
 
+/** Transparent audit-walk counter. `getA11yAttributes` is read by the selection
+ *  readout (inspectA11y) too, so counting entity attribute calls cannot
+ *  distinguish a cached audit from a fresh walk — spy on the walk itself. */
+const auditSpy = vi.hoisted(() => ({ walks: 0 }));
+vi.mock('../src/a11yInspect', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../src/a11yInspect')>();
+  return {
+    ...mod,
+    auditA11y: (...args: Parameters<typeof mod.auditA11y>) => {
+      auditSpy.walks++;
+      return mod.auditA11y(...args);
+    },
+  };
+});
+
 class Box extends Entity {
   constructor(id: string, w = 40, h = 20) {
     super(id);
@@ -265,7 +280,7 @@ describe('attachDevtools', () => {
     host.destroy();
   });
 
-  it('re-runs the cached a11y audit when the inspected entity changes', () => {
+  it('serves the cached audit across selection changes (findings are scene-global)', () => {
     const host = makeHost();
     const a = new Box('cnt-a');
     host.add(a);
@@ -273,18 +288,34 @@ describe('attachDevtools', () => {
     host.add(b);
 
     const panel = attachDevtools(host, { refreshInterval: 0 });
-    panel.select(a);
-    const cached = (panel as any).a11yFindings();
+    // Cleanup in finally: a failing assertion mid-test must not leak the dock
+    // into the DOM and break later querySelector-based tests.
+    try {
+      // Earlier tests in this module share the hoisted counter; measure deltas.
+      const beforeSelections = auditSpy.walks;
+      panel.select(a); // first audit runs here
+      const afterFirst = auditSpy.walks;
+      expect(afterFirst).toBe(beforeSelections + 1);
 
-    // Property-only state (labels, disabled, opacity, world bounds) never moves
-    // structureVersion, so a version-only key stayed stale indefinitely (#705).
-    // The highlight entity is re-tracked rather than re-added here, so nothing
-    // bumps the version — the inspected-entity change itself must invalidate.
-    panel.select(b);
-    expect((panel as any).a11yFindings()).not.toBe(cached);
+      // auditA11y(this.host) walks the whole scene and takes no selection input;
+      // writeA11y applies the per-entity ▸ marker by comparing finding.entityId
+      // at render time, so findings are identical for every selection. Keying the
+      // cache on the selected id bought no correctness — it paid one O(scene)
+      // re-walk per tree-row click (#785).
+      panel.select(b);
+      const findings = (panel as any).a11yFindings();
+      expect((panel as any).a11yFindings()).toBe(findings);
+      expect(auditSpy.walks).toBe(afterFirst); // second selection hit the cache
 
-    panel.detach();
-    host.destroy();
+      // A structure bump still invalidates: the version is the real signal.
+      host.add(new Box('late'));
+      (panel as any).a11yFindings();
+      expect(auditSpy.walks).toBe(afterFirst + 1);
+    } finally {
+      panel.detach();
+      host.destroy();
+      auditSpy.walks = 0;
+    }
   });
 
   it('bounds a11y-audit staleness: property-only drift surfaces after the TTL', () => {
