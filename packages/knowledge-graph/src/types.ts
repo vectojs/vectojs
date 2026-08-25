@@ -1,4 +1,4 @@
-import type { GraphData, GraphLink, GraphNode, NodeId } from '@vectojs/graph3d';
+import type { GraphLink, GraphNode, NodeId } from '@vectojs/graph3d';
 
 export type { NodeId };
 
@@ -56,8 +56,6 @@ export interface KgDataSource {
   getNodes(ids?: readonly NodeId[]): MaybeAsync<readonly KgEntity[]>;
   /** Outbound (and optionally inbound) facts + their far-end entities. */
   getNeighbors(id: NodeId, options?: KgNeighborOptions): MaybeAsync<KgNeighborhood>;
-  /** Resolve labels for entities already known by id (language negotiation). */
-  getLabels?(ids: readonly NodeId[], lang?: string): MaybeAsync<ReadonlyMap<NodeId, string>>;
 }
 
 export interface KgNeighborOptions {
@@ -84,14 +82,6 @@ export interface KgNeighborhood {
 }
 
 export type MaybeAsync<T> = T | Promise<T>;
-
-/** Convert domain data into the generic graph3d shape (identity cast of arrays). */
-export function toGraphData(data: KgGraphData): GraphData {
-  return {
-    nodes: data.entities as GraphNode[],
-    links: data.facts as GraphLink[],
-  };
-}
 
 /** Pick a display label from a {@link LabelMap}. */
 export function pickLabel(labels: LabelMap, lang = 'en'): string {

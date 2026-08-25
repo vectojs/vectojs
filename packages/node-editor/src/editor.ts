@@ -7,7 +7,7 @@ import {
   getPort,
   getNode,
   removeLink,
-  updateNodePosition,
+  removeNode,
   type LinkData,
   type NodeData,
   type NodeDocument,
@@ -19,6 +19,34 @@ import { layoutDocument, type AutoLayoutOptions } from './layout';
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 76;
 const PORT_SIZE = 12;
+
+/**
+ * Invisible aggregate live-region node (WCAG 4.1.3 status messages): carries
+ * `role="status"` + `aria-live="polite"` text for keyboard-only transitions
+ * that have no visual counterpart (a pending connection has no rubber line,
+ * unlike the pointer gesture). Renders nothing and never hit-tests.
+ */
+class StatusAnnouncer extends Entity {
+  private message = '';
+  public constructor() {
+    super('node-editor:status');
+    this.interactive = false;
+  }
+  public say(message: string): void {
+    this.message = message;
+    this.scene?.markDirty();
+  }
+  public getA11yAttributes() {
+    return { role: 'status', label: this.message, live: 'polite' as const };
+  }
+  public render(): void {}
+  public isPointInside(): boolean {
+    return false;
+  }
+  public getBounds() {
+    return null;
+  }
+}
 
 class PortEntity extends UIComponent {
   public width = PORT_SIZE;
@@ -173,6 +201,7 @@ export class NodeEditor extends Entity {
   private readonly history: CommandHistory;
   private readonly nodeEntities = new Map<string, NodeCard>();
   private readonly linkEntities = new Map<string, LinkEntity>();
+  private readonly status = new StatusAnnouncer();
   private dragDocument: NodeDocument | null = null;
   private connection: { nodeId: string; portId: string } | null = null;
   private connectionPoint: { x: number; y: number } | null = null;
@@ -273,6 +302,11 @@ export class NodeEditor extends Entity {
       // No pointer is attached to a keyboard gesture, so no rubber line point.
       this.connection = { nodeId, portId };
       this.connectionPoint = null;
+      // The pending connection is invisible (no pointer to draw a rubber line
+      // from), so the live region must announce it.
+      this.status.say(
+        `Linking from ${node.title} ${port.id}; activate an input port, Escape cancels`,
+      );
       this.scene?.markDirty();
       return;
     }
@@ -308,6 +342,9 @@ export class NodeEditor extends Entity {
     };
     try {
       this.createLink(link);
+      // Keyboard parity: the pointer path has the visible new edge; AT users
+      // only get confirmation through the live region.
+      this.status.say('Link created.');
     } catch {
       // Invalid targets cancel the transient connection without history.
     }
@@ -345,6 +382,27 @@ export class NodeEditor extends Entity {
     this.applyDocument(this.history.currentDocument);
   }
 
+  /**
+   * Delete the given nodes and every link incident to them as one undoable
+   * command (keyboard Delete/Backspace path). Ids that match no node are
+   * ignored; if nothing matched, no history entry is created.
+   */
+  public deleteNodes(ids: readonly string[]): void {
+    // End transient gestures first — deleting the dragged or connected node
+    // would leave a dangling drag origin or pending connection.
+    this.cancelConnection();
+    this.cancelDrag();
+    let next = this.documentState;
+    for (const id of new Set(ids)) {
+      if (!getNode(next, id)) continue;
+      next = removeNode(next, id);
+    }
+    if (next === this.documentState) return;
+    this.history.execute('Delete nodes', next);
+    this.applyDocument(this.history.currentDocument);
+    this.selection.clear();
+  }
+
   public beginDrag(id: string, event: VectoJSEvent): void {
     const node = getNode(this.documentState, id);
     const point = this.getLocalPoint(event);
@@ -364,11 +422,20 @@ export class NodeEditor extends Entity {
     const drag = this.selection.drag;
     const point = this.getLocalPoint(event);
     if (!drag || !point) return;
-    const position = {
-      x: drag.originX + point.x - drag.pointerX,
-      y: drag.originY + point.y - drag.pointerY,
-    };
-    this.applyPreview(updateNodePosition(this.documentState, drag.nodeId, position));
+    const x = drag.originX + point.x - drag.pointerX;
+    const y = drag.originY + point.y - drag.pointerY;
+    // In-place hot path: mutate just the dragged node instead of cloning the
+    // full document per pointermove. LinkEntity reads the nodeEntities map
+    // every frame, so links follow the card with no per-event rebuild.
+    // documentState owns its node objects (applyDocument/cloneDocument), so
+    // this cannot alias a history snapshot; cancelDrag still rolls back via
+    // the pre-drag clone in dragDocument.
+    const node = getNode(this.documentState, drag.nodeId);
+    if (!node) return;
+    node.position.x = x;
+    node.position.y = y;
+    this.nodeEntities.get(drag.nodeId)?.setPosition(x, y);
+    this.scene?.markDirty();
   }
 
   public endDrag(event: VectoJSEvent): void {
@@ -392,8 +459,10 @@ export class NodeEditor extends Entity {
   private handleKeyDown(event: VectoJSEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault();
+      const hadConnection = this.connection !== null;
       this.cancelConnection();
       this.cancelDrag();
+      if (hadConnection) this.status.say('Connection cancelled.');
       return;
     }
     const modifier = event.metaKey || event.ctrlKey;
@@ -406,6 +475,11 @@ export class NodeEditor extends Entity {
       this.cancelDrag();
       if (event.key?.toLowerCase() === 'y' || event.shiftKey) this.redo();
       else this.undo();
+      return;
+    }
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      this.deleteNodes(this.selection.list());
     }
   }
 
@@ -426,14 +500,17 @@ export class NodeEditor extends Entity {
     return this.worldToLocal(event.sceneX, event.sceneY);
   }
   private findPortAt(point: { x: number; y: number }): { nodeId: string; portId: string } | null {
-    for (const node of this.documentState.nodes) {
-      for (const [index, port] of (node.ports ?? []).entries()) {
+    // Reverse add-order: later cards render on top, so overlapping cards must
+    // resolve to the visible (topmost) card's port, not a hidden one beneath.
+    for (let index = this.documentState.nodes.length - 1; index >= 0; index--) {
+      const node = this.documentState.nodes[index]!;
+      for (const [portIndex, port] of (node.ports ?? []).entries()) {
         const x =
           node.position.x +
           (port.direction === 'output'
             ? (node.width ?? NODE_WIDTH) - PORT_SIZE / 2
             : -PORT_SIZE / 2);
-        const y = node.position.y + 24 + index * 20;
+        const y = node.position.y + 24 + portIndex * 20;
         if (point.x >= x && point.x <= x + PORT_SIZE && point.y >= y && point.y <= y + PORT_SIZE)
           return { nodeId: node.id, portId: port.id };
       }
@@ -463,6 +540,9 @@ export class NodeEditor extends Entity {
       this.add(entity);
     }
     for (const entity of this.nodeEntities.values()) this.add(entity);
+    // Last: rebuild() wipes children, and the announcer must survive every
+    // document change to keep its live region registered.
+    this.add(this.status);
   }
 }
 

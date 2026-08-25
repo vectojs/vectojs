@@ -184,6 +184,59 @@ describe('KnowledgeGraphSession async safety and ownership', () => {
     }
   });
 
+  it('fires onExpand once for rapid selects sharing an in-flight expansion', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = new MemoryDataSource(SAMPLE);
+    const source: KgDataSource = {
+      getNodes: (ids) => inner.getNodes(ids),
+      getNeighbors: (id, options) => gate.then(() => inner.getNeighbors(id, options)),
+    };
+    const onExpand = vi.fn();
+    const session = new KnowledgeGraphSession({ domElement: dom(), source, onExpand });
+    try {
+      await session.bootstrap(['b'], false);
+      const expandSpy = vi.spyOn(session.model, 'expand');
+      selectAt(session, 0);
+      selectAt(session, 0); // second click while the first fetch is in flight
+      // Exactly ONE model.expand despite two selects: the in-flight gate must
+      // swallow the duplicate before it reaches the model.
+      expect(expandSpy).toHaveBeenCalledTimes(1);
+      release();
+      await vi.waitFor(() => expect(onExpand).toHaveBeenCalledTimes(1));
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it('captures warm-start positions once at settle, not per hot tick', () => {
+    const session = new KnowledgeGraphSession({
+      domElement: dom(),
+      source: new MemoryDataSource(SAMPLE),
+      expandOnSelect: false,
+    });
+    try {
+      session.loadSnapshot(SAMPLE);
+      const captureSpy = vi.spyOn(session.model, 'captureLayoutPositions');
+      let guard = 0;
+      let capturesAtSettle = -1;
+      while (guard < 1000) {
+        const settled = session.tick(1);
+        guard++;
+        if (settled) {
+          capturesAtSettle = captureSpy.mock.calls.length;
+          break;
+        }
+      }
+      expect(guard).toBeLessThan(1000);
+      // The entire hot phase captured nothing; exactly the settling tick
+      // captured once. (A host stops ticking once tick() reports settled.)
+      expect(capturesAtSettle).toBe(1);
+    } finally {
+      session.dispose();
+    }
+  });
+
   it('model is the single layout driver during expand', async () => {
     const setGraphSpy = vi.spyOn(FixedZLayout.prototype, 'setGraph');
     const reheatSpy = vi.spyOn(FixedZLayout.prototype, 'reheat');

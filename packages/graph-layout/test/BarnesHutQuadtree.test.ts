@@ -10,13 +10,32 @@ describe('BarnesHutQuadtree', () => {
     const charges = new Float32Array(count).fill(1);
     const tree = new BarnesHutQuadtree();
     tree.build(positions, charges, count);
-    const nearby: number[] = [];
-    const force = new Float64Array(2);
-    tree.forEachNearby(0, 0, 0.01, (point) => nearby.push(point));
-
-    expect(nearby.sort((a, b) => a - b)).toEqual(
-      Array.from({ length: count - 1 }, (_, index) => index),
+    // Retention contract, exercised through the collision kernel now that the
+    // test-only forEachNearby traversal is gone: every one of the 63 coincident
+    // points must participate (nonzero separation velocity), while the far
+    // outlier stays untouched.
+    const radii = new Float32Array(count).fill(1);
+    const velocityX = new Float32Array(count);
+    const velocityY = new Float32Array(count);
+    const pinned = new Uint8Array(count);
+    tree.applyGridCollisions(
+      positions,
+      count,
+      radii,
+      velocityX,
+      velocityY,
+      pinned,
+      pinned,
+      1,
+      7,
+      1,
     );
+    for (let point = 0; point < count - 1; point++)
+      expect(Math.hypot(velocityX[point]!, velocityY[point]!)).toBeGreaterThan(0);
+    expect(velocityX[count - 1]).toBe(0);
+    expect(velocityY[count - 1]).toBe(0);
+
+    const force = new Float64Array(2);
     tree.force(100, 0, 0, count - 1, force);
     expect(force[0]).toBeCloseTo(63 / 10_000, 8);
   });
@@ -87,6 +106,7 @@ describe('BarnesHutQuadtree', () => {
       new Uint8Array(2),
       1,
       7,
+      1,
     );
 
     expect(Math.hypot(velocityX[0], velocityY[0])).toBeGreaterThan(0);
@@ -112,6 +132,7 @@ describe('BarnesHutQuadtree', () => {
         new Uint8Array(2),
         1,
         7,
+        1,
       );
       return Math.hypot(velocityX[0], velocityY[0]);
     };
@@ -136,6 +157,7 @@ describe('BarnesHutQuadtree', () => {
       new Uint8Array(3),
       1,
       7,
+      10,
     );
 
     // Radii [10, 5, 2] span three tiers; the coincident (0,1) pair is resolved
@@ -241,6 +263,7 @@ describe('BarnesHutQuadtree tiered collision binning', () => {
         pinnedY,
         1,
         7,
+        Math.max(...radii),
       );
       const reference = bruteForce(positions, radii, count, 1, 7);
       for (let i = 0; i < count; i++) {
@@ -270,7 +293,18 @@ describe('BarnesHutQuadtree tiered collision binning', () => {
     const velocityY = new Float32Array(count);
     const pinnedX = new Uint8Array(count);
     const pinnedY = new Uint8Array(count);
-    tree.applyGridCollisions(positions, count, radii, velocityX, velocityY, pinnedX, pinnedY, 1, 3);
+    tree.applyGridCollisions(
+      positions,
+      count,
+      radii,
+      velocityX,
+      velocityY,
+      pinnedX,
+      pinnedY,
+      1,
+      3,
+      Math.max(...radii),
+    );
 
     let momentumX = 0;
     let momentumY = 0;
@@ -315,7 +349,18 @@ describe('BarnesHutQuadtree tiered collision binning', () => {
     const velocityX = new Float32Array(count);
     const velocityY = new Float32Array(count);
     const pinned = new Uint8Array(count);
-    tree.applyGridCollisions(positions, count, radii, velocityX, velocityY, pinned, pinned, 1, 7);
+    tree.applyGridCollisions(
+      positions,
+      count,
+      radii,
+      velocityX,
+      velocityY,
+      pinned,
+      pinned,
+      1,
+      7,
+      Math.max(...radii),
+    );
 
     const reference = bruteForce(positions, radii, count, 1, 7);
     for (let i = 0; i < count; i++) {
@@ -369,6 +414,7 @@ describe('BarnesHutQuadtree tiered collision binning', () => {
         pinned,
         1,
         7,
+        Math.max(...scene.radii),
       );
     }
     console.log(

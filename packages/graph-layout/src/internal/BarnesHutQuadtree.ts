@@ -169,34 +169,6 @@ export class BarnesHutQuadtree {
     out[1] = forceY;
   }
 
-  public forEachNearby(
-    qx: number,
-    qy: number,
-    radius: number,
-    visit: (pointIndex: number) => void,
-  ): void {
-    if (this.nodeCount === 0) return;
-    let stackSize = 0;
-    this.ensureStack(this.nodeCount);
-    this.stack[stackSize++] = 0;
-    while (stackSize > 0) {
-      const node = this.stack[--stackSize];
-      const dx = Math.max(Math.abs(qx - this.cellX[node]) - this.halfSize[node], 0);
-      const dy = Math.max(Math.abs(qy - this.cellY[node]) - this.halfSize[node], 0);
-      if (dx * dx + dy * dy > radius * radius) continue;
-      if (this.internal[node] === 0) {
-        for (let point = this.pointHead[node]; point >= 0; point = this.pointNext[point])
-          visit(point);
-        continue;
-      }
-      const offset = node * 4;
-      for (let quadrant = 0; quadrant < 4; quadrant++) {
-        const child = this.child[offset + quadrant];
-        if (child >= 0) this.stack[stackSize++] = child;
-      }
-    }
-  }
-
   public applyGridCollisions(
     positions: Float32Array<ArrayBufferLike>,
     pointCount: number,
@@ -207,10 +179,10 @@ export class BarnesHutQuadtree {
     pinnedY: Uint8Array<ArrayBufferLike>,
     strength: number,
     seed: number,
+    // Precomputed by the caller, which already needed it for its early-out —
+    // rescanning it here doubled the per-tick O(N) radius walk.
+    maximumRadius: number,
   ): void {
-    let maximumRadius = 0;
-    for (let point = 0; point < pointCount; point++)
-      maximumRadius = Math.max(maximumRadius, radii[point]);
     if (maximumRadius <= 0) return;
     this.ensureCollisionGrid(pointCount * 2);
     this.ensureCollisionScratch(pointCount);

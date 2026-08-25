@@ -4,6 +4,7 @@ import {
   cloneDocument,
   createDocument,
   getNode,
+  removeNode,
   updateNodePosition,
   validateLink,
 } from '../src/model';
@@ -34,6 +35,27 @@ describe('node document model', () => {
       { x: 4, y: 5 },
     ]);
     expect(document.nodes[0].position).toEqual({ x: 1, y: 2 });
+  });
+
+  it('removes a node and every link touching it, sharing survivors with the input', () => {
+    const document = createDocument({
+      nodes: [
+        { id: 'a', type: 'input', title: 'A', position: { x: 0, y: 0 } },
+        { id: 'b', type: 'hub', title: 'B', position: { x: 1, y: 0 } },
+        { id: 'c', type: 'sink', title: 'C', position: { x: 2, y: 0 } },
+      ],
+      links: [
+        { id: 'l1', source: 'a', target: 'b' },
+        { id: 'l2', source: 'b', target: 'c' },
+        { id: 'l3', source: 'a', target: 'c' },
+      ],
+    });
+    const next = removeNode(document, 'b');
+    expect(next.nodes.map((node) => node.id)).toEqual(['a', 'c']);
+    // Only links INCIDENT to b disappear; the a→c link survives untouched.
+    expect(next.links.map((link) => link.id)).toEqual(['l3']);
+    // Same copy semantics as removeLink: fresh arrays, shared node objects.
+    expect(next.nodes[0]).toBe(document.nodes[0]);
   });
 
   it('deep clones nested data records so history snapshots cannot alias them', () => {

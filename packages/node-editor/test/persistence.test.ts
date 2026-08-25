@@ -88,6 +88,76 @@ describe('node editor persistence', () => {
     ).toThrow(NodeEditorPersistenceError);
   });
 
+  it('rejects self-loops the runtime validator refuses (links[i]: same-node)', () => {
+    // Ports are chosen so every STRUCTURAL check passes (both endpoints exist
+    // on the node, directions legal); only the semantic pass can see that a
+    // self-loop could never be created through validateLink.
+    const selfLoop = {
+      ...document,
+      nodes: [
+        {
+          ...document.nodes[0],
+          ports: [
+            { id: 'out', direction: 'output' as const },
+            { id: 'in', direction: 'input' as const },
+          ],
+        },
+        document.nodes[1],
+      ],
+      links: [
+        { id: 'loop', source: 'source', sourcePort: 'out', target: 'source', targetPort: 'in' },
+      ],
+    };
+    expect(() => exportDocument(selfLoop)).toThrow(/links\[0\]: same-node/);
+    expect(() =>
+      importDocument(JSON.stringify({ ...selfLoop, schemaVersion: NODE_EDITOR_SCHEMA_VERSION })),
+    ).toThrow(NodeEditorPersistenceError);
+  });
+
+  it('rejects duplicate endpoint quadruples with distinct ids (links[i]: duplicate-link)', () => {
+    // Capacity is raised to 2 so the pair is legal per-port; only the repeated
+    // endpoint quadruple (caught solely by the semantic validateLink pass)
+    // makes this document unrecreateable.
+    const duplicated = {
+      ...document,
+      nodes: [
+        document.nodes[0],
+        {
+          ...document.nodes[1],
+          ports: [{ id: 'in', direction: 'input' as const, dataType: 'number', maxConnections: 2 }],
+        },
+      ],
+      links: [document.links[0], { ...document.links[0], id: 'link-copy' }],
+    };
+    expect(() => exportDocument(duplicated)).toThrow(/links\[0\]: duplicate-link/);
+    expect(() =>
+      importDocument(JSON.stringify({ ...duplicated, schemaVersion: NODE_EDITOR_SCHEMA_VERSION })),
+    ).toThrow(NodeEditorPersistenceError);
+  });
+
+  it('rejects a second link into a maxConnections-bounded port (target-port-occupied)', () => {
+    // Distinct endpoint quadruples (different source ports) so the verdict is
+    // capacity, not duplicate-link.
+    const bounded = {
+      ...document,
+      nodes: [
+        {
+          ...document.nodes[0],
+          ports: [
+            { id: 'out', direction: 'output' as const, dataType: 'number' },
+            { id: 'out2', direction: 'output' as const, dataType: 'number' },
+          ],
+        },
+        document.nodes[1],
+      ],
+      links: [
+        document.links[0],
+        { id: 'second', source: 'source', sourcePort: 'out2', target: 'target', targetPort: 'in' },
+      ],
+    };
+    expect(() => exportDocument(bounded)).toThrow(/target-port-occupied/);
+  });
+
   it('rejects non-JSON-safe values before JSON serialization', () => {
     expect(() =>
       serializeDocument({

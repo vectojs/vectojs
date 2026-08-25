@@ -15,7 +15,7 @@ export class CommandHistory {
     this.current = cloneDocument(document);
   }
 
-  public get document(): NodeDocument {
+  private snapshot(): NodeDocument {
     return cloneDocument(this.current);
   }
   public get canUndo(): boolean {
@@ -30,26 +30,26 @@ export class CommandHistory {
     this.current = command.after;
     this.undoStack.push(command);
     this.redoStack = [];
-    return this.document;
+    return this.snapshot();
   }
 
   public get currentDocument(): NodeDocument {
-    return this.document;
+    return this.snapshot();
   }
 
   public undo(): NodeDocument {
     const command = this.undoStack.pop();
-    if (!command) return this.document;
+    if (!command) return this.snapshot();
     this.current = command.before;
     this.redoStack.push(command);
-    return this.document;
+    return this.snapshot();
   }
 
   public redo(): NodeDocument {
     const command = this.redoStack.pop();
-    if (!command) return this.document;
+    if (!command) return this.snapshot();
     this.current = command.after;
     this.undoStack.push(command);
-    return this.document;
+    return this.snapshot();
   }
 }

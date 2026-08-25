@@ -306,4 +306,110 @@ describe('node editor interaction', () => {
       { x: 300, y: 300 },
     ]);
   });
+
+  it('delete key removes the selected node plus incident links as one command', () => {
+    const editor = new NodeEditor({
+      document: {
+        nodes: [
+          { id: 'a', type: 'input', title: 'A', position: { x: 0, y: 0 } },
+          { id: 'b', type: 'hub', title: 'B', position: { x: 200, y: 0 } },
+          { id: 'c', type: 'sink', title: 'C', position: { x: 400, y: 0 } },
+        ],
+        links: [
+          { id: 'l1', source: 'a', target: 'b' },
+          { id: 'l2', source: 'b', target: 'c' },
+          { id: 'l3', source: 'a', target: 'c' },
+        ],
+      },
+    });
+    editor.select('b');
+    editor.emit('keydown', new VectoJSEvent('keydown', editor, { key: 'Delete' }));
+    // b and BOTH incident links are gone; the a→c link survives untouched.
+    expect(editor.document.nodes.map((node) => node.id)).toEqual(['a', 'c']);
+    expect(editor.document.links.map((link) => link.id)).toEqual(['l3']);
+    expect(editor.selection.selectedIds).toEqual([]);
+    expect(editor.canUndo).toBe(true);
+    // Exactly ONE history entry: a single undo brings back node AND links.
+    editor.undo();
+    expect(editor.document.nodes).toHaveLength(3);
+    expect(editor.document.links).toHaveLength(3);
+  });
+
+  it('backspace deletes like delete, and an empty selection is a no-op', () => {
+    const editor = new NodeEditor({
+      document: {
+        nodes: [{ id: 'a', type: 'input', title: 'A', position: { x: 0, y: 0 } }],
+        links: [],
+      },
+    });
+    editor.select('a');
+    editor.emit('keydown', new VectoJSEvent('keydown', editor, { key: 'Backspace' }));
+    expect(editor.document.nodes).toHaveLength(0);
+    editor.undo();
+    editor.emit('keydown', new VectoJSEvent('keydown', editor, { key: 'Delete' }));
+    expect(editor.document.nodes).toHaveLength(1);
+    expect(editor.canUndo).toBe(false);
+  });
+
+  it('resolves connection drops to the topmost of overlapping cards', () => {
+    const port = { id: 'in', direction: 'input' as const };
+    const editor = new NodeEditor({
+      document: {
+        nodes: [
+          {
+            id: 'source',
+            type: 'source',
+            title: 'S',
+            position: { x: 0, y: 0 },
+            ports: [{ id: 'out', direction: 'output' as const }],
+          },
+          {
+            id: 'bottom',
+            type: 'sink',
+            title: 'Bottom',
+            position: { x: 200, y: 0 },
+            ports: [port],
+          },
+          { id: 'top', type: 'sink', title: 'Top', position: { x: 200, y: 0 }, ports: [port] },
+        ],
+        links: [],
+      },
+    });
+    editor.beginConnection('source', 'out', event(editor, 'pointerdown', 174, 30));
+    // The drop point hits BOTH coincident input-port boxes; the last-added
+    // card renders above, so it — not the hidden bottom card — must win.
+    editor.endConnection(event(editor, 'pointerup', 200, 30));
+    expect(editor.document.links).toHaveLength(1);
+    expect(editor.document.links[0]).toMatchObject({
+      source: 'source',
+      target: 'top',
+      targetPort: 'in',
+    });
+  });
+
+  it('announces pending, committed and cancelled keyboard connections', () => {
+    const editor = new NodeEditor({ document: connectedDocument() });
+    const status = () =>
+      (
+        findEntity(editor, 'node-editor:status') as unknown as {
+          getA11yAttributes(): { role: string; label: string; live: string };
+        }
+      ).getA11yAttributes();
+    const outPort = findEntity(editor, 'port:source:out')!;
+    const inPort = findEntity(editor, 'port:target:in')!;
+    outPort.dispatchEvent(new VectoJSEvent('click', outPort, keyActivate()));
+    expect(status()).toMatchObject({ role: 'status', live: 'polite' });
+    expect(status().label).toBe('Linking from Source out; activate an input port, Escape cancels');
+    inPort.dispatchEvent(new VectoJSEvent('click', inPort, keyActivate()));
+    expect(status().label).toBe('Link created.');
+    // Pointer gestures have the visible rubber line and stay unannounced:
+    // arming via pointerdown must not overwrite the message.
+    editor.beginConnection('source', 'out', event(editor, 'pointerdown', 174, 30));
+    expect(status().label).toBe('Link created.');
+    editor.cancelConnection();
+    // Keyboard arm again, then Escape announces the cancellation.
+    outPort.dispatchEvent(new VectoJSEvent('click', outPort, keyActivate()));
+    editor.emit('keydown', new VectoJSEvent('keydown', editor, { key: 'Escape' }));
+    expect(status().label).toBe('Connection cancelled.');
+  });
 });

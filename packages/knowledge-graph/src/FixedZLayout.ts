@@ -13,6 +13,11 @@ export interface FixedZLayoutOptions extends VectoForceLayoutOptions {
  * The inner simulation still runs in 3D (Barnes-Hut octree); pinning z each
  * tick keeps the view planar without forking the force kernel. Pin/unpin/
  * reheat delegate through.
+ *
+ * Pinning contract: this class implements {@link GraphLayout}, which pins by
+ * node INDEX — graph-layout's `ForceLayout2D.pinNode` pins by node ID instead;
+ * translate when porting between stacks (see its docstring for the full
+ * divergence note).
  */
 export class FixedZLayout implements GraphLayout {
   private readonly inner: VectoForceLayout;

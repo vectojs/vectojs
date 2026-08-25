@@ -1,4 +1,10 @@
-import type { LinkData, NodeData, NodeDocument, PortDefinition } from './model';
+import {
+  validateLink,
+  type LinkData,
+  type NodeData,
+  type NodeDocument,
+  type PortDefinition,
+} from './model';
 
 export const NODE_EDITOR_SCHEMA_VERSION = 1 as const;
 
@@ -135,6 +141,23 @@ function validateDocument(value: unknown): asserts value is NodeDocument {
     if (sourcePort?.dataType && targetPort?.dataType && sourcePort.dataType !== targetPort.dataType)
       fail(`${name} connects incompatible port types`);
     validateData(link.data, `${name}.data`);
+  }
+
+  // Semantic pass over the completed document: reuse the runtime validator so
+  // a persisted file is guaranteed to re-create in the editor — the structural
+  // loop above accepts self-loops and duplicate endpoint quadruples that
+  // validateLink (and therefore any future addLink) rejects. Each link is
+  // validated against the document WITHOUT itself: validateLink treats its
+  // argument as prospective and counts existing endpoint occupancy, so an
+  // at-capacity port would otherwise reject its own legitimate link.
+  const nodes = value.nodes as NodeData[];
+  const links = value.links as LinkData[];
+  for (const [index, link] of links.entries()) {
+    const verdict = validateLink(
+      { nodes, links: links.filter((_, others) => others !== index) },
+      link,
+    );
+    if (!verdict.valid) fail(`links[${index}]: ${verdict.error}`);
   }
 }
 

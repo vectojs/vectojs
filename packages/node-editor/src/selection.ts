@@ -23,8 +23,8 @@ export class SelectionState {
     if (!additive) this.clear();
     this.ids.add(id);
   }
-  public toggle(id: string): void {
-    if (this.ids.has(id)) this.ids.delete(id);
-    else this.ids.add(id);
+  /** Snapshot of the selected ids (iteration-safe copy). */
+  public list(): readonly string[] {
+    return [...this.ids];
   }
 }
