@@ -189,9 +189,6 @@ export class DevtoolsPanel {
   private findings: AuditFinding[] = [];
   /** Host structure version the cached full-scene a11y audit was computed at. */
   private a11yAuditVersion = -1;
-  /** Inspected entity the cached audit was computed for (part of the key:
-   *  selection changes must not serve another entity's findings). */
-  private a11yAuditSelectedId: string | null = null;
   /** Timestamp the cached audit was computed at, for the staleness TTL. */
   private a11yAuditAt = -Infinity;
   private a11yAuditFindings: A11yFinding[] = [];
@@ -1233,26 +1230,25 @@ export class DevtoolsPanel {
    *
    * `writeA11y` runs on every tick (it is the selected entity's readout), but
    * the audit walks the whole tree, so it used to pay a full-scene walk every
-   * 500ms for results that were identical. The cache key carries every cheap
-   * signal that can invalidate it: the host's structure version (the same one
-   * `refresh()` keys on), the inspected entity (findings are rendered per
-   * selection and highlight reuse means switching it moves no version), and a
-   * staleness TTL — audit inputs include non-structural state (labels,
-   * disabled, opacity, tabIndex, world bounds) that no version counter tracks,
-   * so without the TTL a stale list could persist indefinitely (#705).
+   * 500ms for results that were identical. The cache key carries only inputs
+   * that can actually change the result: the host's structure version (the
+   * same one `refresh()` keys on) and a staleness TTL — audit inputs include
+   * non-structural state (labels, disabled, opacity, tabIndex, world bounds)
+   * that no version counter tracks, so without the TTL a stale list could
+   * persist indefinitely (#705).
+   *
+   * The selected entity is deliberately NOT part of the key (#785): the audit
+   * takes no selection argument and its findings are scene-global — writeA11y
+   * applies the per-entity highlight by comparing `finding.entityId` at render
+   * time — so keying on it bought no correctness, only one O(scene) re-walk
+   * per tree-row click during the panel's primary interaction.
    */
   private a11yFindings(): A11yFinding[] {
     const version = this.host.structureVersion;
-    const selectedId = this.selected?.id ?? null;
     const now = Date.now();
-    if (
-      version !== this.a11yAuditVersion ||
-      selectedId !== this.a11yAuditSelectedId ||
-      now - this.a11yAuditAt >= A11Y_AUDIT_TTL_MS
-    ) {
+    if (version !== this.a11yAuditVersion || now - this.a11yAuditAt >= A11Y_AUDIT_TTL_MS) {
       this.a11yAuditFindings = auditA11y(this.host);
       this.a11yAuditVersion = version;
-      this.a11yAuditSelectedId = selectedId;
       this.a11yAuditAt = now;
     }
     return this.a11yAuditFindings;
