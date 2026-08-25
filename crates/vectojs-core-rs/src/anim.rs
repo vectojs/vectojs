@@ -377,6 +377,14 @@ fn ease(id: i32, t: f64) -> f64 {
 /// (advance elapsed, clamp progress, ease) bit-for-bit — see `ease()` on why the
 /// easing is now exact rather than ~1e-12 close.
 ///
+/// A non-positive or NaN `dt` is declined before any state is touched, mirroring
+/// the JS guard (`if (!(dtMs > 0)) return;` in `TweenDriver.tick`,
+/// `packages/animation/src/drivers.ts`): NaN would poison `t_elapsed` forever
+/// and a negative dt would rewind the monotonic clock, un-completing finished
+/// tweens — divergence from pure-JS mode either way (#784). The call reports
+/// [`STATUS_OK`] with nothing written so the caller-side fallback semantics stay
+/// unchanged, exactly like `spring_step`'s per-spring skip.
+///
 /// Returns [`STATUS_OK`], or a non-zero status when `anim_init` has not run or
 /// `count` exceeds the tween capacity it allocated; nothing is written in that
 /// case. Note `t_elapsed` is state, so a partially-advanced pack would corrupt
@@ -389,6 +397,12 @@ pub extern "C" fn tween_step(dt: f64, count: usize) -> i32 {
     }
     if count > unsafe { A.tween_capacity } {
         return STATUS_CAPACITY;
+    }
+    // Matches JS `if (!(dtMs > 0)) return;` — rejects 0, negatives, and NaN
+    // (and -Infinity) before `t_elapsed` is touched; +Infinity advances and
+    // completes on both sides, as in JS.
+    if dt.is_nan() || dt <= 0.0 {
+        return STATUS_OK;
     }
     unsafe {
         for i in 0..count {
