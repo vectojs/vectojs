@@ -166,7 +166,13 @@ export class WasmTransformBackend {
       return;
     }
 
-    const status = kernel === 'scalar' ? this.ex.compose_scalar() : this.ex.compose_simd();
+    // A stale published .wasm can instantiate cleanly yet predate
+    // `compose_simd`; calling the missing export would throw a TypeError
+    // mid-render (#798 fixed the same gap for `compute_aabbs_simd`). Probe it
+    // and downgrade to the bit-identical scalar kernel instead — same status
+    // telemetry either way, since `lastStatus` reports the pass that ran.
+    const simd = kernel === 'simd' && typeof this.ex.compose_simd === 'function';
+    const status = simd ? this.ex.compose_simd() : this.ex.compose_scalar();
     this.lastStatus = status;
     // A rejected kernel wrote nothing, so reading back would copy stale matrices
     // over the caller's store and silently render the previous frame's geometry.
@@ -193,7 +199,10 @@ export class WasmTransformBackend {
    * {@link uploadRuns} after a topology change.
    */
   runKernel(kernel: Kernel = 'simd'): number {
-    const status = kernel === 'scalar' ? this.ex.compose_scalar() : this.ex.compose_simd();
+    // Same stale-module probe as `compose` (#798's shape): a cached .wasm
+    // predating `compose_simd` must degrade to the scalar kernel, not throw.
+    const simd = kernel === 'simd' && typeof this.ex.compose_simd === 'function';
+    const status = simd ? this.ex.compose_simd() : this.ex.compose_scalar();
     this.lastStatus = status;
     return status;
   }
