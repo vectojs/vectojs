@@ -126,3 +126,39 @@ describe('clipped path render windows (#787)', () => {
     expect(w.effW).toBeGreaterThanOrEqual(2000);
   });
 });
+
+describe('sliced radical clip windows (#788)', () => {
+  // A `\sqrt` radical is a 400em-wide path with `preserveAspectRatio slice`,
+  // clipped to its declared visible box whose top edge IS the path's own
+  // origin (`clip.y === p.y` at record time). SVG resolves the clip in the
+  // path's post-transform user space, so if the rect were emitted verbatim in
+  // root coordinates the window top would render at `ty + sy·ty` — for a
+  // radical under a non-1 `sy` that displaced the window by ~1000 units and
+  // ate ~33% of the ink from the wrong side (measured against the unclipped
+  // variant: 1306 dark pixels vs 1943). These assertions pin the invariant
+  // directly from the emitted geometry.
+  const expectWindowPinnedToPlacement = (tex: string): void => {
+    const { svg } = emitSVG(layout(tex));
+    const wins = clipWindows(svg);
+    expect(wins.length).toBe(1);
+    const w = wins[0];
+    // The visible window must coincide with the path's own placement box:
+    // left edge on its translate x, top edge on its translate y.
+    expect(w.effX).toBeCloseTo(w.tx, 1);
+    expect(w.effY).toBeCloseTo(w.ty, 1);
+    // The window must not be rescaled by the path's own transform beyond the
+    // recorded intent: height round-trips through sy exactly.
+    expect(w.effH).toBeCloseTo(w.sy * w.rh, 1);
+  };
+
+  it('pins a sliced radical under a non-1 sy', () => {
+    // sy ≈ 0.99: before #793 the y-window rendered ~987 units too high.
+    expectWindowPinnedToPlacement('\\sqrt{x^2+y^2}');
+  });
+
+  it('keeps a radical window glued to its origin inside an aligned fraction', () => {
+    // The numerator row is replayed with dx > 0 and carries sx = sy = 0.7:
+    // both coincidences that used to mask the recording gap are gone here.
+    expectWindowPinnedToPlacement('\\frac{\\sqrt{x}}{y}');
+  });
+});
