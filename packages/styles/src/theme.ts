@@ -17,8 +17,11 @@ export const HAS_VAR_RE = /var\(--([\w-]+)\)/;
  *  untracked for theme switches. Detected explicitly so the apply layer can
  *  fail loudly instead — fallback resolution is not implemented, and silence
  *  is the one thing this package must never do with an unrecognized `var()`
- *  form (the GH-608 doctrine). */
-export const HAS_VAR_FALLBACK_RE = /var\(--[\w-]+\s*,/;
+ *  form (the GH-608 doctrine). Whitespace after the opening paren is allowed
+ *  (`var( --key, fb)`), conservatively so — only whitespace, not the full
+ *  CSS token grammar — because authors do write stray spaces there and the
+ *  detector missing them meant an unresolved value reaching the field (#753). */
+export const HAS_VAR_FALLBACK_RE = /var\(\s*--[\w-]+\s*,/;
 
 /**
  * A flat token set. Keys are written WITHOUT the `--` prefix and referenced in
