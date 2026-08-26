@@ -65,12 +65,18 @@ function sceneWithRecorder() {
   const parent = document.createElement('div');
   const canvas = document.createElement('canvas');
   parent.appendChild(canvas);
+  document.body.appendChild(parent);
   // Force this canvas to hand back our recorder.
   (canvas as HTMLCanvasElement).getContext = (() => ctx) as never;
   ctx.canvas = canvas;
   const scene = new Scene(canvas);
   (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame = () => 0;
   (scene as unknown as { isRunning: boolean }).isRunning = true;
+  const _origDestroy = scene.destroy.bind(scene);
+  scene.destroy = () => {
+    _origDestroy();
+    parent.remove();
+  };
   return { scene, ctx };
 }
 
