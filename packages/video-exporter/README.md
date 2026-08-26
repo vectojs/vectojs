@@ -28,6 +28,7 @@ await exportVideo({
   height: 1080,
   fps: 60,
   duration: 10,
+  audioPath: './voice.wav', // optional: muxed as AAC, trimmed to the video length
 });
 ```
 
@@ -37,6 +38,7 @@ The fixed-step contract makes VectoJS animation time deterministic: the exporter
 
 - Fixed-step scene control — `scene.step(1000 / fps)` before each capture, never wall-clock time; output is standard H.264 `yuv420p` MP4.
 - CLI accepts a local JavaScript/TypeScript module (served through an in-memory Vite route that writes nothing into your source directory) or an already-hosted URL: `bunx vecto-export ./scene.ts -o out.mp4 -w 1920 -h 1080 -f 60 -d 5`.
+- Optional audio: `-a/--audio <file>` (or `audioPath` in the API) muxes an audio track as AAC, trimmed to the video length; exports stay silent without it.
 - Atomic output: FFmpeg encodes to a unique staged file beside the destination, which replaces the target only after a successful exit; failed or aborted exports preserve any existing file and remove the staged one.
 - Errors identify the failing phase — validation/Vite, Chromium/page contract, capture, FFmpeg spawn/stdin/exit, output commit, cleanup — with a bounded FFmpeg stderr tail attached.
 - Cancellation end to end: `AbortSignal` on API exports, SIGINT/SIGTERM mapped to the same path in the CLI (exit codes 130/143); every acquired resource is released in reverse order.

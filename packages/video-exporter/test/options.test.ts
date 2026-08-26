@@ -97,6 +97,32 @@ describe('normalizeOptions', () => {
     );
   });
 
+  it('resolves an existing audio file and leaves it undefined when not provided', async () => {
+    const audioPath = join(scratchDir, 'voice.wav');
+    await writeFile(audioPath, Buffer.alloc(4));
+
+    expect(normalizeOptions(options({ audioPath }))).toEqual(
+      expect.objectContaining({ audioPath }),
+    );
+    expect(normalizeOptions(options()).audioPath).toBeUndefined();
+  });
+
+  it('rejects a missing audio file before the browser launches', () => {
+    expect(() => normalizeOptions(options({ audioPath: join(scratchDir, 'missing.wav') }))).toThrow(
+      /audio file does not exist/i,
+    );
+  });
+
+  it.each(['', '   '])('rejects a blank audioPath %j', (audioPath) => {
+    expect(() => normalizeOptions(options({ audioPath }))).toThrow(/audioPath.*non-empty string/i);
+  });
+
+  it('rejects an audio path that points at a directory', () => {
+    expect(() => normalizeOptions(options({ audioPath: scratchDir }))).toThrow(
+      /audio path is not a file/i,
+    );
+  });
+
   it('rejects an output whose parent directory does not exist', () => {
     expect(() =>
       normalizeOptions(options({ outputPath: join(scratchDir, 'missing', 'out.mp4') })),

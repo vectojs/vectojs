@@ -28,12 +28,12 @@ class FakeChild extends EventEmitter implements ChildProcessLike {
   }
 }
 
-function setup(signal?: AbortSignal) {
+function setup(signal?: AbortSignal, audioPath?: string) {
   const child = new FakeChild();
   const spawn = vi.fn(() => child);
   const dependencies: FfmpegDependencies = { spawn };
   const supervisor = startFfmpeg(
-    { fps: 30, outputPath: '/workspace/output.mp4', signal, terminateTimeoutMs: 50 },
+    { fps: 30, outputPath: '/workspace/output.mp4', audioPath, signal, terminateTimeoutMs: 50 },
     dependencies,
   );
   return { child, spawn, supervisor };
@@ -56,6 +56,33 @@ describe('FfmpegSupervisor', () => {
       'libx264',
       '-pix_fmt',
       'yuv420p',
+      '/workspace/output.mp4',
+    ]);
+  });
+
+  it('appends the audio input and AAC output options when audioPath is set', () => {
+    const { spawn } = setup(undefined, '/workspace/voice.wav');
+    expect(spawn).toHaveBeenCalledWith('ffmpeg', [
+      '-y',
+      '-f',
+      'image2pipe',
+      '-vcodec',
+      'png',
+      '-r',
+      '30',
+      '-i',
+      '-',
+      '-i',
+      '/workspace/voice.wav',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-shortest',
       '/workspace/output.mp4',
     ]);
   });

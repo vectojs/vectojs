@@ -84,6 +84,21 @@ describe('runCli', () => {
     });
   });
 
+  it('forwards --audio as audioPath and omits it when the flag is absent', async () => {
+    const withAudio = runtime();
+
+    await expect(runCli(['scene.ts', '--audio', 'voice.wav'], withAudio.value)).resolves.toBe(0);
+    expect(withAudio.exporter).toHaveBeenCalledWith(
+      expect.objectContaining({ audioPath: 'voice.wav' }),
+    );
+
+    const withoutAudio = runtime();
+    await expect(runCli(['scene.ts'], withoutAudio.value)).resolves.toBe(0);
+    expect(withoutAudio.exporter).toHaveBeenCalledWith(
+      expect.objectContaining({ audioPath: undefined }),
+    );
+  });
+
   it('reports exporter failures and returns 1', async () => {
     const failure = new Error('encoder unavailable');
     const fixture = runtime(vi.fn(async () => Promise.reject(failure)));
