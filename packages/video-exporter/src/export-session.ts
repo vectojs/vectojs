@@ -137,6 +137,7 @@ export class ExportSession {
       encoder = this.dependencies.startFfmpeg({
         fps: this.options.fps,
         outputPath: output.path,
+        audioPath: this.options.audioPath,
         signal: this.options.signal,
       });
       progress = this.dependencies.createProgress();

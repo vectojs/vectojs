@@ -28,7 +28,8 @@ Options:
   -w, --width <pixels>   Width in pixels (default: 1280)
   -h, --height <pixels>  Height in pixels (default: 720)
   -f, --fps <number>     Frames per second (default: 60)
-  -d, --duration <secs>  Duration in seconds (default: 5)`;
+  -d, --duration <secs>  Duration in seconds (default: 5)
+  -a, --audio <file>     Mux an audio track into the export (encoded as AAC)`;
 
 function positiveInteger(name: string, value: string): number {
   const parsed = Number(value);
@@ -60,6 +61,7 @@ export async function runCli(
         height: { type: 'string', short: 'h', default: '720' },
         fps: { type: 'string', short: 'f', default: '60' },
         duration: { type: 'string', short: 'd', default: '5' },
+        audio: { type: 'string', short: 'a' },
       },
       allowPositionals: true,
     });
@@ -96,6 +98,7 @@ export async function runCli(
     height: string;
     fps: string;
     duration: string;
+    audio?: string;
   };
   try {
     width = positiveInteger('width', values.width);
@@ -128,6 +131,7 @@ export async function runCli(
       height,
       fps,
       duration,
+      audioPath: values.audio,
       signal: controller.signal,
     });
     return signalExitCode ?? 0;

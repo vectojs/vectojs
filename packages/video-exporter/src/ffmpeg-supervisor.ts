@@ -25,6 +25,8 @@ export interface FfmpegDependencies {
 export interface FfmpegOptions {
   fps: number;
   outputPath: string;
+  /** Optional audio file muxed as a second input; encoded AAC, trimmed with -shortest. */
+  audioPath?: string;
   signal?: AbortSignal;
   terminateTimeoutMs?: number;
 }
@@ -273,21 +275,18 @@ export function startFfmpeg(
   options: FfmpegOptions,
   dependencies: FfmpegDependencies = defaultDependencies,
 ): FfmpegSupervisor {
-  const child = dependencies.spawn('ffmpeg', [
-    '-y',
-    '-f',
-    'image2pipe',
-    '-vcodec',
-    'png',
-    '-r',
-    String(options.fps),
-    '-i',
-    '-',
-    '-c:v',
-    'libx264',
-    '-pix_fmt',
-    'yuv420p',
-    options.outputPath,
-  ]);
+  // Inputs first (the PNG pipe, then the optional audio track), then output
+  // options: `-c:a` placed before the audio `-i` would be parsed as an input
+  // decoder selection instead of the output encoder.
+  const args = ['-y', '-f', 'image2pipe', '-vcodec', 'png', '-r', String(options.fps), '-i', '-'];
+  if (options.audioPath !== undefined) {
+    args.push('-i', options.audioPath);
+  }
+  args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
+  if (options.audioPath !== undefined) {
+    args.push('-c:a', 'aac', '-b:a', '192k', '-shortest');
+  }
+  args.push(options.outputPath);
+  const child = dependencies.spawn('ffmpeg', args);
   return new FfmpegSupervisor(child, options);
 }

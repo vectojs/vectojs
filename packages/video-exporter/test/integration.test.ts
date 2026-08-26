@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,30 @@ afterEach(async () => {
     scratchRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
 });
+
+/** Minimal 16-bit mono PCM WAV writer (8 kHz), enough for ffmpeg to mux. */
+function toneWav(seconds: number, hz = 440, sampleRate = 8000): Buffer {
+  const samples = Math.floor(seconds * sampleRate);
+  const data = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) {
+    data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / sampleRate) * 12000), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write('data', 36);
+  header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
 
 describe('real video export', () => {
   it('renders exactly two H.264 frames through Chromium and FFmpeg', async () => {
@@ -65,5 +89,40 @@ describe('real video export', () => {
       }),
     ]);
     expect((await readdir(scratch)).filter((name) => name !== basename(outputPath))).toEqual([]);
+  }, 90_000);
+
+  it('muxes an aac audio track when audioPath is provided', async () => {
+    const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
+    scratchRoots.push(scratch);
+    const outputPath = join(scratch, 'with-audio.mp4');
+    const audioPath = join(scratch, 'tone.wav');
+    await writeFile(audioPath, toneWav(0.5));
+
+    await exportVideo({
+      url: fixture,
+      outputPath,
+      width: 64,
+      height: 64,
+      fps: 2,
+      duration: 1,
+      audioPath,
+    });
+
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v',
+      'error',
+      '-show_entries',
+      'stream=codec_name,codec_type',
+      '-of',
+      'json',
+      outputPath,
+    ]);
+    const result = JSON.parse(stdout) as {
+      streams: Array<{ codec_name: string; codec_type: string }>;
+    };
+
+    expect(result.streams).toHaveLength(2);
+    expect(result.streams[0]).toMatchObject({ codec_name: 'h264', codec_type: 'video' });
+    expect(result.streams[1]).toMatchObject({ codec_name: 'aac', codec_type: 'audio' });
   }, 90_000);
 });

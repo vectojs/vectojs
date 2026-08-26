@@ -8,6 +8,12 @@ export interface ExportOptions {
   height: number;
   fps?: number;
   duration?: number;
+  /**
+   * Optional audio file muxed into the export (encoded as AAC). The track is
+   * trimmed to the video length (`-shortest`); the canvas pipeline itself
+   * never produces sound, so exports stay silent unless this is provided.
+   */
+  audioPath?: string;
   signal?: AbortSignal;
 }
 
@@ -18,6 +24,7 @@ export interface NormalizedExportOptions {
   height: number;
   fps: number;
   duration: number;
+  audioPath?: string;
   signal?: AbortSignal;
   isRemote: boolean;
   totalFrames: number;
@@ -65,6 +72,19 @@ export function normalizeOptions(options: ExportOptions): NormalizedExportOption
     if (!statSync(url).isFile()) throw new Error(`Input path is not a file: ${url}`);
   }
 
+  // Fail on a bad audio input before Chromium launches, mirroring the input
+  // file checks above: a missing track would otherwise only surface as raw
+  // ffmpeg stderr at the very end of the export.
+  let audioPath: string | undefined;
+  if (options.audioPath !== undefined) {
+    if (typeof options.audioPath !== 'string' || options.audioPath.trim() === '') {
+      throw new TypeError('audioPath must be a non-empty string when provided');
+    }
+    audioPath = resolve(options.audioPath);
+    if (!existsSync(audioPath)) throw new Error(`Audio file does not exist: ${audioPath}`);
+    if (!statSync(audioPath).isFile()) throw new Error(`Audio path is not a file: ${audioPath}`);
+  }
+
   const outputPath = resolve(options.outputPath);
   const outputDirectory = dirname(outputPath);
   if (!existsSync(outputDirectory)) {
@@ -86,6 +106,7 @@ export function normalizeOptions(options: ExportOptions): NormalizedExportOption
     height: options.height,
     fps,
     duration,
+    audioPath,
     signal: options.signal,
     isRemote,
     totalFrames: Math.ceil(fps * duration),
