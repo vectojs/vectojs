@@ -45,7 +45,7 @@ The fixed-step contract makes VectoJS animation time deterministic: the exporter
 - The Chromium sandbox stays enabled for normal users and is disabled only for root or with explicit `VECTO_CHROMIUM_NO_SANDBOX=1`, warning either way.
 - Frame-0 determinism support (#646): page load free-runs rAF before capture begins, so scenes with load-time state should expose `reset()`; static-until-first-step scenes need nothing.
 
-> Documents @vectojs/video-exporter@0.2.4.
+> Documents @vectojs/video-exporter@0.3.0.
 
 ## Documentation
 
