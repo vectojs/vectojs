@@ -1,5 +1,29 @@
 // Issue #540: real-browser per-tick and incremental-topology costs for the two
 // existing Graph3D layouts and the standalone 2D graph-layout package.
+//
+// Default-matrix budget (CTX-0517, measured 2026-08-26): the original defaults
+// (counts 100,500,1000,3000 × 2 workloads × 4 arms × TRIALS 6, SETTLE_CAP 500)
+// exceeded any sane in-harness budget — >1500 s/engine projected from single-cell
+// measurements, settle-dominated (each settle tick pays a ~4 ms timer-clamped
+// event-loop yield, and settles ran to natural convergence at ~285-300 ticks,
+// i.e. essentially every trial paid near-full CAP ticks). Two budget levers,
+// chosen so the full default completes in well under ~300 s per engine WITHOUT
+// dropping any scenario (all 2 workloads × 4 layout arms remain, per size):
+//   - SETTLE_CAP 500 → 120: settle statistics measure the FIRST 120 post-append
+//     ticks (the deterministic initial transient), not convergence-to-alpha-floor;
+//     natural convergence was measured at ~285-300 ticks at alphaDecay 0.024, so
+//     capped trials are expected and settleCappedTrials == TRIALS by design. The
+//     2026-08-25 sweep (CTX-0509) already quoted cap-120 settle data, so this is
+//     continuous with the most recent published figures.
+//   - counts 100,500,1000,3000 → 100,1000,3000: dropped 500, the nearest
+//     log-scale neighbour of 1000 (both mid-size); small/mid/large coverage and
+//     the #559 baseline size (3000) are retained.
+//   - TRIALS 6 → 3: the in-page trial count of the #559 baseline protocol and of
+//     every previously published graph-layout figure (three trials, suite-level
+//     repetition handled by run-browsers.sh --iterations). Halves the dominant
+//     per-tick yield overhead (~4 ms timer-clamped event-loop yield per step).
+// Measured full-default cost after budgeting: ~150 s headless Chrome
+// (preflight-mt9vw80t envelope), against >1500 s projected for the old defaults.
 import { ForceLayout2D } from '@vectojs/graph-layout';
 import { D3ForceLayout, VectoForceLayout, type GraphData } from '@vectojs/graph3d';
 import {
@@ -18,10 +42,13 @@ import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 import { median, percentile } from '../_shared/stats.ts';
 
 const params = new URLSearchParams(location.search);
-const COUNTS = (params.get('counts') ?? '100,500,1000,3000').split(',').map(Number);
+// Budgeted defaults — see the header comment. Overridable per-run for deeper
+// sweeps, e.g. `?counts=100,500,1000,3000&settleCap=500` reproduces the old
+// full-convergence matrix within an explicit budget.
+const COUNTS = (params.get('counts') ?? '100,1000,3000').split(',').map(Number);
 const TICKS = Number(params.get('ticks') ?? 30);
-const TRIALS = Number(params.get('trials') ?? 6);
-const SETTLE_CAP = Number(params.get('settleCap') ?? 500);
+const TRIALS = Number(params.get('trials') ?? 3);
+const SETTLE_CAP = Number(params.get('settleCap') ?? 120);
 const parsedUaMemoryTimeoutMs = Number(params.get('uaMemoryTimeoutMs') ?? 1250);
 const UA_MEMORY_TIMEOUT_MS =
   Number.isFinite(parsedUaMemoryTimeoutMs) && parsedUaMemoryTimeoutMs > 0
