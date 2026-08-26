@@ -1,5 +1,12 @@
 # @vectojs/video-exporter
 
+## 0.3.0
+
+### Minor Changes
+
+- feat: optional audio muxing — `audioPath` in the API and `-a, --audio <file>` in the CLI attach an audio track to the export, encoded as AAC (192 kbps) and trimmed to the video length with `-shortest`; a bad path is rejected during option validation before Chromium launches, and exports stay silent without the option (#816)
+- feat: deterministic teaching demos under `demo/` — seeded OHLC chart (`data-chart.ts`), unit-circle → sine tracing (`math-teaching.ts`), 40-step gradient descent (`ml-descent.ts`); `demo/main.ts` fixed to actually animate (dead `animate(dt)` hook → `update(dt, time)`) (#807, #810, #814)
+
 ## 0.2.4
 
 ### Patch Changes
