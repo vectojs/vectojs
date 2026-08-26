@@ -30,6 +30,7 @@ describe('Dropdown', () => {
 
   it('opens overlay menu on click and closes on click outside', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const dropdown = new Dropdown(['A', 'B', 'C'], { width: 100, height: 40 });
     scene.add(dropdown);
@@ -43,6 +44,7 @@ describe('Dropdown', () => {
 
   it('positions and sizes its menu from the transformed trigger bounds', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const parent = new Entity('parent');
     parent.setPosition(100, 50);
@@ -64,6 +66,7 @@ describe('Dropdown', () => {
 
   it('flips above the trigger when the menu would overflow the scene bottom (#664)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     canvas.width = 800;
     canvas.height = 600;
     const scene = new Scene(canvas, { disableWindowResize: true });
@@ -81,6 +84,7 @@ describe('Dropdown', () => {
 
   it('clamps a menu that cannot fit either side into the top edge (#664)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     canvas.width = 800;
     canvas.height = 600;
     const scene = new Scene(canvas, { disableWindowResize: true });
@@ -100,6 +104,7 @@ describe('Dropdown', () => {
 
   it('keeps a fitting menu inside the viewport when space below is short (#664)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     canvas.width = 800;
     canvas.height = 600;
     const scene = new Scene(canvas, { disableWindowResize: true });
@@ -117,6 +122,7 @@ describe('Dropdown', () => {
 
   it('closes an open menu on Tab and lets focus move out (#693)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
     scene.add(dropdown);
@@ -134,6 +140,7 @@ describe('Dropdown', () => {
 
   it('closes the menu on document-level Escape after focus moved out (#693)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
     scene.add(dropdown);
@@ -149,6 +156,7 @@ describe('Dropdown', () => {
 
   it('derives unique backdrop ids per instance (#693)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const a = new Dropdown(['A'], { width: 100, height: 40 });
     const b = new Dropdown(['B'], { width: 100, height: 40 });
@@ -172,6 +180,7 @@ describe('Dropdown', () => {
 describe('Dropdown menu projection', () => {
   it('keeps the listbox container pointer-transparent so option clicks land on the option', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const dropdown = new Dropdown(['A', 'B'], { width: 100, height: 40 });
     scene.add(dropdown);

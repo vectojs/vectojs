@@ -128,6 +128,7 @@ describe('Table', () => {
 
   it('draws headers, cells, and grids without errors in renderer', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const table = new Table({
       headers: ['A', 'B'],
@@ -258,6 +259,7 @@ describe('Table', () => {
 
     it('mounts rows around the scrolled position after a wheel scroll', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const t = makeTable(400);
       scene.add(t);
@@ -311,6 +313,7 @@ describe('Table', () => {
 
     it('scrolls the body on a touch/pointer drag (drag up scrolls down)', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const t = makeTable(400);
       scene.add(t);

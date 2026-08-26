@@ -52,6 +52,7 @@ describe('Overlay.showAtPoint', () => {
 
   it('auto-mounts and becomes visible when called with a source Scene (the bare-constructor fix)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
 
     const overlay = new TestOverlay();
@@ -73,6 +74,7 @@ describe('Overlay.showAtPoint', () => {
 
   it('auto-mounts when called with a source Entity whose .scene is set', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
 
     const host = new Entity('host');
@@ -90,6 +92,7 @@ describe('Overlay.showAtPoint', () => {
 
   it('works without source when already mounted (existing callers unchanged)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
 
     const overlay = new TestOverlay();
@@ -109,6 +112,7 @@ describe('Overlay.showAtPoint', () => {
 
   it('hide() drives the overlay back to hidden', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const overlay = new TestOverlay();
     overlay.showAtPoint(50, 50, scene);
@@ -122,6 +126,7 @@ describe('Overlay.showAtPoint', () => {
 
   it('hide() drops interactivity and prunes the a11y shadow (not just opacity)', () => {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const overlay = new TestOverlay();
     overlay.interactive = true;
@@ -147,6 +152,7 @@ describe('Overlay.showAtPoint', () => {
 describe('Popover hidden-state invariant', () => {
   function makeHost(): { scene: Scene; target: Entity; popover: Popover; sync: () => void } {
     const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
     const scene = new Scene(canvas);
     const target = new Entity('target');
     target.interactive = true;
