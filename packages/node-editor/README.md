@@ -1,71 +1,69 @@
 # @vectojs/node-editor
 
-Canvas-native node and link editing primitives for VectoJS. The package has no
-dependency on `@vectojs/desktop`: applications own the `NodeDocument`, while the
-editor owns selection, pointer transactions, and undo/redo history.
+Canvas-native node and link editing for VectoJS: a `NodeEditor` entity that renders and edits a typed `NodeDocument` of nodes, ports, and links as canvas cards, plus renderer-neutral helpers — document commands, selection, whole-document undo history, strict persistence, and deterministic layered auto-layout. Applications own the document; the editor owns gestures, validation, and history. It peers only on `@vectojs/core` and `@vectojs/ui` and carries no dependency on `@vectojs/desktop`, so it slots into any host scene.
+
+## Install
+
+```bash
+bun add @vectojs/node-editor
+```
+
+`@vectojs/core` and `@vectojs/ui` are peer dependencies and must be installed explicitly.
+
+## Usage
 
 ```ts
 import { Scene } from '@vectojs/core';
-import { NodeEditor } from '@vectojs/node-editor';
+import { NodeEditor, createDocument } from '@vectojs/node-editor';
 
 const scene = new Scene(canvas, { renderMode: 'onDemand' });
+
 const editor = new NodeEditor({
-  document: {
-    nodes: [{ id: 'source', type: 'input', title: 'Source', position: { x: 80, y: 100 } }],
+  width: 1000,
+  height: 700,
+  document: createDocument({
+    nodes: [
+      { id: 'source', type: 'input', title: 'Source', position: { x: 80, y: 100 } },
+      {
+        id: 'gain',
+        type: 'process',
+        title: 'Gain',
+        position: { x: 380, y: 100 },
+        ports: [
+          { id: 'in', direction: 'input' },
+          { id: 'out', direction: 'output' },
+        ],
+      },
+    ],
     links: [],
-  },
+  }),
 });
 scene.add(editor);
+
+editor.createLink({
+  id: 'l1',
+  source: 'source',
+  target: 'gain',
+  sourcePort: 'out',
+  targetPort: 'in',
+}); // validated against the rule set, then committed as one undoable command
+editor.undo();
+editor.redo();
+editor.applyAutoLayout(); // deterministic layered layout, also undoable
 ```
 
-Nodes can declare typed input and output ports. Drag from an output port to an
-input port to create a link; the connection is committed as one undoable
-command only when the target is valid. Escape/cancel, incompatible types,
-duplicate links, occupied inputs, and non-port targets leave the document and
-history unchanged. `deleteLink()` is also undoable.
+## Highlights
 
-Port hotspots are projected as accessible buttons with direction and node
-labels. Rendering remains canvas-native and the editor works with
-`renderMode = 'onDemand'`; applications should call `scene.markDirty()` after
-external document changes.
+- Every mutation is a single undoable command over whole-document snapshots (`CommandHistory.execute`/`undo`/`redo`), so undo/redo never lands mid-gesture; undo and redo end any in-flight drag or connection first.
+- Links are validated before commitment — missing endpoints, self-loops, duplicate ids or endpoint pairs, port direction/type mismatches, occupied inputs, and non-port targets all throw or reject without touching the document or history.
+- `deleteNodes(ids)` removes the given nodes plus every incident link in one command; headless `removeNode(document, id)` keeps documents referentially valid the same way.
+- Ports are keyboard-reachable: each hotspot projects as a focusable `role="button"`, keyboard activation arms/commits connections (pointer clicks never leave phantom pending connections), and transitions announce through an aggregate `role="status"` live region.
+- Persistence is explicit JSON with schema-version stamping (`exportDocument`/`importDocument`, aliases `serializeDocument`/`deserializeDocument`); import validates structurally and semantically through runtime `validateLink`, rejecting malformed data, unsupported versions, and links impossible to re-create.
+- `layoutDocument()` places source-to-target links in deterministic layers (Tarjan SCC, then longest-path ranking; stable ID sort within layers) and never mutates its input — dependency-free, with no runtime pull toward `@vectojs/graph-layout`.
+- Works under scaled or translated ancestors (document-local coordinates) and plays well with `renderMode: 'onDemand'`; call `scene.markDirty()` after external document changes.
 
-## Persistence
+> Documents @vectojs/node-editor@0.2.0.
 
-Persistence is explicit and JSON-only; it never reads browser storage. Use
-`exportDocument()` and `importDocument()` for a versioned, validated
-document format:
+## Documentation
 
-```ts
-const saved = exportDocument(editor.document);
-const restored = importDocument(saved);
-```
-
-Malformed documents, unsupported schema versions, invalid port references, and
-non-JSON data are rejected. Import and export use deep clones, so the restored
-document is independent of the source. `serializeDocument()` and
-`deserializeDocument()` remain aliases for the new names. These helpers do not
-mutate a `NodeEditor`; applications replacing an external document should call
-`scene.markDirty()` when using `renderMode = 'onDemand'`.
-Collaboration and table/markdown app integration remain outside this package.
-
-## Deterministic auto-layout
-
-`layoutDocument()` is an optional, dependency-free layout helper. It places
-source-to-target links in layers, sorts nodes within a layer by stable ID, and
-compresses cycles into one layer. Nodes without links are placed in the first
-layer. It preserves node dimensions and data and returns a new document:
-
-```ts
-import { layoutDocument } from '@vectojs/node-editor';
-
-const laidOut = layoutDocument(document, {
-  originX: 80,
-  originY: 100,
-  horizontalGap: 260,
-  verticalGap: 120,
-});
-```
-
-`NodeEditor.applyAutoLayout()` applies the same result as one undoable command.
-The helper is canvas-native and does not add a runtime dependency on
-`@vectojs/graph-layout`.
+- [`NodeEditor` reference](https://vectojs.org/reference/node-editor/)

@@ -1,15 +1,16 @@
 # @vectojs/desktop
 
-WebOS desktop shell for VectoJS — Plasma-inspired window manager, taskbar,
-Kickoff start menu, config-first chrome, VFS, and shortcuts on a single `Scene`.
+WebOS desktop shell for VectoJS — a Plasma-inspired window manager, taskbar, Kickoff start menu, multi-display work areas, chord shortcuts, and a pluggable VFS composed on a single `Scene`. It sits at the application layer of the package graph: it composes `@vectojs/core`, `@vectojs/ui`, and `@vectojs/styles` behind one config-first shell (`WebosConfig`), so apps register once and get window chrome, focus, minimize/maximize, and keyboard access without touching DOM.
 
 ## Install
 
 ```bash
-bun add @vectojs/desktop @vectojs/core @vectojs/ui @vectojs/styles
+bun add @vectojs/desktop
 ```
 
-## Quick start
+`@vectojs/core`, `@vectojs/ui`, and `@vectojs/styles` are peer dependencies and must be installed explicitly.
+
+## Usage
 
 ```ts
 import { Scene } from '@vectojs/core';
@@ -24,25 +25,17 @@ const shell = new DesktopShell({
       {
         id: 'about',
         title: 'About',
-        icon: 'ℹ',
-        // Prefer iconSvg for stable canvas rendering across platforms.
         iconSvg: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#38bdf8"/></svg>',
         create: () => new Text('Hello from @vectojs/desktop'),
       },
       {
         id: 'notes',
         title: 'Notes',
-        instances: 'multiple', // KWin: allow many windows
+        instances: 'multiple',
         create: (ctx) => new Text(`note ${ctx.windowId}`),
       },
     ],
-    desktop: {
-      wallpaper: '#0b1220',
-      // wallpaperImage: '/wall.png',
-      taskbarHeight: 40,
-      taskbarPosition: 'bottom',
-      // displays: [{ id: 'main', x: 0, y: 0, width: 1280, height: 800 }],
-    },
+    desktop: { wallpaper: '#0b1220', taskbarHeight: 40, taskbarPosition: 'bottom' },
     shortcuts: {
       'Control+n': { type: 'open-app', appId: 'notes' },
       'Meta+w': { type: 'close-focused' },
@@ -55,33 +48,19 @@ shell.start();
 shell.open('about');
 ```
 
-## Plasma-aligned behaviour
+## Highlights
 
-| Surface       | Behaviour                                                                  |
-| ------------- | -------------------------------------------------------------------------- |
-| Window chrome | Titlebar drag, min / max / close (LTR order), edge+corner resize           |
-| Keyboard move | Tab to the titlebar handle, arrow keys move the window (Shift = 1px steps) |
-| Resize        | 6px rim hit zone on the frame; corner grips drawn while focused            |
-| Maximize      | Fills display **work area** (display minus taskbar); double-click titlebar |
-| Minimize      | Hides window; taskbar entry restores                                       |
-| Task Manager  | One entry per window; click active → minimize; click other → focus         |
-| Kickoff       | Start button opens app list panel                                          |
-| Multi-display | Logical rectangles in one Scene; per-display work areas                    |
-| Shortcuts     | Document-level chord router (`Control+n`, `Meta+w`, …)                     |
-| VFS           | Pluggable `Vfs` + in-memory `MemoryVfs`                                    |
-| Instances     | `single` (default) focuses existing; `multiple` always spawns              |
-| a11y          | Windows default to `a11yProjection: 'onDemand'`                            |
+- Window chrome is 100% canvas: titlebar drag, min/max/close, edge and corner resize with a 6px rim hit zone, double-click maximize into the display work area (display minus taskbar), and taskbar-restore minimize.
+- Keyboard-first WM behavior: Tab reaches the titlebar handle, arrow keys move the focused window (Shift steps 1px), and windows default to `a11yProjection: 'onDemand'`.
+- Multi-display in one Scene: logical display rectangles each with their own work area; maximize respects the containing display.
+- Config-first everything — apps, wallpaper, displays, shortcuts, theme tokens, and VFS arrive as one `WebosConfig` resolved by `resolveConfig`.
+- Document-level chord router (`Control+n`, `Meta+w`, `Meta+Space`, ...) with `{ type: 'open-app' | 'close-focused' | 'toggle-start' | 'custom' }` actions and a custom handler hook.
+- App instance policy per app: `'single'` (default) focuses the existing window; `'multiple'` always spawns, KWin-style.
+- Stable SVG icons via `AppDefinition.iconSvg` across Start menu, taskbar, and window chrome; `icon` text remains a legacy fallback.
+- Pluggable `Vfs` interface with an in-memory `MemoryVfs`; acyclic dependency rule `desktop → {core, ui, styles}` only.
 
-## Public surface
+> Documents @vectojs/desktop@0.7.1.
 
-`DesktopShell`, `WindowManager`, `DesktopWindow`, `Taskbar`, `StartMenu`,
-`AppRegistry`, `DisplayLayout`, `ShortcutRouter`, `MemoryVfs` / `Vfs`,
-`resolveConfig`, `WebosConfig`.
+## Documentation
 
-## Design rules
-
-- **Acyclic deps**: `desktop → {core, ui, styles}` only.
-- **Config-first**: colours, apps, displays, shortcuts, VFS via `WebosConfig`.
-- **Window = Entity**: chrome is 100% canvas; z-order is overlay sibling order.
-- **Stable icons**: `AppDefinition.iconSvg` renders SVG icons in the Start menu,
-  taskbar, and window chrome; `icon` remains a text fallback for legacy apps.
+No dedicated docs page yet — see the [repository](https://github.com/vectojs/vectojs/tree/main/packages/desktop) for source, tests, and the type surface.
