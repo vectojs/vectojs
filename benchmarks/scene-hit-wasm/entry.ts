@@ -12,6 +12,21 @@
 //          grid-only — e.g. hover-tracking or multiple hit-tests per frame)
 // against the JS depth-first walk (findHitRecursively), on real Chrome/Firefox.
 // Posts JSON to /results (hyprland-browser-bench contract).
+//
+// Harness note (PX-1255): this entry used to leave every scene it rendered
+// self-perpetuating. Scene.loop() ends with scheduleFrame() whenever isRunning,
+// and the bench force-set isRunning=true permanently, so each renderFrame()
+// chained another full-render rAF at panel rate — forever, across 12 scenes by
+// the end of the sweep. Post-run calibrateRefreshRate() then observed only
+// ≥200 ms frame deltas and reported refreshHz 0, invalidating every envelope
+// (validation.ok false, both engines, twice). Two fixes, both load-bearing:
+//   1. renderFrame() holds isRunning only FOR the duration of the manual
+//      loop() call, so the scheduled continuation no-ops and dies — the bench
+//      drives frames itself instead of leaking render loops.
+//   2. run() yields to the event loop/rAF between phases and sizes, keeping
+//      per-trial work bounded so the page keeps producing clean frames for
+//      calibration (the canonical init→rAF→settle→report pattern shared by
+//      core-wasm/particle-wasm).
 import { Scene, Entity } from '@vectojs/core';
 import { awaitStart, reportFailure, reportResult } from '../_shared/client.ts';
 
@@ -54,8 +69,16 @@ function sceneWith(): Scene {
   const canvas = document.createElement('canvas');
   canvas.width = VW;
   canvas.height = VH;
-  const scene = new Scene(canvas);
-  (scene as unknown as { isRunning: boolean }).isRunning = true;
+  // disableWindowResize is load-bearing for correctness here: without it Scene
+  // sizes itself from window.innerWidth/innerHeight when the canvas is
+  // unattached (clientWidth/Height are 0), so in any window shorter than VH
+  // the scene's logical height silently became the WINDOW height and the wasm
+  // hit grid never covered the bottom strip of entities — every query there
+  // returned null while the JS walk still found them (measured 2026-08-26,
+  // headless 1280x720: 9-40 mismatches per run, all with wasmBox null and
+  // queryY > innerHeight). Sizing from the canvas attributes makes the sweep
+  // deterministic whatever window the runner opens.
+  const scene = new Scene(canvas, { disableWindowResize: true });
   // Outside a test environment Scene defaults to a 60fps frame-pacing cap
   // (`maxFPS=60`), which silently no-ops a loop() call arriving <16.67ms
   // after the last one — exactly what renderFrame() calls in this bench's
@@ -65,6 +88,34 @@ function sceneWith(): Scene {
   // skipping and leaving the previous grid/frame counter untouched.
   scene.maxFPS = 0;
   return scene;
+}
+/** Advance the scene's frame counter (a real render pass) so the lazily-cached
+ *  hit grid is invalidated — mirrors what an actual new rendered frame does.
+ *  isRunning is held ONLY for the duration of the manual loop() call: loop()
+ *  ends by scheduling its own rAF continuation whenever it sees isRunning, and
+ *  leaving that set would leak one full-render rAF chain per scene at panel
+ *  rate, saturating the main thread and starving post-run refresh-rate
+ *  calibration (the PX-1255 defect). With isRunning cleared again the scheduled
+ *  continuation no-ops on its first tick and the chain dies. */
+function renderFrame(scene: Scene): void {
+  const s = scene as unknown as { isRunning: boolean; loop: (t: number) => void };
+  s.isRunning = true;
+  s.loop(performance.now());
+  s.isRunning = false;
+}
+/** Yield to the event loop and then to one real animation frame. The rAF hop
+ *  is what keeps frames flowing for the cadence gate and post-run
+ *  calibrateRefreshRate(); the setTimeout hop guarantees the browser gets a
+ *  macrotask boundary even where rAF is throttled. Awaiting this between
+ *  phases/sizes keeps every synchronous stretch bounded (a heavy un-yielded
+ *  loop both starves calibration and can trip Chrome's page-unresponsive
+ *  dialog mid-run). */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      requestAnimationFrame(() => resolve());
+    }, 0);
+  });
 }
 function buildEntities(scene: Scene, n: number): void {
   const rand = rng(0xbeef);
@@ -77,27 +128,25 @@ function buildEntities(scene: Scene, n: number): void {
     scene.add(e);
   }
 }
-/** Advance the scene's frame counter (a real render pass) so the lazily-cached
- *  hit grid is invalidated — mirrors what an actual new rendered frame does. */
-function renderFrame(scene: Scene): void {
-  (scene as unknown as { loop: (t: number) => void }).loop(performance.now());
-}
 /** Time `action(trialIndex)`, running untimed `setup` immediately before each
  *  trial — so a render inside `setup` (whose cost happens every frame
  *  regardless of hit-testing) never pollutes the measured hit-test cost.
- *  `action` receives the trial index so a single-query measurement can cycle
- *  through different query points per trial: `findHitRecursively` walks
- *  children in REVERSE order, so a fixed point that happens to land inside a
- *  high-index entity returns after one check — repeating the SAME point every
- *  trial would consistently hit that one lucky/unlucky landing rather than
- *  measuring a representative query. */
-function minMsWithSetup(
+ *  Yields to a real animation frame between trials (outside the timed region),
+ *  keeping each synchronous stretch bounded so frames keep flowing for cadence
+ *  calibration. `action` receives the trial index so a single-query measurement
+ *  can cycle through different query points per trial: `findHitRecursively`
+ *  walks children in REVERSE order, so a fixed point that happens to land
+ *  inside a high-index entity returns after one check — repeating the SAME
+ *  point every trial would consistently hit that one lucky/unlucky landing
+ *  rather than measuring a representative query. */
+async function minMsWithSetup(
   trials: number,
   setup: () => void,
   action: (trial: number) => void,
-): number {
+): Promise<number> {
   let best = Infinity;
   for (let t = 0; t < trials; t++) {
+    if (t > 0) await nextFrame();
     setup();
     const t0 = performance.now();
     action(t);
@@ -143,17 +192,19 @@ async function run(): Promise<void> {
   };
 
   for (const n of NS) {
+    if (rows.length > 0) await nextFrame();
     // JS-only baseline: single query, isolated (no render mixed in — JS has
     // no build step, so a fresh render vs. a stale one costs the same here).
     const jsScene = sceneWith();
     buildEntities(jsScene, n);
     renderFrame(jsScene);
-    const jsColdMs = minMsWithSetup(
+    const jsColdMs = await minMsWithSetup(
       TRIALS,
       () => renderFrame(jsScene),
       (t) => jsScene.findEntityAt(queryX[t], queryY[t]),
     );
     const jsColdNs = jsColdMs * 1e6;
+    await nextFrame();
 
     // WASM: same scene topology, hit-test backend enabled.
     //
@@ -192,10 +243,11 @@ async function run(): Promise<void> {
       if (a !== b) mismatches++;
     }
     if (mismatches > 0) beacon('error', `n=${n}: ${mismatches}/200 wasm/js MISMATCH`);
+    await nextFrame();
 
     // cold: fresh render (untimed setup) then exactly ONE query — pure
     // gather+build+query cost, the worst case (one query per rendered frame).
-    const wasmColdMs = minMsWithSetup(
+    const wasmColdMs = await minMsWithSetup(
       TRIALS,
       () => renderFrame(wasmScene),
       (t) => wasmScene.findEntityAt(queryX[t], queryY[t]),
@@ -205,17 +257,17 @@ async function run(): Promise<void> {
     // Same cold measurement on the unfused control, so the fusion's effect is a
     // same-run delta rather than a comparison across two builds.
     const unfusedColdNs =
-      minMsWithSetup(
+      (await minMsWithSetup(
         TRIALS,
         () => renderFrame(unfusedScene),
         (t) => unfusedScene.findEntityAt(queryX[t], queryY[t]),
-      ) * 1e6;
+      )) * 1e6;
 
     // warm: fresh render (untimed setup) then WARM_QUERIES queries — the
     // first pays gather+build, the rest are grid-query-only; per-query cost
     // amortizes that one-time build over the batch (repeated hit-tests
     // against the same rendered frame, e.g. hover-tracking).
-    const wasmWarmMs = minMsWithSetup(
+    const wasmWarmMs = await minMsWithSetup(
       TRIALS,
       () => renderFrame(wasmScene),
       () => {
@@ -230,7 +282,7 @@ async function run(): Promise<void> {
     // decoupled from build cost (unlike "warm", which is still build-dominated
     // at high N since WARM_QUERIES isn't large enough to amortize a ~10ms
     // build down to negligible — this is the fair comparison to jsSteady).
-    const wasmHotMs = minMsWithSetup(
+    const wasmHotMs = await minMsWithSetup(
       TRIALS,
       () => {
         renderFrame(wasmScene);
@@ -244,7 +296,7 @@ async function run(): Promise<void> {
 
     // js steady-state per-query (repeated queries, no render between —
     // confirms jsColdNs is representative: JS has no cold/warm distinction).
-    const jsSteadyMs = minMsWithSetup(TRIALS, noop, () => {
+    const jsSteadyMs = await minMsWithSetup(TRIALS, noop, () => {
       for (let i = 0; i < 500; i++) jsScene.findEntityAt(queryX[i], queryY[i]);
     });
     const jsSteadyNs = (jsSteadyMs / 500) * 1e6;
@@ -272,6 +324,10 @@ async function run(): Promise<void> {
       `n=${n}: jsCold=${jsColdNs.toFixed(0)}ns jsSteady=${jsSteadyNs.toFixed(0)}ns wasmCold=${wasmColdNs.toFixed(0)}ns wasmWarm=${wasmWarmPerQueryNs.toFixed(0)}ns wasmHot=${wasmHotPerQueryNs.toFixed(0)}ns mismatches=${mismatches}`,
     );
     status.textContent = `done ${rows.length}/${NS.length}…`;
+    // Hygiene: stop all four scenes so nothing scheduled survives into the next
+    // size's measurement window (renderFrame already prevents self-perpetuation;
+    // this also releases the scenes' observers/canvases for GC).
+    for (const scene of [jsScene, wasmScene, unfusedScene, refScene]) scene.stop();
   }
 
   // `warmQueries`/`trials`/`note` move into `params` (workload dimensions). The
