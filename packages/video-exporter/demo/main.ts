@@ -15,7 +15,7 @@ class DemoRoot extends UIComponent {
   subtitle: Text;
   card: Card;
 
-  public render(_renderer: any): void {}
+  public render(_renderer: unknown): void {}
 
   constructor() {
     super();
@@ -54,7 +54,8 @@ class DemoRoot extends UIComponent {
     this.add(this.card);
   }
 
-  animate(dt: number) {
+  public override update(dt: number, _time: number): void {
+    super.update(dt, _time);
     this.time += dt;
 
     // Animate title color hue shift
@@ -71,4 +72,7 @@ class DemoRoot extends UIComponent {
 
 const root = new DemoRoot();
 scene.add(root);
-scene.start();
+// Deliberately NOT calling scene.start(): see data-chart.ts. A running rAF
+// loop advances entity state with real wall-clock dt before the exporter's
+// takeover, breaking frame-exact reproducibility. The exporter's
+// stop()+step(dt) sequence is the sole clock for export scenes.
