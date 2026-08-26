@@ -1,94 +1,62 @@
 # @vectojs/three
 
-> Put a live VectoJS 2D interface into Three.js/WebXR and route 3D pointer input back to the canvas.
-
-[![npm](https://img.shields.io/npm/v/@vectojs/three?color=22d3ee)](https://www.npmjs.com/package/@vectojs/three)
-[![CI](https://github.com/vectojs/vectojs/actions/workflows/ci.yml/badge.svg)](https://github.com/vectojs/vectojs/actions/workflows/ci.yml)
-[![MIT](https://img.shields.io/badge/license-MIT-6366f1.svg)](https://github.com/vectojs/vectojs/blob/main/LICENSE)
-
-`@vectojs/three` renders a VectoJS `Scene` into a canvas-backed Three.js texture. The adapter maps
-raycast UV coordinates into the Scene's logical coordinate space, forwards pointer/hover/wheel
-events, and keeps texture uploads synchronized with VectoJS rendering.
-
-[Live 3D demo](https://vectojs.org/demos/dimension/) ·
-[Reference](https://vectojs.org/reference/three/) ·
-[Main repository](https://github.com/vectojs/vectojs)
+WebGL bridge between VectoJS and Three.js, with two exports for two different jobs: `ThreeAdapter` renders a live VectoJS 2D UI onto a canvas wrapped as a `THREE.CanvasTexture` — routing raycast pointer input, panel focus, and synthetic keyboard dispatch back into the scene — while `ThreeRenderer` uses Three.js itself as the rendering backend of a VectoJS `Scene`. In the dependency graph it is a leaf rendering integration: it peers only on `@vectojs/core` and `three`, and is consumed by hosts that already own a Three.js or WebXR scene rather than by other VectoJS packages.
 
 ## Install
 
 ```bash
-bun add @vectojs/core @vectojs/ui @vectojs/three three
+bun add @vectojs/three
 ```
 
-`@vectojs/core` and `three` are peer dependencies. `@vectojs/ui` is used by the example and is
-optional when you supply your own core entities.
+`@vectojs/core` and `three` are peer dependencies and must be installed explicitly. For TypeScript, add `@types/three`.
 
-## Basic usage
+## Usage
 
 ```ts
+import * as THREE from 'three';
 import { Button, Stack, Text } from '@vectojs/ui';
 import { ThreeAdapter } from '@vectojs/three';
-import * as THREE from 'three';
 
-const scene3d = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-
-const adapter = new ThreeAdapter({
-  width: 800,
-  height: 500,
-});
-
-const panel = new Stack({ direction: 'vertical', gap: 16 });
-panel.setPosition(36, 36);
-panel.add(new Text('VectoJS in 3D', { font: '700 28px Inter' }));
-panel.add(new Button('Select', { onClick: () => console.log('selected') }));
-adapter.vectoScene.add(panel);
+const adapter = new ThreeAdapter({ width: 512, height: 256 });
+const stack = new Stack({ direction: 'vertical', gap: 12 });
+const apply = new Button('Apply');
+apply.on('click', () => console.log('applied'));
+stack.add(new Text('Settings'));
+stack.add(apply);
+adapter.vectoScene.add(stack);
 adapter.vectoScene.start();
+myThreeScene.add(adapter.mesh); // ready-made textured plane
 
-// Use the adapter's texture/material with a mesh in your Three.js scene.
-scene3d.add(adapter.mesh);
+// Logical-coordinate input without a raycaster (tests, automation, tools):
+adapter.dispatchPointer('pointerdown', 60, 30);
+adapter.dispatchPointer('pointerup', 60, 30);
+
+// Panel focus drives key routing. Keyboard owners — entities projecting an
+// input/textarea/select tag or a role from core's KEYBOARD_OWNING_ROLES
+// (button, textbox, slider, ...) — consume keys instead of leaking them to
+// the page, so arrows move a slider instead of orbiting your camera.
+if (adapter.isFocusable(apply)) adapter.focus(apply);
+adapter.dispatchKey('Enter'); // routed at the focused entity's projection
+console.log(adapter.focusedEntity === apply); // true
+adapter.blur();
 ```
 
-See the [reference](https://vectojs.org/reference/three/) for the exact constructor and
-mesh/material customization supported by the installed version.
+In a real application, drive pointer input with `updateIntersection(raycaster, type, originalEvent)` inside your pointer listeners and render loop; `dispatchKey`/`dispatchPointer` are the raycaster-free equivalents over logical scene coordinates. Wheel events have no neutral defaults and stay on the `updateIntersection` path.
 
-## Coordinate and event model
+## Highlights
 
-- VectoJS layout uses the logical `width`/`height` passed to the adapter.
-- The backing canvas may be larger on HiDPI displays; raycast UVs are still mapped to logical space.
-- Pointer intersections are translated into VectoJS events and routed through its normal hit-test,
-  capture, target, and bubble phases.
-- Hover state is tracked per pointer, including pointer leave boundaries.
-- WebXR controllers can use the same raycast-to-2D route when supplied by the host application.
+- Two exports, two contracts: `ThreeAdapter` puts a VectoJS UI into an existing Three.js/WebXR scene; `ThreeRenderer` replaces Canvas 2D with hardware-accelerated Three.js primitives behind the normal `IRenderer` surface.
+- Texture sync without polling: a render hook sets `texture.needsUpdate` after every VectoJS frame, so on-demand scenes upload only when their visual state changes.
+- Panel focus model (`focus`/`blur`/`focusedEntity`/`isFocusable`) bridges synthetic `FocusEvent`s through core-side state so caret blink and focus emits match a connected canvas; pointerdown focuses the nearest focusable ancestor of the hit.
+- Keyboard ownership via core's `KEYBOARD_OWNING_ROLES`: while a focused owner holds keys they never reach the page; otherwise events forward to `window` under native gates (`defaultPrevented`, auto-repeat, page-level keyboard owners), and an entity handler calling `preventDefault()` suppresses the forward.
+- Raycast UVs are remapped into the scene's logical space with automatic Y flip and DPR-correct hit-testing on HiDPI displays (physical-size mapping was fixed in 0.1.2).
+- Per-pointerId hover state gives WebXR controllers and multi-touch inputs independent hover/focus contexts.
+- Idempotent `dispose()` releases texture, geometry, and material, restores the Scene render hook, destroys the inner VectoJS scene, and clears per-pointer state including panel focus.
 
-The adapter does not own the application's Three.js render loop, camera, controls, or raycaster.
+> Documents @vectojs/three@0.2.0.
 
-## Texture synchronization
+## Documentation
 
-The adapter wraps the VectoJS Scene render path so `texture.needsUpdate` is set after a dirty frame.
-On-demand VectoJS scenes therefore upload only when their visual state changes; the Three.js host
-still decides when to render its own frame.
-
-## Lifecycle
-
-```ts
-adapter.dispose();
-```
-
-`dispose()` restores the Scene render hook, releases adapter-owned Three.js resources, destroys the
-inner VectoJS Scene, and detaches event state. Call it when removing the panel or unmounting the host
-component.
-
-## Constraints
-
-- The default output is a flat textured plane; it is not DOM rendered in 3D.
-- Canvas clipping and logical hit-testing remain 2D even when the mesh is rotated in world space.
-- The host must provide correct raycast intersections and account for occlusion.
-- Texture resolution affects sharpness and upload cost. Choose logical size and DPR for the target
-  viewing distance rather than always maximizing both.
-- Three.js releases outside the declared peer range are not guaranteed.
-
-## License
-
-[MIT](https://github.com/vectojs/vectojs/blob/main/LICENSE) © 2026 Xuepoo
+- [Overview](https://vectojs.org/reference/three/)
+- [`ThreeAdapter`](https://vectojs.org/reference/three-adapter/)
+- [`ThreeRenderer`](https://vectojs.org/reference/three-renderer/)

@@ -1,16 +1,27 @@
 # @vectojs/styles
 
-CSS-property-name style objects for [VectoJS](https://github.com/vectojs/vectojs).
+`@vectojs/styles` is a thin declarative layer over `@vectojs/core`: write styles with CSS property
+names and CSS-like values, and `applyStyle` maps them onto the numeric entity fields of the
+Virtual Math Tree. It depends only on `@vectojs/core`, sits beside `@vectojs/ui` in application
+code, and is deliberately not a CSS engine — no parser, no selector, no cascade, no inheritance;
+the canvas stays the single source of truth.
 
-Typed syntax sugar for migrating web habits onto the numeric Virtual Math Tree:
-write styles with CSS property names and CSS-like values, and `applyStyle`
-maps them onto entity fields. Token references (`var(--key)`) resolve against
-a flat theme, and switching the theme re-applies every tracked style. No
-parser, no cascade, no selector — the canvas stays the single source of truth.
+## Install
+
+```bash
+bun add @vectojs/styles
+```
+
+Depends on `@vectojs/core` (`^1.39.0`), which is installed automatically.
+
+## Usage
 
 ```ts
-import { style, applyStyle, css, tokens, setTheme, PRESET_THEMES } from '@vectojs/styles';
+import { Scene } from '@vectojs/core';
+import { Button, Stack } from '@vectojs/ui';
+import { applyStyle, css, PRESET_THEMES, setTheme, style, tokens } from '@vectojs/styles';
 
+const scene = new Scene(document.querySelector<HTMLCanvasElement>('canvas')!);
 setTheme(tokens(PRESET_THEMES.dark));
 
 const primary = css(
@@ -19,76 +30,36 @@ const primary = css(
 );
 const muted = css(primary, { backgroundColor: 'var(--muted)' });
 
+const button = new Button('Deploy');
 applyStyle(button, muted);
-applyStyle(stack, style({ flexDirection: 'row', gap: '8px', alignItems: 'center' }));
-applyStyle(title, style({ fontFamily: 'Inter', fontSize: '18px', fontWeight: 700 }));
+
+const row = new Stack({ direction: 'horizontal' });
+applyStyle(row, style({ flexDirection: 'row', gap: '8px', alignItems: 'center' }));
+row.add(button);
+scene.add(row.setPosition(40, 40));
 ```
 
-## Exports
+## Highlights
 
-- `style()` — identity factory typing an object literal as `Style`.
-- `css(...styles)` — merge factory; later sources win, `null`/`false` skipped.
-- `applyStyle(entity, style)` — writes mapped fields, returns the applied CSS
-  keys; skips keys the entity does not have, throws on invalid values and on
+- Typed CSS-property-name style objects: `style()` types an object literal as a `Style`;
+  `applyStyle(entity, style)` writes the mapped fields, marks the scene dirty, returns the applied
+  CSS keys, skips keys the entity does not have, and throws loudly on invalid values or
   container-only keys applied to non-containers.
-- `tokens(set)` / `setTheme(theme)` / `getTheme()` — flat token sets; styles
-  referencing `var(--key)` are re-applied when the theme switches.
-- `PRESET_THEMES` — `light` / `dark` / `github` / `dracula` token sets.
-- `Style` — the CSS-named style interface.
+- Token themes with `var(--key)` references resolved against a flat theme — `setTheme(theme)`
+  re-applies every tracked style; unknown tokens, unsupported `var(--key, fallback)`, and
+  reference cycles all throw with the offending chain.
+- `css(...styles)` merge factory: later sources win, falsy sources are skipped for conditional
+  variants, inputs are never mutated (per-axis `padding` objects are copied).
+- Preset token sets in `PRESET_THEMES`: `light`, `dark`, `github`, `dracula`; compose your own
+  with `tokens(set)` and read back the active theme with `getTheme()`.
+- Font composition: `fontFamily` / `fontSize` / `fontWeight` merge into the entity's full canvas
+  `font` shorthand preserving unchanged segments, or compose explicitly with `composeFont`.
+- Layout keywords map to containers: `flexDirection`, `gap`, `alignItems`, `flexWrap`, and
+  `display: 'flex'` (validation-only) work on Stack/Flow entities; per-axis `padding` accepts
+  `{ x, y }`.
 
-## Rules of the road
+> Documents @vectojs/styles@0.3.3.
 
-- Values are bare numbers (px) or `px` strings; `%`/`em` are rejected loudly.
-  This holds for `fontSize` at runtime too — tokens and JS callers bypass the
-  `${number}px` type, so non-px units fail loudly instead of composing a
-  shorthand Canvas2D silently drops.
-- String values may be `var(--key)` token references resolved against the
-  active theme; an unknown token throws. References embedded inside a larger
-  string (`'rgba(var(--rgb), 0.4)'`) resolve by substitution as well, and
-  chains of token-references-token resolve transitively with cycle detection —
-  any cycle or missing token throws with the offending chain.
-  The CSS fallback form `var(--key, fallback)` is not supported and throws
-  loudly wherever it appears (directly, inside a composite, or through a
-  token) — an unresolved fallback would silently keep the previous canvas
-  paint and never re-resolve on a theme switch (#645).
-- `fontFamily` / `fontSize` / `fontWeight` compose into the entity's `font`
-  shorthand, preserving the segments the style does not change. The parser
-  understands the full canvas prefix grammar
-  `[style || variant || weight]? size[/line-height]? family`; a stored
-  shorthand with an unrecognized size-like segment throws instead of being
-  silently recomposed into something invalid.
-- `css(...)` produces a fresh object and never aliases its inputs — per-axis
-  `padding` objects are copied into the merged result.
-- `padding` accepts a single value or `{ x, y }` (per-axis); box components
-  size themselves at construction, so post-construction padding changes are
-  picked up only by consumers that read `padding`/`paddingX`/`paddingY` live.
-- `flexDirection`/`alignItems`/`flexWrap` take CSS keywords (`row`/`column`,
-  `flex-start`/`center`/`flex-end`, `wrap`/`nowrap`).
-- Layout keys require a container entity (Stack/Flow); anything else throws.
-- `applyStyle` marks the entity's scene dirty when it writes anything.
+## Documentation
 
-## Property support matrix (GH-453)
-
-Not every CSS-named property maps to every component — `applyStyle` skips keys
-whose field does not exist on the entity (shared styles) and throws on
-container-only keys applied to non-containers. What that means in practice:
-
-| Property                                                    | Works on                                                | Notes                                                                                                                                                                                          |
-| ----------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `x`/`y`/`width`/`height`, `opacity`, `scaleX/Y`, `rotation` | any entity with the field                               | `rotation` is radians, not degrees.                                                                                                                                                            |
-| `backgroundColor`, `color`                                  | components with `bg` / `color` (Button, Card, Text, …)  | `Button` has no `borderColor` — the key is skipped silently on it.                                                                                                                             |
-| `borderColor`                                               | components that expose `borderColor` (Card, Popover, …) | Silently skipped elsewhere by design (shared-style contract).                                                                                                                                  |
-| `borderRadius`                                              | components with `radius` (Button, Card, …)              |                                                                                                                                                                                                |
-| `font` / `lineHeight`                                       | text-bearing components (Text, RichText, Input, …)      | `font` is the full shorthand.                                                                                                                                                                  |
-| `fontFamily`/`fontSize`/`fontWeight`                        | text-bearing components                                 | Compose into the `font` shorthand. `fontSize` needs a unit-bearing token; `fontFamily` must not reference the `font` shorthand token — both throw loudly.                                      |
-| `textAlign`                                                 | `Text`/`RichText`/`TextEntity` (via `setTextAlign`)     | Only `left` and `justify` exist in the stack; `center`/`right` throw (revisit when ui Text supports them).                                                                                     |
-| `padding`                                                   | components with `paddingX`/`paddingY` (ui components)   | Sizing is fixed at construction; consumers that read the fields live pick changes up.                                                                                                          |
-| `display`/`flexDirection`/`gap`/`alignItems`/`flexWrap`     | Stack/Flow containers                                   | `display: flex` is validation-only. Container detection is "has a `direction` field", so any entity carrying `direction` accepts these keys — give non-layout entities a different field name. |
-
-## Install
-
-```sh
-bun add @vectojs/styles
-```
-
-Depends only on `@vectojs/core`.
+- [`@vectojs/styles` reference](https://vectojs.org/reference/styles/)
