@@ -2279,14 +2279,27 @@ export class Scene {
       this.width = styleWidth ?? (canvas.width || canvas.clientWidth || 0);
       this.height = styleHeight ?? (canvas.height || canvas.clientHeight || 0);
     } else {
-      this.width =
-        typeof window !== 'undefined'
-          ? window.innerWidth
-          : canvas.clientWidth || canvas.width || 800;
-      this.height =
-        typeof window !== 'undefined'
-          ? window.innerHeight
-          : canvas.clientHeight || canvas.height || 600;
+      // Full-window contract (#817): the window viewport is adopted only once
+      // the canvas is actually attached. A detached canvas (constructed before
+      // its host mounts it, benchmarks, offscreen renders, tests) has no
+      // meaningful viewport to fill — inheriting `window.innerWidth/Height`
+      // silently gave such scenes viewport-dependent geometry that no resize
+      // event would ever correct. They start at 0×0 instead; when the canvas
+      // later gains layout, `armAttachmentViewportLatch()` adopts the window
+      // size exactly as a post-attachment `resize` would.
+      if (typeof canvas.isConnected === 'boolean' && !canvas.isConnected) {
+        this.width = 0;
+        this.height = 0;
+      } else {
+        this.width =
+          typeof window !== 'undefined'
+            ? window.innerWidth
+            : canvas.clientWidth || canvas.width || 800;
+        this.height =
+          typeof window !== 'undefined'
+            ? window.innerHeight
+            : canvas.clientHeight || canvas.height || 600;
+      }
     }
     const globalProcess =
       typeof globalThis !== 'undefined' ? (globalThis as any).process : undefined;
@@ -2657,6 +2670,38 @@ export class Scene {
     gl.addEventListener('webglcontextrestored', this.glContextRestoredHandler);
   }
 
+  /**
+   * One-shot adoption of the window viewport once an initially-detached canvas
+   * gains layout (#817). A full-window scene constructed before its canvas is
+   * attached starts at 0×0, and no window `resize` fires on attachment — so
+   * without this latch the scene would stay unsized forever. The first nonzero
+   * layout box adopts `window.innerWidth/innerHeight` (the same sizing the
+   * window resize handler applies, keeping the full-window contract), then the
+   * observer disconnects: steady-state sizing stays exactly as if the canvas
+   * had been attached before construction. An explicit user `resize()` between
+   * construction and attachment is respected and skips adoption.
+   *
+   * No-op when the scene already has a size (attached at construction) or when
+   * `ResizeObserver` is unavailable (the caller then drives sizing explicitly).
+   */
+  private armAttachmentViewportLatch(): void {
+    if (this.width > 0 && this.height > 0) return;
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      // A zero box means the canvas is attached but not displayed yet
+      // (`display: none` ancestor); stay latched until a real layout arrives.
+      if (!box || !(box.width > 0) || !(box.height > 0)) return;
+      observer.disconnect();
+      this.canvasResizeObserver = null;
+      if (this.width === 0 || this.height === 0) {
+        this.resize(window.innerWidth, window.innerHeight);
+      }
+    });
+    this.canvasResizeObserver = observer;
+    observer.observe(this.canvas);
+  }
+
   // --- domain: scene-facade — renderer accessor ---
   /**
    * Expose the underlying {@link IRenderer} for advanced direct-draw operations.
@@ -2966,6 +3011,10 @@ export class Scene {
   private setupEvents(): void {
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.addEventListener('resize', this.resizeHandler);
+      // A canvas that was detached at construction started at 0×0 (#817); the
+      // window resize listener alone would never size it, since attaching the
+      // canvas fires no window event. Arm the one-shot adoption latch.
+      this.armAttachmentViewportLatch();
     } else if (
       this.disableWindowResize &&
       typeof ResizeObserver !== 'undefined' &&
