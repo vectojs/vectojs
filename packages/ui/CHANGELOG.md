@@ -1,5 +1,11 @@
 # @vectojs/ui
 
+## 2.20.2
+
+### Patch Changes
+
+- 2a954fc: fix(math-selection): make display/inline math atomically selectable — avoid per-grapheme TeX fragmentation
+
 ## 2.20.1
 
 ### Patch Changes
