@@ -1439,6 +1439,8 @@ export class Scene {
    *  this an embedded canvas stayed at its initial size forever. */
   private canvasResizeObserver: ResizeObserver | null = null;
   private dprChangeHandler: (() => void) | null = null;
+  private dprPollInterval: number | null = null;
+  private lastDpr: number = 1;
 
   // --- domain: a11y-projection — focus, overlay geometry, DOM ordering, portals ---
   private focusedA11yElement: HTMLElement | null = null;
@@ -2598,12 +2600,32 @@ export class Scene {
     if (this.dprMediaQuery && this.dprChangeHandler) {
       this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
     }
-    const dpr = window.devicePixelRatio || 1;
+    const raw = (window as unknown as { devicePixelRatio?: number }).devicePixelRatio;
+    const dpr = Number.isFinite(raw) && (raw as number) > 0 ? (raw as number) : 1;
     const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
     const handler = () => {
+      // Guard against fractional-DPR jitter (e.g. 1.1000000685 at 110% zoom).
+      // Re-arming a matchMedia query for a fractional DPR can fire immediately
+      // even though the DPR hasn't meaningfully changed — the query's own
+      // resolution is coarser than the reported double — so re-arming would
+      // re-trigger itself and flicker continuously (vectojs-website comment at
+      // src/index.ts:1012). Use an epsilon to ignore sub-0.001 jitter.
+      const curRaw = (window as unknown as { devicePixelRatio?: number }).devicePixelRatio;
+      const cur = Number.isFinite(curRaw) && (curRaw as number) > 0 ? (curRaw as number) : 1;
+      if (Math.abs(cur - dpr) <= 0.001) {
+        this.watchDevicePixelRatio();
+        return;
+      }
+      this.lastDpr = cur;
       // Re-scale the backing store for the new DPR, then re-arm for the next
       // change (the fired query is now stale for the new ratio).
-      this.resize(this.width, this.height);
+      // Use try/catch so a failing resize/render does not leave the scene blank
+      // and unresponsive — the handler must re-arm regardless.
+      try {
+        this.resize(this.width, this.height);
+      } catch (err) {
+        console.warn('[VectoJS] DPR resize failed', err);
+      }
       // Repaint in the same task, before the browser can composite.
       //
       // `resize` assigns `canvas.width`/`canvas.height`, and per the HTML spec
@@ -2616,12 +2638,41 @@ export class Scene {
       //
       // Guarded on the context: a lost 2D context makes every draw call a no-op,
       // and its own `contextrestored` handler owns the repaint.
-      if (this.renderer.isContextLost?.() !== true) this.render(this.renderer);
+      try {
+        if (this.renderer.isContextLost?.() !== true) this.render(this.renderer);
+      } catch (err) {
+        console.warn('[VectoJS] DPR repaint failed', err);
+      }
       this.watchDevicePixelRatio();
     };
     query.addEventListener?.('change', handler);
     this.dprMediaQuery = query;
     this.dprChangeHandler = handler;
+    this.lastDpr = dpr;
+    // Poll fallback for DPR changes that don't fire a media-query change
+    // (monitor move, CDP emulation without a size change). Uses the same
+    // epsilon as the handler so fractional jitter doesn't cause flicker.
+    if (this.dprPollInterval === null && typeof setInterval === 'function') {
+      this.dprPollInterval = setInterval(() => {
+        const rawPoll = (window as unknown as { devicePixelRatio?: number }).devicePixelRatio;
+        const curPoll =
+          Number.isFinite(rawPoll) && (rawPoll as number) > 0 ? (rawPoll as number) : 1;
+        if (Math.abs(curPoll - this.lastDpr) <= 0.001) return;
+        this.lastDpr = curPoll;
+        try {
+          this.resize(this.width, this.height);
+        } catch (err) {
+          console.warn('[VectoJS] DPR poll resize failed', err);
+        }
+        try {
+          if (this.renderer.isContextLost?.() !== true) this.render(this.renderer);
+        } catch (err) {
+          console.warn('[VectoJS] DPR poll repaint failed', err);
+        }
+        // Re-arm the media query for the new DPR so future changes fire
+        this.watchDevicePixelRatio();
+      }, 1000) as unknown as number;
+    }
   }
 
   /**
@@ -2880,6 +2931,10 @@ export class Scene {
       this.dprMediaQuery.removeEventListener?.('change', this.dprChangeHandler);
       this.dprMediaQuery = null;
       this.dprChangeHandler = null;
+    }
+    if (this.dprPollInterval !== null) {
+      clearInterval(this.dprPollInterval);
+      this.dprPollInterval = null;
     }
     if (this.forcedColorsQuery && this.forcedColorsChangeHandler) {
       this.forcedColorsQuery.removeEventListener?.('change', this.forcedColorsChangeHandler);

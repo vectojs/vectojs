@@ -35,7 +35,11 @@ const TWO_PI = Math.PI * 2;
 
 /** Device pixel ratio, or `1` in non-DOM (SSR/Node) environments. */
 function getDevicePixelRatio(): number {
-  return typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const raw =
+    typeof window !== 'undefined'
+      ? (window as unknown as { devicePixelRatio?: number }).devicePixelRatio
+      : 1;
+  return Number.isFinite(raw) && (raw as number) > 0 ? (raw as number) : 1;
 }
 
 export class CanvasRenderer implements IRenderer {
@@ -215,7 +219,10 @@ export class CanvasRenderer implements IRenderer {
   /** Real `devicePixelRatio`, clamped to {@link maxDPR} when set. */
   private effectiveDPR(): number {
     const real = getDevicePixelRatio();
-    return this.maxDPR !== undefined ? Math.min(real, this.maxDPR) : real;
+    if (this.maxDPR === undefined) return real;
+    // Guard NaN/Infinity maxDPR (externally assignable) — treat as uncapped
+    if (!Number.isFinite(this.maxDPR) || this.maxDPR <= 0) return real;
+    return Math.min(real, this.maxDPR);
   }
 
   /**
@@ -248,17 +255,27 @@ export class CanvasRenderer implements IRenderer {
    */
   public resize(width: number, height: number): void {
     const dpr = this.effectiveDPR();
+    // Guard against non-finite dimensions (caller should have validated, but
+    // DPR-scaled product can still overflow to Infinity).
+    const safeWidth = Number.isFinite(width) && width >= 0 ? width : this.width;
+    const safeHeight = Number.isFinite(height) && height >= 0 ? height : this.height;
+    const backingW = Number.isFinite(safeWidth * dpr)
+      ? Math.max(1, Math.round(safeWidth * dpr))
+      : 1;
+    const backingH = Number.isFinite(safeHeight * dpr)
+      ? Math.max(1, Math.round(safeHeight * dpr))
+      : 1;
     this.appliedDPR = dpr;
-    this.width = width;
-    this.height = height;
-    this.ctx.canvas.width = width * dpr;
-    this.ctx.canvas.height = height * dpr;
+    this.width = safeWidth;
+    this.height = safeHeight;
+    this.ctx.canvas.width = backingW;
+    this.ctx.canvas.height = backingH;
     // Sync CSS size so the logical and physical sizes match on HiDPI screens.
     // Guarded like the constructor for SSR/stubbed canvases where a 2D context
     // exists but `style` does not.
     if (this.ctx.canvas.style) {
-      this.ctx.canvas.style.width = `${width}px`;
-      this.ctx.canvas.style.height = `${height}px`;
+      this.ctx.canvas.style.width = `${safeWidth}px`;
+      this.ctx.canvas.style.height = `${safeHeight}px`;
     }
     this.ctx.scale(dpr, dpr);
     // Setting `canvas.width`/`canvas.height` resets the whole 2D context state
