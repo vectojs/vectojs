@@ -1,5 +1,13 @@
 # @vectojs/markdown
 
+## 0.23.2
+
+### Patch Changes
+
+- Fix inline math starting with digit like `$3 \times 3$` (CTX-0034).
+
+  Relax opener guard from `(?![$\s\d])` to `(?![$\s])` so `"$3 \times 3$"` and similar digit-leading math tokenizes. Currency `"$5 to $10"` remains excluded via closing digit/space checks; standalone `"$9"` still prose. Blocked legitimate matrix dimensions in math-foundations zh-cn/ja where `"$3 \times 3$"` rendered as literal.
+
 ## 0.23.1
 
 ### Patch Changes
