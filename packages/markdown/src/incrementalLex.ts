@@ -137,9 +137,61 @@
  * completes the item and it tiles again), so declining costs one chunk of window
  * growth, where degrading would have cost the whole rest of the stream.
  */
-import { marked, type Token, type TokensList } from 'marked';
+import { marked, type Token, type Tokens, type TokensList } from 'marked';
 import { hasContainerOpener } from './markdown-container';
 import { hasFootnoteDefOpener } from './markdown-footnote';
+
+/**
+ * Zola / GitHub `attr_list` trailing attribute for headings: `{#id}`, `{.class}`,
+ * `{#id .c1 .c2}` etc. Same regex as `Markdown.ts` — keep in lockstep.
+ */
+const HEADING_ATTR_SUFFIX_RE = /\s*\{(?:#|\.)[^}]*\}\s*$/;
+
+function stripHeadingAttributesFromToken(token: Tokens.Heading): void {
+  if (!HEADING_ATTR_SUFFIX_RE.test(token.text)) return;
+  token.text = token.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+  if (token.tokens && token.tokens.length > 0) {
+    for (let i = token.tokens.length - 1; i >= 0; i--) {
+      const inline: any = token.tokens[i];
+      if (inline.type === 'text' && typeof inline.text === 'string') {
+        if (HEADING_ATTR_SUFFIX_RE.test(inline.text)) {
+          const ct = inline.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+          if (ct === '') {
+            token.tokens.splice(i, 1);
+          } else {
+            inline.text = ct;
+            if (typeof inline.raw === 'string') {
+              inline.raw = inline.raw.replace(HEADING_ATTR_SUFFIX_RE, '');
+            }
+          }
+          break;
+        }
+        if (inline.text.trim() === '') continue;
+        break;
+      }
+      break;
+    }
+  }
+}
+
+function stripHeadingAttributesFromTokens(tokens: Token[]): void {
+  for (const tok of tokens) {
+    if (tok.type === 'heading') {
+      stripHeadingAttributesFromToken(tok as Tokens.Heading);
+    }
+    const t: any = tok;
+    if (Array.isArray(t.tokens)) {
+      stripHeadingAttributesFromTokens(t.tokens as Token[]);
+    }
+    if (Array.isArray(t.items)) {
+      for (const item of t.items) {
+        if (Array.isArray((item as any).tokens)) {
+          stripHeadingAttributesFromTokens((item as any).tokens as Token[]);
+        }
+      }
+    }
+  }
+}
 
 /**
  * Everything needed to extend a lex without redoing it.
@@ -393,6 +445,7 @@ function cacheFromFullLex(source: string, tokens: TokensList): IncrementalLexCac
  */
 export function lexFull(source: string): IncrementalLexResult {
   const tokens = marked.lexer(source);
+  stripHeadingAttributesFromTokens(tokens as unknown as Token[]);
   return {
     tokens,
     cache: cacheFromFullLex(source, tokens),
@@ -404,6 +457,7 @@ export function lexFull(source: string): IncrementalLexResult {
 /** Full-lex `source`, then pin the result as permanently degraded. */
 function degradeTo(source: string, reason: DegradeReason): IncrementalLexResult {
   const tokens = marked.lexer(source);
+  stripHeadingAttributesFromTokens(tokens as unknown as Token[]);
   return {
     tokens,
     cache: degradedCache(source, tokens, reason),
@@ -443,7 +497,8 @@ export function lexAppend(prev: IncrementalLexCache, append: string): Incrementa
   if (hasContainerOpener(tail)) return degradeTo(source, 'container');
   if (hasFootnoteDefOpener(tail)) return degradeTo(source, 'footnote-def');
 
-  const suffix = marked.lexer(tail);
+  const suffix = marked.lexer(tail) as TokensList;
+  stripHeadingAttributesFromTokens(suffix as unknown as Token[]);
 
   // A definition anywhere forces a full lex: one in the suffix has to be able to
   // resolve reflinks in the prefix, and only a whole-document lex does that.

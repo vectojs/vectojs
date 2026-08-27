@@ -1,10 +1,43 @@
-import { marked, type Token } from 'marked';
+import { marked, type Token, type Tokens } from 'marked';
 import {
   type IncrementalLexCache,
   type IncrementalLexResult,
   lexAppend,
   lexFull,
 } from './incrementalLex';
+
+/**
+ * Zola / GitHub `attr_list` trailing attribute for headings: `{#id}`, `{.class}`,
+ * `{#id .c1 .c2}` etc. Same regex as `Markdown.ts` / `incrementalLex.ts`.
+ */
+const HEADING_ATTR_SUFFIX_RE = /\s*\{(?:#|\.)[^}]*\}\s*$/;
+
+function stripHeadingAttributesFromToken(token: Tokens.Heading): void {
+  if (!HEADING_ATTR_SUFFIX_RE.test(token.text)) return;
+  token.text = token.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+  if (token.tokens && token.tokens.length > 0) {
+    for (let i = token.tokens.length - 1; i >= 0; i--) {
+      const inline: any = token.tokens[i];
+      if (inline.type === 'text' && typeof inline.text === 'string') {
+        if (HEADING_ATTR_SUFFIX_RE.test(inline.text)) {
+          const ct = inline.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+          if (ct === '') {
+            token.tokens.splice(i, 1);
+          } else {
+            inline.text = ct;
+            if (typeof inline.raw === 'string') {
+              inline.raw = inline.raw.replace(HEADING_ATTR_SUFFIX_RE, '');
+            }
+          }
+          break;
+        }
+        if (inline.text.trim() === '') continue;
+        break;
+      }
+      break;
+    }
+  }
+}
 import { ABBR_EXTENSIONS } from './markdown-abbr';
 import { CONTAINER_EXTENSIONS } from './markdown-container';
 import { EMOJI_EXTENSIONS } from './markdown-emoji';
@@ -60,6 +93,11 @@ function endUserTiming(span: WorkerTimingSpan | null): void {
 }
 
 marked.use({
+  walkTokens(token) {
+    if (token.type === 'heading') {
+      stripHeadingAttributesFromToken(token as Tokens.Heading);
+    }
+  },
   // Shared with `Markdown.ts`'s registration — see the lockstep note there and in
   // `markdown-footnote.ts`. esbuild inlines this import into the worker bundle.
   extensions: [
