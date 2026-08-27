@@ -547,6 +547,12 @@ export class RichText extends UIComponent {
     const runs: Array<{ text: string; font: string; width: number }> = [];
     const mctx = getSharedMeasuringContext();
     let offset = 0;
+    // Track whether the last pushed run originated from an inline object.
+    // An object run must stay atomic even when its font matches surrounding
+    // text; otherwise "Inline math " + alt + " inside." with the same base
+    // font would coalesce into one run and the object width (SVG box) would be
+    // merged with measured text widths, losing atomic selection.
+    let prevWasObject = false;
     for (const span of this.spans) {
       // Spans are ordered, so once the cursor passes the requested line end
       // nothing later can overlap it. Without this break a ragged line on a
@@ -561,32 +567,47 @@ export class RichText extends UIComponent {
         const font = this.nodeFont(style, style?.fontSize ?? this.baseFontSize);
         // The alt, not the U+FFFC sentinel — see `projectedSlice`. An object span
         // is exactly one sentinel character, so any overlap covers all of it.
-        const text = span.object
-          ? (span.object.alt ?? '')
-          : span.text.slice(from - offset, to - offset);
+        const obj = span.object;
+        const isObject = !!obj;
+        const text = isObject ? (obj.alt ?? '') : span.text.slice(from - offset, to - offset);
         let width = 0;
-        if (mctx && text.length > 0) {
-          mctx.font = font;
-          // Sum ISOLATED grapheme advances rather than taking one shaped
-          // `measureText(text)`. Layout placed these glyphs by summing isolated
-          // per-grapheme advances (`baseMeasurer` measures one grapheme at a
-          // time), and paint follows layout (`flushRun` falls back to
-          // per-character draws whenever shaping would move a glyph), so a
-          // whole-string shaped width includes kerning the canvas never
-          // painted. A carrier pinned to the shaped width drifted the selection
-          // box ahead of the ink by the accumulated kerning delta — measured
-          // 5–8px over a ~300px kerning-heavy 16px line in both Gecko and
-          // Blink, worst on bold runs.
-          for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
-            width += mctx.measureText(segment).width;
-          }
-        }
-        const previous = runs.at(-1);
-        if (previous?.font === font) {
-          previous.text += text;
-          previous.width += width;
-        } else {
+        if (obj) {
+          // TeX source natural width (isolated measureText at body font 16px) !=
+          // SVG box (exToPx widthEx * scale). Per-grapheme isolated measure is
+          // wrong; whole formula should be atomic selectable chunk pinned to
+          // object.width, matching MathBlock comment "formula is projected text
+          // and accessible name". Keep object as its own run even if font matches
+          // surrounding text, or a merged width would sum measured alt + text.
+          width = obj.width ?? 0;
+          // Still emit empty-alt objects as zero-text carriers so Scene keeps
+          // their reserved width (visual box) while copy stays empty.
           runs.push({ text, font, width });
+          prevWasObject = true;
+        } else {
+          if (mctx && text.length > 0) {
+            mctx.font = font;
+            // Sum ISOLATED grapheme advances rather than taking one shaped
+            // `measureText(text)`. Layout placed these glyphs by summing isolated
+            // per-grapheme advances (`baseMeasurer` measures one grapheme at a
+            // time), and paint follows layout (`flushRun` falls back to
+            // per-character draws whenever shaping would move a glyph), so a
+            // whole-string shaped width includes kerning the canvas never
+            // painted. A carrier pinned to the shaped width drifted the selection
+            // box ahead of the ink by the accumulated kerning delta — measured
+            // 5–8px over a ~300px kerning-heavy 16px line in both Gecko and
+            // Blink, worst on bold runs.
+            for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+              width += mctx.measureText(segment).width;
+            }
+          }
+          const previous = runs.at(-1);
+          if (previous?.font === font && !prevWasObject) {
+            previous.text += text;
+            previous.width += width;
+          } else {
+            runs.push({ text, font, width });
+          }
+          prevWasObject = false;
         }
       }
       offset = spanEnd;
@@ -717,7 +738,23 @@ export class RichText extends UIComponent {
       // Use per-grapheme carriers only for single-style LTR lines.
       // Mixed-style lines get per-run positioned carriers from logicalRuns(),
       // which carry x/width measured at each run's own font.
-      const perGraphemeCarriers = !justified && !hasBidi && singleStyle;
+      // Single inline-object lines (display math: one OBJECT_REPLACEMENT span
+      // with alt = formula) must NOT use per-grapheme carriers: the TeX source
+      // natural width (isolated measureText at body font 16px) mismatches the
+      // SVG raster box (intrinsicW * scale via exToPx widthEx). Splitting the
+      // alt per grapheme with isolated widths drifts and fragments "\setminus"
+      // etc., revealing raw TeX fragments mid-selection. Whole formula should
+      // be atomic selectable chunk copying full formula, matching MathBlock
+      // comment "formula is projected text and accessible name". Pinned width
+      // comes from object.width via logicalRuns (atomic run), not per-grapheme
+      // measure. Alternative kept per-grapheme but divided object.width across
+      // characters was rejected: TeX source characters have no visual
+      // correspondence to SVG glyphs. Minimal safe rule: any single-object line
+      // is atomic. Mixed lines (text + inline $...$) become multi-run via the
+      // object-separate logic above, so singleStyle already false and they stay
+      // atomic for the object while text runs keep width-pinned carriers.
+      const isSingleObjectLine = nodes.length === 1 && !!nodes[0].object;
+      const perGraphemeCarriers = !justified && !hasBidi && singleStyle && !isSingleObjectLine;
 
       return {
         nodes,
