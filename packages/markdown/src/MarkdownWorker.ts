@@ -85,11 +85,10 @@ marked.use({
         // first blank line (including whitespace-only lines) or closing `$$`.
         // Kept in lockstep with Markdown.ts's blockMath tokenizer.
         //
-        // This must exist as a *block* rule. The inline `inlineMath` rule below
-        // deliberately refuses `$$` to protect currency ('$5 to $10'), so with
-        // no block rule marked's text tokenizer consumes the leading `$`, the
-        // inline rule then matches the inner `$...$` pair, and the outer two
-        // dollars are painted as literal text on either side of the formula.
+        // This must exist as a *block* rule. Without it, $$ at line-start would
+        // be tokenized as inline $$ inside a paragraph (or, before inline $$
+        // support, as an inner $...$ with stray dollars), producing an inline
+        // object rather than a centered display block.
         const match = /^ {0,3}\$\$((?:(?!\n[ \t]*\n)[\s\S])+?)\$\$[ \t]*(?:\n|$)/.exec(src);
         if (match) {
           return {
@@ -108,11 +107,26 @@ marked.use({
       name: 'inlineMath',
       level: 'inline',
       start(src) {
-        return src.match(/(?<![\\$])\$(?![$\s])/)?.index;
+        return src.match(/(?<![\\$])(?:\$\$(?!\s)|\$(?![$\s]))/)?.index;
       },
       tokenizer(src) {
-        // Keep in lockstep with Markdown.ts's inlineMath tokenizer: guard
-        // against currency ("$5 to $10"), `$$`, and trailing digits so only
+        // Keep in lockstep with Markdown.ts's inlineMath tokenizer: StackEdit
+        // supports both $ and $$ for inline math; block $$...$$ is handled at
+        // block level, so any $$ here is inside a paragraph and should be
+        // inline. Try $$ first so the outer dollars of $$a+b$$ are not left
+        // as stray "$" on either side of an inner $a+b$.
+        const doubleMatch = /^\$\$(?!\s)((?:\\\$|[^$\n])*?)(?<!\s)\$\$(?!\d)/.exec(src);
+        if (doubleMatch) {
+          const inner = doubleMatch[1].trim();
+          if (inner !== '') {
+            return {
+              type: 'inlineMath',
+              raw: doubleMatch[0],
+              text: inner,
+            };
+          }
+        }
+        // Guard against currency ("$5 to $10") and trailing digits so only
         // real inline math ("$x+1$") tokenizes.
         const match = /^\$(?![$\s\d])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
         if (match) {

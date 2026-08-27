@@ -108,6 +108,40 @@ describe('inline math is typeset into a reserved inline object', () => {
   });
 });
 
+describe('inline $$...$$ is also typeset inline (StackEdit compat)', () => {
+  it('renders inline $$...$$ as an inline object', () => {
+    const md = new Markdown('行内 $$a+b$$ 测试');
+    const objects = objectSpans(md);
+    expect(objects).toHaveLength(1);
+    expect(objects[0].object!.alt).toBe('a+b');
+    expect(textOf(md)).not.toContain('$');
+    expect(textOf(md)).toContain('行内 ');
+    expect(textOf(md)).toContain(' 测试');
+  });
+
+  it('produces no stray dollars for $$ with trailing prose', () => {
+    const md = new Markdown('$$a+b$$ 测试');
+    expect(objectSpans(md)).toHaveLength(1);
+    expect(objectSpans(md)[0].object!.alt).toBe('a+b');
+    expect(textOf(md)).not.toContain('$');
+  });
+
+  it('treats alone $$...$$ on its own line as display block, not inline', () => {
+    const md = new Markdown('$$a+b$$');
+    // A standalone $$ block is display math (MathBlock), not an inline object.
+    // Inline $$ inside paragraph should be inline, but line-start $$ without
+    // trailing prose must remain display.
+    const walk = (e: any, out: any[] = []): any[] => {
+      out.push(e);
+      for (const c of e.children ?? []) walk(c, out);
+      return out;
+    };
+    const blocks = walk(md.content).filter((e: any) => e.constructor.name === 'MathBlock');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].formula).toBe('a+b');
+  });
+});
+
 describe('inline math in nested block types', () => {
   // Each of these nests inline math somewhere `containsInlineMath` has to
   // recurse into. A missed site means the formula never typesets at all.

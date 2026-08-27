@@ -200,11 +200,13 @@ marked.use({
         // spaces of indent, as CommonMark allows for other block starts). The
         // content may span lines; the first closing `$$` or blank line ends it.
         //
-        // This must exist as a *block* rule. The inline `inlineMath` rule below
-        // deliberately refuses `$$` to protect currency ("$5 to $10"), so with
-        // no block rule marked's text tokenizer consumes the leading `$`, the
-        // inline rule then matches the inner `$...$` pair, and the outer two
-        // dollars are painted as literal text on either side of the formula.
+        // This must exist as a *block* rule. Without it, $$ at line-start would
+        // be tokenized as inline $$ inside a paragraph (or, before inline $$
+        // support, as an inner $...$ with stray dollars), producing an inline
+        // object rather than a centered display block. Block requires line-start
+        // and no trailing prose, so inline $$ inside Chinese paragraph
+        // '行内 $$a+b$$ 测试' remains inline while '$$x^2$$' on its own line
+        // becomes display.
         //
         // **Blank-line termination**: a blank line inside `$$..$$` ends the
         // construct, so `(?:(?!\n[ \t]*\n)[\s\S])+?` replaces a bare
@@ -241,9 +243,25 @@ marked.use({
       name: 'inlineMath',
       level: 'inline',
       start(src) {
-        return src.match(/(?<![\\$])\$(?![$\s])/)?.index;
+        return src.match(/(?<![\\$])(?:\$\$(?!\s)|\$(?![$\s]))/)?.index;
       },
       tokenizer(src) {
+        // StackEdit supports both $ and $$ for inline math; block $$...$$ is
+        // handled at block level (requires line-start), so any $$ here is
+        // inside a paragraph and should be inline. Try $$ first so the outer
+        // dollars of $$a+b$$ are not consumed as a failed single-$ attempt
+        // leaving stray "$" on either side of an inner $a+b$.
+        const doubleMatch = /^\$\$(?!\s)((?:\\\$|[^$\n])*?)(?<!\s)\$\$(?!\d)/.exec(src);
+        if (doubleMatch) {
+          const inner = doubleMatch[1].trim();
+          if (inner !== '') {
+            return {
+              type: 'inlineMath',
+              raw: doubleMatch[0],
+              text: inner,
+            };
+          }
+        }
         // Guard against currency: "$5 to $10" must NOT become one math span.
         // Require, à la pandoc: the opening `$` is not `$$` and is immediately
         // followed by a non-space, non-digit; the content has no literal `$`
