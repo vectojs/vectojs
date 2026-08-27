@@ -128,8 +128,14 @@ export class CanvasGeometry {
   /** Effective device pixel ratio, matching CanvasRenderer: real DPR clamped to
    *  `maxDPR` when set. */
   public effectiveDPR(maxDPR: number | undefined): number {
-    const real = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    return maxDPR !== undefined ? Math.min(real, maxDPR) : real;
+    const raw =
+      typeof window !== 'undefined'
+        ? (window as unknown as { devicePixelRatio?: number }).devicePixelRatio
+        : 1;
+    const real = Number.isFinite(raw) && (raw as number) > 0 ? (raw as number) : 1;
+    if (maxDPR === undefined) return real;
+    if (!Number.isFinite(maxDPR) || maxDPR <= 0) return real;
+    return Math.min(real, maxDPR);
   }
 
   /** Size the WebGPU particle canvas: backing store at logical × DPR, CSS box at
