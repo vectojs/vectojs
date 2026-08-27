@@ -465,4 +465,63 @@ describe('emitSVG', () => {
     const boxed = emitSVG(layout('\\boxed{x}'));
     expect(boxed.width).toBeCloseTo(emitSVG(layout('x')).width + 0.6, 3);
   });
+
+  it('renders the quadratic formula radicand `b^2 - 4ac` as contiguous sqrt content (regression for truncated vinculum and centred radical)', () => {
+    // `x = (-b ± √(b² - 4ac))/2a` — the radical must appear *before* the
+    // radicand, the vinculum must span the whole `b^2 - 4ac`, and the minus
+    // inside the radicand must not be lost or placed after the radical as
+    // `b²√4ac`.
+    const full = emitSVG(layout('x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}'));
+    expect(full.missing).toEqual([]);
+    // Pinned to the advance the layout reports (metrics width, not a relative
+    // assertion that passes when both sides are zero — see the `x` test above).
+    expect(full.width).toBeCloseTo(6.2865, 3);
+    // The radical path must be left of the radicand and its clip must cover
+    // the radicand width (otherwise the vinculum is truncated to the 0.853em
+    // minimum and the radicand appears as `b²√4ac`). The SVG has exactly one
+    // clipped radical path.
+    const clipWidths = [...full.svg.matchAll(/<clipPath[^>]*><rect[^>]*width="([\d.]+)"/g)].map(
+      (m) => Number(m[1]),
+    );
+    expect(clipWidths).toHaveLength(1);
+    // 2751em-in-units * 1/0.7 ≈ 3930 viewBox units for the `mtight` radicand.
+    // A truncated vinculum would be 0.853em → 0.853*1000/0.7 ≈ 1218.
+    expect(clipWidths[0]).toBeGreaterThan(3000);
+
+    // The frac alone has the same radicand but without the leading `x =`.
+    // Use a y-filtered view so the denominator (`2a` at a different baseline)
+    // does not interleave with the numerator when sorting by x alone.
+    const frac = emitSVG(layout('\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}'));
+    const num = frac.placements.filter((p) => p.y < 0); // numerator baseline is negative
+    const numSorted = [...num].sort((a, b) => a.x - b.x);
+    const nChars = numSorted.map((p) => p.char);
+    const pmIdx = nChars.indexOf('±');
+    expect(pmIdx).toBeGreaterThan(-1);
+    // The radicand's `b` is the first `b` after `±`.
+    const afterPm = nChars.slice(pmIdx + 1);
+    const radicandBRel = afterPm.indexOf('b');
+    expect(radicandBRel).toBeGreaterThan(-1);
+    const radicandBIdx = pmIdx + 1 + radicandBRel;
+    expect(nChars[radicandBIdx + 1]).toBe('2'); // `b^2`
+    const sup2 = numSorted.find((p) => p.char === '2' && p.scale < 0.6);
+    expect(sup2).toBeDefined();
+    // Two minuses in the numerator: the leading `-b` and the radicand's `b^2 - 4ac`.
+    const minusIndices = numSorted.map((p, i) => (p.char === '−' ? i : -1)).filter((i) => i !== -1);
+    expect(minusIndices).toHaveLength(2);
+    const radicandMinus = minusIndices[1];
+    expect(radicandMinus).toBeGreaterThan(radicandBIdx + 1);
+    expect(nChars[radicandMinus + 1]).toBe('4');
+
+    const radicandOut = emitSVG(layout('\\sqrt{b^2 - 4ac}'));
+    expect(radicandOut.missing).toEqual([]);
+    expect(radicandOut.width).toBeCloseTo(4.3464, 3);
+    // Isolated radicand is also left-aligned: the radical at x=0 before `b` at 0.833.
+    expect(radicandOut.placements[0].char).toBe('b');
+    expect(radicandOut.placements[0].x).toBeCloseTo(0.833, 3);
+    const isoClip = Number(
+      [...radicandOut.svg.matchAll(/<clipPath[^>]*><rect[^>]*width="([\d.]+)"/g)][0][1],
+    );
+    // Isolated radicand width is the radicand itself (≈4.346em) → clip covers it.
+    expect(isoClip).toBeCloseTo(4346.4, 0);
+  });
 });

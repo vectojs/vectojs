@@ -255,15 +255,20 @@ export type RowAlign = 'left' | 'center' | 'right';
  * - `.col-align-c|l|r > .vlist-t` (lines 442-451)
  * - `.x-arrow, .mover, .munder { text-align: center }` (lines 563-566)
  *
- * `sqrt: 'center'` is a deliberate deviation from upstream, which has no
+ * `sqrt: 'left'` is a deliberate deviation from upstream, which has no
  * `text-align` rule under `.sqrt`; see the guard's deviation table for why.
+ * Left is the CSS initial and matches the browser: the hide-tail radical is
+ * `width:100%` with `min-width:0.853em`, so a wide radicand (`b^2 - 4ac`)
+ * expands the container to the radicand width and the vinculum must span
+ * it. The former `center` put the narrow radical in the middle of a wide
+ * radicand, rendering `b²√4ac` with a truncated vinculum.
  */
 export const ROW_ALIGN_CLASSES: Readonly<Record<string, RowAlign>> = {
   'col-align-c': 'center',
   'col-align-l': 'left',
   'col-align-r': 'right',
   mfrac: 'center',
-  sqrt: 'center',
+  sqrt: 'left',
   'katex-accent': 'center',
   'op-limits': 'center',
   'x-arrow': 'center',
@@ -1199,6 +1204,33 @@ function emitVList(
     const p = state.paths[i];
     if (p.overlay) {
       placeOverlay(p, startX, width);
+    } else if (p.clip) {
+      // `\sqrt`'s hide-tail is `width: 100%` with `min-width: 0.853em`
+      // (katex.scss:513, delimiter.ts:533). `emitSvgNode` seeds the clip
+      // from `min-width`, so a wide radicand (`b^2 - 4ac`) leaves the
+      // vinculum truncated to the minimum and the minus/glyphs after it
+      // appear after the radical (`b²√4ac`). The browser instead expands the
+      // container to the radicand width, so the visible vinculum is
+      // `max(minWidth, radicandWidth)`. Expand here once `width` (the vlist
+      // extent, i.e. the radicand width when wider) is known. After the
+      // `sqrt: left` fix the path is already at `startX`, so only the
+      // window grows; keep the left edge pinned.
+      //
+      // Only the sqrt vlist itself should expand its radical; an ancestor
+      // vlist (e.g. the outer `mfrac`) also sees the same path in its
+      // `pathStart..` range during its own width resolution and would
+      // otherwise stretch the radical to the fraction width (`-b ± …`),
+      // making the vinculum cover the preceding `-b ±` as well.
+      if (classChain.includes('sqrt') && p.clip.w < width) {
+        p.w = width;
+        p.clip.w = width;
+        // If this vlist was previously centered, the path was offset to the
+        // middle; re-anchor to the left edge now that `sqrt` is left-aligned.
+        if (align !== 'left') {
+          p.x = startX;
+          p.clip.x = startX;
+        }
+      }
     }
   }
 

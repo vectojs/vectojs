@@ -969,11 +969,14 @@ const STRUCTURAL_CLASSES = new Set(['span', 'vlist', 'vlist-t', 'vlist-t2', 'vli
  */
 const EXPECTED_ROW_ALIGN_DEVIATIONS: Record<string, { align: string; reason: string }> = {
   sqrt: {
-    align: 'center',
+    align: 'left',
     reason:
       'upstream has no text-align rule under .sqrt (the old comment cited katex.scss:406, ' +
-      'which is .op-limits). Kept because both sqrt rows measure equal width, making ' +
-      'centering output-neutral; revisit if sqrt ever grows unequal rows.',
+      'which is .op-limits). The vlist must be left-aligned: its hide-tail radical ' +
+      'is `width:100%` with `min-width:0.853em`, so the vinculum spans the radicand ' +
+      'width when wider. The former `center` put the narrow radical in the middle ' +
+      'of a wide radicand (`b^2 - 4ac`), rendering as `b²√4ac` with a truncated ' +
+      'vinculum (CTX-0???). Left is the CSS initial and matches the browser.',
   },
 };
 
