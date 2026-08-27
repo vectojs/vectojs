@@ -433,6 +433,21 @@ describe('emitSVG', () => {
     expect(out.svg).toContain('<path');
   });
 
+  it('typesets math-foundations display blocks with no missing glyph (CTX-0529)', () => {
+    const cases = [
+      '\\mathbf{M}_{\\text{world, child}} = \\mathbf{M}_{\\text{world, parent}} \\cdot \\mathbf{M}_{\\text{local}}',
+      'I_{\\text{allowed}} = I_0 \\setminus \\bigcup_{k=1}^{K} E_k',
+      'd^2(C, \\overline{P_iP_{i+1}}) \\le \\left(\\frac{\\text{lineWidth}}{2} + \\text{hitTolerance}\\right)^2',
+    ];
+    for (const tex of cases) {
+      const out = emitSVG(layout(tex, { displayMode: true }));
+      expect(out.missing, tex).toEqual([]);
+      expect(out.width, tex).toBeGreaterThan(0);
+      expect(out.height + out.depth, tex).toBeGreaterThan(0);
+      expect(out.svg, tex).toContain('<path');
+    }
+  });
+
   it('applies class-carried horizontal padding', () => {
     // `.x-arrow-pad { padding: 0 0.5em }` sits on the label's *sizing* span
     // (`reset-size6.size3` = ×0.7), so the padding scales with it: two

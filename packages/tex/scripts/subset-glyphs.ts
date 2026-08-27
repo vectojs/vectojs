@@ -154,6 +154,14 @@ const DEFAULT_CORPUS = [
   '\\text{abcdefghijklmnopqrstuvwxyz}',
   '\\text{ABCDEFGHIJKLMNOPQRSTUVWXYZ}',
   '\\text{0123456789 .,;:!?()[]-+*/=}',
+  // math-foundations coverage — formulas that degraded to raw TeX (CTX-0529).
+  // Each pins a glyph the previous whitelist missed: \\setminus (U+2216),
+  // \\bigcup display variant (Size2 U+22C3), literal underscore via \\_ (U+005F),
+  // and the overline/sampled-spline hit-test block.
+  'I_{\\text{allowed}} = I_0 \\setminus \\bigcup_{k=1}^{K} E_k',
+  '\\mathbf{M}_{\\text{world, child}} = \\mathbf{M}_{\\text{world, parent}} \\cdot \\mathbf{M}_{\\text{local}}',
+  'd^2(C, \\overline{P_iP_{i+1}}) \\le \\left(\\frac{\\text{lineWidth}}{2} + \\text{hitTolerance}\\right)^2',
+  'a\\_b',
 ];
 
 /** The full table's glyph map: face -> codepoint (as string) -> outline. */
