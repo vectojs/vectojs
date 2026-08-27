@@ -1,5 +1,11 @@
 # @vectojs/video-exporter
 
+## 0.4.0
+
+### Minor Changes
+
+- 82948fa: Add optional audio muxing: `audioPath` in the API and `-a, --audio <file>` in the CLI attach an audio track to the export, encoded as AAC and trimmed to the video length (`-shortest`). Exports stay silent when the option is absent.
+
 ## 0.3.0
 
 ### Minor Changes

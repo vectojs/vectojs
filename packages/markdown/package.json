@@ -44,7 +44,7 @@
     "test:e2e": "bun e2e/blockquote-layout.e2e.ts && bun e2e/stream-controller.e2e.ts && bun e2e/lazy-math.e2e.ts && bun e2e/paragraph-image-repaint.e2e.ts && bun e2e/inline-image.e2e.ts && bun e2e/selection-fidelity.e2e.ts && bun e2e/code-atlas-dpr.e2e.ts && bun e2e/set-max-width.e2e.ts && bun e2e/block-affordances.e2e.ts && bun e2e/single-tilde-ink.e2e.ts && bun e2e/superscript-ink.e2e.ts && bun e2e/ins-mark-ink.e2e.ts && bun e2e/container-ink.e2e.ts && bun e2e/abbr-ink.e2e.ts"
   },
   "dependencies": {
-    "@vectojs/tex": "^0.1.2",
+    "@vectojs/tex": "^0.1.3",
     "marked": "^18.0.10"
   },
   "peerDependencies": {

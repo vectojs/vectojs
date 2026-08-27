@@ -1,5 +1,15 @@
 # @vectojs/core
 
+## 1.39.1
+
+### Patch Changes
+
+- a85e789: Fix white-screen and dead clicks after browser zoom / DPR change (CTX-0530).
+
+  `CanvasRenderer`/`CanvasGeometry` now guard `devicePixelRatio` against NaN/Infinity and round backing-store sizes, and `Scene.watchDevicePixelRatio` uses an epsilon (0.001) to ignore fractional-DPR jitter (1.1000000685 at 110% zoom) that previously caused continuous re-arm flicker. A polling fallback (1s, same epsilon) covers monitor moves and CDP emulation where the resolution media query doesn't fire, and `resize`/`handleResize` are wrapped so a failing rebuild never leaves the canvas blank. Fixes blank gradient and hit-test loss on zoom.
+
+- 43b4f65: Scene no longer inherits the window viewport for an unattached canvas (#817). A full-window scene constructed before its canvas is attached now starts at 0×0 and adopts `window.innerWidth/innerHeight` through a one-shot ResizeObserver latch when the canvas first gains layout; an explicit `resize()` issued before attachment is respected and skips adoption. Attached-at-construction scenes and `disableWindowResize` scenes are unchanged.
+
 ## 1.39.0
 
 ### Minor Changes
