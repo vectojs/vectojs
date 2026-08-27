@@ -1,5 +1,13 @@
 # @vectojs/markdown
 
+## 0.23.3
+
+### Patch Changes
+
+- fix(markdown): strip trailing {#...} heading attributes upstream (CTX-0541)
+
+  Strip Zola/GitHub attr_list suffix like {#id}, {.class}, {#id .c} from heading text at token phase (Markdown.ts lexMarkdown/walkTokens, MarkdownWorker, incrementalLex). Prevents literal {#...} rendering for docs that use explicit heading ids. 923 tests pass.
+
 ## 0.23.2
 
 ### Patch Changes
