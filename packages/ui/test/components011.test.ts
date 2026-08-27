@@ -49,6 +49,7 @@ describe('UI 0.1.1 Components', () => {
   describe('Overlay & positioning', () => {
     it('mounts to overlayRoot on showAt', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const target = new Entity('target');
       scene.add(target);
@@ -66,6 +67,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('positions correctly with respect to target and boundary limits', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       canvas.width = 800;
       canvas.height = 600;
       const scene = new Scene(canvas);
@@ -92,6 +94,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('anchors to a target world-space box under ancestor transforms', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       canvas.width = 800;
       canvas.height = 600;
       const scene = new Scene(canvas);
@@ -570,6 +573,7 @@ describe('UI 0.1.1 Components', () => {
   describe('Tooltip, Popover & ContextMenu', () => {
     it('shows Tooltip on target hover', async () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const target = new Entity('btn');
       scene.add(target);
@@ -589,6 +593,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('detaches its target listeners on destroy, instead of leaking a reference to itself', async () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const target = new Entity('btn');
       scene.add(target);
@@ -606,6 +611,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('toggles Popover on target click', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const target = new Entity('btn');
       scene.add(target);
@@ -623,6 +629,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('detaches its target click listener on destroy, instead of leaking a reference to itself', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const target = new Entity('btn');
       scene.add(target);
@@ -639,6 +646,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('displays ContextMenu at point', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const menu = new ContextMenu({
         items: [
@@ -657,6 +665,7 @@ describe('UI 0.1.1 Components', () => {
 
     it('shows the correct submenu content when a different submenu item is opened', () => {
       const canvas = document.createElement('canvas');
+      document.body.appendChild(canvas);
       const scene = new Scene(canvas);
       const menu = new ContextMenu({
         items: [

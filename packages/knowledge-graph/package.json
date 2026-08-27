@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "@vectojs/graph3d": "workspace:*",
-    "n3": "^2.2.0"
+    "n3": "^2.3.0"
   },
   "peerDependencies": {
     "three": "^0.185.1"
@@ -58,6 +58,6 @@
     "jsdom": "^30.0.1",
     "three": "^0.185.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

@@ -829,6 +829,7 @@ describe('Scene', () => {
     const parent = document.createElement('div');
     const canvas = document.createElement('canvas');
     parent.appendChild(canvas);
+    document.body.appendChild(parent);
     const scene = new Scene(canvas);
 
     // A ScrollView-like clip box with an interactive button child.
@@ -860,6 +861,7 @@ describe('Scene', () => {
     (scene as any).syncA11y((scene as any).root);
     expect(el.style.display).not.toBe('none');
     scene.destroy();
+    parent.remove();
   });
 
   it('never clips an a11yFullViewport interactive overlay', () => {
@@ -911,8 +913,14 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
     parentDiv.appendChild(canvas);
+    document.body.appendChild(parentDiv);
     const scene = new Scene(canvas); // window mock: 800x600 viewport
     (scene as any).isRunning = true; // allow loop() to run without scheduling
+    const _origDestroy = scene.destroy.bind(scene);
+    (scene as any).destroy = () => {
+      _origDestroy();
+      parentDiv.remove();
+    };
     return scene;
   }
 
@@ -1563,7 +1571,13 @@ describe('Scene render loop: culling, onDemand, a11y early-out', () => {
       const parentDiv = document.createElement('div');
       const canvas = document.createElement('canvas');
       parentDiv.appendChild(canvas);
+      document.body.appendChild(parentDiv);
       const scene = new Scene(canvas, options);
+      const _origDestroyDom = scene.destroy.bind(scene);
+      (scene as any).destroy = () => {
+        _origDestroyDom();
+        parentDiv.remove();
+      };
       (scene as any).isRunning = true;
       return scene;
     }
@@ -2861,7 +2875,14 @@ describe('Scene syncA11y — boundless / full-viewport interactive entities', ()
     const parentDiv = document.createElement('div');
     const canvas = document.createElement('canvas');
     parentDiv.appendChild(canvas);
-    return new Scene(canvas);
+    document.body.appendChild(parentDiv);
+    const scene = new Scene(canvas);
+    const _origDestroy4 = scene.destroy.bind(scene);
+    (scene as any).destroy = () => {
+      _origDestroy4();
+      parentDiv.remove();
+    };
+    return scene;
   }
 
   it('mounts a shadow node for a width=0 entity when a11yFullViewport is set', () => {

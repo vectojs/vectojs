@@ -44,8 +44,8 @@
     "@vectojs/ui": "workspace:*",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",
-    "puppeteer-core": "^25.7.0",
+    "puppeteer-core": "^25.8.0",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
