@@ -166,17 +166,83 @@ function mapsEqual(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string
  * languages neither built-in claims.
  */
 
+/**
+ * Zola / GitHub `attr_list` trailing attribute for headings: `{#id}`, `{.class}`,
+ * `{#id .c1 .c2}` etc. Loose: brace starts with `#` or `.` then anything up to `}`.
+ * Stripped from heading text so `### Title {#slug}` renders as `Title`.
+ * Only the trailing suffix is removed; `{foo}` without leading `#`/`.` is left.
+ * Code fences already lex as `code`, so stripping at token phase is safe.
+ */
+const HEADING_ATTR_SUFFIX_RE = /\s*\{(?:#|\.)[^}]*\}\s*$/;
+
+function stripHeadingAttributesFromToken(token: Tokens.Heading): void {
+  if (!HEADING_ATTR_SUFFIX_RE.test(token.text)) return;
+  token.text = token.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+  if (token.tokens && token.tokens.length > 0) {
+    for (let i = token.tokens.length - 1; i >= 0; i--) {
+      const inline: any = token.tokens[i];
+      if (inline.type === 'text' && typeof inline.text === 'string') {
+        if (HEADING_ATTR_SUFFIX_RE.test(inline.text)) {
+          const ct = inline.text.replace(HEADING_ATTR_SUFFIX_RE, '');
+          if (ct === '') {
+            token.tokens.splice(i, 1);
+          } else {
+            inline.text = ct;
+            if (typeof inline.raw === 'string') {
+              inline.raw = inline.raw.replace(HEADING_ATTR_SUFFIX_RE, '');
+            }
+          }
+          break;
+        }
+        if (inline.text.trim() === '') continue;
+        break;
+      }
+      break;
+    }
+  }
+}
+
+function stripHeadingAttributesFromTokens(tokens: Token[]): void {
+  for (const tok of tokens) {
+    if (tok.type === 'heading') {
+      stripHeadingAttributesFromToken(tok as Tokens.Heading);
+    }
+    const t: any = tok;
+    if (Array.isArray(t.tokens)) {
+      stripHeadingAttributesFromTokens(t.tokens as Token[]);
+    }
+    if (Array.isArray(t.items)) {
+      for (const item of t.items) {
+        if (Array.isArray((item as any).tokens)) {
+          stripHeadingAttributesFromTokens((item as any).tokens as Token[]);
+        }
+      }
+    }
+  }
+}
+
 function lexMarkdown(text: string, userTiming: boolean): TokensList {
-  if (!userTiming) return marked.lexer(text);
+  if (!userTiming) {
+    const tokens = marked.lexer(text) as TokensList;
+    stripHeadingAttributesFromTokens(tokens as unknown as Token[]);
+    return tokens;
+  }
   const timing = beginVectoUserTiming(VECTO_USER_TIMING.markdown.parse);
   try {
-    return marked.lexer(text);
+    const tokens = marked.lexer(text) as TokensList;
+    stripHeadingAttributesFromTokens(tokens as unknown as Token[]);
+    return tokens;
   } finally {
     if (timing) endVectoUserTiming(timing);
   }
 }
 
 marked.use({
+  walkTokens(token) {
+    if (token.type === 'heading') {
+      stripHeadingAttributesFromToken(token as Tokens.Heading);
+    }
+  },
   // `FOOTNOTE_EXTENSIONS`, `SUPERSCRIPT_EXTENSIONS`, `INS_MARK_EXTENSIONS`,
   // `EMOJI_EXTENSIONS`, `CONTAINER_EXTENSIONS`, and `ABBR_EXTENSIONS` are
   // shared with `MarkdownWorker.ts` rather than spelled out twice: the two
@@ -3321,6 +3387,9 @@ export class Markdown extends UIComponent {
    * undecoded on the in-place path but decoded on a fresh render.
    */
   private headingSpans(token: Tokens.Heading): StyledSpan[] {
+    if (HEADING_ATTR_SUFFIX_RE.test(token.text)) {
+      stripHeadingAttributesFromToken(token);
+    }
     const spans: StyledSpan[] = [];
     if (token.tokens && token.tokens.length > 0) {
       collectSpans(token.tokens, {}, this.theme, spans, undefined, this.abbreviations);
@@ -4110,6 +4179,9 @@ export class Markdown extends UIComponent {
       // ── Headings ─────────────────────────────────────────────────────
       case 'heading': {
         const hToken = token as Tokens.Heading;
+        if (HEADING_ATTR_SUFFIX_RE.test(hToken.text)) {
+          stripHeadingAttributesFromToken(hToken);
+        }
         const size = headingSize(t, hToken.depth);
         const headingFont = `bold ${size}px ${t.bodyFont}`;
         return renderInlineToRichText(
