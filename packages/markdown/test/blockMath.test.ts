@@ -192,6 +192,34 @@ describe('math SVG carries an explicit color', () => {
   });
 });
 
+describe('math-foundations regression (CTX-0529)', () => {
+  it('typesets the three display blocks that degraded to raw TeX', async () => {
+    await preloadMathJax();
+    const cases = [
+      '\\mathbf{M}_{\\text{world, child}} = \\mathbf{M}_{\\text{world, parent}} \\cdot \\mathbf{M}_{\\text{local}}',
+      'I_{\\text{allowed}} = I_0 \\setminus \\bigcup_{k=1}^{K} E_k',
+      'd^2(C, \\overline{P_iP_{i+1}}) \\le \\left(\\frac{\\text{lineWidth}}{2} + \\text{hitTolerance}\\right)^2',
+    ];
+    for (const tex of cases) {
+      const md = new Markdown(`$$${tex}$$`);
+      expect(mathBlocksOf(md), tex).toHaveLength(1);
+      expect(mathBlocksOf(md)[0].formula, tex).toBe(tex);
+      expect(textOf(md), tex).not.toContain('$');
+      const svg = svgOf(mathBlocksOf(md)[0]);
+      expect(svg, tex).toContain('<path');
+    }
+  });
+
+  it('does not turn underscores inside $$...$$ into emphasis', async () => {
+    await preloadMathJax();
+    const md = new Markdown('$$d^2(C, \\overline{P_iP_{i+1}}) \\le 1$$');
+    expect(mathBlocksOf(md)).toHaveLength(1);
+    expect(mathBlocksOf(md)[0].formula).toBe('d^2(C, \\overline{P_iP_{i+1}}) \\le 1');
+    expect(mathBlocksOf(md)[0].formula).not.toContain('*');
+    expect(textOf(md)).not.toContain('*');
+  });
+});
+
 describe('blockMath stops at blank line for incremental lexing', () => {
   it('stops at first blank line, treating remainder as a new paragraph', () => {
     const md = new Markdown('$$\nx = 1\n\ny = 2\n$$\n');
