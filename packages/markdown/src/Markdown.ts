@@ -264,11 +264,17 @@ marked.use({
         }
         // Guard against currency: "$5 to $10" must NOT become one math span.
         // Require, à la pandoc: the opening `$` is not `$$` and is immediately
-        // followed by a non-space, non-digit; the content has no literal `$`
-        // (only escaped `\$`) and no newline; the closing `$` is preceded by a
-        // non-space and not followed by a digit. So "$x+1$" is math, but "$5",
-        // "$5 to $10", "$$", and "cost $9 each" are not.
-        const match = /^\$(?![$\s\d])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
+        // followed by a non-space; the content has no literal `$` (only escaped
+        // `\$`) and no newline; the closing `$` is preceded by a non-space and
+        // not followed by a digit. So "$x+1$" is math, but "$5", "$5 to $10",
+        // "$$", and "cost $9 each" are not.
+        //
+        // The digit guard on the opener was relaxed (2026-08): "$3 \\times 3$"
+        // is legitimate math that was previously blocked by `(?!\\d)`. Currency
+        // like "$5 to $10" is still excluded because the closing `$` before
+        // "10" is followed by a digit and the content before it ends with a
+        // space, so the lazy match cannot close there — no formula is produced.
+        const match = /^\$(?![$\s])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
         if (match) {
           return {
             type: 'inlineMath',

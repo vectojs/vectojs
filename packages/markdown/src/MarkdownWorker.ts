@@ -127,8 +127,11 @@ marked.use({
           }
         }
         // Guard against currency ("$5 to $10") and trailing digits so only
-        // real inline math ("$x+1$") tokenizes.
-        const match = /^\$(?![$\s\d])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
+        // real inline math ("$x+1$") tokenizes. The digit guard on the opener
+        // was relaxed (2026-08) to allow "$3 \\times 3$"; currency remains
+        // excluded via the closing digit/space checks so no formula matches
+        // "$5 to $10".
+        const match = /^\$(?![$\s])((?:\\\$|[^$\n])*?)(?<!\s)\$(?!\d)/.exec(src);
         if (match) {
           return {
             type: 'inlineMath',
