@@ -3560,6 +3560,7 @@ export class Markdown extends UIComponent {
     }
     this.width = this.content.width;
     this.height = this.content.height;
+    this.notifyLayoutUpdated();
     this.scene?.markDirty();
   }
 
@@ -3631,7 +3632,8 @@ export class Markdown extends UIComponent {
    * or exporting there would capture placeholders.
    */
   private waitForAppendSettled(): Promise<void> {
-    if (!this.appendInFlight && !this.mathLoadPending) return Promise.resolve();
+    if (!this.appendInFlight && !this.mathLoadPending && !this.fencedRebuildPending)
+      return Promise.resolve();
     return new Promise<void>((resolve) => {
       this.appendSettledWaiters.push(resolve);
     });
@@ -3649,7 +3651,12 @@ export class Markdown extends UIComponent {
    * one chunk early.
    */
   private flushAppendSettledWaiters(): void {
-    if (this.appendInFlight || this.mathLoadPending || this.appendSettledWaiters.length === 0) {
+    if (
+      this.appendInFlight ||
+      this.mathLoadPending ||
+      this.fencedRebuildPending ||
+      this.appendSettledWaiters.length === 0
+    ) {
       return;
     }
     const waiters = this.appendSettledWaiters;
@@ -4326,8 +4333,12 @@ export class Markdown extends UIComponent {
               this.fencedRebuildPending = true;
               loadPromise.then(() => {
                 this.fencedRebuildPending = false;
-                if (this.isDestroyed) return;
+                if (this.isDestroyed) {
+                  this.flushAppendSettledWaiters();
+                  return;
+                }
                 if (isFencedBlockRendererReady(lang)) this.retypesetFromTokens();
+                this.flushAppendSettledWaiters();
               });
             }
           }
