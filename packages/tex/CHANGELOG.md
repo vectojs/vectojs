@@ -1,5 +1,13 @@
 # @vectojs/tex
 
+## 0.1.5
+
+### Patch Changes
+
+- fix(tex): missing Size2/Size4 glyphs for math-foundations (CTX-0040)
+
+  Add i/J/H formulas to subset, 671 glyphs. Fixes boxed raw LaTeX for floor and cases.
+
 ## 0.1.4
 
 ### Patch Changes
