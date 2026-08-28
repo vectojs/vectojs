@@ -1,0 +1,602 @@
+{
+  "suite": "foum",
+  "name": "foum",
+  "date": "2026-08-28",
+  "engine": "bun-node",
+  "userAgent": "Bun/1.4.0",
+  "note": "FOUM (flash of unstyled markdown) = intermediate frames where raw markers are visible then disappear; optimistic hides them via inline guess, remend completes them before lex. Structural flicker = block type or loose flag changes retroactively (para→setext, tight→loose). Convergence = optimistic final === literal final === one-shot lexer output. Adversarial chunks are split at incomplete syntax boundaries (This is **bo, half list marker \"- \", list loose, heading setext). Literal shows FOUM, optimistic/remend avoid it; all converge.",
+  "cases": [
+    {
+      "id": "bold-incomplete",
+      "description": "Inline strong split as **bo | ld** — literal shows **bo, optimistic/remend show bold",
+      "doc": "This is **bold** text and more.",
+      "chunks": ["This is **b", "ol", "d** text and more."],
+      "chunkCount": 3,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 2,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.1322280000000049,
+        "literalAvgUs": 44.076000000001635,
+        "remendTotalMs": 1.0178099999999972,
+        "remendAvgUs": 339.2699999999991
+      },
+      "snapshots": {
+        "literalTails": ["This is **b", "This is **bol", "This is bold text and more."],
+        "optimisticTails": ["This is b", "This is bol", "This is bold text and more."],
+        "remendTails": ["This is b", "This is bol", "This is bold text and more."],
+        "literalTypes": [["paragraph"], ["paragraph"], ["paragraph"]],
+        "remendTypes": [["paragraph"], ["paragraph"], ["paragraph"]]
+      }
+    },
+    {
+      "id": "italic-incomplete",
+      "description": "Italic *it split — literal \"*it\", optimistic/remend \"it\" italic",
+      "doc": "Text with *italic* words here.",
+      "chunks": ["Text with *it", "alic", "* words here."],
+      "chunkCount": 3,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 2,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.07261300000000404,
+        "literalAvgUs": 24.204333333334677,
+        "remendTotalMs": 0.3531250000000057,
+        "remendAvgUs": 117.70833333333523
+      },
+      "snapshots": {
+        "literalTails": ["Text with *it", "Text with *italic", "Text with italic words here."],
+        "optimisticTails": ["Text with it", "Text with italic", "Text with italic words here."],
+        "remendTails": ["Text with it", "Text with italic", "Text with italic words here."],
+        "literalTypes": [["paragraph"], ["paragraph"], ["paragraph"]],
+        "remendTypes": [["paragraph"], ["paragraph"], ["paragraph"]]
+      }
+    },
+    {
+      "id": "codespan-incomplete",
+      "description": "Inline code `co split",
+      "doc": "Run `code` now and continue.",
+      "chunks": ["Run `c", "ode", "` now and continue."],
+      "chunkCount": 3,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 2,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.055235999999993624,
+        "literalAvgUs": 18.411999999997875,
+        "remendTotalMs": 0.148733,
+        "remendAvgUs": 49.577666666666666
+      },
+      "snapshots": {
+        "literalTails": ["Run `c", "Run `code", "Run code now and continue."],
+        "optimisticTails": ["Run c", "Run code", "Run code now and continue."],
+        "remendTails": ["Run c", "Run code", "Run code now and continue."],
+        "literalTypes": [["paragraph"], ["paragraph"], ["paragraph"]],
+        "remendTypes": [["paragraph"], ["paragraph"], ["paragraph"]]
+      }
+    },
+    {
+      "id": "link-incomplete",
+      "description": "Link destination split as https://exa | mple... — remend completes to incomplete-link",
+      "doc": "See [the docs](https://example.com) now.",
+      "chunks": ["See [the docs](htt", "ps://examp", "le.com) now."],
+      "chunkCount": 3,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 2,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.1429340000000039,
+        "literalAvgUs": 47.644666666667966,
+        "remendTotalMs": 0.2720729999999989,
+        "remendAvgUs": 90.69099999999963
+      },
+      "snapshots": {
+        "literalTails": ["See [the docs](htt", "See [the docs](https://examp", "See the docs now."],
+        "optimisticTails": ["See the docs", "See the docs", "See the docs now."],
+        "remendTails": ["See the docs", "See the docs", "See the docs now."],
+        "literalTypes": [["paragraph"], ["paragraph"], ["paragraph"]],
+        "remendTypes": [["paragraph"], ["paragraph"], ["paragraph"]]
+      }
+    },
+    {
+      "id": "list-marker-half",
+      "description": "Half list marker \"- \" then \"item one\" — bare \"- \" lexes as list with empty item then heals",
+      "doc": "- item one\n- item two\n",
+      "chunks": ["- ", "item one\n- item two\n"],
+      "chunkCount": 2,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.16218400000000344,
+        "literalAvgUs": 81.09200000000172,
+        "remendTotalMs": 0.19798499999999564,
+        "remendAvgUs": 98.99249999999782
+      },
+      "snapshots": {
+        "literalTails": [null, null],
+        "optimisticTails": [null, null],
+        "remendTails": [null, null],
+        "literalTypes": [["list(loose:false)"], ["list(loose:false)"]],
+        "remendTypes": [["list(loose:false)"], ["list(loose:false)"]]
+      }
+    },
+    {
+      "id": "list-marker-space",
+      "description": "Bare trailing list marker \"- \" with no content — tiles as \"- \\n\" then heals",
+      "doc": "- a\n- b\n",
+      "chunks": ["- a\n- ", "b\n"],
+      "chunkCount": 2,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.04420700000000011,
+        "literalAvgUs": 22.103500000000054,
+        "remendTotalMs": 1.0693150000000102,
+        "remendAvgUs": 534.6575000000051
+      },
+      "snapshots": {
+        "literalTails": [null, null],
+        "optimisticTails": [null, null],
+        "remendTails": [null, null],
+        "literalTypes": [["list(loose:false)"], ["list(loose:false)"]],
+        "remendTypes": [["list(loose:false)"], ["list(loose:false)"]]
+      }
+    },
+    {
+      "id": "list-loose",
+      "description": "Ordered list loose flag: tight [list, space, list] vs single loose list after blank run",
+      "doc": "1. ordered\n2. second\n\n\n1. third\n",
+      "chunks": ["1. ordered\n", "2. second\n", "\n\n1", ". third\n"],
+      "chunkCount": 4,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 3,
+        "optimistic": 3,
+        "remend": 3
+      },
+      "timing": {
+        "literalTotalMs": 0.2766330000000039,
+        "literalAvgUs": 69.15825000000098,
+        "remendTotalMs": 0.19167099999999948,
+        "remendAvgUs": 47.91774999999987
+      },
+      "snapshots": {
+        "literalTails": [null, null, "1", null],
+        "optimisticTails": [null, null, "1", null],
+        "remendTails": [null, null, "1", null],
+        "literalTypes": [
+          ["list(loose:false)"],
+          ["list(loose:false)"],
+          ["list(loose:false)", "space", "paragraph"],
+          ["list(loose:true)"]
+        ],
+        "remendTypes": [
+          ["list(loose:false)"],
+          ["list(loose:false)"],
+          ["list(loose:false)", "space", "paragraph"],
+          ["list(loose:true)"]
+        ]
+      }
+    },
+    {
+      "id": "heading-setext",
+      "description": "Paragraph Term then \"---\" becomes setext heading h2 — para→heading flicker",
+      "doc": "Term\n---\n\nAfter.\n",
+      "chunks": ["Term\n", "---\n\nAfter.\n"],
+      "chunkCount": 2,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 1,
+        "optimistic": 1,
+        "remend": 1
+      },
+      "timing": {
+        "literalTotalMs": 0.04526499999999345,
+        "literalAvgUs": 22.632499999996725,
+        "remendTotalMs": 0.05138900000000035,
+        "remendAvgUs": 25.694500000000176
+      },
+      "snapshots": {
+        "literalTails": ["Term", "After."],
+        "optimisticTails": ["Term", "After."],
+        "remendTails": ["Term", "After."],
+        "literalTypes": [["paragraph"], ["heading", "space", "paragraph"]],
+        "remendTypes": [["paragraph"], ["heading", "space", "paragraph"]]
+      }
+    },
+    {
+      "id": "heading-setext-trailing",
+      "description": "Setext split at newline before underline",
+      "doc": "Intro text\n---\n\nNext para.\n",
+      "chunks": ["Intro text\n", "---\n", "\nNext para.\n"],
+      "chunkCount": 3,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 1,
+        "optimistic": 1,
+        "remend": 1
+      },
+      "timing": {
+        "literalTotalMs": 0.030281999999992593,
+        "literalAvgUs": 10.09399999999753,
+        "remendTotalMs": 0.061472999999999445,
+        "remendAvgUs": 20.490999999999815
+      },
+      "snapshots": {
+        "literalTails": ["Intro text", null, "Next para."],
+        "optimisticTails": ["Intro text", null, "Next para."],
+        "remendTails": ["Intro text", null, "Next para."],
+        "literalTypes": [["paragraph"], ["heading"], ["heading", "space", "paragraph"]],
+        "remendTypes": [["paragraph"], ["heading"], ["heading", "space", "paragraph"]]
+      }
+    },
+    {
+      "id": "fence-incomplete",
+      "description": "Fenced code block split inside content",
+      "doc": "```js\ncode here\n```\n",
+      "chunks": ["```js\ncode ", "here\n```\n"],
+      "chunkCount": 2,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.016943999999995185,
+        "literalAvgUs": 8.471999999997593,
+        "remendTotalMs": 0.058359000000002936,
+        "remendAvgUs": 29.179500000001468
+      },
+      "snapshots": {
+        "literalTails": [null, null],
+        "optimisticTails": [null, null],
+        "remendTails": [null, null],
+        "literalTypes": [["code"], ["code"]],
+        "remendTypes": [["code"], ["code"]]
+      }
+    },
+    {
+      "id": "blockquote-incomplete",
+      "description": "Blockquote split — structural stable, inline FOUM not",
+      "doc": "> quote line\n> second\n",
+      "chunks": ["> quote line\n", "> second\n"],
+      "chunkCount": 2,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 0,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "timing": {
+        "literalTotalMs": 0.09365499999999827,
+        "literalAvgUs": 46.827499999999134,
+        "remendTotalMs": 0.12567199999999445,
+        "remendAvgUs": 62.83599999999723
+      },
+      "snapshots": {
+        "literalTails": [null, null],
+        "optimisticTails": [null, null],
+        "remendTails": [null, null],
+        "literalTypes": [["blockquote"], ["blockquote"]],
+        "remendTypes": [["blockquote"], ["blockquote"]]
+      }
+    },
+    {
+      "id": "mixed-stream",
+      "description": "Mixed prose with heading, inline, list, setext — exercises all axes together",
+      "doc": "# Title\n\nThis is **bold** and *italic* with `code`.\n\n- item one\n- item two\n\nTerm\n---\n\nFinal para.\n",
+      "chunks": [
+        "# Title\n\n",
+        "This is *",
+        "*bold** a",
+        "nd *itali",
+        "c* with `",
+        "code`.\n\n-",
+        " item one",
+        "\n- item t",
+        "wo\n\nTerm\n",
+        "---\n\nFina",
+        "l para.\n"
+      ],
+      "chunkCount": 11,
+      "convergence": true,
+      "convergenceDetails": {
+        "literalFinalEqualsOneShot": true,
+        "optimisticFinalEqualsOneShot": true,
+        "remendFinalEqualsOneShot": true,
+        "optimisticLiteralEqualOnClose": true
+      },
+      "foumFrames": {
+        "literal": 1,
+        "optimistic": 0,
+        "remend": 0
+      },
+      "flickerFrames": {
+        "literal": 1,
+        "optimistic": 1,
+        "remend": 1
+      },
+      "timing": {
+        "literalTotalMs": 0.5266670000000033,
+        "literalAvgUs": 47.87881818181848,
+        "remendTotalMs": 0.6518680000000074,
+        "remendAvgUs": 59.26072727272795
+      },
+      "snapshots": {
+        "literalTails": [
+          null,
+          "This is *",
+          "This is bold a",
+          "This is bold and *itali",
+          "This is bold and italic with `",
+          null,
+          null,
+          null,
+          "Term",
+          "Fina",
+          "Final para."
+        ],
+        "optimisticTails": [
+          null,
+          "This is *",
+          "This is bold a",
+          " and itali",
+          "This is bold and italic with `",
+          null,
+          null,
+          null,
+          "Term",
+          "Fina",
+          "Final para."
+        ],
+        "remendTails": [
+          null,
+          "This is *",
+          "This is bold a",
+          "This is bold and itali",
+          "This is bold and italic with `",
+          null,
+          null,
+          null,
+          "Term",
+          "Fina",
+          "Final para."
+        ],
+        "literalTypes": [
+          ["heading", "space"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)", "space", "paragraph"],
+          [
+            "heading",
+            "space",
+            "paragraph",
+            "space",
+            "list(loose:false)",
+            "space",
+            "heading",
+            "space",
+            "paragraph"
+          ],
+          [
+            "heading",
+            "space",
+            "paragraph",
+            "space",
+            "list(loose:false)",
+            "space",
+            "heading",
+            "space",
+            "paragraph"
+          ]
+        ],
+        "remendTypes": [
+          ["heading", "space"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)"],
+          ["heading", "space", "paragraph", "space", "list(loose:false)", "space", "paragraph"],
+          [
+            "heading",
+            "space",
+            "paragraph",
+            "space",
+            "list(loose:false)",
+            "space",
+            "heading",
+            "space",
+            "paragraph"
+          ],
+          [
+            "heading",
+            "space",
+            "paragraph",
+            "space",
+            "list(loose:false)",
+            "space",
+            "heading",
+            "space",
+            "paragraph"
+          ]
+        ]
+      }
+    }
+  ],
+  "aggregate": {
+    "totalCases": 12,
+    "totalChunks": 40,
+    "totalFoumFrames": {
+      "literal": 9,
+      "optimistic": 0,
+      "remend": 0
+    },
+    "totalFlickerFrames": {
+      "literal": 6,
+      "optimistic": 6,
+      "remend": 6
+    },
+    "convergenceAll": true,
+    "timing": {
+      "literalTotalMs": 1.5988479999999967,
+      "remendTotalMs": 4.199473000000012,
+      "remendOverheadMs": 2.600625000000015,
+      "remendOverheadRatio": 2.626561749459624
+    }
+  },
+  "versions": {
+    "remend": "1.3.0",
+    "marked": "see packages/markdown/package.json",
+    "bun": "1.4.0"
+  }
+}

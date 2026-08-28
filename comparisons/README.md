@@ -570,6 +570,62 @@ Mid-stream syntax repair (`remend`'s job) is the one capability in this comparis
 that we lack outright. Worth having; worth implementing as a prefix-table pass
 from the start rather than as a rescan per delimiter.
 
+### Incomplete UX: FOUM, structural flicker, and convergence (2026-08-28)
+
+Streaming-parse cost is not the whole UX. Two render-level properties decide whether a stream **looks** stable:
+
+- **FOUM** — flash of unstyled markdown: `This is **bo` renders as literal `**bo` then reflows to **bo**. One frame of marker noise, one layout shift.
+- **Structural flicker** — a block retroactively changes type: `Term` then `---` flips a paragraph into a setext heading; `1. a / 2. b` then `\n\n1. c` flips two tight lists into one loose list (`loose: false → true`), which changes item spacing.
+
+`@vectojs/markdown` has two modes for trailing unclosed inline syntax:
+
+- **`literal`** (default, every release before this option): what `marked.lexer()` gives, markers stay visible.
+- **`optimistic`**: the trailing paragraph's last unclosed `strong`/`em`/`codespan`/`link` is rendered with the guessed style immediately, display-only, unwound on `close()` so `literal` and `optimistic` converge.
+
+`remend` (Streamdown 2.5.0, the `streamdown:incomplete-link` path) is the string-level counterpart: it rewrites `This is **bo` → `This is **bo**` **before** lexing, so the lexer never sees the bare markers.
+
+This sub-bench streams 12 adversarial documents split at incomplete boundaries (the task's `This is **bo`, half list marker `-` (dash + space), list loose, heading `para→setext`, fence inside content, mixed stream) and drives three arms through the **same** `marked` copy (`packages/markdown`'s pinned 18.0.10, so engine constants cannot masquerade as strategy differences):
+
+<!-- markdownlint-disable MD060 MD038 -->
+
+| case                  | chunks                                             | what the split exercises                 |
+| --------------------- | -------------------------------------------------- | ---------------------------------------- |
+| `bold-incomplete`     | `This is **b` → `ol` → `d** …`                     | `**bo` — strong FOUM                     |
+| `italic-incomplete`   | `Text with *it` → `alic` → `* …`                   | `*it` — em FOUM                          |
+| `codespan-incomplete` | ``Run `c` → `ode` →`` ` …``                        | `` `co`` — code FOUM                     |
+| `link-incomplete`     | `[the docs](htt` → `ps://examp` → `le.com)`        | `[…](https://exa` — link FOUM            |
+| `list-marker-half`    | `- ` → `item one …`                                | half marker                              |
+| `list-marker-space`   | `- a\n- ` → `b\n`                                  | bare trailing `- ` (module-comment case) |
+| `list-loose`          | `1. ordered` → `2. second` → `\n\n1` → `. third`   | `tight → loose` flicker                  |
+| `heading-setext`      | `Term\n` → `---\n…`                                | `para → setext heading` flicker          |
+| `mixed-stream`        | 11 × 9-char slices over heading+inline+list+setext | all axes together                        |
+
+<!-- markdownlint-enable MD060 MD038 -->
+
+Method: for each intermediate `acc = chunks[0..i].join('')` lex `acc` (literal/optimistic share the lex, optimistic is display-only) and `remend(acc)` then lex; count a FOUM frame as an intermediate `acc` where literal's trailing paragraph has an unclosed inline (`findUnclosedInline` non-null) — i.e. literal shows `**bo` while optimistic/remend show `bo` styled. Count a flicker frame as an intermediate `acc` whose block fingerprint (`type` + `list.loose` + `heading.depth`) differs from the final document's prefix of the same length. Convergence is `optimistic final === literal final === one-shot` (`marked.lexer(doc)`) and `remend(doc)` final === one-shot.
+
+Results — `comparisons/stream-markdown-smd/results/foum-2026-08-28.json` (bun-node, 12 cases, 40 chunks, also `foum-latest.json`):
+
+<!-- markdownlint-disable MD060 MD038 -->
+
+|                          | FOUM frames | flicker frames | convergence | lex total (40 chunks)               |
+| ------------------------ | ----------- | -------------- | ----------- | ----------------------------------- |
+| **VectoJS `literal`**    | **9**       | 6              | ✅          | 1.22 ms                             |
+| **VectoJS `optimistic`** | **0**       | 6              | ✅          | 1.22 ms (same lex)                  |
+| **Streamdown `remend`**  | **0**       | 6              | ✅          | 3.63–3.99 ms (**2.6–3.2×** literal) |
+
+<!-- markdownlint-enable MD060 MD038 -->
+
+Per-case FOUM in that file is all inline: `bold` 2, `italic` 2, `codespan` 2, `link` 2, `mixed` 1 = 9; block cases are 0. Per-case flicker is `list-loose` 3 (tight list → `space+paragraph` → loose list), `heading-setext` 1, `heading-setext-trailing` 1, `mixed` 1 = 6; the half-marker cases are 0 because `marked` already treats `-` as a list marker even with empty item (no para→list flip in CommonMark), so no flicker is expected there.
+
+Takeaways:
+
+- Optimistic and remend both hide FOUM (0 vs 9); convergence holds for every case — optimistic unwinds on `close()` so its final token tree is byte-identical to literal and to one-shot, same for `remend(doc)` on balanced input.
+- Structural flicker is **not** fixed by either — both arms show the same 6 flicker frames (list loose, para→setext). That is correct: optimistic is scoped to the trailing **inline** run inside one paragraph, and `remend`'s own `setextHeadings` handler only covers the `---` inside that handler (which already converged here). Block re-grouping on appended text is the same token-rewrite `incrementalLex` documents and deliberately does not paper over.
+- `remend` pays string-rewrite cost: ~2.6–3.2× the literal lex on this small corpus; the suite's main streaming-parse benchmark shows why the ratio widens with length — `remend` rescans the whole accumulated document from zero on every chunk (exponent 2.45 in Chrome in the table above), so the 40-chunk cost here is the small-doc floor. VectoJS optimistic pays none: same lex, same tokens, only the trailing paragraph's spans are re-derived.
+
+Run: `bun run comparisons/stream-markdown-smd/foum-bench.ts` (uses `packages/markdown`'s `marked` copy and `findUnclosedInline` from shipped source, writes `results/foum-<YYYY-MM-DD>.json` + `foum-latest.json`).
+
 ## Libraries reviewed but not yet benchmarked
 
 Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
