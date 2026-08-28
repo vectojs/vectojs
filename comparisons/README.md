@@ -554,6 +554,71 @@ worse:
 The `degraded` field on each result row reports which path ran, so a timing figure
 from this suite always says whether the boundary was in play.
 
+### Adversarial corpus — `degradedReason` + stable-boundary ratio
+
+A second artifact measures `incrementalLex` on documents **chosen to break it**:
+reference definitions, nested lists, blockquote, table growth, fence, display math
+(`$$` and `cases`), footnote, container, CJK, RTL and emoji — each streamed in
+32-char chunks, median of 9 trials after 3 warmups, validated by deep token
+equality against a whole-document `marked.lexer(doc)` at every intermediate
+length. The suite lives in `benchmarks/markdown-adversarial/` and the results are
+archived as `comparisons/stream-markdown-smd/results/adversarial-2026-08-28.json`
+(Bun 1.4.0, same pinned `marked` copy as production). A headed-browser build is
+available via `bun run benchmarks/markdown-adversarial/build.ts` and the same
+page can be driven through `benchmarks/run-browsers.sh` for a quotable figure.
+
+| Corpus         | chars | degradedReason    | stable ratio¹ | charsLexed / whole² | speedup³ |
+| -------------- | ----: | ----------------- | ------------: | ------------------: | -------: |
+| ref-definition |  5088 | `link-definition` |        0.0000 |                1.00 |    0.99× |
+| nested-lists   |  7192 | —                 |        0.9936 |               17.09 |   16.27× |
+| blockquote     |  5425 | —                 |        0.9935 |               30.54 |   25.66× |
+| table-growth   | 10003 | —                 |        0.9982 |                1.06 |    1.08× |
+| fence          |  4896 | —                 |        0.9963 |               27.19 |   32.18× |
+| math-display   |  3570 | —                 |        0.9742 |               24.87 |   14.76× |
+| math-cases     |  2469 | —                 |        0.9927 |               18.34 |    9.61× |
+| footnote       |  1945 | `footnote-def`    |        0.0000 |                1.26 |    1.32× |
+| container      |  4132 | `container`       |        0.0000 |                1.00 |    0.97× |
+| CJK            |  5916 | —                 |        0.9966 |               51.48 |   47.16× |
+| RTL            |  6733 | —                 |        0.9938 |               55.36 |   50.90× |
+| emoji          |  8529 | —                 |        0.9947 |               60.21 |   49.72× |
+
+¹ `stableRatio = stableOffset / docChars` — the fraction of the final document
+already behind the stable block boundary and never re-lexed again (stable chars
+vs total). 0 means the instance degraded immediately and stayed degraded.
+² `wholeDocumentCharsLexed / charsLexed` — total characters handed to
+`marked.lexer()` across the stream; a proxy for the mechanism, measured
+independently of wall time.
+³ `wholeMedianMs / medianMs` — wall-clock win from the boundary.
+
+**Degraded (by design, correct, never worse):** 3 of 12. `ref-definition`
+(`link-definition`), `container` (`container`) and `footnote` (`footnote-def`)
+degrade permanently because their semantics are non-local — a late definition
+rewrites inline tokens already emitted. Their charsLexed ratio is ~1.0 and
+speedup ~1.0 (parity, never a slowdown). The `degradedReason` field reports
+which.
+
+**Incremental with high stable ratio:** 9 of 12, avg `stableRatio = 0.9926`.
+Lists, blockquote, fence, both math shapes, CJK, RTL and emoji all hold the
+incremental path and spend >99% of the final document behind the boundary.
+CJK/RTL/emoji are inline BiDi/Unicode; the boundary is block-level so they
+behave like prose, as intended — 47–50× speedups, 51–60× fewer chars lexed.
+
+**The interesting non-degraded loss — `table-growth`:** `table-growth` does
+**not** degrade but still wins only 1.08× (1.06× fewer chars). A GFM table is
+one block token whose rows accumulate until the blank line after the table; the
+stable cut cannot land inside it, so each row's chunk re-lexes the growing tail.
+`maxCharsLexed = 9714` (97% of the 10003-char doc) confirms the window grew
+with the table. This is not a bug: correctness forbids cutting inside an
+open table, and a 120-row table is the worst-case shape. Smaller tables
+(pagination, virtualization) behave like the other block constructs.
+
+**Math no longer degrades:** `math-display` and `math-cases` (multiple `$$`
+blocks, including `\begin{cases}`) stay incremental (`degradedReason: null`,
+stable 0.97–0.99, 10–16×). The `$$` blank-line guard
+`(?:(?!\n[ \t]*\n)[\s\S])+?` and `paragraphPairCap` removed the former blanket
+degrade; all 12 gates pass including `tokensAgree` and `rawTilingOk`, so the fast
+path is not buying speed with a different token tree.
+
 ### TODO (ground rule 5)
 
 Make display math incremental by stopping `blockMath`'s tokenizer at a blank line,
