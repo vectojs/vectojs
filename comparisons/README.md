@@ -570,7 +570,50 @@ Mid-stream syntax repair (`remend`'s job) is the one capability in this comparis
 that we lack outright. Worth having; worth implementing as a prefix-table pass
 from the start rather than as a rescan per delimiter.
 
+### Long-session streaming: 100KB / 500KB / 1MB — heap, entities, charsLexed/Shaped, layout visits
+
+A streaming Markdown document that grows to 1 MB is not a bigger version of a 25 KB chat bubble — it is where a quadratic pipeline becomes unusable. This bench streams the same synthetic corpus used by `markdown-retained-stream` (heading + paragraph + blockquote + list + table + code per section, unique per index) to **100 KB, 500 KB and 1 024 KB**, in **320-char chunks**, and measures the five costs that matter for a long session:
+
+- **heap** — `process.memoryUsage().heapUsed` headless, `performance.memory.usedJSHeapSize` / `measureUserAgentSpecificMemory` in the browser (quantized to 5 MB without `--enable-precise-memory-info`, source reported alongside the figure)
+- **worker retained source** — `rawMarkdown.length` (the worker keeps the same string via `workerSourceLen`; `workerSourceLen === rawChars` when incremental)
+- **entity count** — top-level `content.children.length` and total entities via tree walk
+- **nodes created/destroyed** — `streamStats.entitiesRebuilt` / `entitiesReused` / `inPlaceUpdates` and `tokensPrefixMatched` / `tokensReturned`
+- **charsLexed** — `sourceCharsLexed` from incrementalLex (the shipped worker tail) vs the whole-document control
+- **charsShaped** — total characters passed to `CanvasRenderingContext2D.measureText` (headless stub counts `text.length`, browser counts real `measureText` calls)
+- **layout visits** — `Stack.layout()` invocations plus `Scene` phase totals (`transform`, `drawWalk`, `entityPaint`, etc. via `beginPhaseCapture`)
+
+Headless run (`bun run comparisons/stream-markdown-smd/long-session-bench.ts`, 5 trials median, 1 warmup) — the browser twin lives at `benchmarks/markdown-long-session` (Scene + Markdown + real canvas, heap via `heapBytes()` like `hybrid-projection`):
+
+| doc | chunks | heap headless Δ / after | entities top / total | charsLexed inc / whole (ratio) | charsShaped | layout visits (Stack) | time inc / whole |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 KB (102 400) | 320 | 0.00 / 6.16 MB | 767 / 2 301 | 131 481 / 16 435 200 (125×) | 131 481 | 2 301 | 21.35 ms / 2 868 ms (134×) |
+| 500 KB (512 000) | 1 600 | 2.74 / 17.63 MB | 3 801 / 11 403 | 693 236 / 409 856 000 (591×) | 693 236 | 11 403 | 133.07 ms / 71 704 ms (538×) |
+| 1 024 KB (1 048 576) | 3 277 | −6.38 / 24.37 MB* | 7 754 / 23 262 | 1 429 829 / 1 718 720 960 (1 202×) | 1 429 829 | 23 262 | 329.15 ms / 300 750 ms (913×) |
+
+\* Headless `heapDelta` is `heapAfter - heapBefore` per trial median; the −6.38 MB at 1 MB is GC (heapBefore 30.75 → heapAfter 24.37 after `global.gc()`), not a leak — `heapAfter` itself grows monotonically 6.16 → 17.63 → 24.37 MB.
+
+Scaling exponents across 100 → 1 024 KB (10.24× chars):
+
+| metric | exponent | interpretation |
+| --- | --- | --- |
+| `incrementalCharsLexed` | **1.03** | linear — stable boundary skips re-lexing |
+| `wholeDocumentCharsLexed` | **2.00** | quadratic control — `Σ prefix` |
+| `incrementalMs` | **1.18** | near-linear wall time (lex + reconcile) |
+| `wholeMs` | **2.00** | quadratic wall time |
+| `entityTotal` | **0.99** | linear — one entity per block, reused |
+| `charsShaped` | **1.03** | linear — each char measured once |
+| `layoutVisits` | **0.99** | linear — one `Stack.layout` per entity |
+
+**Pipeline stays linear.** Characters handed to the lexer grow 10.24× → 10.87× (1.03 exponent), entities 10.11×, layout visits 10.11×, and wall time 10.24× → 15.41× (1.18) — all O(n). The whole-document control that re-lexes the accumulated source each chunk grows 104.59× in chars (2.00) and 104.85× in time. The gap widens from 125× at 100 KB to 1 202× at 1 MB, which is exactly the wrong direction for a chat transcript if the control were shipped.
+
+Heap and worker retention are also linear: `heapAfter` 6.16 → 24.37 MB (3.95× over 10.24× chars, but per-char 0.06 B → 0.023 B, not growing superlinearly; delta is noisy due to GC buckets), `workerRetainedChars` equals `rawChars` at every size (no duplication).
+
+Nodes created/destroyed: `entitiesReused` tracks `tokensPrefixMatched` (99%+ reuse, same as `stream-markdown-smd`'s 99.5%), `entitiesRebuilt` equals `tokensReturned` (the changed tail), `inPlaceUpdates` fires for code/paragraph/heading/list/table/image tails — so per-chunk work is O(tail), not O(document).
+
+Results: `comparisons/stream-markdown-smd/results/long-session-2026-08-28.json` (also `long-session-latest.json`); browser run writes `benchmarks/markdown-long-session/results/history/markdown-long-session-<engine>-<runId>.json` via `reportResult`. Run: `bun run comparisons/stream-markdown-smd/long-session-bench.ts` (headless, also shows the 122×–913× speedups) or `benchmarks/run-browsers.sh markdown-long-session 8179 chrome firefox` (headed, real heap via `measureUserAgentSpecificMemory` and real `measureText`/`fillText` counts).
+
 ## Libraries reviewed but not yet benchmarked
+
 
 Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
 `paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`,
