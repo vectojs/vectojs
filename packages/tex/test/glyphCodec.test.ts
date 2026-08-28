@@ -66,8 +66,9 @@ describe('glyph table binary codec', () => {
     // corpus is subset in both display modes, and a regression that dropped one
     // mode would quietly cut the table back to 561. 666 is the count after the
     // #666 corpus extension (Script-Regular, Math-BoldItalic, italic digits,
-    // the \approx/\hbar/\ell/\Re/… symbols) plus CTX-0529 (setminus/bigcup/underscore/overline).
-    expect(all.length).toBe(666);
+    // the \approx/\hbar/\ell/\Re/… symbols) plus CTX-0529 (setminus/bigcup/underscore/overline),
+    // 671 after CTX-0040 (SpatialHashGrid floor/cases).
+    expect(all.length).toBe(671);
 
     const mismatches: string[] = [];
     for (const want of all) {

@@ -162,6 +162,12 @@ const DEFAULT_CORPUS = [
   '\\mathbf{M}_{\\text{world, child}} = \\mathbf{M}_{\\text{world, parent}} \\cdot \\mathbf{M}_{\\text{local}}',
   'd^2(C, \\overline{P_iP_{i+1}}) \\le \\left(\\frac{\\text{lineWidth}}{2} + \\text{hitTolerance}\\right)^2',
   'a\\_b',
+  // SpatialHashGrid coverage — CTX-0040: floor delimiters (U+230A/B) and cases brace (Size4)
+  // First two display maths in zh-cn math-foundations §8 degraded to CodeBlock with scrollbar
+  // because their glyphs were absent from the subset; H(i,j) rendered correctly.
+  'i = \\left\\lfloor \\frac{x}{S} \\right\\rfloor, \\quad j = \\left\\lfloor \\frac{y}{S} \\right\\rfloor',
+  'x = \\begin{cases} 2i & i \\geq 0 \\\\ -2i - 1 & i < 0 \\end{cases} \\qquad y = \\begin{cases} 2j & j \\geq 0 \\\\ -2j - 1 & j < 0 \\end{cases}',
+  'H(i, j) = \\frac{(x + y)(x + y + 1)}{2} + y',
 ];
 
 /** The full table's glyph map: face -> codepoint (as string) -> outline. */
