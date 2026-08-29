@@ -42,7 +42,7 @@ This document is that map.
                    ▼                              ▼
               Visible pixels              Screen readers, IME, Playwright,
                                          copy/find, AT automation
-```text
+```
 
 Source-of-pixels is always the canvas. The DOM carries **semantics and native input** only; it does not render the visible scene. The two worlds are kept in sync by a depth-first walk (`Scene.syncA11y` / `ContentProjectionManager`, see `packages/core/src/tree/scene/A11yProjectionManager.ts:30`) that runs after layout and before presenting a frame.
 
@@ -68,7 +68,7 @@ Leaf engines first, composition upward. The graph is acyclic; arrows mean "impor
            @vectojs/video-exporter / @vectojs/desktop      ┘  (host apps atop core+ui)
 
   crates/vectojs-core-rs (Rust → wasm32)  — invisible accelerator behind @vectojs/core
-```text
+```
 
 Verified against `packages/*/package.json` dependencies (`text`/`math`/`graph-layout`/`tex` have zero `@vectojs/*` deps; `layout→text`, `animation→math`, `core→{layout,text,math,animation}`, `markdown→{ui,tex,core}`). Build respects this order (`package.json:14`). Tests alias sibling packages to `src/` via `vitest.config.ts`, so the ordering governs `.d.ts` emit, not test execution.
 

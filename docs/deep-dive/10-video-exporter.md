@@ -91,7 +91,7 @@ Testing imitates the page with `packages/video-exporter/test/fixtures/two-frame-
                                                     │
                                         StagedOutput commit  staged-output.ts:99
                                         atomic rename: .vecto-*.mp4 → destination.mp4
-```text
+```
 
 ### 3.1 Options → normalised options
 
@@ -129,6 +129,8 @@ Launch itself is a test seam: `BrowserDependencies.launch` (`browser.ts:34` `lau
 
 ### 3.4 The capture loop — `validateAndStopScene` → `sizeCanvas` → frame loop
 
+<!-- markdownlint-disable MD031 MD032 MD040 -->
+
 `ExportSession.run` (`export-session.ts:111`):
 
 1. `throwIfAborted()` before acquiring anything (`export-session.ts:120`, reads `options.signal?.aborted` and throws `abortError(signal)` from `packages/video-exporter/src/abort-error.ts:6`).
@@ -148,11 +150,11 @@ Launch itself is a test seam: `BrowserDependencies.launch` (`browser.ts:34` `lau
      await encoder.write(await captureFrame(page)); // :153
      progress.update(frame + 1); // :154
    }
-   ```
-
-   `captureFrame` (`export-session.ts:99`) reads the _first_ `<canvas>` and calls `canvas.toDataURL('image/png')`, splits on `,` (`export-session.ts:104`), decodes the base64 tail to a `Buffer` for the `image2pipe/png` stdin. _"First page `<canvas>` is resized and captured"_ (`SKILL.md:27`).
+```
+`captureFrame` (`export-session.ts:99`) reads the _first_ `<canvas>` and calls `canvas.toDataURL('image/png')`, splits on `,` (`export-session.ts:104`), decodes the base64 tail to a `Buffer` for the `image2pipe/png` stdin. _"First page `<canvas>` is resized and captured"_ (`SKILL.md:27`).
 
 <!-- markdownlint-disable MD029 -->
+
 10. After the loop: `throwIfAborted()` (`export-session.ts:157`), `encoder.finish()` (`export-session.ts:158` closes stdin and waits for `close`), `throwIfAborted()` again (`export-session.ts:159`), then `output.commit()` (`export-session.ts:160`) — only after a clean FFmpeg exit does the staged file replace the destination.
 
 ## 4. FFmpeg — `image2pipe` → H.264/yuv420p, with a bounded stderr tail
@@ -162,21 +164,10 @@ Launch itself is a test seam: `BrowserDependencies.launch` (`browser.ts:34` `lau
 `packages/video-exporter/src/ffmpeg-supervisor.ts:274` `startFfmpeg`:
 
 ```ts
-const args = [
-  "-y",
-  "-f",
-  "image2pipe",
-  "-vcodec",
-  "png",
-  "-r",
-  String(fps),
-  "-i",
-  "-",
-];
-if (audioPath !== undefined) args.push("-i", audioPath);
-args.push("-c:v", "libx264", "-pix_fmt", "yuv420p");
-if (audioPath !== undefined)
-  args.push("-c:a", "aac", "-b:a", "192k", "-shortest");
+const args = ['-y', '-f', 'image2pipe', '-vcodec', 'png', '-r', String(fps), '-i', '-'];
+if (audioPath !== undefined) args.push('-i', audioPath);
+args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p');
+if (audioPath !== undefined) args.push('-c:a', 'aac', '-b:a', '192k', '-shortest');
 args.push(outputPath);
 ```text
 
@@ -275,8 +266,8 @@ Anything of this form must be either `reset()`-gated, seeded, or removed. The ex
 
 `packages/video-exporter/src/index.ts:6` `exportVideo`:
 
-```ts
-import { exportVideo } from "@vectojs/video-exporter";
+```
+import { exportVideo } from '@vectojs/video-exporter';
 await exportVideo({
   url,
   outputPath,
@@ -295,7 +286,7 @@ One function, no builder. `normalizeOptions` throws synchronously on bad geometr
 
 `packages/video-exporter/src/cli.ts:25` `USAGE`:
 
-```text
+```
 Usage: vecto-export <url> [options]
   -o, --output <file>    Output file (default: out.mp4)  cli.ts:59
   -w, --width <pixels>   Width (default: 1280)            cli.ts:60
@@ -354,8 +345,8 @@ The export package is tested without a real Chromium or Vulkan instance — ever
 A minimal in-page scene that the exporter can drive (from `packages/video-exporter/test/fixtures/two-frame-scene.ts:8`):
 
 ```ts
-import { Scene } from "@vectojs/core";
-const scene = new Scene(document.querySelector("canvas")!);
+import { Scene } from '@vectojs/core';
+const scene = new Scene(document.querySelector('canvas')!);
 // ... assemble entities, animators, springs/tweens — all driven from dt ...
 (window as unknown as { vectoScene?: unknown }).vectoScene = {
   stop: () => scene.stop(),

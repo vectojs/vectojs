@@ -29,7 +29,7 @@ public resize(width: number, height: number): void {
   if (this.gpuCanvas) this.sizeGpuCanvas(this.gpuCanvas, width, height);
   this.markDirty();
 }
-```text
+```
 
 Five things happen atomically: logical `width`/`height` update, two generation counters bump, every backing store resizes, and the frame is dirtied. The generation counters are the key — `contentFontEpoch` forces text recalibration (browser zoom changes Range geometry even at the same CSS font), and `contentViewportEpoch` re-tiers every content block without moving any of them (`Scene.ts:6415`, `Scene.ts:6420`). A resize that only changed `width`/`height` would leave every block holding DOM built for the old viewport.
 
@@ -83,7 +83,7 @@ export class Flow extends Stack {
     super({ ...opts, direction: opts.direction ?? "horizontal", wrap: true });
   }
 }
-```text
+```
 
 ### 2.3 Card — the rounded panel
 
@@ -99,7 +99,7 @@ PanelGroup { direction, width, height }
   ├── PanelResizeHandle { width: handleSize, interactive: true }  — drag delta → _onResize
   ├── Panel
   └── ...
-```text
+```
 
 `addPanel()` at `ResizablePanel.ts:237` auto-inserts a handle before every panel after the first (`ResizablePanel.ts:239` `new PanelResizeHandle`). `resize(w, h)` at `ResizablePanel.ts:258` redistributes sizes proportionally (`ResizablePanel.ts:267` `(size / basis) * avail`) then normalizes (`ResizablePanel.ts:309` clamp to `minSize`/`avail`). `_layout()` at `ResizablePanel.ts:343` assigns `x/y/width/height` to panels and handles alternately — a horizontal group's panels are `width = sizes[i], height = cross`; handles are `width = handleSize, height = cross`.
 
@@ -197,7 +197,7 @@ window.addEventListener("resize", () => {
   sidebar.layout();
   contentGroup.resize(w - sidebar.width, h - header.height);
 });
-```text
+```
 
 Each `resize()` bumps the two generation counters, every backing store rescales, `Stack`/`Flow` re-group on the next `layout()`, `PanelGroup.resize()` redistributes, and `VirtualList` clamps `_targetY` (`VirtualList.ts:566` `_clamp`). No media-query engine — the app decides the breakpoint and calls the API.
 
@@ -218,7 +218,7 @@ editorGroup.setContent(inner); // ← Panel.setContent keeps inner sized
 outer.addPanel(sidebar).addPanel(editorGroup);
 scene.add(outer);
 // On window resize: outer.resize(newW, newH) — inner follows via Panel.update().
-```text
+```
 
 `PanelGroup.resize()` proportional scaling (`ResizablePanel.ts:265`) handles the outer group; the inner group is re-laid out via `Panel.update()`'s fit sync, no explicit inner `resize()` call needed.
 
@@ -263,7 +263,7 @@ VectoJS has no native scrollbar widget — `ScrollView` and `VirtualList` clip a
 4. **Overlay ownership is overlayRoot, not parent.** `Overlay.showAt` (`Overlay.ts:70`) re-parents to `scene.overlayRoot` — always pass `source` from `showAtPoint`'s caller (`Overlay.ts:98` third arg) so a never-mounted overlay resolves `scene` on first show.
 5. **Scroll integrators must not re-arm the idle throttle.** `ScrollView.update()` (`ScrollView.ts:219`) only re-assigns `content.y` when clamping moved `targetY`; `VirtualList` does `markDirty()` only when scroll state changes (`VirtualList.ts:596`). Unconditional per-frame dirtying keeps an `onDemand` scene at full rate forever.
 6. **deltaMode — scale before you clamp.** Line→×16, page→×viewport before `clampTarget()`/`_clamp()` (`ScrollView.ts:105`, `VirtualList.ts:583`). Chrome/jsdom always deliver `deltaMode: 0`, so the bug is invisible there.
-7. **VirtualList: rebuild heights from keys, not indices.** After `setItems` with `keyForItem`, the Fenwick tree re-seeds from `_heightByKey` (`VirtualList.ts:272`) and ` _rekeyPool()` (`VirtualList.ts:317`) moves pooled entities before any height read — index-addressed reuse without rekeying writes every height into the wrong cache slot.
+7. **VirtualList: rebuild heights from keys, not indices.** After `setItems` with `keyForItem`, the Fenwick tree re-seeds from `_heightByKey` (`VirtualList.ts:272`) and `_rekeyPool()` (`VirtualList.ts:317`) moves pooled entities before any height read — index-addressed reuse without rekeying writes every height into the wrong cache slot.
 8. **PanelDrag must stay in scene space and not end on pointerleave.** `PanelResizeHandle` (`ResizablePanel.ts:86`) reads `sceneX`/`sceneY` when available, and no longer ends drag on `pointerleave` — the shadow node holds capture.
 
 ---

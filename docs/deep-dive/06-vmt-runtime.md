@@ -49,7 +49,7 @@ order: 26
                         │
                         ▼
                    Pixels + DOM mirrors
-```text
+```
 
 The causal order is fixed — `Scene.ts:5745` documents it as a correctness contract — even though physical walks may fuse. The JS path interleaves `update → compose → cull → paint` per node in pre-order; the WASM path updates the whole tree, then gathers and composes in one SoA pass before the same cull/paint walk. Both must expose an `update()` mutation in that same frame.
 
@@ -65,7 +65,7 @@ The causal order is fixed — `Scene.ts:5745` documents it as a correctness cont
 - Local transform: `_x/_y/_scaleX/_scaleY/_rotation/_opacity` (`:805`), with `_hasTransitions` fast-path flag (`:812`) so a passive entity's `x = v` is one boolean check + field write.
 - Lazily allocated `Map`s: `_drivers`, `listeners`, `captureListeners` (`:819`) — null until first use. A scene of 20k particles never allocates them.
 - `_mounted: boolean` (`:816`), `_destroyed: boolean` (`:817`), `_driversTickedFrame: number` (`:828`, `-1` initially).
-- World-matrix cache ` _wa.._wf / _worldFrame` (`:845`) and WASM slot ` _storeSlot: number` (`:865`, `-1` when not in the store).
+- World-matrix cache `_wa.._wf / _worldFrame` (`:845`) and WASM slot `_storeSlot: number` (`:865`, `-1` when not in the store).
 
 Subclasses override `getBounds()`, `drawSelf()`, `getContentProjection()`, `update()`, `onMounted()`, `destroy()`.
 
@@ -106,7 +106,7 @@ animations = null;
 for (const d of this._drivers.values()) this._settleDriver(d); // resolve animateTo promises
 this._drivers.clear(); listeners.clear(); captureListeners.clear();
 if (this.parent) this.parent.remove(this);
-```text
+```
 
 - Leaf-first (destroy from tail) so each child's `parent.remove(this)` mutates the tail being iterated past — no snapshot, no index skew.
 - Subclasses owning GPU/DOM resources override, free the resource, then call `super.destroy()` (`ComputeParticleEntity.ts:419`, `DOMPortalEntity.ts:142`).
@@ -171,7 +171,7 @@ for (let i = path.length -1; i >=0; i--) {
   nextC = a*lc + c*ld; nextD = b*lc + d*ld;
   nextE = a*le + c*lf + e; nextF = b*le + d*lf + f;
 }
-```text
+```
 
 `_getTrig()` (`:1746`) caches `{cos, sin}` and recomputes only when `rotation` changed (`_trigRotation` check) — V8's `Math.cos/sin` is ~2.5× slower than other engines, and this is per-entity-per-frame. `_readWorldCache(frame, out)` (`:1647`) is the zero-allocation sibling for per-entity gathers (e.g. G3's `gatherHitAABBs`) — six scalar reads into a caller-owned `out` instead of one object per entity.
 
@@ -221,7 +221,7 @@ Scene-level keyboard (`Scene.ts:3272` `on('keydown'|'keyup')`) is a separate cha
 ```ts
 if (e.target === capEl && typeof capEl.setPointerCapture === 'function')
   capEl.setPointerCapture(e.pointerId);
-```text
+```
 
 Guard `e.target === capEl` is load-bearing: a bubbled `pointerdown` whose target is a descendant must not re-capture — the descendant already owns it, and an ancestor overriding retargets `pointerup` + `click` to the common ancestor (measured as Dropdown options whose clicks landed on the listbox container, `Scene.ts:3844`). `pointerup`/`pointercancel` release via `releasePointer` (`:3831`) guarded by `hasPointerCapture(pointerId)` and catching `NotFoundError` DOMException. `pointerEvents: 'none'` (`Entity.ts:431` `a11yAttributes.pointerEvents`) opts a node out of hit-testing without affecting children — see §6.3.
 
@@ -309,4 +309,3 @@ Still, inserting a 500-deep chain and calling `getWorldTransform` in a tight loo
 ---
 
 _Series: 00 Overview → 01 Selection → 02 Text+Layout → 03 Projection+Virtualization → 04 Streaming Markdown → 05 TeX → **06 VMT Runtime** → 07 Renderer → 08 WASM G1/G2/G3 → 09 Three/XR → 10 Video Export → 11 Graph Layout → 12 DevTools → 99 Synthesis._
-

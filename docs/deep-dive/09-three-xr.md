@@ -38,7 +38,7 @@ this.texture.magFilter = THREE.LinearFilter; // ThreeAdapter.ts:152
 this.vectoScene.render = (renderer, dt, time) => { originalRender.call(...); this.texture.needsUpdate = true; }; // ThreeAdapter.ts:157
 this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, depthWrite: false })); // ThreeAdapter.ts:163
-```text
+```
 
 Design notes with `file:line`:
 
@@ -72,7 +72,7 @@ public updateIntersection(raycaster: THREE.Raycaster, type, originalEvent?): boo
     this.dispatchAtUv('pointerleave', state.lastUv, pointerId, originalEvent); // ThreeAdapter.ts:209
   }
 }
-```text
+```
 
 The caller owns the `Raycaster` — typically `raycaster.setFromCamera(ndc, camera)` where `ndc` is `((clientX/width)*2-1, -((clientY/height)*2-1))`. That is `GraphInteraction.setPointerFromEvent` (`packages/graph3d/src/GraphInteraction.ts:157`) and `GraphCamera` wheel zoom (`packages/graph3d/src/GraphCamera.ts:363`) shape.
 
@@ -85,7 +85,7 @@ private dispatchAtUv(type: VectoEvent, uv: THREE.Vector2, ...): void {
   const py = (1.0 - uv.y) * this.vectoScene.height; // ThreeAdapter.ts:253 — flip Three's bottom-origin
   this.dispatchAtPoint(type, px, py, ...);
 }
-```text
+```
 
 Three traps, each behind a fixed bug:
 
@@ -105,7 +105,7 @@ private dispatchAtPoint(type, px, py, pointerId, originalEvent): boolean {
   // then dispatchEventToTarget or canvas fallback (ThreeAdapter.ts:307)
   // then pointerdown focus (ThreeAdapter.ts:320)
 }
-```text
+```
 
 `findEntityAt` is the same hit tester the on-screen Scene uses (`HitTester.ts:12`, boss 06), including `clipChildren` gating and rotation-aware bounds — no 3D-specific hit path.
 
@@ -173,7 +173,7 @@ public dispatchKey(key: string, mods: ThreeAdapterKeyModifiers = {}, phase: 'pre
   if (phase !== 'keyup') this.routeKeyEvent(new KeyboardEvent('keydown', init));
   if (phase !== 'keydown') this.routeKeyEvent(new KeyboardEvent('keyup', init));
 }
-```text
+```
 
 `codeFor` (`ThreeAdapter.ts:597`) infers `KeyboardEvent.code` from `key`: letters to `Key<X>`, digits to `Digit<N>`, space to `Space`, others passed through — best-effort because `code` is layout-dependent.
 
@@ -208,7 +208,7 @@ if (type === 'pointerdown' && (a11yEl instanceof HTMLInputElement || …)) a11yE
 
 // Disconnected mirror — virtual-tree bubble, no DOM
 entity.dispatchEvent(new VectoJSEvent(type, entity, originalEvent, …, { x, y })); // ThreeAdapter.ts:363
-```text
+```
 
 ## 7. The pure-Three counterpart — `Graph3D` family
 
@@ -268,7 +268,7 @@ scene3d.add(adapter.mesh);
 // pointer routing — raycaster owns the 3D hit, adapter owns the 2D dispatch
 const handled = adapter.updateIntersection(raycaster, type, event);
 if (handled) event.preventDefault();
-```text
+```
 
 - Call `adapter.updateIntersection(raycaster, type, event)` from `window`/`document` listeners, passing the real `PointerEvent`/`WheelEvent` so button/modifier state and wheel deltas forward. When `handled` is true the 3D hit was consumed — `preventDefault()` the host event so the page doesn't scroll/select underneath.
 - Use `adapter.dispatchPointer(type, x, y)` (`ThreeAdapter.ts:675`) for tests/automation — logical pixels, same downstream path as the raycaster, but wheel stays on the raycaster path (no neutral delta to synthesize, `ThreeAdapter.ts:664`).

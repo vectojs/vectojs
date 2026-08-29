@@ -53,7 +53,7 @@ TeX string  ──►  layout(tex, opts)                         layout.ts:62
                       ▼
                  InlineObject{width,height,depth,alt,paint}  markdown/src/markdown-inline.ts:287 inlineMath arm
                    InlineObjectBox in LayoutEngine lines, paint draws the raster
-```text
+```
 
 `layout` (`layout.ts:62`) is KaTeX's `buildTree` without the `.katex`/`.katex-display` wrappers that carry browser-only CSS semantics (`layout.ts:5`). Its only interesting choice is `throwOnError:true` + `strict:false` (`layout.ts:68`): a hard parse error throws so the caller can degrade to showing TeX source verbatim (what `@vectojs/markdown` already does for unknown commands); a strictness violation does not.
 
@@ -224,7 +224,7 @@ const { svg, width, placements, missing } = emitSVG(
   layout("\\sqrt{b^2-4ac}", { displayMode: true }),
 );
 // width is advance in em; placements[].{x,y,scale,font,code} in em; missing lists absent U+XXXX
-```text
+```
 
 `width` is the only number that gates layout — under-reporting it truncates the `InlineObjectBox`, over-reporting it inserts a visible gap — while `placements[].y` positive-down from the baseline is what must match a KaTeX-in-Chromium DOM probe to 0.0000 em (`math-engine-2026-08.md:423`). A failed clip or overlay shows up as a `PlacedPath.w/clip.w` mismatch to `placements` extents, not as a path-string difference.
 
@@ -280,6 +280,7 @@ If the construct's geometry includes the container extent (vlist `width`, radica
 
 ## Debugging checklist
 
+<!-- markdownlint-disable MD056 MD060 -->
 | symptom                                                                           | check first                                                                          | file:line                                                                   |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | All stretchies off-canvas / `p.x+sx·clip.x` doubled                               | Clip path emitted in root space instead of path-local                                | `emit/svg.ts:1555` `invSx/invSy`                                            |
@@ -289,7 +290,7 @@ If the construct's geometry includes the container extent (vlist `width`, radica
 | `\sum_{i}` limits flush left; `\xrightarrow{label}` label at arrow left edge      | Row alignment class missing                                                          | `emit/svg.ts:266` `ROW_ALIGN_CLASSES`                                       |
 | `\underline`/`\overline`/`\hline`/`\sout` missing                                 | Border span without width — dropped because only `frac-line` considered              | `emit/svg.ts:800` `borderBottomWidth/katex-sout`                            |
 | `\boxed`/`\angl` box edge invisible                                               | Border thickness only in `katex.scss` (`.angl`) or `borderStyle` shorthand not read  | `emit/svg.ts:834` `CONTAINER_BORDER_CLASSES` + shorthand                    |
-| `{c                                                                               | c}`rules invisible;`:` solid instead of dashed                                       | `vertical-separator` span dropped; `borderRightStyle===dashed` not applied  | `emit/svg.ts:718` `dashed` + `svg.ts:1597` `stroke-dasharray` |
+| `{c\|c}` rules invisible; `:` solid instead of dashed                                       | `vertical-separator` span dropped; `borderRightStyle===dashed` not applied  | `emit/svg.ts:718` `dashed` + `svg.ts:1597` `stroke-dasharray` |
 | `\llap`/`\clap` ink to the right of the anchor                                    | All three laps using `rlap` (`left:0`) semantics                                     | `emit/svg.ts:982` `llap/clap` width probe + shift                           |
 | `\smash`/`\hphantom` content clipped by viewBox                                   | ViewBox derived from zeroed `height/depth` not the union of placed ink               | `emit/svg.ts:1630` `minY/maxY` ink union                                    |
 | Colours dropped; `\color{red}x` black or unknowns look valid                      | `style.color` not inherited; or known missing glyphs not gated via `emitted.missing` | `emit/svg.ts:479` + `markdown-math.ts:559` `missing.length>0` degrade path  |

@@ -53,7 +53,7 @@ crates/vectojs-force-rs        WASM octree force kernel (invisible backend)
 benchmarks/graph-layout        headed 4-arm matrix (d3-force-3d, vecto-force, d3-force-2d, force-layout-2d)
 benchmarks/graph3d-frame       frame-cost harness for the 3D renderer (not the physics matrix)
 benchmarks/_shared/*           single server + bundler + stats + runner (run-browsers.sh)
-```text
+```
 
 `@vectojs/graph-layout` has zero `@vectojs/*` deps (`package.json:1` `name: @vectojs/graph-layout`); `@vectojs/graph3d` depends on `three` only; `@vectojs/knowledge-graph` depends on `graph3d`'s layout contract. Build order: `math+text → graph-layout → three/graph3d → knowledge-graph` (verified via `package.json` workspaces).
 
@@ -92,7 +92,7 @@ Capacity growth is geometric, amortised O(1) (`ForceLayout2D.ts:851` `grownCapac
 ```text
 sanitizeState → quadtree.build → repulsion (Barnes-Hut per node)
               → link springs → collision grid → centering+integrate+pin clamp → alpha decay
-```text
+```
 
 Each phase in detail:
 
@@ -303,7 +303,7 @@ just test-pkg graph-layout && just test-pkg graph3d
 
 # 3D frame cost (renderer, not physics — don't conflate):
 ./benchmarks/run-browsers.sh graph3d-frame 8274 --viewport 1280x720 chrome firefox
-```text
+```
 
 Report `refreshHz` from `calibrateRefreshRate()`, both engines, commit SHA, and host CPU/GPU/driver (the page cannot see these — the harness at `benchmarks/_shared/server.ts:1` captures them). Keep raw JSON under `benchmarks/graph-layout/results/` (gitignored) and cite its history ID, not pasted medians.
 

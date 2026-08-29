@@ -41,7 +41,7 @@ VectoJS renders **zero visible DOM**. Everything you see is canvas. Everything a
                               `SceneOptions.contentSemanticMargin`
                                                             `SceneOptions.contentProjectionMargin`
                                                             `SceneOptions.contentSemanticBudget`
-```text
+```
 
 Why two margins? One scalar cannot express "every block has DOM but only near-viewport blocks have carriers" — a finite value freed off-band blocks entirely while `Infinity` also unwindowed every carrier (`O(total glyphs)`). See `SceneOptions.contentSemanticMargin` vs `contentProjectionMargin` (`Scene.ts:328`, `336`, `359`) and the rejected-enum rationale in `vectojs-docs/forge/baselines/content-projection-frontload-findings.md:1`.
 
@@ -154,7 +154,7 @@ entity.viewportCullChildren = true;
 entity.getRenderChildRange(localViewport: Bounds): RenderChildRange | null {
   // return { start, end } of children intersecting the viewport, or null for none
 }
-```text
+```
 
 `Stack`/`Flow` leave this off by default (cheap for modest child counts). Turn it on for a container with thousands of visual children where culling the _canvas_ draw itself matters — projection windowing does not help the visual tier, and the tree walk without culling is `O(total entities)` per synced frame (`forge/baselines/content-projection-frontload-findings.md:Not addressed`, `vectojs#350`).
 
@@ -173,7 +173,7 @@ entity.getRenderChildRange(localViewport: Bounds): RenderChildRange | null {
   coarse text stays if inside semantic gate;         materializes windowed carriers;
   outside both gates the element is removed.         outside semantic gate but inside
                                                      interaction gate: direct to fine.
-```text
+```
 
 Budget applies only to coarse→fine promotion from off-band; scrolling a block that is already coarse into the interaction band ignores the budget.
 
@@ -200,7 +200,7 @@ class GridCellHotspot extends UIComponent {
   }
   render(): void {} // Table paints the cell on canvas
 }
-```text
+```
 
 | Component         | Hotspot role                                      | Roving stop owner                                 | Keys                                                              |
 | ----------------- | ------------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------- |

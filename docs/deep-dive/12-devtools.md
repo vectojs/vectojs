@@ -41,7 +41,7 @@ if (import.meta.env.DEV) {
   const devtools = attachDevtools(scene, { traceEvents: true });
   // devtools.detach() === devtools.destroy()
 }
-```text
+```
 
 `DevtoolsOptions` at `packages/devtools/src/panel.ts:42` — `width` default 360, `refreshInterval` default 500, `dockSide` `right|left`, `showPerf` default true, `traceEvents`/`traceCapacity`, `defaultTab`. The headless subpath exists so a production test bundle can pull the model layer without the panel or `@vectojs/ui` (`vectojs-docs/content/reference/devtools.md:58`).
 
@@ -59,7 +59,6 @@ The dock header at `packages/devtools/src/panel.ts:306` carries three ghost butt
 - **Selection highlight** — `HighlightEntity` on the host overlay (`panel.ts:874`), default `['aabb']` (`panel.ts:172`), switchable via `setHighlightLayers` (`panel.ts:926`).
 
 The dock container and canvas are `pointer-events: none` (`panel.ts:288`), matching `Scene.a11yRoot` — so empty dock pixels never steal host input.
-
 
 ## 3. Tree model and picking — the same walk the engine uses
 
@@ -198,7 +197,6 @@ This is a diagnostic, not a per-frame call — it walks the entire tree. On a WA
 `fps` (EMA-smoothed rendered-frame cadence, clamped to `maxFPS`, `0` before the first pair), `frameTimeMs` (wall-clock of the last `render()` only), `frameIntervalMs`, `dt`, `renderedFrames/skippedFrames` counters, `renderMode`, `dirty`. The panel's perf strip at `panel.ts:800` shows `fps · ms/frame / entities · mode · rendered/skipped`, updated every 250 ms (`panel.ts:571`). An idle `onDemand` scene honestly reads `0 fps`; an auto-throttled `'always'` scene reads its `idleFPS` floor (60 by default) (`vectojs-docs/content/reference/devtools.md:72`). The renderer always repaints the full canvas, so there is no dirty-rect — `dirty` is the boolean redraw-pending flag (`vectojs-docs/forge/findings/devtools-and-telemetry.md:73`). The lesson from `forge 2026-07-18`: never sample rAF independently — only an entity's `update()` or `frameStats` measures frames Scene actually rendered.
 
 Other Scene surfaces the headless layer reads: `structureVersion` (`Scene.ts:3462`, `Scene.ts:1636`) for tree-shape staleness, `getA11yTree()` (`Scene.ts:5412`) for the public a11y snapshot, `getA11yElement(id)` (`Scene.ts:6446`) and `getContentElement(id)` for DOM-vs-canvas box comparison (`packages/devtools/src/a11yInspect.ts:143`), `getContentProjection()` per entity, and the plugin readouts below.
-
 
 ## 10a. Scene integration points — where DevTools reads the engine
 

@@ -41,7 +41,7 @@ just wasm  # runs crates/vectojs-core-rs/build.sh with correct RUSTFLAGS
 # what build.sh does (crates/vectojs-core-rs/build.sh:28):
 RUSTFLAGS="-C target-cpu=generic -C target-feature=+simd128 -C linker=rust-lld" \
   cargo build --release --target wasm32-unknown-unknown --manifest-path crates/vectojs-core-rs/Cargo.toml
-```text
+```
 
 Rule details (`crates/vectojs-core-rs/build.sh:1`, `crates/vectojs-force-rs/build.sh:1`, `.carryctx/rules/wasm-crate-build.md:1`):
 
@@ -124,7 +124,7 @@ The copy path can be _slower_ than JS at small/medium fan-out (flat 1k `0.995×`
 public animGate: { spring: number; tween: number; mixed: number } = {
   spring: 128, tween: 256, mixed: 128,
 };
-```text
+```
 
 `DriverTicker.tick` (`DriverTicker.ts:50` `AnimGate`, `DriverTicker.ts:197` gate-open accounting, `DriverTicker.ts:64` _"O(tree size) — the exact mistake G3's first benchmark made"_) gathers active batchable drivers into dense `Float64Array` packs (`anim-backend.ts:68` `ensure` + `springView`/`tweenView`) and runs one kernel each; custom `EasingFn` tweens have `wasmEasingId === null` and stay in JS (`DriverTicker.ts:228`). Below the gate, the JS loop is kept — the `anim-wasm-scene` integrated benchmark found allocation churn dominated the cost, not the kernel (`DriverTicker.ts:68` comment referencing `benchmarks/anim-wasm`/`anim-wasm-scene`).
 

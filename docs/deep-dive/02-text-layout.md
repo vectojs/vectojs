@@ -36,7 +36,7 @@ Unicode string
  Paint / measure parity ─┬─ @vectojs/layout  (canvas Text/RichText)
                          └─ @vectojs/text    (MSDF: MSDFFont.layout)  packages/text/src/MSDFFont.ts:201
                          └─ @vectojs/core    (MSDFTextEntity → worker) packages/core/src/text/MSDFTextEntity.ts:25
-```text
+```
 
 Two parallel consumers share the same measurement contract: the **canvas path** (`@vectojs/layout` + `measureContext`) and the **GPU/MSDF path** (`MSDFFont.layout` + `LayoutWorker`). Results diverge only in how quads become pixels, never in where line breaks fall per family.
 
@@ -52,7 +52,7 @@ prepare(text) / prepareRich(spans)          ← cold:  Intl.Segmenter + Arabic s
 layoutPrepared(prepared, mask, exclusions)  ← hot:   computeLineSegments + suppressLineBreaks + shiftedExtent
 measurePrepared(prepared)                   ← hot (no alloc): lineCount+height only
 layoutPreparedIntoBuffer(prepared, buffer)  ← hot, zero-GC: typed arrays + reorderSegments
-```text
+```
 
 `benchmarks/text-layout-pretext` / `comparisons/text-layout-pretext` / `scripts/compare-pretext.ts:1` established the apples-to-apples split (`measurePrepared` vs `pretext.layout`). Before the split, `layoutText` (cold+hot) was timed against pretext's hot-only `layout` — the gap was reported as engine cost when it was really segmentation cost.
 
@@ -296,7 +296,7 @@ Cold: soft hyphen `U+00AD` (`LayoutEngine.ts:1134`) and `hyphenate` callback (`:
 
 `LayoutEngine.streamShapeCache` (`:839`, `isComplexScript` `:584` gate, `shapeSimpleRun` `:1644`) was introduced alongside the paragraph memo (`:829`/`833`) to cut per-chunk cost from `O(length)` to `O(appended)` on a growing Markdown block (`Markdown.ts:899` streaming `appendMarkdown`). Measured on the 346 KB synthetic doc (`forge/findings/text-richtext-and-markdown.md:356`): **identical cost 2630 ms vs 2639 ms**. Real Markdown has bounded paragraphs — the existing memo already caps per-paragraph reshaping — so suffix-only shaping only helps pathological single huge paragraphs. The finding stayed shipped as a correctness win (its `isComplexScript` predicate and `styleRangeEquals`/`objectRangeEquals` checks prevent silent joining-text disconnect) but was **not** published as a performance fix in a standalone `@vectojs/core` release. When diagnosing streaming time, `prepareRich` + `measureText` + content-projection sync (`forge/findings` 2026-07-20 entry: `perf.ts` `requestAnimationFrame` delta) matter; MSDF changes glyph _drawing_ and `64fps→120Hz` is a separate path.
 
-## 5. Invariants developers must keep
+## 5b. Extended invariants (expanded from §5)
 
 1. **Measure where you paint.** Use `getSharedMeasuringContext()` (`packages/text/src/measureContext.ts:87`). Grep for stray `document.createElement('canvas')` without `appendChild`.
 2. **Cold before hot, never re-segment for a DOM.** `prepare`/`prepareRich` once, `layoutPrepared` many times (`packages/layout/src/LayoutEngine.ts:1080` `/` `:1266` `/` `:1848`). Re-segmenting shifts breaks and bidi order.
@@ -309,7 +309,7 @@ Cold: soft hyphen `U+00AD` (`LayoutEngine.ts:1134`) and `hyphenate` callback (`:
 9. **`\r` and CRLF are never shaped.** `splitParagraphs` (`LayoutEngine.ts:566`, `PreparedContentGrid.ts:197`) and `MSDFFont.layout` (`MSDFFont.ts:213`) both own line endings before any shape/measure step; a stray `\r` that slips through becomes a positioned glyph with phantom width and a wrong `sourceIndex`.
 10. **Zero-GC mirrors allocating — keep the BiDi pass in sync.** `layoutPreparedIntoBuffer` (`:2241`) must apply the same `BidiResolver.reorderSegments` (`BidiResolver.ts:121` typed-array) permutation as `layoutPrepared`'s `reorderVisual` (`:89`), and must mirror `shiftedExtent`/`computeLineSegments`/`justifyLines`. Drift here is silent until a bidi paragraph is scrolled.
 
-## 6. How to add a new script or style without breaking metrics parity
+## 6b. Extended guide (expanded from §6)
 
 **New script (e.g., Thai, Devanagari):**
 

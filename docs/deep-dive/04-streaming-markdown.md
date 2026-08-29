@@ -44,7 +44,7 @@ chunk ──► consumeFrontMatter ──► dispatchAppend ──► MarkdownWo
                     content Stack + width/height republish
                               │
                     Scene.markDirty() + notifyLayoutUpdated()
-```text
+```
 
 Three modules own the three phases:
 
@@ -108,7 +108,7 @@ Think of the document as two regions split at `stableOffset`:
 [████████████ stable █████████████████] [ unstable tail ]
  |  already committed — never re-lexed  |  may still change |
  |  raw-equal, entity-reused            |  this chunk's work |
-```text
+```
 
 Appending text appended to the **tail only** can never affect a stable prefix — that is the invariant `findStableCut` earns by brute force. The tail is `O(window)` — bounded by the distance between blank lines plus any open container — so per-chunk work scales with the open region, not with document length.
 
@@ -181,7 +181,7 @@ const target = entity instanceof BlockWithAffordances ? entity.block : entity;
 if (!(target instanceof Table)) return false;
 // … and after a width/content change:
 if (entity instanceof BlockWithAffordances) entity.refreshAffordances();
-```text
+```
 
 `#789` / `#795` (`vectojs` issue) is this bug. `code-review-2026-08.md:167` records all sites together because they cluster.
 
@@ -322,7 +322,7 @@ chunk " world": "Hello **bo" → "Hello **world**"
    diff:  matchLen=0 (paragraph raw changed), tail = [paragraph(strong)]
    reconcile: heading/paragraph didn't match → destroy old RichText, add new one
   after:  stable="Hello **world**\n\n"  tail=""  (blank line committed, entitiesReused++)
-```text
+```
 
 The commit happens when a blank line arrives and `findStableCut` can advance. Until then every chunk revisits the same tail — bounded, not growing with document length.
 

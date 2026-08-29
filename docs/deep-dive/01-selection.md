@@ -51,7 +51,7 @@ The failure is always geometric — and it compounds with calibration. Even a co
               + ContentProjectionManager grid calibration
               + DPR / page zoom compensation (256 px basis)
               + font-epoch / viewport-epoch generation stamping
-```text
+```
 
 Both worlds derive from **one logical source** (`source: string`) and one retained geometry plan. Re-segmenting the source for the DOM creates a second layout that inevitably disagrees: different word breaks under CJK, different bidi visual order, different tab column stops, different line-height distribution. The projection never re-lays out; it reuses the engine's own coordinates.
 
@@ -302,7 +302,7 @@ console.log({
 // Geometry readout — local logical x/y vs world transform
 import { getContentGeometry } from "@vectojs/devtools";
 console.log(getContentGeometry(entity));
-```text
+```
 
 Pass `debugA11y: true` in `SceneOptions` (`packages/core/src/tree/Scene.ts:SceneOptions`) to outline shadow nodes with a blue dashed border during development. Drive cross-engine, multi-DPR verification with `scripts/selection-harness/drive.sh` (`DPR=1.5 ZOOM=0.9`, `scripts/selection-harness/README.md`) — headless DPR 1 hides both the quantization bugs and the grid-fit drift that ship at DPR 1.1/1.6. That harness exercises justified lines, RTL/bidi, and fractional DPR/zoom, all three failure modes `selectionAudit.ts` was written to catch (`selectionAudit.ts:1`).
 
@@ -330,12 +330,13 @@ Any step that remeasures without going through step 1 creates a second layout an
 ---
 
 **Further reading.** `vectojs-docs/content/learn/accessibility.md` (projection model, IME, find-in-page, cost table) and `reference/core-a11y.md` (composite widgets, roving tabindex, `pointerEvents: 'none'` hotspot pattern) set the tone this document follows: measured, per-engine, with the rejected alternative named, the number, and the `file:line` where it lands. `forge/decisions/file-decomposition-2026-08.md` §2 explains why the four per-sync fields and the two walks move only as a pair. `KNOWN_ISSUES.md` §Selection highlights / Positioned-run carriers / Core TextEntity projections record the fixed drifts and their traps. Never "should generally" — either the carrier is at `node.x` or it is not.
+
 ## Appendix — one drag, every file it touches
 
 User presses in blank padding of a `Markdown` code block, drags across three lines, releases. DPR 1.6, `position: fixed` full-viewport scene, Firefox 153:
 
 | Moment | What happens | Files |
-|--------|--------------|-------|
+| -------- | -------------- | ------- |
 | `mousedown` in blank | `ContentProjectionManager.beginBlankRegionDrag` tracks `TextCaretPosition`; browser collapses `Selection` | `ContentProjectionManager.ts:beginBlankRegionDrag` |
 | `mousemove` | `Scene.ts:nearestGridPosition` → `gridCellCaret` (Bidi-aware fraction) + `blankRegionDragActive` extends `Selection` via `setBaseAndExtent` | `Scene.ts:nearestGridPosition`, `ContentProjectionManager.ts:blankRegionDragActive` |
 | Next frame: block reflows | `syncContentProjection` re-windows carriers; `snapshotGridSelection` saves source offsets | `ContentProjectionManager.ts:snapshotGridSelection` |
@@ -345,5 +346,3 @@ User presses in blank padding of a `Markdown` code block, drags across three lin
 | Copy (Ctrl+C) | browser serializes `projectedSlice` text (alt-substituted, separator-merged) from the now-calibrated carriers | `RichText.ts:projectedSlice` |
 
 If any row is skipped or reordered, the invariant in §5 with the same row number is the one to re-read.
-
-

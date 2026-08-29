@@ -64,7 +64,7 @@ IRenderer.ts:193 — drawImage / drawImageRect? (optional)
 IRenderer.ts:287 — fill / stroke / fillText / fillCircle / flush
 IRenderer.ts:350 — createLinearGradient
 IRenderer.ts:404 — present? / dispose? / isContextLost? / onContextRestored?
-```text
+```
 
 Key design choices:
 
@@ -160,7 +160,7 @@ CanvasRenderer.ts:119  constructor / resize apply scale(dpr, dpr)
 WebGLPointRenderer.ts:972  same clamp for the point layer
 ThreeRenderer.ts:307   effectiveDPR() / pixelRatio via getPixelRatio()
 Scene.ts:286           SceneOptions.maxDPR — syncs to every renderer on resize
-```text
+```
 
 Three invariants:
 
@@ -292,7 +292,7 @@ Scene.ts:398  SceneOptions.renderMode: 'always' | 'onDemand'
 Scene.ts:1142 Scene.renderMode + DirtyTracker + RenderScheduler (maxFPS / autoThrottle)
 Scene.ts:2284 full-window viewport adoption (once) + disableWindowResize
 Scene.ts:2781 clientToScene viewport mapping
-```text
+```
 
 - **`pointBackend` vs `particleBackend` are different features**
   (`forge 2026-08-26`). `pointBackend: 'webgl'` batches glyph/sprite
