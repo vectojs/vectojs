@@ -614,7 +614,6 @@ Results: `comparisons/stream-markdown-smd/results/long-session-2026-08-28.json` 
 
 ## Libraries reviewed but not yet benchmarked
 
-
 Cloned into the workspace-root `references/` for source review: `pixijs`, `konva`, `fabric`,
 `paperjs`, `twojs`, `zimjs`, `deckgl`, `perspective`,
 `danmaku`.
