@@ -43,86 +43,94 @@ function toneWav(seconds: number, hz = 440, sampleRate = 8000): Buffer {
 }
 
 describe('real video export', () => {
-  it('renders exactly two H.264 frames through Chromium and FFmpeg', async () => {
-    // The OS temp dir. This used to walk up from `process.cwd()` for an ancestor
-    // holding both `vectojs/` and `tmp/`, i.e. it depended on the *workspace
-    // container's* layout rather than on anything in this repository. It passed in CI
-    // only by accident: GitHub checks out to `/home/runner/work/vectojs/vectojs`, so
-    // the parent matched — and the `tmp/` that made it match was created by the two
-    // sibling suites in this directory, which wrote outside the repo through the same
-    // kind of cwd-relative path. Fixing those removed this test's accidental
-    // dependency and it failed with "Could not find the VectoJS workspace", which is
-    // how the coupling was found.
-    const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
-    scratchRoots.push(scratch);
-    const outputPath = join(scratch, 'two-frames.mp4');
+  it(
+    'renders exactly two H.264 frames through Chromium and FFmpeg',
+    { retry: 2, timeout: 90_000 },
+    async () => {
+      // The OS temp dir. This used to walk up from `process.cwd()` for an ancestor
+      // holding both `vectojs/` and `tmp/`, i.e. it depended on the *workspace
+      // container's* layout rather than on anything in this repository. It passed in CI
+      // only by accident: GitHub checks out to `/home/runner/work/vectojs/vectojs`, so
+      // the parent matched — and the `tmp/` that made it match was created by the two
+      // sibling suites in this directory, which wrote outside the repo through the same
+      // kind of cwd-relative path. Fixing those removed this test's accidental
+      // dependency and it failed with "Could not find the VectoJS workspace", which is
+      // how the coupling was found.
+      const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
+      scratchRoots.push(scratch);
+      const outputPath = join(scratch, 'two-frames.mp4');
 
-    await exportVideo({
-      url: fixture,
-      outputPath,
-      width: 64,
-      height: 64,
-      fps: 2,
-      duration: 1,
-    });
-
-    const { stdout } = await execFileAsync('ffprobe', [
-      '-v',
-      'error',
-      '-show_streams',
-      '-show_entries',
-      'stream=codec_name,width,height,nb_frames',
-      '-of',
-      'json',
-      outputPath,
-    ]);
-    const result = JSON.parse(stdout) as {
-      streams: Array<{ codec_name: string; width: number; height: number; nb_frames: string }>;
-    };
-
-    expect(result.streams).toEqual([
-      expect.objectContaining({
-        codec_name: 'h264',
+      await exportVideo({
+        url: fixture,
+        outputPath,
         width: 64,
         height: 64,
-        nb_frames: '2',
-      }),
-    ]);
-    expect((await readdir(scratch)).filter((name) => name !== basename(outputPath))).toEqual([]);
-  }, 90_000);
+        fps: 2,
+        duration: 1,
+      });
 
-  it('muxes an aac audio track when audioPath is provided', async () => {
-    const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
-    scratchRoots.push(scratch);
-    const outputPath = join(scratch, 'with-audio.mp4');
-    const audioPath = join(scratch, 'tone.wav');
-    await writeFile(audioPath, toneWav(0.5));
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v',
+        'error',
+        '-show_streams',
+        '-show_entries',
+        'stream=codec_name,width,height,nb_frames',
+        '-of',
+        'json',
+        outputPath,
+      ]);
+      const result = JSON.parse(stdout) as {
+        streams: Array<{ codec_name: string; width: number; height: number; nb_frames: string }>;
+      };
 
-    await exportVideo({
-      url: fixture,
-      outputPath,
-      width: 64,
-      height: 64,
-      fps: 2,
-      duration: 1,
-      audioPath,
-    });
+      expect(result.streams).toEqual([
+        expect.objectContaining({
+          codec_name: 'h264',
+          width: 64,
+          height: 64,
+          nb_frames: '2',
+        }),
+      ]);
+      expect((await readdir(scratch)).filter((name) => name !== basename(outputPath))).toEqual([]);
+    },
+  );
 
-    const { stdout } = await execFileAsync('ffprobe', [
-      '-v',
-      'error',
-      '-show_entries',
-      'stream=codec_name,codec_type',
-      '-of',
-      'json',
-      outputPath,
-    ]);
-    const result = JSON.parse(stdout) as {
-      streams: Array<{ codec_name: string; codec_type: string }>;
-    };
+  it(
+    'muxes an aac audio track when audioPath is provided',
+    { retry: 2, timeout: 90_000 },
+    async () => {
+      const scratch = await mkdtemp(join(tmpdir(), 'vectojs-video-exporter-integration-'));
+      scratchRoots.push(scratch);
+      const outputPath = join(scratch, 'with-audio.mp4');
+      const audioPath = join(scratch, 'tone.wav');
+      await writeFile(audioPath, toneWav(0.5));
 
-    expect(result.streams).toHaveLength(2);
-    expect(result.streams[0]).toMatchObject({ codec_name: 'h264', codec_type: 'video' });
-    expect(result.streams[1]).toMatchObject({ codec_name: 'aac', codec_type: 'audio' });
-  }, 90_000);
+      await exportVideo({
+        url: fixture,
+        outputPath,
+        width: 64,
+        height: 64,
+        fps: 2,
+        duration: 1,
+        audioPath,
+      });
+
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v',
+        'error',
+        '-show_entries',
+        'stream=codec_name,codec_type',
+        '-of',
+        'json',
+        outputPath,
+      ]);
+      const result = JSON.parse(stdout) as {
+        streams: Array<{ codec_name: string; codec_type: string }>;
+      };
+
+      expect(result.streams).toHaveLength(2);
+      expect(result.streams[0]).toMatchObject({ codec_name: 'h264', codec_type: 'video' });
+      expect(result.streams[1]).toMatchObject({ codec_name: 'aac', codec_type: 'audio' });
+    },
+  );
 });

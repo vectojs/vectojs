@@ -161,6 +161,12 @@ await page.getByRole('button', { name: 'Save' }).click();
 The DOM projection is deliberately not the visual renderer. It carries semantics and native input;
 the canvas remains the source of visible pixels.
 
+## Deep dive
+
+`docs/deep-dive` (`vectojs.org/learn/deep-dive/`) walks the whole runtime boss by boss — selection, text layout, semantic projection, streaming Markdown, TeX, VMT, renderers, WASM, Three/XR, video export, graph layout, devtools, styles, responsive, and vertical apps. Each file is one boss; [`00 — Overview`](docs/deep-dive/00-overview.md) is the map with the package graph and a difficulty table.
+
+Published mirrors: [`vectojs-docs/content/learn/deep-dive`](https://github.com/vectojs/vectojs-docs/tree/main/content/learn/deep-dive) (authoritative) and [`vectojs-website/content/learn/deep-dive`](https://github.com/vectojs/vectojs-website/tree/main/content/learn/deep-dive) (`https://vectojs.org/learn/deep-dive/`). Translations land under `content/<locale>/learn/deep-dive/` (see `vectojs-i18n` skill).
+
 ## Where it fits
 
 Good candidates:
