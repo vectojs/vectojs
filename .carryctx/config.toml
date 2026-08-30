@@ -35,4 +35,4 @@ unicode = true
 [agent]
 
 [verification]
-commands = []
+commands = ["just check", "just verify"]
