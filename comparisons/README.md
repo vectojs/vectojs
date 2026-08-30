@@ -554,6 +554,71 @@ worse:
 The `degraded` field on each result row reports which path ran, so a timing figure
 from this suite always says whether the boundary was in play.
 
+### Adversarial corpus — `degradedReason` + stable-boundary ratio
+
+A second artifact measures `incrementalLex` on documents **chosen to break it**:
+reference definitions, nested lists, blockquote, table growth, fence, display math
+(`$$` and `cases`), footnote, container, CJK, RTL and emoji — each streamed in
+32-char chunks, median of 9 trials after 3 warmups, validated by deep token
+equality against a whole-document `marked.lexer(doc)` at every intermediate
+length. The suite lives in `benchmarks/markdown-adversarial/` and the results are
+archived as `comparisons/stream-markdown-smd/results/adversarial-2026-08-28.json`
+(Bun 1.4.0, same pinned `marked` copy as production). A headed-browser build is
+available via `bun run benchmarks/markdown-adversarial/build.ts` and the same
+page can be driven through `benchmarks/run-browsers.sh` for a quotable figure.
+
+| Corpus         | chars | degradedReason    | stable ratio¹ | charsLexed / whole² | speedup³ |
+| -------------- | ----: | ----------------- | ------------: | ------------------: | -------: |
+| ref-definition |  5088 | `link-definition` |        0.0000 |                1.00 |    0.99× |
+| nested-lists   |  7192 | —                 |        0.9936 |               17.09 |   16.27× |
+| blockquote     |  5425 | —                 |        0.9935 |               30.54 |   25.66× |
+| table-growth   | 10003 | —                 |        0.9982 |                1.06 |    1.08× |
+| fence          |  4896 | —                 |        0.9963 |               27.19 |   32.18× |
+| math-display   |  3570 | —                 |        0.9742 |               24.87 |   14.76× |
+| math-cases     |  2469 | —                 |        0.9927 |               18.34 |    9.61× |
+| footnote       |  1945 | `footnote-def`    |        0.0000 |                1.26 |    1.32× |
+| container      |  4132 | `container`       |        0.0000 |                1.00 |    0.97× |
+| CJK            |  5916 | —                 |        0.9966 |               51.48 |   47.16× |
+| RTL            |  6733 | —                 |        0.9938 |               55.36 |   50.90× |
+| emoji          |  8529 | —                 |        0.9947 |               60.21 |   49.72× |
+
+¹ `stableRatio = stableOffset / docChars` — the fraction of the final document
+already behind the stable block boundary and never re-lexed again (stable chars
+vs total). 0 means the instance degraded immediately and stayed degraded.
+² `wholeDocumentCharsLexed / charsLexed` — total characters handed to
+`marked.lexer()` across the stream; a proxy for the mechanism, measured
+independently of wall time.
+³ `wholeMedianMs / medianMs` — wall-clock win from the boundary.
+
+**Degraded (by design, correct, never worse):** 3 of 12. `ref-definition`
+(`link-definition`), `container` (`container`) and `footnote` (`footnote-def`)
+degrade permanently because their semantics are non-local — a late definition
+rewrites inline tokens already emitted. Their charsLexed ratio is ~1.0 and
+speedup ~1.0 (parity, never a slowdown). The `degradedReason` field reports
+which.
+
+**Incremental with high stable ratio:** 9 of 12, avg `stableRatio = 0.9926`.
+Lists, blockquote, fence, both math shapes, CJK, RTL and emoji all hold the
+incremental path and spend >99% of the final document behind the boundary.
+CJK/RTL/emoji are inline BiDi/Unicode; the boundary is block-level so they
+behave like prose, as intended — 47–50× speedups, 51–60× fewer chars lexed.
+
+**The interesting non-degraded loss — `table-growth`:** `table-growth` does
+**not** degrade but still wins only 1.08× (1.06× fewer chars). A GFM table is
+one block token whose rows accumulate until the blank line after the table; the
+stable cut cannot land inside it, so each row's chunk re-lexes the growing tail.
+`maxCharsLexed = 9714` (97% of the 10003-char doc) confirms the window grew
+with the table. This is not a bug: correctness forbids cutting inside an
+open table, and a 120-row table is the worst-case shape. Smaller tables
+(pagination, virtualization) behave like the other block constructs.
+
+**Math no longer degrades:** `math-display` and `math-cases` (multiple `$$`
+blocks, including `\begin{cases}`) stay incremental (`degradedReason: null`,
+stable 0.97–0.99, 10–16×). The `$$` blank-line guard
+`(?:(?!\n[ \t]*\n)[\s\S])+?` and `paragraphPairCap` removed the former blanket
+degrade; all 12 gates pass including `tokensAgree` and `rawTilingOk`, so the fast
+path is not buying speed with a different token tree.
+
 ### TODO (ground rule 5)
 
 Make display math incremental by stopping `blockMath`'s tokenizer at a blank line,
@@ -625,6 +690,48 @@ Takeaways:
 - `remend` pays string-rewrite cost: ~2.6–3.2× the literal lex on this small corpus; the suite's main streaming-parse benchmark shows why the ratio widens with length — `remend` rescans the whole accumulated document from zero on every chunk (exponent 2.45 in Chrome in the table above), so the 40-chunk cost here is the small-doc floor. VectoJS optimistic pays none: same lex, same tokens, only the trailing paragraph's spans are re-derived.
 
 Run: `bun run comparisons/stream-markdown-smd/foum-bench.ts` (uses `packages/markdown`'s `marked` copy and `findUnclosedInline` from shipped source, writes `results/foum-<YYYY-MM-DD>.json` + `foum-latest.json`).
+
+### Long-session streaming: 100KB / 500KB / 1MB — heap, entities, charsLexed/Shaped, layout visits
+
+A streaming Markdown document that grows to 1 MB is not a bigger version of a 25 KB chat bubble — it is where a quadratic pipeline becomes unusable. This bench streams the same synthetic corpus used by `markdown-retained-stream` (heading + paragraph + blockquote + list + table + code per section, unique per index) to **100 KB, 500 KB and 1 024 KB**, in **320-char chunks**, and measures the five costs that matter for a long session:
+
+- **heap** — `process.memoryUsage().heapUsed` headless, `performance.memory.usedJSHeapSize` / `measureUserAgentSpecificMemory` in the browser (quantized to 5 MB without `--enable-precise-memory-info`, source reported alongside the figure)
+- **worker retained source** — `rawMarkdown.length` (the worker keeps the same string via `workerSourceLen`; `workerSourceLen === rawChars` when incremental)
+- **entity count** — top-level `content.children.length` and total entities via tree walk
+- **nodes created/destroyed** — `streamStats.entitiesRebuilt` / `entitiesReused` / `inPlaceUpdates` and `tokensPrefixMatched` / `tokensReturned`
+- **charsLexed** — `sourceCharsLexed` from incrementalLex (the shipped worker tail) vs the whole-document control
+- **charsShaped** — total characters passed to `CanvasRenderingContext2D.measureText` (headless stub counts `text.length`, browser counts real `measureText` calls)
+- **layout visits** — `Stack.layout()` invocations plus `Scene` phase totals (`transform`, `drawWalk`, `entityPaint`, etc. via `beginPhaseCapture`)
+
+Headless run (`bun run comparisons/stream-markdown-smd/long-session-bench.ts`, 5 trials median, 1 warmup) — the browser twin lives at `benchmarks/markdown-long-session` (Scene + Markdown + real canvas, heap via `heapBytes()` like `hybrid-projection`):
+
+| doc | chunks | heap headless Δ / after | entities top / total | charsLexed inc / whole (ratio) | charsShaped | layout visits (Stack) | time inc / whole |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 KB (102 400) | 320 | 0.00 / 6.16 MB | 767 / 2 301 | 131 481 / 16 435 200 (125×) | 131 481 | 2 301 | 21.35 ms / 2 868 ms (134×) |
+| 500 KB (512 000) | 1 600 | 2.74 / 17.63 MB | 3 801 / 11 403 | 693 236 / 409 856 000 (591×) | 693 236 | 11 403 | 133.07 ms / 71 704 ms (538×) |
+| 1 024 KB (1 048 576) | 3 277 | −6.38 / 24.37 MB* | 7 754 / 23 262 | 1 429 829 / 1 718 720 960 (1 202×) | 1 429 829 | 23 262 | 329.15 ms / 300 750 ms (913×) |
+
+\* Headless `heapDelta` is `heapAfter - heapBefore` per trial median; the −6.38 MB at 1 MB is GC (heapBefore 30.75 → heapAfter 24.37 after `global.gc()`), not a leak — `heapAfter` itself grows monotonically 6.16 → 17.63 → 24.37 MB.
+
+Scaling exponents across 100 → 1 024 KB (10.24× chars):
+
+| metric | exponent | interpretation |
+| --- | --- | --- |
+| `incrementalCharsLexed` | **1.03** | linear — stable boundary skips re-lexing |
+| `wholeDocumentCharsLexed` | **2.00** | quadratic control — `Σ prefix` |
+| `incrementalMs` | **1.18** | near-linear wall time (lex + reconcile) |
+| `wholeMs` | **2.00** | quadratic wall time |
+| `entityTotal` | **0.99** | linear — one entity per block, reused |
+| `charsShaped` | **1.03** | linear — each char measured once |
+| `layoutVisits` | **0.99** | linear — one `Stack.layout` per entity |
+
+**Pipeline stays linear.** Characters handed to the lexer grow 10.24× → 10.87× (1.03 exponent), entities 10.11×, layout visits 10.11×, and wall time 10.24× → 15.41× (1.18) — all O(n). The whole-document control that re-lexes the accumulated source each chunk grows 104.59× in chars (2.00) and 104.85× in time. The gap widens from 125× at 100 KB to 1 202× at 1 MB, which is exactly the wrong direction for a chat transcript if the control were shipped.
+
+Heap and worker retention are also linear: `heapAfter` 6.16 → 24.37 MB (3.95× over 10.24× chars, but per-char 0.06 B → 0.023 B, not growing superlinearly; delta is noisy due to GC buckets), `workerRetainedChars` equals `rawChars` at every size (no duplication).
+
+Nodes created/destroyed: `entitiesReused` tracks `tokensPrefixMatched` (99%+ reuse, same as `stream-markdown-smd`'s 99.5%), `entitiesRebuilt` equals `tokensReturned` (the changed tail), `inPlaceUpdates` fires for code/paragraph/heading/list/table/image tails — so per-chunk work is O(tail), not O(document).
+
+Results: `comparisons/stream-markdown-smd/results/long-session-2026-08-28.json` (also `long-session-latest.json`); browser run writes `benchmarks/markdown-long-session/results/history/markdown-long-session-<engine>-<runId>.json` via `reportResult`. Run: `bun run comparisons/stream-markdown-smd/long-session-bench.ts` (headless, also shows the 122×–913× speedups) or `benchmarks/run-browsers.sh markdown-long-session 8179 chrome firefox` (headed, real heap via `measureUserAgentSpecificMemory` and real `measureText`/`fillText` counts).
 
 ## Libraries reviewed but not yet benchmarked
 
