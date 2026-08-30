@@ -53,6 +53,8 @@
  *   not a stale dist.
  */
 
+import { calibrateRefreshRate } from '../../benchmarks/_shared/client';
+
 // No static imports of @vectojs/* here: the Worker is created at module load,
 // so it must be removed BEFORE the module is evaluated. Everything is
 // dynamically imported inside main() after the deletion.
@@ -65,6 +67,15 @@ const CHUNK_CHARS = 32;
 const SECTION_COUNTS = [25, 50, 100, 200] as const;
 const TRIALS = 7;
 const WARMUPS = 2;
+
+function runnerIdentity(): { runId: string; suiteRunId: string } {
+  const params = new URLSearchParams(location.search);
+  const manualId = `manual-${Date.now()}`;
+  return {
+    runId: params.get('runId') ?? manualId,
+    suiteRunId: params.get('suiteRunId') ?? manualId,
+  };
+}
 
 function section(i: number): string {
   return (
@@ -496,6 +507,9 @@ async function main(): Promise<void> {
     pre.textContent += m + '\n';
     console.log(m);
   };
+  const { runId, suiteRunId } = runnerIdentity();
+  const refreshHz = await calibrateRefreshRate(1000);
+  log(`refreshHz: ${refreshHz.toFixed(2)}`);
 
   // Delete Worker BEFORE importing Markdown so the synchronous path runs.
   // This is the same deletion `benchmarks/markdown-stream-phases` does, for the
@@ -674,10 +688,13 @@ async function main(): Promise<void> {
   const engineName = /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome';
 
   const payload: any = {
+    runId,
+    suiteRunId,
     suite: 'stream-markdown-smd',
     name: 'run-e2e',
     engine: engineName,
     userAgent: navigator.userAgent,
+    refreshHz,
     note:
       'End-to-end streaming pipeline main-thread p50/p95/p99 per stage: ' +
       'chunk→worker→lex→reconcile→shape→layout→render, plus heap/entity count. ' +
@@ -735,9 +752,11 @@ void main().catch((e) => {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
+      ...runnerIdentity(),
       suite: 'stream-markdown-smd',
       name: 'run-e2e',
       engine: /firefox/i.test(navigator.userAgent) ? 'firefox' : 'chrome',
+      rows: [],
       error: String(e.stack ?? e),
     }),
   });
