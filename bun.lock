@@ -13,7 +13,7 @@
         "@commitlint/cli": "^21.2.2",
         "@commitlint/config-conventional": "^21.2.2",
         "@incremark/core": "1.0.2",
-        "carryctx": "0.7.0",
+        "carryctx": "0.8.0",
         "ctxctl": "^0.3.0",
         "d3-force": "3.0.0",
         "fabric": "^7.4.0",
@@ -1067,17 +1067,17 @@
 
     "canvas": ["canvas@3.2.3", "", { "dependencies": { "node-addon-api": "^7.0.0", "prebuild-install": "^7.1.3" } }, "sha512-PzE5nJZPz72YUAfo8oTp0u3fqqY7IzlTubneAihqDYAUcBk7ryeCmBbdJBEdaH0bptSOe2VT2Zwcb3UaFyaSWw=="],
 
-    "carryctx": ["carryctx@0.7.0", "", { "optionalDependencies": { "carryctx-cli-darwin-arm64": "0.7.0", "carryctx-cli-darwin-x64": "0.7.0", "carryctx-cli-linux-arm64-gnu": "0.7.0", "carryctx-cli-linux-x64-gnu": "0.7.0", "carryctx-cli-windows-x64": "0.7.0" }, "bin": { "carryctx": "bin/carryctx.js" } }, "sha512-0tIn6gorWMG+yfw2ah7ah0MqCZ5g5LqgJor/s9HSh0kWcOkCKZIOacMNu9jrAbSGouMWZdL4j3wKhf9SgNtbsA=="],
+    "carryctx": ["carryctx@0.8.0", "", { "optionalDependencies": { "carryctx-cli-darwin-arm64": "0.8.0", "carryctx-cli-darwin-x64": "0.8.0", "carryctx-cli-linux-arm64-gnu": "0.8.0", "carryctx-cli-linux-x64-gnu": "0.8.0", "carryctx-cli-windows-x64": "0.8.0" }, "bin": { "carryctx": "bin/carryctx.js" } }, "sha512-KzWnwzj0+Uoe9+VQWlh0NPDniGTTjp7tr2Sze2OsPB8uHzVEw6PtFIkATrSvSEBLFDyD668wLvR+3eCLmCP3mw=="],
 
-    "carryctx-cli-darwin-arm64": ["carryctx-cli-darwin-arm64@0.7.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Y2369A7E+UfhGBsDzdvEkQNfu3BGeomrSttUwgQDpj+HY9F3f/PTsMkm8vBKog4pm1G9j0IEOyVS3pbSjeJRaA=="],
+    "carryctx-cli-darwin-arm64": ["carryctx-cli-darwin-arm64@0.8.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-zAyeACYAK2ILts7++cfOdf1anbpsKgz62xCG4kQDcKx3tWFhvqYTjvegF7Okbix0MpLCc4ippJG1hUSvNvrPQg=="],
 
-    "carryctx-cli-darwin-x64": ["carryctx-cli-darwin-x64@0.7.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-Ax/CjYhniM/gPjinr1jyhA+h4xHwqmH1Jp3J7pO13CT6Gqz12A+HySEoJjgBVSBRBM7VRZJX9npIGTWAG2QQFg=="],
+    "carryctx-cli-darwin-x64": ["carryctx-cli-darwin-x64@0.8.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-NaR3TTbY/IJQxb3pY8cmNrxoxLr/XoHWBkSSeVh6D134lXLitdTvUEVkl7gh0DgQ7dfP27d6Hfd24i43ANz4qw=="],
 
-    "carryctx-cli-linux-arm64-gnu": ["carryctx-cli-linux-arm64-gnu@0.7.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-1rg7SRi8A/2lOMEwDqMWQHPRNox6wSboGmqaWYk7N61wVQwnOw7JeJOTCytqRd+rs66iSbgnROxUfaMWoXln4Q=="],
+    "carryctx-cli-linux-arm64-gnu": ["carryctx-cli-linux-arm64-gnu@0.8.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-bxmRlqpLHe2MLhHQbkNJKxT52Lje/UhqAqTNCi5LF9PR9FkM6xDGQ0nDefV6hQ8W8WrMQv1C4jzYgKuDTbi7Mw=="],
 
-    "carryctx-cli-linux-x64-gnu": ["carryctx-cli-linux-x64-gnu@0.7.0", "", { "os": "linux", "cpu": "x64" }, "sha512-POGbGsJqJEafJfFR0k5Z9HT6Lng5aOHDj9VyMDzL6arW5h3Vg+WxSgJKwwJ6ErLad+WB3TmIuBotOVekPDGh9g=="],
+    "carryctx-cli-linux-x64-gnu": ["carryctx-cli-linux-x64-gnu@0.8.0", "", { "os": "linux", "cpu": "x64" }, "sha512-RT4thFcp4w6Rbhq5IZi6OwRoyXhOlIwRecRzVjfdYpxZ9+/azjpT84jUVH3ytce1J/7Z4LQr2D/yD4tZcKpjBQ=="],
 
-    "carryctx-cli-windows-x64": ["carryctx-cli-windows-x64@0.7.0", "", { "os": "win32", "cpu": "x64" }, "sha512-aS6DntD5Ra6w3GiEXFDD92R/llooCR8chfnJN2aTwq2Xp9NgmCvypPpxXUHpNKy7wUtuLw5LXlCwljIMMOal+g=="],
+    "carryctx-cli-windows-x64": ["carryctx-cli-windows-x64@0.8.0", "", { "os": "win32", "cpu": "x64" }, "sha512-6RlhmRzDf4VRvssjSk5O6N4PhHSBpGT62mqEf6Lkvas3a96ldJiXk59yWShJq7qSQ04hgwLchfus5o7sm/qxiA=="],
 
     "ccount": ["ccount@2.0.1", "", {}, "sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg=="],
 
