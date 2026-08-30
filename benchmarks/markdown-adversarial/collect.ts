@@ -112,12 +112,12 @@ function measureOne(name: string, doc: string): CorpusResult {
   const incSamples: number[] = [];
   const wholeSamples: number[] = [];
   let lastInc = runIncremental(chunks);
-  let lastWhole = runWholeDocument(chunks);
+  runWholeDocument(chunks);
   for (let t = 0; t < TRIALS; t++) {
     lastInc = runIncremental(chunks);
     incSamples.push(lastInc.ms);
-    lastWhole = runWholeDocument(chunks);
-    wholeSamples.push(lastWhole.ms);
+    const whole = runWholeDocument(chunks);
+    wholeSamples.push(whole.ms);
   }
 
   const medianMs = median(incSamples);
