@@ -240,7 +240,7 @@ export class Image extends UIComponent {
         this.bitmap = decoded.source as HTMLImageElement;
       }
       this._onLoad?.();
-      this.scene?.markDirty();
+      if (!this._onLoad) this.scene?.markDirty();
     };
 
     const onError = (): void => {
