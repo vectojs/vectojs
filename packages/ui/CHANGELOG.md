@@ -1,5 +1,17 @@
 # @vectojs/ui
 
+## 2.21.0
+
+### Minor Changes
+
+- 1c000d3: feat(ui): ImageSource abstraction with string|url|blob|bitmap and DecodedImage
+
+  Unify url/blob/ImageBitmap behind ImageSource, string shorthand for url, DecodedImage decouples decode from renderBitmap, keeps backward compat for new Image(string, opts).
+
+- 7a78662: feat(ui): semanticMode auto/img/role for Image a11y projection
+
+  Add semanticMode with auto mapping url->img / blob-bitmap->role, explicit overrides, warn throttling, alt/semanticMode setters markDirty.
+
 ## 2.20.2
 
 ### Patch Changes
