@@ -28,3 +28,5 @@ export type {
   StreamControllerState,
   StreamPacingOptions,
 } from './StreamController';
+export { defaultMarkdownImageResolver, type MarkdownImageResolver } from './markdown-image';
+export type { ImageSource } from '@vectojs/ui';

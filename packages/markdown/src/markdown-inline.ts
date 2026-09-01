@@ -2,7 +2,12 @@ import { OBJECT_REPLACEMENT, type StyledSpan, type TextStyle } from '@vectojs/co
 import { RichText } from '@vectojs/ui';
 import type { Token, Tokens } from 'marked';
 
-import { ensureInlineImageRaster, paintInlineImage } from './markdown-image';
+import {
+  defaultMarkdownImageResolver,
+  ensureInlineImageRaster,
+  paintInlineImage,
+  type MarkdownImageResolver,
+} from './markdown-image';
 import { footnoteMarker } from './markdown-footnote';
 import { exToPx, fontSizeFromFont, paintInlineMath, renderMathToSVGDataURI } from './markdown-math';
 import type { MarkdownTheme } from './theme';
@@ -183,13 +188,28 @@ export function collectSpans(
    * predating this feature — costs nothing extra.
    */
   abbr: ReadonlyMap<string, string> = NO_ABBREVIATIONS,
+  /**
+   * How a markdown image `src` becomes a generic {@link ImageSource}. When
+   * omitted the default identity `{kind:'url'}` mapping is used, so a plain
+   * `![alt](https://…)` keeps its historic path and an app can supply a
+   * CapGlyph adapter that returns `{kind:'bitmap'}` for `capglyph:` URLs.
+   */
+  imageResolver: MarkdownImageResolver = defaultMarkdownImageResolver,
 ): void {
   for (const token of tokens) {
     switch (token.type) {
       case 'strong': {
         const t = token as Tokens.Strong;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, bold: true }, theme, out, blockFontSize, abbr);
+          collectSpans(
+            t.tokens,
+            { ...inherited, bold: true },
+            theme,
+            out,
+            blockFontSize,
+            abbr,
+            imageResolver,
+          );
         } else {
           emitProse(decodeProse(t.text, theme), { ...inherited, bold: true }, abbr, out);
         }
@@ -198,7 +218,15 @@ export function collectSpans(
       case 'em': {
         const t = token as Tokens.Em;
         if (t.tokens) {
-          collectSpans(t.tokens, { ...inherited, italic: true }, theme, out, blockFontSize, abbr);
+          collectSpans(
+            t.tokens,
+            { ...inherited, italic: true },
+            theme,
+            out,
+            blockFontSize,
+            abbr,
+            imageResolver,
+          );
         } else {
           emitProse(decodeProse(t.text, theme), { ...inherited, italic: true }, abbr, out);
         }
@@ -234,7 +262,7 @@ export function collectSpans(
             baselineShift: runSize * theme.subscriptShift,
           };
           if (t.tokens) {
-            collectSpans(t.tokens, subStyle, theme, out, blockFontSize, abbr);
+            collectSpans(t.tokens, subStyle, theme, out, blockFontSize, abbr, imageResolver);
           } else {
             emitProse(decodeProse(t.text, theme), subStyle, abbr, out);
           }
@@ -248,6 +276,7 @@ export function collectSpans(
             out,
             blockFontSize,
             abbr,
+            imageResolver,
           );
         } else {
           emitProse(decodeProse(t.text, theme), { ...inherited, lineThrough: true }, abbr, out);
@@ -337,7 +366,7 @@ export function collectSpans(
         // why it went unnoticed: `# Title ![logo](u)` read as "Title logo".
         const t = token as Tokens.Image;
         const runSize = inherited.fontSize ?? blockFontSize ?? theme.fontSize;
-        const raster = ensureInlineImageRaster(t.href);
+        const raster = ensureInlineImageRaster(t.href, imageResolver);
         // A failed decode has no picture to show, so fall back to the alt text
         // rather than reserving a box that will stay empty forever.
         if (raster.failed) {
@@ -484,7 +513,7 @@ export function collectSpans(
         if (isAutolink) {
           out.push({ text: t.text, style: linkStyle });
         } else if (t.tokens && t.tokens.length > 0) {
-          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize, abbr);
+          collectSpans(t.tokens, linkStyle, theme, out, blockFontSize, abbr, imageResolver);
         } else {
           emitProse(decodeProse(t.text, theme), linkStyle, abbr, out);
         }
@@ -495,7 +524,15 @@ export function collectSpans(
         // Text tokens may themselves contain nested inline tokens (e.g. from
         // paragraph splitting).  Recurse when present.
         if ('tokens' in t && (t as any).tokens?.length) {
-          collectSpans((t as any).tokens, inherited, theme, out, blockFontSize, abbr);
+          collectSpans(
+            (t as any).tokens,
+            inherited,
+            theme,
+            out,
+            blockFontSize,
+            abbr,
+            imageResolver,
+          );
         } else {
           const decoded = decodeProse(t.text, theme);
           const style = Object.keys(inherited).length > 0 ? inherited : undefined;
@@ -601,6 +638,7 @@ export function renderInlineToRichText(
   onLinkClick?: (url: string) => void,
   /** The document's `*[TERM]: definition` dictionary — see {@link emitProse}. */
   abbr: ReadonlyMap<string, string> = NO_ABBREVIATIONS,
+  imageResolver: MarkdownImageResolver = defaultMarkdownImageResolver,
 ): RichText {
   const spans: StyledSpan[] = [];
   if (tokens && tokens.length > 0) {
@@ -610,7 +648,7 @@ export function renderInlineToRichText(
     // box. Passed as its own argument rather than seeded into `inherited` so no
     // text span gains an explicit fontSize it did not have before, which would
     // change every heading's paragraph-memo key.
-    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font), abbr);
+    collectSpans(tokens, {}, theme, spans, fontSizeFromFont(font), abbr, imageResolver);
   }
   // Fallback: if no spans were produced, use the raw text
   if (spans.length === 0) {

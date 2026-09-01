@@ -1,5 +1,15 @@
 import type { InlineObjectBox, InlineObjectSurface } from '@vectojs/core';
 import type { Token, Tokens } from 'marked';
+import type { ImageSource } from '@vectojs/ui';
+
+/** Resolve a markdown image `src` to a generic {@link ImageSource}. */
+export type MarkdownImageResolver = (src: string) => ImageSource | Promise<ImageSource>;
+
+/** Default resolver — identity mapping to `{kind:'url'}`. */
+export const defaultMarkdownImageResolver: MarkdownImageResolver = (src) => ({
+  kind: 'url',
+  url: src,
+});
 
 /**
  * Image predicates over a `marked` token tree, plus the raster store for images
@@ -163,16 +173,26 @@ export function lastIndexOfImage(tokens: Token[]): number {
  * `InlineObject`, and the box it occupies is fixed when the span is collected, so
  * the natural size has to be readable from here before the next layout rather than
  * applied to an entity afterwards.
+ *
+ * Supports generic {@link ImageSource}: `url` decodes via `HTMLImageElement`,
+ * `blob` via `createImageBitmap` (with object-URL fallback), and `bitmap` is used
+ * directly. The backing `source` is the `CanvasImageSource` drawn by
+ * `paintInlineImage`; `bitmap` is retained as a legacy alias for `url` rasters so
+ * existing tests that reach through `raster.bitmap` keep working.
  */
 export interface InlineImageRaster {
   /** `undefined` when this environment has no `Image` (SSR, plain unit tests). */
   bitmap?: HTMLImageElement;
+  /** Generic backing source for `IRenderer.drawImage` / `InlineObjectSurface`. */
+  source?: CanvasImageSource;
   decoded: boolean;
   /** Natural size, known only once decoded. */
   naturalWidth?: number;
   naturalHeight?: number;
   /** Set when the decode failed, so a broken URL is not retried every frame. */
   failed?: boolean;
+  /** Release `ImageBitmap` / revoke `blob:` URL when evicted or cleared. */
+  dispose?: () => void;
 }
 
 const inlineImageRasters = new Map<string, InlineImageRaster>();
@@ -210,6 +230,146 @@ export function unsubscribeInlineImageRaster(notify: () => void): void {
   inlineImageRasterWaiters.delete(notify);
 }
 
+function normalizeInlineSource(
+  src: ImageSource,
+):
+  | { kind: 'url'; url: string }
+  | { kind: 'blob'; blob: Blob }
+  | { kind: 'bitmap'; bitmap: ImageBitmap } {
+  if (typeof src === 'string') return { kind: 'url', url: src };
+  return src as
+    | { kind: 'url'; url: string }
+    | { kind: 'blob'; blob: Blob }
+    | { kind: 'bitmap'; bitmap: ImageBitmap };
+}
+
+function notifyInlineWaiters(): void {
+  for (const notify of inlineImageRasterWaiters) notify();
+}
+
+function decodeInlineSource(
+  resolved: ImageSource,
+  entry: InlineImageRaster,
+  fallbackSrc: string,
+): void {
+  const norm = normalizeInlineSource(resolved);
+  switch (norm.kind) {
+    case 'bitmap': {
+      const bmp = norm.bitmap;
+      entry.source = bmp;
+      // Keep bitmap legacy alias for completeness (tests may check)
+      entry.decoded = true;
+      entry.naturalWidth = bmp.width;
+      entry.naturalHeight = bmp.height;
+      // External ImageBitmap ownership stays with caller — do not close on dispose.
+      // Defer notification so the caller that created this raster during
+      // collectSpans (inside renderToken → renderMarkdown) finishes its
+      // initial layout before a re-measure is considered. Without the defer,
+      // a sync bitmap notifies while renderMarkdown is still iterating its
+      // token list, and the re-measure's retypesetFromTokens clears and
+      // re-adds the heading while the outer loop then adds it again,
+      // duplicating the block.
+      if (typeof queueMicrotask === 'function') queueMicrotask(notifyInlineWaiters);
+      else Promise.resolve().then(notifyInlineWaiters);
+      break;
+    }
+    case 'blob': {
+      const blob = norm.blob;
+      const gCreate = globalThis as unknown as {
+        createImageBitmap?: (b: Blob) => Promise<ImageBitmap>;
+      };
+      if (typeof gCreate.createImageBitmap === 'function') {
+        gCreate
+          .createImageBitmap(blob)
+          .then((bmp) => {
+            entry.source = bmp;
+            entry.decoded = true;
+            entry.naturalWidth = bmp.width;
+            entry.naturalHeight = bmp.height;
+            entry.dispose = () => {
+              try {
+                bmp.close();
+              } catch {}
+            };
+            notifyInlineWaiters();
+          })
+          .catch(() => {
+            decodeBlobViaImageInline(blob, entry);
+          });
+      } else {
+        decodeBlobViaImageInline(blob, entry);
+      }
+      break;
+    }
+    case 'url':
+    default: {
+      const url = norm.kind === 'url' ? norm.url : fallbackSrc;
+      if (typeof globalThis.Image === 'undefined') return;
+      const bitmap = new globalThis.Image();
+      bitmap.onload = () => {
+        entry.decoded = true;
+        entry.naturalWidth = bitmap.naturalWidth || undefined;
+        entry.naturalHeight = bitmap.naturalHeight || undefined;
+        entry.source = bitmap;
+        notifyInlineWaiters();
+      };
+      bitmap.onerror = () => {
+        entry.failed = true;
+        notifyInlineWaiters();
+      };
+      bitmap.src = url;
+      entry.bitmap = bitmap;
+      entry.source = bitmap;
+      break;
+    }
+  }
+}
+
+function decodeBlobViaImageInline(blob: Blob, entry: InlineImageRaster): void {
+  if (
+    typeof globalThis.Image === 'undefined' ||
+    typeof URL === 'undefined' ||
+    typeof URL.createObjectURL !== 'function'
+  ) {
+    entry.failed = true;
+    notifyInlineWaiters();
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  let objectURL: string | null = url;
+  entry.dispose = () => {
+    if (objectURL) {
+      try {
+        URL.revokeObjectURL(objectURL);
+      } catch {}
+      objectURL = null;
+    }
+  };
+  const img = new globalThis.Image();
+  entry.bitmap = img;
+  entry.source = img as unknown as CanvasImageSource;
+  img.onload = () => {
+    entry.decoded = true;
+    entry.naturalWidth = (img as HTMLImageElement).naturalWidth || undefined;
+    entry.naturalHeight = (img as HTMLImageElement).naturalHeight || undefined;
+    entry.source = img as unknown as CanvasImageSource;
+    // Keep object URL alive while image is decoded; revoke on dispose/eviction.
+    notifyInlineWaiters();
+  };
+  img.onerror = () => {
+    if (objectURL) {
+      try {
+        URL.revokeObjectURL(objectURL);
+      } catch {}
+      objectURL = null;
+      entry.dispose = undefined;
+    }
+    entry.failed = true;
+    notifyInlineWaiters();
+  };
+  img.src = url;
+}
+
 /**
  * Ensure the raster for `src` is decoding, and return it.
  *
@@ -217,8 +377,16 @@ export function unsubscribeInlineImageRaster(notify: () => void): void {
  * paint path calls it on every visible frame, and only the first call starts a
  * decode. Exported because the span collector needs the natural size to size its
  * box, which is the whole reason this store reports one.
+ *
+ * When a resolver is supplied, its result (which may be `blob` or `bitmap`) is
+ * decoded instead of the raw `src` URL. Resolver may be async — the raster stays
+ * square until the promise settles, then notifies waiters so the owner can
+ * re-measure.
  */
-export function ensureInlineImageRaster(src: string): InlineImageRaster {
+export function ensureInlineImageRaster(
+  src: string,
+  resolver: MarkdownImageResolver = defaultMarkdownImageResolver,
+): InlineImageRaster {
   const existing = inlineImageRasters.get(src);
   if (existing) {
     // Re-insert so Map iteration order is recency order: a raster that is
@@ -236,28 +404,30 @@ export function ensureInlineImageRaster(src: string): InlineImageRaster {
   while (inlineImageRasters.size > INLINE_IMAGE_RASTER_LIMIT) {
     const oldest = inlineImageRasters.keys().next().value;
     if (oldest === undefined || oldest === src) break;
+    const evicted = inlineImageRasters.get(oldest);
+    try {
+      evicted?.dispose?.();
+    } catch {}
     inlineImageRasters.delete(oldest);
   }
 
-  // Guarded exactly as the math raster and `Image` are: jsdom and SSR have no
-  // `globalThis.Image`, and an image must degrade to a reserved box rather than
-  // throwing out of a layout.
-  if (typeof globalThis.Image !== 'undefined') {
-    const bitmap = new globalThis.Image();
-    bitmap.onload = () => {
-      entry.decoded = true;
-      entry.naturalWidth = bitmap.naturalWidth || undefined;
-      entry.naturalHeight = bitmap.naturalHeight || undefined;
-      for (const notify of inlineImageRasterWaiters) notify();
-    };
-    bitmap.onerror = () => {
-      // Recorded so the alt text stays visible and the box is not re-measured on
-      // every frame for a URL that will never resolve.
-      entry.failed = true;
-      for (const notify of inlineImageRasterWaiters) notify();
-    };
-    bitmap.src = src;
-    entry.bitmap = bitmap;
+  let resolved: ImageSource | Promise<ImageSource>;
+  try {
+    resolved = resolver(src);
+  } catch (err) {
+    console.warn('[Markdown] imageResolver threw for', src, err);
+    resolved = { kind: 'url', url: src };
+  }
+  if (resolved instanceof Promise) {
+    resolved
+      .then((r) => decodeInlineSource(r, entry, src))
+      .catch((err) => {
+        console.warn('[Markdown] imageResolver rejected for', src, err);
+        entry.failed = true;
+        notifyInlineWaiters();
+      });
+  } else {
+    decodeInlineSource(resolved, entry, src);
   }
   return entry;
 }
@@ -268,6 +438,9 @@ export function ensureInlineImageRaster(src: string): InlineImageRaster {
  * Draws nothing until the raster decodes — one frame of empty box, then a repaint
  * through {@link inlineImageRasterWaiters}. Mirrors `paintInlineMath`; a
  * placeholder slab would flash a grey rectangle mid-sentence on every first paint.
+ *
+ * Supports generic {@link ImageSource} backing: `source` may be an `ImageBitmap`
+ * or an `HTMLImageElement`.
  */
 export function paintInlineImage(
   src: string,
@@ -275,12 +448,19 @@ export function paintInlineImage(
   box: InlineObjectBox,
 ): void {
   const raster = ensureInlineImageRaster(src);
-  if (!raster.decoded || !raster.bitmap) return;
-  surface.drawImage(raster.bitmap, box.x, box.y, box.width, box.height);
+  if (!raster.decoded) return;
+  const backing = raster.source ?? raster.bitmap;
+  if (!backing) return;
+  surface.drawImage(backing as CanvasImageSource, box.x, box.y, box.width, box.height);
 }
 
 /** Drop every cached raster. Tests only — a decode is process-wide state. */
 export function clearInlineImageRasters(): void {
+  for (const r of inlineImageRasters.values()) {
+    try {
+      r.dispose?.();
+    } catch {}
+  }
   inlineImageRasters.clear();
 }
 
