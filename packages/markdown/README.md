@@ -62,6 +62,56 @@ await stream.close(); // resolves after the final parse is applied
 - Large-document virtualization: pass `virtualize` and drive `setVisibleRange(scrollY, viewportHeight)`
   to materialize only top-level blocks near the viewport.
 
+## Images — `imageResolver` & CapGlyph adapter
+
+`Markdown` maps every `![](src)` through a single injectable resolver. The
+package has no CapGlyph import — that adapter lives in the app layer.
+
+```ts
+import type { ImageSource } from '@vectojs/ui';
+import type { MarkdownImageResolver } from '@vectojs/markdown';
+
+type MarkdownImageResolver = (src: string) => ImageSource | Promise<ImageSource>;
+const defaultMarkdownImageResolver: MarkdownImageResolver = (src) => ({
+  kind: 'url',
+  url: src,
+});
+```
+
+`MarkdownOptions.imageResolver` drives both block `Image` entities and inline
+`InlineObject` rasters (`blob` → `createImageBitmap` → `ImageBitmap`, with
+object-URL fallback). Sync and async resolvers both work; `paragraphImage` keeps
+a guessed 800×480 box until the resolver settles or the raster decodes, then
+reflows and `scene.markDirty()`.
+
+**CapGlyph adapter (app layer):**
+
+```ts
+import type { MarkdownImageResolver } from '@vectojs/markdown';
+
+const imageResolver: MarkdownImageResolver = async (src) => {
+  if (!src.startsWith('capglyph:')) return { kind: 'url', url: src };
+  const cap = parseCapGlyph(src); // { endpoint, token, variant }
+  const res = await fetch(cap.endpoint, {
+    headers: { Authorization: `Bearer ${cap.token}` },
+  });
+  if (!res.ok) throw new Error(`CapGlyph fetch failed: ${res.status}`);
+  const blob = await res.blob();
+  const bitmap = await createImageBitmap(blob);
+  return { kind: 'bitmap', bitmap }; // caller-owned; no blob: URL in a11y
+};
+
+const md = new Markdown(source, { maxWidth: 640, imageResolver });
+```
+
+Trust: **Master never enters client** — the resolver fetches only Derived
+Raster bytes (watermarked, capped size); CapGlyph is the credential/provenance
+signal, not a resize service. `auto` semanticMode keeps `blob`/`bitmap` off the
+shadow `<img src>`; Visual Flattening already removes the canvas hit-target and
+context-menu, so `role` is only needed when even a `url` must not appear in the
+a11y tree. See the [Image reference](https://vectojs.org/reference/ui-image/)
+for the full Visual Flattening trust table and `DecodedImage` lifecycle.
+
 > Documents @vectojs/markdown@0.23.0.
 
 ## Documentation
