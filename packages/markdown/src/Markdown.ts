@@ -71,6 +71,8 @@ export { isMathJaxReady, MathBlock, preloadMathJax } from './markdown-math';
 export { CodeBlock, codeAtlas, codeAtlasStats, highlightedLanguages } from './markdown-code';
 export type { CodeBlockOptions } from './markdown-code';
 import {
+  defaultMarkdownImageResolver,
+  type MarkdownImageResolver,
   containsImage,
   ensureInlineImageRaster,
   expectedImageParagraphChildren,
@@ -365,6 +367,7 @@ import {
   Table,
   Text,
   Image,
+  type ImageSource,
   UIComponent,
 } from '@vectojs/ui';
 import {
@@ -650,6 +653,19 @@ export interface MarkdownOptions {
    * it unset for mixed content where a few short tables are the whole cost.
    */
   tableViewportHeight?: number;
+  /**
+   * Map a markdown image `src` to a generic {@link ImageSource}.
+   *
+   * The package stays free of CapGlyph or any other app concern: the
+   * document owns how a `src` string becomes pixels, and the adapter lives
+   * in the app layer (`capglyph:` → `fetch` → `createImageBitmap` →
+   * `{kind:\'bitmap\'}`), not in this package. Default
+   * `(src) => ({kind:\'url\', url:src})` preserves the historic `new
+   * Image(src)` path. Returning a `Promise` is supported; the paragraph image
+   * keeps a guessed box until the resolver settles and then reflows as if the
+   * bitmap had just decoded.
+   */
+  imageResolver?: MarkdownImageResolver;
 }
 
 interface BlockMetrics {
@@ -755,6 +771,8 @@ export class Markdown extends UIComponent {
   public writeClipboard: (text: string) => void;
   /** File saver used by the download controls. */
   public saveFile: (filename: string, content: string, mimeType: string) => void;
+  /** How `src` strings become {@link ImageSource} for {@link Image} construction. */
+  private readonly imageResolver: MarkdownImageResolver;
   private activeBlockMetrics: BlockMetrics | null = null;
   /** Whether `opts.virtualize` enabled viewport-culled block materialization. */
   private readonly virtualizeBlocks: boolean;
@@ -1069,6 +1087,7 @@ export class Markdown extends UIComponent {
     this.showCodeLanguage = opts.showCodeLanguage ?? false;
     this.writeClipboard = opts.writeClipboard ?? defaultWriteClipboard;
     this.saveFile = opts.saveFile ?? defaultSaveFile;
+    this.imageResolver = opts.imageResolver ?? defaultMarkdownImageResolver;
 
     const virt = opts.virtualize;
     this.virtualizeBlocks = virt === true || (typeof virt === 'object' && virt !== null);
@@ -1719,19 +1738,24 @@ export class Markdown extends UIComponent {
    * closure applies.
    */
   private refitParagraphImage(image: Image, availableWidth: number): void {
-    // `naturalWidth`/`naturalHeight`, not `width`/`height`: `bitmap` is an
-    // `HTMLImageElement`, whose `width`/`height` are the *layout* attributes and
-    // are 0 for an element never inserted into a document. Using them would make
-    // every decoded image fall through to the placeholder guess below.
-    const bitmap = (image as unknown as { bitmap?: HTMLImageElement | null }).bitmap;
-    if (bitmap?.naturalWidth && bitmap.naturalHeight) {
+    const decoded = (image as unknown as { decodedImage?: { width: number; height: number } })
+      .decodedImage;
+    if (decoded && decoded.width && decoded.height) {
+      const aspect = decoded.height / decoded.width;
+      image.width = Math.min(decoded.width, availableWidth);
+      image.height = Math.round(image.width * aspect);
+      return;
+    }
+    const bitmap = (image as unknown as { bitmap?: HTMLImageElement | null }).bitmap as unknown as {
+      naturalWidth?: number;
+      naturalHeight?: number;
+    } | null;
+    if (bitmap?.naturalWidth && bitmap?.naturalHeight) {
       const aspect = bitmap.naturalHeight / bitmap.naturalWidth;
       image.width = Math.min(bitmap.naturalWidth, availableWidth);
       image.height = Math.round(image.width * aspect);
       return;
     }
-    // Not decoded yet: mirror the placeholder the render arm guesses, so the
-    // reserved box tracks the width until the real aspect ratio arrives.
     image.width = Math.min(800, availableWidth);
     image.height = Math.round(image.width * 0.6);
   }
@@ -1863,7 +1887,7 @@ export class Markdown extends UIComponent {
           // predicate stays true forever and every decode anywhere on the page costs
           // this document a full re-render.
           if (this.inlineImagesMeasured.has(href)) continue;
-          const raster = ensureInlineImageRaster(href);
+          const raster = ensureInlineImageRaster(href, this.imageResolver);
           // A failed decode has to rebuild too: the span arm replaces the reserved
           // box with the alt text, and without a rebuild the document keeps an
           // invisible gap where the picture will never appear.
@@ -2367,7 +2391,15 @@ export class Markdown extends UIComponent {
   private literalParagraphSpans(token: Tokens.Paragraph): StyledSpan[] {
     const spans: StyledSpan[] = [];
     if (token.tokens && token.tokens.length > 0) {
-      collectSpans(token.tokens, {}, this.theme, spans, undefined, this.abbreviations);
+      collectSpans(
+        token.tokens,
+        {},
+        this.theme,
+        spans,
+        undefined,
+        this.abbreviations,
+        this.imageResolver,
+      );
     }
     if (spans.length === 0) spans.push({ text: token.text });
     return spans;
@@ -2389,7 +2421,7 @@ export class Markdown extends UIComponent {
    */
   private tableCellSpans(cell: Tokens.TableCell, t: Required<MarkdownTheme>): StyledSpan[] {
     const spans: StyledSpan[] = [];
-    collectSpans(cell.tokens, {}, t, spans, undefined, this.abbreviations);
+    collectSpans(cell.tokens, {}, t, spans, undefined, this.abbreviations, this.imageResolver);
     if (spans.length === 0) spans.push({ text: decodeEntities(cell.text) });
     return spans;
   }
@@ -2408,7 +2440,8 @@ export class Markdown extends UIComponent {
    */
   private inlineRunSpans(tokens: Token[], t: Required<MarkdownTheme>): StyledSpan[] {
     const spans: StyledSpan[] = [];
-    if (tokens.length > 0) collectSpans(tokens, {}, t, spans, undefined, this.abbreviations);
+    if (tokens.length > 0)
+      collectSpans(tokens, {}, t, spans, undefined, this.abbreviations, this.imageResolver);
     if (spans.length === 0) spans.push({ text: '' });
     return spans;
   }
@@ -2553,30 +2586,83 @@ export class Markdown extends UIComponent {
    */
   private paragraphImage(imgToken: Tokens.Image, availableWidth: number): Image {
     const initialWidth = Math.min(800, availableWidth);
-    const initialHeight = Math.round(initialWidth * 0.6); // Guess 16:10 aspect ratio initially
-    const img = new Image(imgToken.href, {
-      width: initialWidth,
-      height: initialHeight,
-      alt: imgToken.text,
-      radius: this.theme.imageRadius,
-      onLoad: () => {
-        const bmp = (img as any).bitmap;
-        const previousWidth = img.width;
-        const previousHeight = img.height;
+    const initialHeight = Math.round(initialWidth * 0.6);
+    const rawSrc = imgToken.href;
+    let initialSource: ImageSource = { kind: 'url', url: rawSrc };
+    let pending: Promise<ImageSource> | null = null;
+    try {
+      const out = this.imageResolver(rawSrc);
+      if (out instanceof Promise) {
+        pending = out;
+      } else {
+        initialSource = out;
+      }
+    } catch (err) {
+      console.warn('[Markdown] imageResolver threw for', rawSrc, err);
+    }
+    let img: Image | null = null;
+    const handleLoad = (): void => {
+      if (!img) return;
+      const decoded = (img as unknown as { decodedImage?: { width: number; height: number } })
+        .decodedImage;
+      const previousWidth = img.width;
+      const previousHeight = img.height;
+      if (decoded && decoded.width && decoded.height) {
+        const aspect = decoded.height / decoded.width;
+        img.width = Math.min(decoded.width, availableWidth);
+        img.height = Math.round(img.width * aspect);
+      } else {
+        const bmp = (img as unknown as { bitmap?: HTMLImageElement | null }).bitmap as unknown as {
+          naturalWidth?: number;
+          naturalHeight?: number;
+        } | null;
         if (bmp && bmp.naturalWidth && bmp.naturalHeight) {
           const aspect = bmp.naturalHeight / bmp.naturalWidth;
           img.width = Math.min(bmp.naturalWidth, availableWidth);
           img.height = Math.round(img.width * aspect);
         }
-        // Only reflow when the guess was actually wrong. An unchanged box needs
-        // no relayout, and neither does the zero-dimension case, which
-        // deliberately keeps the guessed box — see `paragraphImageRepaint.test.ts`.
-        if (img.width !== previousWidth || img.height !== previousHeight) {
-          this.reflowAfterImageResize(img);
-        }
-        this.scene?.markDirty();
-      },
+      }
+      if (img.width !== previousWidth || img.height !== previousHeight) {
+        this.reflowAfterImageResize(img);
+      }
+      this.scene?.markDirty();
+    };
+    img = new Image(initialSource, {
+      width: initialWidth,
+      height: initialHeight,
+      alt: imgToken.text,
+      radius: this.theme.imageRadius,
+      onLoad: handleLoad,
     });
+    // Bitmap sources decode synchronously during construction, so handleLoad
+    // was invoked while img was still null and returned early. Apply the same
+    // sizing now that img exists.
+    if (img.decodedImage?.width && img.decodedImage?.height) {
+      const decoded = img.decodedImage;
+      const prevW = img.width;
+      const prevH = img.height;
+      const aspect = decoded.height / decoded.width;
+      const nextW = Math.min(decoded.width, availableWidth);
+      const nextH = Math.round(nextW * aspect);
+      if (nextW !== prevW || nextH !== prevH) {
+        img.width = nextW;
+        img.height = nextH;
+        this.reflowAfterImageResize(img);
+        this.scene?.markDirty();
+      }
+    }
+    if (pending) {
+      pending
+        .then((resolved) => {
+          try {
+            (img as unknown as { setSource: (s: ImageSource) => void }).setSource(resolved);
+          } catch {}
+          this.scene?.markDirty();
+        })
+        .catch((err) => {
+          console.warn('[Markdown] imageResolver rejected for', rawSrc, err);
+        });
+    }
     return img;
   }
 
@@ -2892,6 +2978,7 @@ export class Markdown extends UIComponent {
             contentSpans,
             undefined,
             this.abbreviations,
+            this.imageResolver,
           );
         } else if ('tokens' in inner && (inner as any).tokens?.length) {
           collectSpans(
@@ -2901,6 +2988,7 @@ export class Markdown extends UIComponent {
             contentSpans,
             undefined,
             this.abbreviations,
+            this.imageResolver,
           );
         } else if ('text' in inner) {
           contentSpans.push({ text: decodeEntities((inner as any).text) });
@@ -3392,7 +3480,15 @@ export class Markdown extends UIComponent {
     }
     const spans: StyledSpan[] = [];
     if (token.tokens && token.tokens.length > 0) {
-      collectSpans(token.tokens, {}, this.theme, spans, undefined, this.abbreviations);
+      collectSpans(
+        token.tokens,
+        {},
+        this.theme,
+        spans,
+        undefined,
+        this.abbreviations,
+        this.imageResolver,
+      );
     }
     if (spans.length === 0) spans.push({ text: decodeEntities(token.text) });
     return spans;
@@ -3460,6 +3556,7 @@ export class Markdown extends UIComponent {
         spans,
         undefined,
         this.abbreviations,
+        this.imageResolver,
       );
     }
     const head = runText.slice(0, found.at);
@@ -4201,6 +4298,7 @@ export class Markdown extends UIComponent {
           this.selectable,
           this.onLinkClick,
           this.abbreviations,
+          this.imageResolver,
         );
       }
 
@@ -4218,6 +4316,7 @@ export class Markdown extends UIComponent {
             this.selectable,
             this.onLinkClick,
             this.abbreviations,
+            this.imageResolver,
           );
         }
 
