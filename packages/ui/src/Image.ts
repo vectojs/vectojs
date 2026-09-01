@@ -105,6 +105,9 @@ export function computeImageFit(
   return { dx, dy, dw, dh };
 }
 
+/** Controls how {@link Image} projects its a11y shadow node. */
+export type ImageSemanticMode = 'auto' | 'img' | 'role';
+
 /** Construction options for {@link Image}. */
 export interface ImageOptions {
   /** Box width in pixels. Required (the canvas needs a known box for layout/culling). */
@@ -131,11 +134,27 @@ export interface ImageOptions {
   radius?: number;
   /** Invoked once the image finishes loading (e.g. to `scene.markDirty()`). */
   onLoad?: () => void;
+  /**
+   * Semantic projection policy for the a11y shadow node.
+   *
+   * - `'auto'` (default): `url` → `<img src alt>`, `blob`/`bitmap` → `<div role="img" aria-label>`.
+   * - `'img'`: force `<img src alt>` when the source is a url; for `blob`/`bitmap` the
+   *   projection falls back to `role="img"` (no `blob:` URL is synthesized) and a
+   *   `console.warn` is emitted — callers that truly need `<img src>` must provide a url.
+   * - `'role'`: always `<div role="img" aria-label>`, never exposing a URL.
+   *
+   * Trust boundary: the decoded bitmap never leaves the canvas path; `role` mode
+   * guarantees the raw `blob`/`bitmap` bytes are not projected as a URL, and even
+   * `auto` keeps non-url sources off the DOM `src` attribute.
+   */
+  semanticMode?: ImageSemanticMode;
 }
 
 /**
- * An image rendered to canvas via `drawImage`, projecting a real `<img src alt>`
- * shadow node so it stays crawlable/accessible.
+ * An image rendered to canvas via `drawImage`, projecting an a11y shadow node
+ * that stays crawlable/accessible. The shadow is either a real `<img src alt>`
+ * or a `<div role="img" aria-label>` depending on {@link ImageOptions.semanticMode}
+ * and the backing {@link ImageSource} kind.
  *
  * Loading is async: a placeholder box is drawn until the bitmap is ready. In
  * `onDemand` scenes, pass `onLoad: () => scene.markDirty()` to repaint on load.
@@ -145,16 +164,30 @@ export interface ImageOptions {
  * used directly. Decode is decoupled as {@link DecodedImage} so `renderBitmap`
  * depends only on `decoded.width/height` + `decoded.source`.
  *
+ * A11y projection policy (`semanticMode`, default `'auto'`):
+ * - `'auto'`: `url` → `<img src alt>`; `blob`/`bitmap` → `<div role="img" aria-label>`.
+ * - `'img'`: force `<img>` for url sources; `blob`/`bitmap` falls back to `role="img"`
+ *   without synthesizing a `blob:` URL (emits `console.warn`); callers that need
+ *   `<img src>` for binary sources must supply a url themselves.
+ * - `'role'`: always `<div role="img" aria-label>`.
+ *
+ * Trust boundary: the decoded bitmap is a canvas-only `CanvasImageSource`;
+ * `role` mode (and `auto` for non-url) never writes raw `blob`/`bitmap` bytes
+ * into the DOM `src` attribute — the URL/request never enters the client a11y
+ * tree. `alt` is projected as `alt` for `<img>` and as `aria-label` for `role="img"`.
+ *
  * @example new Image('/logo.png', { width: 120, height: 40, alt: 'Vecto' });
  * @example new Image({ kind: 'blob', blob }, { width: 64, height: 64 });
  * @example new Image({ kind: 'bitmap', bitmap }, { width: 64, height: 64 });
+ * @example new Image('/logo.png', { width: 64, height: 64, semanticMode: 'role' })
  */
 export class Image extends UIComponent {
-  public alt: string;
   public placeholder: string;
   public radius: number;
   public fit: ImageFit;
   public focalPoint: ImageFocalPoint;
+  private _semanticMode: ImageSemanticMode;
+  private _alt: string;
   private _source: ImageSource;
   private _normalized: NormalizedImageSource;
   private decoded: DecodedImage | null = null;
@@ -164,12 +197,13 @@ export class Image extends UIComponent {
   private _onLoad?: () => void;
   private _objectURL: string | null = null;
   private _gen = 0;
+  private _warnedFallback = false;
 
   constructor(source: ImageSource, opts: ImageOptions) {
     super();
     this._source = source;
     this._normalized = normalizeSource(source);
-    this.alt = opts.alt ?? '';
+    this._alt = opts.alt ?? '';
     this.placeholder = opts.placeholder ?? '#1e293b';
     this.radius = opts.radius ?? 0;
     this.fit = opts.fit ?? 'fill';
@@ -179,9 +213,33 @@ export class Image extends UIComponent {
     };
     this.width = opts.width;
     this.height = opts.height;
-    this.interactive = true; // project the <img> shadow node
+    this.interactive = true; // project the shadow node (img or role="img")
+    this._semanticMode = opts.semanticMode ?? 'auto';
     this._onLoad = opts.onLoad;
     this.startDecode(this._normalized);
+  }
+
+  public get semanticMode(): ImageSemanticMode {
+    return this._semanticMode;
+  }
+
+  public set semanticMode(value: ImageSemanticMode) {
+    if (value !== this._semanticMode) {
+      this._semanticMode = value;
+      this._warnedFallback = false;
+      this.scene?.markDirty();
+    }
+  }
+
+  public get alt(): string {
+    return this._alt;
+  }
+
+  public set alt(value: string) {
+    if (value !== this._alt) {
+      this._alt = value;
+      this.scene?.markDirty();
+    }
   }
 
   /** Compat: `string` url or `''` for non-url sources. */
@@ -207,7 +265,12 @@ export class Image extends UIComponent {
   public setSource(source: ImageSource): void {
     this._source = source;
     this._normalized = normalizeSource(source);
+    this._warnedFallback = false;
     this.startDecode(this._normalized);
+    // Source change can flip the a11y projection (e.g. url→blob with auto),
+    // so mark the scene dirty to ensure Scene.syncA11y re-projects next frame
+    // even when decode is async or immediate (bitmap).
+    this.scene?.markDirty();
   }
 
   private startDecode(normalized: NormalizedImageSource): void {
@@ -372,8 +435,34 @@ export class Image extends UIComponent {
   }
 
   public getA11yAttributes(): A11yAttributes {
-    const src = this._normalized.kind === 'url' ? this._normalized.url : undefined;
-    return { tag: 'img', src, alt: this.alt, label: this.alt || undefined };
+    const alt = this.alt;
+    const label = alt || undefined;
+    const url = this._normalized.kind === 'url' ? this._normalized.url : undefined;
+    const mode = this.semanticMode ?? 'auto';
+    if (mode === 'role') {
+      return { tag: 'div', role: 'img', label };
+    }
+    if (mode === 'img') {
+      if (url !== undefined) {
+        return { tag: 'img', src: url, alt, label };
+      }
+      if (
+        !this._warnedFallback &&
+        typeof console !== 'undefined' &&
+        typeof console.warn === 'function'
+      ) {
+        console.warn(
+          '[vectojs/Image] semanticMode="img" with non-url source falls back to role="img" (no blob: URL is synthesized; provide a url source if <img src> is required).',
+        );
+        this._warnedFallback = true;
+      }
+      return { tag: 'div', role: 'img', label };
+    }
+    // auto
+    if (url !== undefined) {
+      return { tag: 'img', src: url, alt, label };
+    }
+    return { tag: 'div', role: 'img', label };
   }
 
   public override destroy(): void {
