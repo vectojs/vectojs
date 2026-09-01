@@ -102,8 +102,7 @@ export class ScrollView extends UIComponent {
       const deltaMode = e.deltaMode ?? 0;
       // Convert deltaMode: 0=pixels (unchanged), 1=lines (~16px), 2=pages (viewport height)
       let scrollDelta = deltaY;
-      if (deltaMode === 1)
-        scrollDelta = deltaY * 16; // line mode
+      if (deltaMode === 1) scrollDelta = deltaY * 16; // line mode
       else if (deltaMode === 2) scrollDelta = deltaY * this.height; // page mode
       this.targetY -= scrollDelta;
       this.clampTarget();

@@ -35,8 +35,7 @@ function randomTree(count: number, topo: Topology, rand: () => number): InputNod
     if (k === 0) parent = -1;
     else if (topo === 'flat') parent = 0;
     else if (topo === 'chain') parent = k - 1;
-    else if (topo === 'bushy')
-      parent = Math.floor(rand() * k); // any earlier node
+    else if (topo === 'bushy') parent = Math.floor(rand() * k); // any earlier node
     else parent = rand() < 0.5 ? 0 : Math.floor(rand() * k); // mixed
     nodes.push({
       parent,

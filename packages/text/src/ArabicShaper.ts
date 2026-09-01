@@ -106,12 +106,9 @@ export class ArabicShaper {
         while (k < len && ArabicShaper.isHarakat(text.charCodeAt(k))) k++;
         const nextCode = k < len ? text.charCodeAt(k) : 0;
         let ligature = 0;
-        if (nextCode === 0x0622)
-          ligature = 0xfef5; // Lam-Alef Madda
-        else if (nextCode === 0x0623)
-          ligature = 0xfef7; // Lam-Alef Hamza Above
-        else if (nextCode === 0x0625)
-          ligature = 0xfef9; // Lam-Alef Hamza Below
+        if (nextCode === 0x0622) ligature = 0xfef5; // Lam-Alef Madda
+        else if (nextCode === 0x0623) ligature = 0xfef7; // Lam-Alef Hamza Above
+        else if (nextCode === 0x0625) ligature = 0xfef9; // Lam-Alef Hamza Below
         else if (nextCode === 0x0627) ligature = 0xfefb; // Lam-Alef
 
         if (ligature !== 0) {
