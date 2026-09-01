@@ -24,6 +24,37 @@ export interface ImagePlacement {
   dh: number;
 }
 
+/** Unified source for {@link Image} — url, blob or a pre-decoded bitmap. */
+export type ImageSource =
+  | string
+  | { kind: 'url'; url: string }
+  | { kind: 'blob'; blob: Blob }
+  | { kind: 'bitmap'; bitmap: ImageBitmap };
+
+/** Normalized variant of {@link ImageSource} with `string` expanded. */
+export type NormalizedImageSource =
+  | { kind: 'url'; url: string }
+  | { kind: 'blob'; blob: Blob }
+  | { kind: 'bitmap'; bitmap: ImageBitmap };
+
+/** Decoupled decode result consumed by `renderBitmap`. */
+export interface DecodedImage {
+  /** Backing source for `IRenderer.drawImage`. */
+  source: CanvasImageSource;
+  /** Intrinsic width in pixels. */
+  width: number;
+  /** Intrinsic height in pixels. */
+  height: number;
+  /** Release `ImageBitmap` / revoke `blob:` URL when the image is replaced or destroyed. */
+  dispose?: () => void;
+}
+
+/** Expand `string` shorthand to `{kind:'url'}`. */
+export function normalizeSource(src: ImageSource): NormalizedImageSource {
+  if (typeof src === 'string') return { kind: 'url', url: src };
+  return src;
+}
+
 const DEFAULT_FOCAL: ImageFocalPoint = { x: 0.5, y: 0.5 };
 
 function clamp01(v: number): number {
@@ -109,21 +140,35 @@ export interface ImageOptions {
  * Loading is async: a placeholder box is drawn until the bitmap is ready. In
  * `onDemand` scenes, pass `onLoad: () => scene.markDirty()` to repaint on load.
  *
+ * Supports {@link ImageSource}: a plain string is `{kind:'url'}` shorthand,
+ * `{kind:'blob'}` decodes via `createImageBitmap`, and `{kind:'bitmap'}` is
+ * used directly. Decode is decoupled as {@link DecodedImage} so `renderBitmap`
+ * depends only on `decoded.width/height` + `decoded.source`.
+ *
  * @example new Image('/logo.png', { width: 120, height: 40, alt: 'Vecto' });
+ * @example new Image({ kind: 'blob', blob }, { width: 64, height: 64 });
+ * @example new Image({ kind: 'bitmap', bitmap }, { width: 64, height: 64 });
  */
 export class Image extends UIComponent {
-  public src: string;
   public alt: string;
   public placeholder: string;
   public radius: number;
   public fit: ImageFit;
   public focalPoint: ImageFocalPoint;
-  private bitmap: HTMLImageElement | null = null;
+  private _source: ImageSource;
+  private _normalized: NormalizedImageSource;
+  private decoded: DecodedImage | null = null;
   private loaded = false;
+  /** Legacy alias kept for `as unknown as {bitmap}` test injections. */
+  private bitmap: HTMLImageElement | null = null;
+  private _onLoad?: () => void;
+  private _objectURL: string | null = null;
+  private _gen = 0;
 
-  constructor(src: string, opts: ImageOptions) {
+  constructor(source: ImageSource, opts: ImageOptions) {
     super();
-    this.src = src;
+    this._source = source;
+    this._normalized = normalizeSource(source);
     this.alt = opts.alt ?? '';
     this.placeholder = opts.placeholder ?? '#1e293b';
     this.radius = opts.radius ?? 0;
@@ -135,25 +180,263 @@ export class Image extends UIComponent {
     this.width = opts.width;
     this.height = opts.height;
     this.interactive = true; // project the <img> shadow node
+    this._onLoad = opts.onLoad;
+    this.startDecode(this._normalized);
+  }
 
-    if (typeof globalThis.Image !== 'undefined') {
-      const bmp = new globalThis.Image();
-      bmp.onload = () => {
-        this.loaded = true;
-        opts.onLoad?.();
-      };
-      bmp.src = src;
-      this.bitmap = bmp;
+  /** Compat: `string` url or `''` for non-url sources. */
+  public get src(): string {
+    return this._normalized.kind === 'url' ? this._normalized.url : '';
+  }
+
+  public set src(value: string) {
+    this.setSource(value);
+  }
+
+  /** Original source as supplied to the constructor / `setSource`. */
+  public get imageSource(): ImageSource {
+    return this._source;
+  }
+
+  /** Decoded payload, or `null` while loading. */
+  public get decodedImage(): DecodedImage | null {
+    return this.decoded;
+  }
+
+  /** Replace the source and re-decode. */
+  public setSource(source: ImageSource): void {
+    this._source = source;
+    this._normalized = normalizeSource(source);
+    this.startDecode(this._normalized);
+  }
+
+  private startDecode(normalized: NormalizedImageSource): void {
+    const gen = ++this._gen;
+    this.loaded = false;
+    if (this.decoded?.dispose) {
+      try {
+        this.decoded.dispose();
+      } catch {}
+    }
+    this.decoded = null;
+    this.bitmap = null;
+    if (this._objectURL) {
+      try {
+        URL.revokeObjectURL(this._objectURL);
+      } catch {}
+      this._objectURL = null;
+    }
+
+    const onDecoded = (decoded: DecodedImage): void => {
+      if (gen !== this._gen) {
+        try {
+          decoded.dispose?.();
+        } catch {}
+        return;
+      }
+      this.decoded = decoded;
+      this.loaded = true;
+      if (typeof HTMLImageElement !== 'undefined' && decoded.source instanceof HTMLImageElement) {
+        this.bitmap = decoded.source as HTMLImageElement;
+      }
+      this._onLoad?.();
+      this.scene?.markDirty();
+    };
+
+    const onError = (): void => {
+      if (gen !== this._gen) return;
+      // stay on placeholder
+    };
+
+    switch (normalized.kind) {
+      case 'bitmap': {
+        // External ImageBitmap ownership stays with caller — do not close on dispose.
+        // Only internally created bitmaps (blob via createImageBitmap) own their disposal.
+        const bmp = normalized.bitmap;
+        const decoded: DecodedImage = {
+          source: bmp,
+          width: bmp.width,
+          height: bmp.height,
+        };
+        onDecoded(decoded);
+        break;
+      }
+      case 'blob': {
+        const blob = normalized.blob;
+        const gCreateImageBitmap = globalThis as unknown as {
+          createImageBitmap?: (b: Blob) => Promise<ImageBitmap>;
+        };
+        if (typeof gCreateImageBitmap.createImageBitmap === 'function') {
+          gCreateImageBitmap
+            .createImageBitmap(blob)
+            .then((bmp) => {
+              const decoded: DecodedImage = {
+                source: bmp,
+                width: bmp.width,
+                height: bmp.height,
+                dispose: () => {
+                  try {
+                    bmp.close();
+                  } catch {}
+                },
+              };
+              onDecoded(decoded);
+            })
+            .catch(() => {
+              this.decodeBlobViaImage(blob, gen, onDecoded, onError);
+            });
+        } else {
+          this.decodeBlobViaImage(blob, gen, onDecoded, onError);
+        }
+        break;
+      }
+      case 'url': {
+        if (typeof globalThis.Image === 'undefined') {
+          onError();
+          break;
+        }
+        const img = new globalThis.Image();
+        this.bitmap = img;
+        img.onload = () => {
+          const decoded: DecodedImage = {
+            source: img,
+            width:
+              (img as HTMLImageElement).naturalWidth || (img as unknown as { width: number }).width,
+            height:
+              (img as HTMLImageElement).naturalHeight ||
+              (img as unknown as { height: number }).height,
+          };
+          onDecoded(decoded);
+        };
+        img.onerror = () => {
+          if (gen === this._gen) this.bitmap = null;
+          onError();
+        };
+        img.src = normalized.url;
+        break;
+      }
     }
   }
 
+  private decodeBlobViaImage(
+    blob: Blob,
+    gen: number,
+    onDecoded: (d: DecodedImage) => void,
+    onError: () => void,
+  ): void {
+    if (
+      typeof globalThis.Image === 'undefined' ||
+      typeof URL === 'undefined' ||
+      typeof URL.createObjectURL !== 'function'
+    ) {
+      onError();
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    if (gen === this._gen) this._objectURL = url;
+    const img = new globalThis.Image();
+    if (gen === this._gen) this.bitmap = img;
+    img.onload = () => {
+      if (gen !== this._gen) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {}
+        return;
+      }
+      const decoded: DecodedImage = {
+        source: img,
+        width:
+          (img as HTMLImageElement).naturalWidth || (img as unknown as { width: number }).width,
+        height:
+          (img as HTMLImageElement).naturalHeight || (img as unknown as { height: number }).height,
+        dispose: () => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch {}
+          if (this._objectURL === url) this._objectURL = null;
+        },
+      };
+      onDecoded(decoded);
+    };
+    img.onerror = () => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+      if (gen === this._gen) {
+        if (this._objectURL === url) this._objectURL = null;
+        if (this.bitmap === img) this.bitmap = null;
+      }
+      onError();
+    };
+    img.src = url;
+  }
+
   public getA11yAttributes(): A11yAttributes {
-    return { tag: 'img', src: this.src, alt: this.alt, label: this.alt || undefined };
+    const src = this._normalized.kind === 'url' ? this._normalized.url : undefined;
+    return { tag: 'img', src, alt: this.alt, label: this.alt || undefined };
+  }
+
+  public override destroy(): void {
+    if (this.decoded?.dispose) {
+      try {
+        this.decoded.dispose();
+      } catch {}
+    }
+    this.decoded = null;
+    this.loaded = false;
+    this.bitmap = null;
+    if (this._objectURL) {
+      try {
+        URL.revokeObjectURL(this._objectURL);
+      } catch {}
+      this._objectURL = null;
+    }
+    this._gen++;
+    super.destroy();
   }
 
   public render(r: IRenderer): void {
-    if (this.loaded && this.bitmap) {
-      this.renderBitmap(r, this.bitmap);
+    if (this.loaded && this.decoded) {
+      this.renderBitmap(r, this.decoded);
+      return;
+    }
+    // Legacy test injection path: `loaded=true` + `bitmap={naturalWidth, naturalHeight}`.
+    const legacy = this.bitmap as unknown as
+      | (HTMLImageElement & {
+          naturalWidth?: number;
+          naturalHeight?: number;
+          width?: number;
+          height?: number;
+        })
+      | null;
+    if (this.loaded && legacy) {
+      const srcW = legacy.naturalWidth ?? legacy.width ?? 0;
+      const srcH = legacy.naturalHeight ?? legacy.height ?? 0;
+      const placement = computeImageFit(
+        srcW,
+        srcH,
+        this.width,
+        this.height,
+        this.fit,
+        this.focalPoint,
+      );
+      const needsClip = this.radius > 0 || this.fit === 'cover';
+      if (needsClip) {
+        r.save();
+        if (this.radius > 0) {
+          r.clip(0, 0, this.width, this.height, this.radius);
+        } else {
+          r.clip(0, 0, this.width, this.height);
+        }
+      }
+      r.drawImage(
+        legacy as unknown as CanvasImageSource,
+        placement.dx,
+        placement.dy,
+        placement.dw,
+        placement.dh,
+      );
+      if (needsClip) r.restore();
       return;
     }
     r.beginPath();
@@ -165,12 +448,10 @@ export class Image extends UIComponent {
    * Draw the loaded bitmap under the active fit policy, clipping to the box's
    * rounded silhouette whenever `radius > 0` or `'cover'` overflows the box.
    */
-  private renderBitmap(r: IRenderer, bitmap: HTMLImageElement): void {
-    const srcW = bitmap.naturalWidth || bitmap.width;
-    const srcH = bitmap.naturalHeight || bitmap.height;
+  private renderBitmap(r: IRenderer, decoded: DecodedImage): void {
     const placement = computeImageFit(
-      srcW,
-      srcH,
+      decoded.width,
+      decoded.height,
       this.width,
       this.height,
       this.fit,
@@ -186,7 +467,7 @@ export class Image extends UIComponent {
         r.clip(0, 0, this.width, this.height);
       }
     }
-    r.drawImage(bitmap, placement.dx, placement.dy, placement.dw, placement.dh);
+    r.drawImage(decoded.source, placement.dx, placement.dy, placement.dw, placement.dh);
     if (needsClip) r.restore();
   }
 }
