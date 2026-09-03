@@ -74,7 +74,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",
-    "puppeteer-core": "^25.8.0",
+    "puppeteer-core": "^25.9.0",
     "tsup": "^8.3.5",
     "vitest": "^4.1.11"
   }
