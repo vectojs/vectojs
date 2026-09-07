@@ -21,11 +21,13 @@ import { RichText, Stack, Table, Text } from '@vectojs/ui';
  * - `Table` → `''` (unsupported-kind): composite interactive widget, stays
  *   canvas with a reported reason.
  * - Grouping wrappers (children present, no specific class) → `'container'`:
- *   never materialized itself; children negotiate individually.
+ *   never materialized itself; the pass recurses into its children so nested
+ *   prose/code negotiates individually (r8, CTX-0608).
  * - Anything else (rules, borders, backgrounds) → `''`: canvas leaves.
  *
- * Kinds are assigned to top-level blocks only; nested content keeps its own
- * `domKind` (default `''` → canvas, reported) until a finer pass tags it.
+ * Tables stay canvas even when nested inside a container (composite widget,
+ * cell text included). Grouping wrappers below the top level keep `domKind`
+ * `''` (reported fallback) — only nested prose/code leaves are tagged.
  */
 
 /** Dogfood switcher mode (RFC4 §6): forced canvas, forced dom, or negotiated. */
@@ -54,13 +56,39 @@ export function classifyProjectionBlock(node: Entity, index: number): Classified
 }
 
 /**
+ * Tag prose/code nested inside a container block (blockquote, list, …) so it
+ * negotiates on its own in hybrid/dom modes. Same mapping as
+ * {@link classifyProjectionBlock}; tables are skipped wholesale (composite
+ * widget, cell text included) and canvas leaves keep `domKind ''`.
+ */
+function classifyNestedChildren(node: Entity): void {
+  for (const child of node.children) {
+    if (child instanceof Text || child instanceof RichText) {
+      child.domKind = 'prose';
+    } else if (child instanceof CodeBlock) {
+      // An affordance-wrapped code block classifies as a container up top;
+      // tagging the inner block here keeps it negotiable (cf. #701).
+      child.domKind = 'code';
+    } else if (child instanceof Table) {
+      // Composite interactive widget: stays canvas, cell text included.
+    } else if (child.children.length > 0) {
+      classifyNestedChildren(child);
+    }
+    // Canvas leaves (rules, borders, backgrounds) keep `domKind ''`.
+  }
+}
+
+/**
  * Top-level blocks of a document's content stack, in order, with kinds
  * assigned onto the blocks (idempotent — re-running keeps prior kinds).
+ * Container blocks additionally have their nested prose/code tagged via
+ * {@link classifyNestedChildren} (idempotent for the same reason).
  */
 export function classifyProjectionBlocks(content: Stack): ClassifiedProjectionBlock[] {
   const blocks = content.children.map((child, i) => classifyProjectionBlock(child, i));
   for (const { node, domKind } of blocks) {
     if (domKind) node.domKind = domKind;
+    if (domKind === 'container') classifyNestedChildren(node);
   }
   return blocks;
 }
