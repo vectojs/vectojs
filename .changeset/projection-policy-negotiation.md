@@ -1,3 +1,4 @@
+---
 '@vectojs/core': minor
 '@vectojs/dom': minor
 '@vectojs/markdown': minor
