@@ -60,6 +60,7 @@ import { CanvasGeometry, type OverlayGeometry } from './scene/CanvasGeometry';
 import { DirtyTracker, type DirtyReasonEntry, type DirtySource } from './scene/DirtyTracker';
 import { DriverTicker } from './scene/DriverTicker';
 import { HitTester } from './scene/HitTester';
+import type { DomHitCandidate, HitResult } from './scene/HitResult';
 import { ContentProjectionManager } from './scene/ContentProjectionManager';
 import { PhaseTimer, type RenderPhase, type RenderPhaseEntry } from './scene/PhaseTimer';
 import {
@@ -2779,6 +2780,43 @@ export class Scene {
    */
   public findEntityAt(x: number, y: number): Entity | null {
     return this._hitTester.findEntityAt(x, y, this.currentFrame, this.width, this.height);
+  }
+
+  // --- domain: hit-test — merged HitResult query (RFC5 §2, CTX-0600) ---
+  /**
+   * The merged hit list for a scene-space point: the canvas spatial test
+   * plus caller-observed DOM-native candidates (mirror / portal /
+   * `dom-visual` extension point for CTX-0598) as ONE ordered candidate
+   * list (`HitResult`, overlay order authoritative).
+   *
+   * Query API alongside {@link findEntityAt} — no dispatch change:
+   * `findEntityAt` keeps its single topmost answer byte-for-byte, keyboard
+   * and AT flows are untouched. For browser pointer coordinates use
+   * {@link findHitsAtClient}, which maps through {@link clientToScene} first.
+   */
+  public findHitsAt(x: number, y: number, domCandidates: DomHitCandidate[] = []): HitResult[] {
+    return this._hitTester.findHitsAt(
+      x,
+      y,
+      this.currentFrame,
+      this.width,
+      this.height,
+      domCandidates,
+    );
+  }
+
+  /**
+   * {@link findHitsAt} for browser viewport coordinates: maps through
+   * {@link clientToScene} so coordinates enter in scene space (RFC5 §2
+   * rule 3) and backend attribution follows.
+   */
+  public findHitsAtClient(
+    clientX: number,
+    clientY: number,
+    domCandidates: DomHitCandidate[] = [],
+  ): HitResult[] {
+    const point = this.clientToScene(clientX, clientY);
+    return this.findHitsAt(point.x, point.y, domCandidates);
   }
 
   // --- domain: hit-test — client-to-scene mapping ---
