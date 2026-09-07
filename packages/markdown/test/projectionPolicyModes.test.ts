@@ -165,3 +165,110 @@ describe('Markdown projection-policy switcher (RFC4 §6)', () => {
     }
   });
 });
+
+const NESTED_CORPUS = ['> Quoted prose to select.', '', '- first item', '- second item', ''].join(
+  '\n',
+);
+
+/** Every entity under a node, excluding the node itself. */
+function descendants(node: Entity): Entity[] {
+  return node.children.flatMap((c) => [c, ...descendants(c)]);
+}
+
+/** Text/RichText leaves under a node (the nested-prose candidates). */
+function nestedProse(node: Entity): Entity[] {
+  return descendants(node).filter(
+    (d) => d.constructor.name === 'Text' || d.constructor.name === 'RichText',
+  );
+}
+
+describe('nested prose classification (r8, CTX-0608)', () => {
+  let canvas: HTMLCanvasElement;
+  let scene: Scene;
+  let backend: ProjectionBackend & { updates: number };
+
+  const tick = (): void => {
+    (scene as unknown as { isRunning: boolean }).isRunning = true;
+    (scene as unknown as { loop: (t: number) => void }).loop(0);
+  };
+
+  beforeEach(() => {
+    HTMLCanvasElement.prototype.getContext = (() => fakeCtx()) as never;
+    canvas = document.createElement('canvas');
+    canvas.width = 900;
+    canvas.height = 700;
+    document.body.appendChild(canvas);
+    scene = new Scene(canvas, { maxFPS: 0, disableWindowResize: true });
+    scene.renderMode = 'always';
+    backend = fakeDomBackend();
+    scene.addProjectionBackend(backend);
+  });
+
+  afterEach(() => {
+    scene.destroy();
+    canvas.remove();
+    document.body.innerHTML = '';
+  });
+
+  function classifyNested(): { nested: Markdown; containers: ClassifiedProjectionBlock[] } {
+    const nested = new Markdown(NESTED_CORPUS, { maxWidth: 860, blockAffordances: false });
+    scene.add(nested);
+    const blocks = classifyProjectionBlocks(nested.content);
+    const containers = blocks.filter((b) => b.label.includes('(container)'));
+    // The corpus is one blockquote + one list, both container-classified.
+    expect(containers).toHaveLength(2);
+    return { nested, containers };
+  }
+
+  it('tags prose nested in quote/list containers', () => {
+    const { containers } = classifyNested();
+    for (const { node } of containers) {
+      const prose = nestedProse(node);
+      expect(prose.length).toBeGreaterThan(0);
+      for (const leaf of prose) {
+        expect(leaf.domKind).toBe('prose');
+      }
+    }
+  });
+
+  it('hybrid negotiates nested prose to dom while containers stay canvas', () => {
+    const { nested, containers } = classifyNested();
+    applyProjectionMode(nested, 'hybrid');
+    tick();
+    for (const { node } of containers) {
+      // The wrapper itself never materializes (`container` row rests canvas).
+      expect(scene.getProjectionResolution(node.id)).toMatchObject({
+        want: 'auto',
+        resolved: 'canvas',
+      });
+      for (const leaf of nestedProse(node)) {
+        expect(scene.getProjectionResolution(leaf.id)).toMatchObject({
+          want: 'auto',
+          resolved: 'dom',
+        });
+      }
+    }
+  });
+
+  it('dom mode materializes nested prose, canvas mode touches no backend', () => {
+    const { nested, containers } = classifyNested();
+    applyProjectionMode(nested, 'dom');
+    tick();
+    for (const { node } of containers) {
+      for (const leaf of nestedProse(node)) {
+        expect(scene.getProjectionResolution(leaf.id)).toMatchObject({ resolved: 'dom' });
+      }
+    }
+    applyProjectionMode(nested, 'canvas');
+    tick();
+    tick();
+    for (const { node } of containers) {
+      for (const leaf of [node, ...descendants(node)]) {
+        expect(scene.getProjectionResolution(leaf.id)).toMatchObject({
+          want: 'canvas',
+          resolved: 'canvas',
+        });
+      }
+    }
+  });
+});

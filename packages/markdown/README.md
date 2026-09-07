@@ -112,7 +112,17 @@ context-menu, so `role` is only needed when even a `url` must not appear in the
 a11y tree. See the [Image reference](https://vectojs.org/reference/ui-image/)
 for the full Visual Flattening trust table and `DecodedImage` lifecycle.
 
-> Documents @vectojs/markdown@0.23.0.
+## Projection policy — `classifyProjectionBlocks` & `applyProjectionMode`
+
+`Markdown` documents negotiate visual projection per block:
+`classifyProjectionBlocks(content)` tags top-level blocks (`prose` for
+headings/paragraphs, `code` for fences, `container` for quotes/lists whose
+nested prose is tagged recursively, canvas for tables/chrome), and
+`applyProjectionMode(root, mode)` switches the subtree — `'canvas'` forces
+canvas pixels, `'dom'` materializes prose/code, `'hybrid'` sets `'auto'`
+everywhere so the engine negotiates per block.
+
+> Documents @vectojs/markdown@0.25.0.
 
 ## Documentation
 
