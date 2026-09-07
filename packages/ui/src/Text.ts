@@ -626,6 +626,9 @@ export class Text extends UIComponent {
   }
 
   public render(r: IRenderer): void {
+    // Backend assumption (RFC1 §2): both arms below materialize text as canvas
+    // pixels via IRenderer.fillText. A future DOM projection backend must
+    // consume getContentProjection, not these laid-out lines/glyph nodes.
     // Glyph-accurate path (justify / hyphenate): each glyph carries its own x
     // (justify widens gaps; hyphenate inserts a '-'), so draw them individually.
     // node.y is in the engine's line-quantum units — remap to the component's

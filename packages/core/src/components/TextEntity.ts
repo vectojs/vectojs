@@ -226,6 +226,10 @@ export class TextEntity extends Entity {
   }
 
   public render(renderer: IRenderer): void {
+    // Backend assumption (RFC1 §2): this path materializes glyphs as canvas
+    // pixels — vector paths through IRenderer, or native fillText where the
+    // atlas has no glyph. A future DOM projection backend must not reuse these
+    // laid-out nodes as DOM boxes; it consumes getContentProjection instead.
     const currentFill = this.isHovered ? this.hoveredFillStyle : this.fillStyle;
 
     for (const node of this.nodes) {

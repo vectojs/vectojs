@@ -1578,7 +1578,10 @@ export abstract class Entity {
       return;
     }
     // Element not yet projected — retry once after the next frame (by which
-    // time Scene.syncA11y should have processed this entity).
+    // time Scene.syncA11y should have processed this entity). Guarded: without
+    // a DOM there is no mirror to focus, so headless construction must not
+    // throw here (core semantic path owns no document/window contact per RFC1 §4).
+    if (typeof requestAnimationFrame === 'undefined') return;
     requestAnimationFrame(() => {
       const retry = this.scene?.getA11yElement(this.id);
       if (retry) retry.focus();
@@ -2007,6 +2010,10 @@ export abstract class Entity {
    * readable by screen readers and crawlers, translatable, and — when
    * `selectable` is set — natively selectable. Returns `null` by default.
    * Read on the a11y sync cadence, so text changes propagate automatically.
+   *
+   * This is the descriptor half of the `ContentProjection` row of
+   * `ProjectionBackend` (`tree/scene/ProjectionBackend.ts`): the entity
+   * describes *what* to project, the scene owns *how* it is materialized.
    *
    * @param hint - Optional advice about which part of the entity is worth
    *   describing. Purely an optimization: ignoring it is always correct, which

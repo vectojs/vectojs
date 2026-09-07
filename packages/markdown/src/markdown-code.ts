@@ -1350,6 +1350,10 @@ export class CodeBlock extends UIComponent {
   }
 
   render(r: IRenderer): void {
+    // Backend assumption (RFC1 §2): the grid below materializes as canvas
+    // pixels — one fillText (or atlas blit) per grapheme cluster at
+    // col × cellWidth. A future DOM projection backend must consume this
+    // block's content projection, not the grid geometry.
     // The scrollbar strip is (re)fitted here rather than in `setWidth`, because
     // `setWidth` is contractually free of rebuilds and the overflow question
     // costs a grid build — one this method is about to pay anyway.
