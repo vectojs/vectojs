@@ -70,6 +70,14 @@ import {
   WasmBackendFacade,
 } from './scene/WasmBackendFacade';
 import { normalizeChord, type SceneKeyEvent, type SceneShortcutSpec } from './scene/keyboard';
+import {
+  DEFAULT_SEMANTIC_PROJECTION_POLICY,
+  getSemanticProjectionCapabilities,
+  isDeferrableSemanticNode,
+  supportsHTMLInCanvas,
+  type SemanticProjectionDecision,
+  type SemanticProjectionPolicy,
+} from './scene/SemanticProjectionPolicy';
 
 // `RenderPhase` and `RenderPhaseEntry` were exported from this module before the
 // phase timer moved out, and `packages/core/src/index.ts` is `export * from
@@ -265,6 +273,14 @@ export interface SceneOptions {
    */
   a11ySyncInterval?: number;
   /**
+   * Per-node semantic projection policy (RFC3 §5, CTX-0599). Consulted by the
+   * single per-node decision point (`shouldProjectA11y`); the framework-known
+   * default projects everything the legacy predicate projects, so omitting
+   * this changes nothing. Also settable later via
+   * {@link Scene.semanticProjectionPolicy}.
+   */
+  semanticProjectionPolicy?: SemanticProjectionPolicy;
+  /**
    * Custom renderer implementation (e.g., ThreeRenderer from @vectojs/three).
    * If provided, this renderer will be used for drawing rather than the default CanvasRenderer.
    */
@@ -448,6 +464,7 @@ export const SCENE_OPTION_KEYS = [
   'renderer',
   'renderMode',
   'respectReducedMotion',
+  'semanticProjectionPolicy',
   'userTiming',
 ] as const;
 
@@ -1320,6 +1337,13 @@ export class Scene {
    * frame. See {@link SceneOptions.a11ySyncInterval}.
    */
   public a11ySyncInterval: number = 0;
+  /**
+   * Per-node semantic projection policy (RFC3 §5, CTX-0599). Consulted once
+   * per node by {@link shouldProjectA11y}; the default projects everything
+   * the legacy predicate projects, so reassigning nothing changes nothing.
+   * See {@link SceneOptions.semanticProjectionPolicy}.
+   */
+  public semanticProjectionPolicy: SemanticProjectionPolicy = DEFAULT_SEMANTIC_PROJECTION_POLICY;
   /** Timestamp of the last a11y sync, for throttling. */
   private lastA11ySync: number = -Infinity;
   /** True if we skipped an a11y sync during animation and need to sync when at rest. */
@@ -2320,6 +2344,8 @@ export class Scene {
     this.phases.userTiming = options.userTiming ?? false;
     this.particleBackend = options.particleBackend ?? 'auto';
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
+    this.semanticProjectionPolicy =
+      options.semanticProjectionPolicy ?? DEFAULT_SEMANTIC_PROJECTION_POLICY;
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
     this.contentSemanticMargin = options.contentSemanticMargin;
@@ -3612,10 +3638,47 @@ export class Scene {
       case 'never':
         return false;
       case 'onDemand':
-        return this.a11yEngaged(node);
+        return this.a11yEngaged(node) && this.resolveSemanticProjection(node);
       default:
-        return true;
+        return this.resolveSemanticProjection(node);
     }
+  }
+
+  /**
+   * Policy half of {@link shouldProjectA11y} (RFC3 §5, CTX-0599).
+   *
+   * The legacy gates above (interactive, box, `a11yProjection` engagement)
+   * are unchanged; this only maps a {@link SemanticProjectionPolicy} decision
+   * onto project/suppress. Out of the box the default policy returns
+   * `'project'`, so behaviour is identical to having no policy.
+   *
+   * `'defer-to-browser'` always falls back to projection today: no deferral
+   * backend exists (`supportsHTMLInCanvas()` is `false`), so deferring would
+   * silently drop semantics — the exact failure RFC §3 rules out. When a
+   * backend lands, only allow-listed plain display text
+   * ({@link isDeferrableSemanticNode}; never controls) may actually defer. A
+   * throwing policy likewise falls back to projection: a policy must never be
+   * able to drop semantics by accident.
+   */
+  private resolveSemanticProjection(node: Entity): boolean {
+    const policy = this.semanticProjectionPolicy ?? DEFAULT_SEMANTIC_PROJECTION_POLICY;
+    let decision: SemanticProjectionDecision;
+    try {
+      decision = policy.choose(node, getSemanticProjectionCapabilities(), {
+        hasDOM: this.a11yRoot !== null,
+      });
+    } catch {
+      decision = 'project';
+    }
+    if (decision === 'never') return false;
+    if (
+      decision === 'defer-to-browser' &&
+      isDeferrableSemanticNode(node) &&
+      supportsHTMLInCanvas()
+    ) {
+      return false;
+    }
+    return true;
   }
 
   /**

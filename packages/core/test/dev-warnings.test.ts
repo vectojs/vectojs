@@ -304,6 +304,7 @@ describe('dev warnings — Scene.devMode', () => {
       readingDirection: 'ltr',
       renderMode: 'onDemand',
       respectReducedMotion: false,
+      semanticProjectionPolicy: undefined,
       userTiming: false,
     };
     // `renderer` is omitted deliberately: it needs a real IRenderer instance.
