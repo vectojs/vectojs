@@ -79,12 +79,89 @@ describe('DOM event bridge (RFC §6, DOMPortalEntity precedent)', () => {
     const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
     (down as unknown as Record<string, number>).pointerId = 7;
     el.dispatchEvent(down);
-    expect(getGestureOwner(7)).toBe('dom');
+    // The election names the owning node (r7: per-node attribution), and the
+    // bridge instance records its own pin.
+    expect(getGestureOwner(7)).toBe('b4');
+    expect(bridge.hasGesture(7)).toBe(true);
     const up = new Event('pointerup', { bubbles: true }) as PointerEvent;
     (up as unknown as Record<string, number>).pointerId = 7;
     el.dispatchEvent(up);
     expect(getGestureOwner(7)).toBeUndefined();
+    expect(bridge.hasGesture(7)).toBe(false);
     bridge.release();
+  });
+
+  it('attributes the election to the pressing node (r7)', () => {
+    const a = new ProbeNode('nA');
+    const b = new ProbeNode('nB');
+    const elA = document.createElement('div');
+    const elB = document.createElement('div');
+    host.append(elA, elB);
+    const bridgeA = attachDOMBridge(elA, a);
+    const bridgeB = attachDOMBridge(elB, b);
+    const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+    (down as unknown as Record<string, number>).pointerId = 31;
+    elB.dispatchEvent(down);
+    expect(getGestureOwner(31)).toBe('nB');
+    expect(bridgeB.hasGesture(31)).toBe(true);
+    expect(bridgeA.hasGesture(31)).toBe(false);
+    bridgeA.release();
+    bridgeB.release();
+  });
+
+  it('scopes releases per bridge: one scene never clears another live gesture (r7)', () => {
+    const a = new ProbeNode('mA');
+    const b = new ProbeNode('mB');
+    const elA = document.createElement('div');
+    const elB = document.createElement('div');
+    host.append(elA, elB);
+    const bridgeA = attachDOMBridge(elA, a);
+    const bridgeB = attachDOMBridge(elB, b);
+    const press = (el: HTMLElement, pointerId: number): void => {
+      const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+      (down as unknown as Record<string, number>).pointerId = pointerId;
+      el.dispatchEvent(down);
+    };
+    const release = (el: HTMLElement, pointerId: number): void => {
+      const up = new Event('pointerup', { bubbles: true }) as PointerEvent;
+      (up as unknown as Record<string, number>).pointerId = pointerId;
+      el.dispatchEvent(up);
+    };
+    // Same pointerId pressed on both scenes: first elector wins the global
+    // record, both bridges hold their own pin.
+    press(elA, 32);
+    expect(getGestureOwner(32)).toBe('mA');
+    press(elB, 32);
+    expect(getGestureOwner(32)).toBe('mA');
+    expect(bridgeA.hasGesture(32)).toBe(true);
+    expect(bridgeB.hasGesture(32)).toBe(true);
+    // The non-owner's release drops only its own pin — the live gesture stays.
+    release(elB, 32);
+    expect(bridgeB.hasGesture(32)).toBe(false);
+    expect(getGestureOwner(32)).toBe('mA');
+    expect(bridgeA.hasGesture(32)).toBe(true);
+    // The owner's release ends the election.
+    release(elA, 32);
+    expect(getGestureOwner(32)).toBeUndefined();
+    expect(bridgeA.hasGesture(32)).toBe(false);
+    bridgeA.release();
+    bridgeB.release();
+  });
+
+  it('release drops mid-gesture pins instead of leaking them (r7)', () => {
+    const node = new ProbeNode('r1');
+    const el = document.createElement('div');
+    host.appendChild(el);
+    const bridge = attachDOMBridge(el, node);
+    const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+    (down as unknown as Record<string, number>).pointerId = 33;
+    el.dispatchEvent(down);
+    expect(getGestureOwner(33)).toBe('r1');
+    // No pointerup ever arrives (element torn down mid-gesture): release must
+    // clear the pin rather than reporting a stale owner forever.
+    bridge.release();
+    expect(bridge.hasGesture(33)).toBe(false);
+    expect(getGestureOwner(33)).toBeUndefined();
   });
 
   it('syncs native input back to the node and forwards change', () => {

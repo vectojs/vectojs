@@ -48,6 +48,13 @@ export interface DOMBridgeHandle {
   setInteractionMode(mode: DOMInteractionMode): void;
   /** Current policy. */
   getInteractionMode(): DOMInteractionMode;
+  /**
+   * Whether this bridge instance currently owns a live press for `pointerId`
+   * (r7: per-instance scope — the authoritative answer for one element, where
+   * the module-global {@link getGestureOwner} is the cross-scene election
+   * view RFC4's arbitration gate will consult).
+   */
+  hasGesture(pointerId: number): boolean;
   /** Remove every listener this bridge installed. Idempotent. */
   release(): void;
 }
@@ -55,6 +62,15 @@ export interface DOMBridgeHandle {
 /**
  * Engine-level gesture election record (input-dispatch-contract v2 §4:
  * gesture stickiness per `pointerId`, single-delivery invariant).
+ *
+ * Maps `pointerId` → owning NODE id (r7: was the constant `'dom'`, which made
+ * per-node attribution untestable). First elector wins — a later press for an
+ * owned id keeps its per-bridge record but does not steal the election — and
+ * a release clears the record only when it still names the releasing node, so
+ * one scene's release can never drop another scene's live gesture
+ * (multi-scene collision). The map stays module-global as the cross-scene
+ * source of truth; each bridge's own `owned` set is authoritative for its
+ * element.
  *
  * P1 is single-source — no mirror exists for a DOM-resident node, so delivery
  * is single by construction — but the election is still recorded here so the
@@ -64,7 +80,11 @@ export interface DOMBridgeHandle {
  */
 const gestureOwner = new Map<number, string>();
 
-/** Test/contract introspection: who owns `pointerId`, if anyone. */
+/**
+ * Test/contract introspection: the node id owning `pointerId`, if anyone.
+ * Single-scene contract preserved (still answers "who owns this press");
+ * the value is now the owning node id rather than the constant `'dom'`.
+ */
 export function getGestureOwner(pointerId: number): string | undefined {
   return gestureOwner.get(pointerId);
 }
@@ -101,6 +121,12 @@ export function attachDOMBridge(
 ): DOMBridgeHandle {
   const listeners: Array<{ type: string; handler: (e: Event) => void; capture: boolean }> = [];
   let mode: DOMInteractionMode = options.mode ?? 'selection';
+  /**
+   * Presses this bridge instance owns (r7 per-instance scope). A press torn
+   * down mid-gesture (element removed, bridge released) never delivers its
+   * release, so `release()` drops these pins rather than leaking them.
+   */
+  const owned = new Set<number>();
   const on = (type: string, handler: (e: Event) => void, capture = false): void => {
     el.addEventListener(type, handler as EventListener, capture);
     listeners.push({ type, handler, capture });
@@ -122,7 +148,8 @@ export function attachDOMBridge(
   const pressCapture = (e: Event): void => {
     if (e.type === 'pointerdown') {
       const id = (e as PointerEvent).pointerId ?? 0;
-      if (!gestureOwner.has(id)) gestureOwner.set(id, 'dom');
+      if (!gestureOwner.has(id)) gestureOwner.set(id, node.id);
+      owned.add(id);
       options.onGestureStart?.(node.id, id);
       node.dispatchEvent(new VectoJSEvent('pointerdown', node, e, true, undefined, 'dom'));
     }
@@ -134,7 +161,10 @@ export function attachDOMBridge(
     on(type, (e: Event) => {
       if (type === 'pointerup' || type === 'pointercancel') {
         const id = (e as PointerEvent).pointerId ?? 0;
-        gestureOwner.delete(id);
+        owned.delete(id);
+        // Only the recorded owner clears the election (r7): a press that
+        // began on another scene's element releases there, not here.
+        if (gestureOwner.get(id) === node.id) gestureOwner.delete(id);
         options.onGestureEnd?.(node.id, id);
       }
       node.dispatchEvent(new VectoJSEvent(type, node, e, true, undefined, 'dom'));
@@ -186,6 +216,9 @@ export function attachDOMBridge(
     getInteractionMode(): DOMInteractionMode {
       return mode;
     },
+    hasGesture(pointerId: number): boolean {
+      return owned.has(pointerId);
+    },
     release(): void {
       if (released) return;
       released = true;
@@ -193,6 +226,13 @@ export function attachDOMBridge(
         el.removeEventListener(type, handler as EventListener, capture);
       }
       listeners.length = 0;
+      // A press torn down mid-gesture never delivers its release — drop this
+      // bridge's pins (owner-checked, so a live election owned elsewhere
+      // survives) rather than reporting a stale gesture forever.
+      for (const id of owned) {
+        if (gestureOwner.get(id) === node.id) gestureOwner.delete(id);
+      }
+      owned.clear();
     },
   };
 }

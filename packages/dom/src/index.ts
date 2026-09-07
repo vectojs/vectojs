@@ -6,7 +6,13 @@
  * materialize as live `HTMLElement`s positioned by their world matrix. Depends
  * on `@vectojs/core`, never the reverse.
  */
-export { DOMProjection, writeField, DOM_VISUAL_Z_INDEX, DOM_ROOT_ATTR } from './DOMProjection';
+export {
+  DOMProjection,
+  writeField,
+  clipPathForNode,
+  DOM_VISUAL_Z_INDEX,
+  DOM_ROOT_ATTR,
+} from './DOMProjection';
 export type { DOMProjectionStats, DOMKindSpec, DOMSyncFields } from './DOMProjection';
 export { attachDOMBridge, getGestureOwner } from './eventBridge';
 export type { DOMInteractionMode, DOMBridgeOptions, DOMBridgeHandle } from './eventBridge';
