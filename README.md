@@ -34,6 +34,7 @@
   <a href="https://www.npmjs.com/package/@vectojs/knowledge-graph"><img alt="knowledge-graph" src="https://img.shields.io/npm/v/@vectojs/knowledge-graph?label=knowledge-graph&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/node-editor"><img alt="node-editor" src="https://img.shields.io/npm/v/@vectojs/node-editor?label=node-editor&color=22d3ee"></a>
   <a href="https://www.npmjs.com/package/@vectojs/table"><img alt="table" src="https://img.shields.io/npm/v/@vectojs/table?label=table&color=22d3ee"></a>
+  <a href="https://www.npmjs.com/package/@vectojs/dom"><img alt="dom" src="https://img.shields.io/npm/v/@vectojs/dom?label=dom&color=22d3ee"></a>
 </p>
 
 > Render only what is visible, materialize only what is usable, retain only what is necessary.
@@ -87,6 +88,7 @@ shape, glyph, point, or row.
 | [`@vectojs/video-exporter`](./packages/video-exporter)   | Fixed-step Chromium + FFmpeg H.264 MP4 export for local modules or hosted scenes                                               |
 | [`@vectojs/desktop`](./packages/desktop)                 | Desktop-environment runtime: window manager, taskbar, start menu, shortcut router, display layout, app registry, memory VFS    |
 | [`@vectojs/knowledge-graph`](./packages/knowledge-graph) | 2D interactive knowledge-graph viewport: d3-force layout, camera pan/zoom, minimap, hover/filter, on-demand rendering          |
+| [`@vectojs/dom`](./packages/dom)                         | DOM visual projection backend: selected subtrees materialize as live HTMLElements positioned by their world matrix             |
 
 ## Install
 
