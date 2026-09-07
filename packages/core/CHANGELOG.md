@@ -1,5 +1,11 @@
 # @vectojs/core
 
+## 1.40.1
+
+### Patch Changes
+
+- 7bb1f9d: Fix projection follow-ups (CTX-0606, closes #860): explicit `dom` policy that falls back to canvas keeps its a11y mirror, `projectionHysteresisFrames` / `projectionAutoDomBudget` are recognized constructor options, and `Scene.destroy()` releases unreachable projection residents.
+
 ## 1.40.0
 
 ### Minor Changes
