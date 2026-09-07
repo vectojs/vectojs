@@ -1,6 +1,6 @@
 {
   "name": "@vectojs/dom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -41,7 +41,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@vectojs/core": "^1.39.0"
+    "@vectojs/core": "^1.40.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",
