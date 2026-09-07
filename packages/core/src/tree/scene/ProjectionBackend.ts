@@ -20,8 +20,8 @@ export type ProjectionBackendKind = 'canvas' | 'dom' | 'a11y' | 'content' | (str
  * mount/update/unmount shape the existing projections already follow so
  * RFC2 (DOM projection), RFC3 (semantic/a11y projection), and RFC4
  * (projection policy) can each name which row they implement or consume.
- * Nothing implements this interface yet — the rows below map each proposed
- * backend onto the code that performs its role today, with the invariant
+ * `@vectojs/dom` implements the `'dom'` row (`DOMProjection`); the rows below
+ * map each backend onto the code that performs its role, with the invariant
  * from RFC1 §2: two projections of the same node must agree on geometry
  * (world matrix), visibility, and lifecycle state, while each keeps its own
  * medium-specific representation.
@@ -31,7 +31,7 @@ export type ProjectionBackendKind = 'canvas' | 'dom' | 'a11y' | 'content' | (str
  * | `CanvasProjection` (`'canvas'`) | the main render pass via `IRenderer` | `Scene.render(renderer)` (`tree/Scene.ts`) → per-entity `Entity.render` (`tree/Entity.ts`) |
  * | `A11yProjection` (`'a11y'`) | `A11yProjectionManager` + `a11yRoot` mirrors | mirror creation in the `Scene.syncA11y` walk (`tree/Scene.ts`); ordering in `A11yProjectionManager` |
  * | `ContentProjection` (`'content'`) | `ContentProjectionManager` + `Entity.getContentProjection` | `Scene.syncContentProjection`, driven on the a11y sync cadence (`tree/Scene.ts`) |
- * | `DOMProjection` (`'dom'`) | **does not exist** — RFC2's work item (CTX-0598) | — (`DOMPortalEntity` is the pilot consumer, not the backend) |
+ * | `DOMProjection` (`'dom'`) | `@vectojs/dom` (`DOMProjection`, driven from the render walk) | `Scene.addProjectionBackend` + walk hook (`tree/Scene.ts`) |
  *
  * Open points deliberately left to RFC2/RFC4 (RFC1 §5): whether `update`
  * receives the full matrix or a decomposed transform, how z-order/layering

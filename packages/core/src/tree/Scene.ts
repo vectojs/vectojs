@@ -6146,7 +6146,8 @@ export class Scene {
    * the per-frame materialization of scene semantics into pixels through the
    * backend-agnostic `IRenderer` contract. (The `A11yProjection` /
    * `ContentProjection` rows run on the same cadence via {@link Scene.syncA11y}
-   * below; the `DOMProjection` row does not exist yet — RFC2/CTX-0598.)
+   * below; the `DOMProjection` row lives in `@vectojs/dom` and is driven from
+   * the render walk further below.)
    *
    * Main-frame causal order is a correctness contract:
    *
