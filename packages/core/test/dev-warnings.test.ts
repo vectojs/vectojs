@@ -301,6 +301,8 @@ describe('dev warnings — Scene.devMode', () => {
       maxFPS: 30,
       particleBackend: 'cpu',
       pointBackend: 'canvas',
+      projectionAutoDomBudget: 10,
+      projectionHysteresisFrames: 3,
       readingDirection: 'ltr',
       renderMode: 'onDemand',
       respectReducedMotion: false,
@@ -312,6 +314,11 @@ describe('dev warnings — Scene.devMode', () => {
     for (const k of Object.keys(everyKey)) {
       expect(SCENE_OPTION_KEYS).toContain(k);
     }
+    // Explicit: these two were honored by the constructor but missing from the
+    // key list, so dev mode warned on legitimate use while this test stayed
+    // green (r2).
+    expect(SCENE_OPTION_KEYS).toContain('projectionHysteresisFrames');
+    expect(SCENE_OPTION_KEYS).toContain('projectionAutoDomBudget');
 
     new Scene(canvas, everyKey as never);
     const optionWarnings = warnSpy.mock.calls.filter((c) =>

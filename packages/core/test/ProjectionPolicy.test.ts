@@ -425,6 +425,98 @@ describe('Scene.resolveProjectionFor (CTX-0601 wiring)', () => {
     expect(scene.getProjectionResolutions().map((r) => r.nodeId)).not.toContain('r1');
   });
 
+  it('explicit dom that falls back to canvas keeps its a11y mirror (CTX-0606 r1)', () => {
+    // No backend registered: negotiation reports no-dom-backend and the walk
+    // paints canvas — the mirror must survive so both projections agree.
+    const node = new Block('f1', 'prose');
+    node.domPolicy = 'dom';
+    scene.add(node);
+    tick();
+    (scene as unknown as { syncA11y: (root: unknown) => void }).syncA11y(
+      (scene as unknown as { root: unknown }).root,
+    );
+    expect(scene.getProjectionResolution('f1')).toEqual({
+      nodeId: 'f1',
+      want: 'dom',
+      resolved: 'canvas',
+      reason: 'no-dom-backend',
+    });
+    expect(scene.getA11yElement('f1')).toBeDefined();
+  });
+
+  it('explicit dom with a backend mounted still suppresses the mirror (CTX-0606 r1)', () => {
+    // The other side of the gate change: a genuinely dom-resolved node keeps
+    // single delivery through its live element, not a transparent mirror.
+    scene.addProjectionBackend(fakeDomBackend());
+    const node = new Block('e1', 'prose');
+    node.domPolicy = 'dom';
+    scene.add(node);
+    tick();
+    expect(scene.getProjectionResolution('e1')?.resolved).toBe('dom');
+    (scene as unknown as { syncA11y: (root: unknown) => void }).syncA11y(
+      (scene as unknown as { root: unknown }).root,
+    );
+    expect(scene.getA11yElement('e1')).toBeUndefined();
+  });
+
+  it('nested parent.remove clears negotiation records so a re-added same-id node starts fresh (CTX-0606 r3)', () => {
+    const backend = fakeDomBackend();
+    scene.addProjectionBackend(backend);
+    const parent = new Block('par', 'text');
+    const child = new Block('kid', 'prose');
+    child.domPolicy = 'auto';
+    parent.add(child);
+    scene.add(parent);
+    tick();
+    expect(scene.getProjectionResolution('kid')?.resolved).toBe('dom');
+    // Mid-gesture pin, then removal through the nested path (not scene.remove).
+    scene.pinProjectionForGesture(child);
+    expect(scene.isProjectionPinned(child)).toBe(true);
+    parent.remove(child);
+    expect(scene.getProjectionResolution('kid')).toBeUndefined();
+    expect(scene.getProjectionResolutions().map((r) => r.nodeId)).not.toContain('kid');
+    expect(scene.isProjectionPinned(child)).toBe(false);
+    expect(backend.unmounts).toBeGreaterThan(0);
+    // A re-added node reusing the id must not inherit the stale pin: flip the
+    // capability to canvas-leaning, then back to dom-leaning. Without a pin
+    // the second flip commits; a stuck pin would hold canvas with
+    // active-gesture.
+    scene.projectionHysteresisFrames = 1;
+    scene.registerProjectionCapability('prose', { ...CANVAS_ROW });
+    const replacement = new Block('kid', 'prose');
+    replacement.domPolicy = 'auto';
+    parent.add(replacement);
+    tick();
+    expect(scene.isProjectionPinned(replacement)).toBe(false);
+    expect(scene.getProjectionResolution('kid')?.resolved).toBe('canvas');
+    scene.registerProjectionCapability('prose', { ...DOM_ROW });
+    tick();
+    expect(scene.getProjectionResolution('kid')?.resolved).toBe('dom');
+  });
+
+  it('destroy unmounts tracked residents unreachable from the tree (CTX-0606 r3)', () => {
+    const backend = fakeDomBackend();
+    scene.addProjectionBackend(backend);
+    const node = new Block('d1', 'prose');
+    node.domPolicy = 'dom';
+    scene.add(node);
+    tick();
+    tick();
+    expect(node.domResident).toBe(true);
+    expect(backend.unmounts).toBe(0);
+    // Detach without remove(): the exact class pruneProjectionBackends names
+    // ("removed without remove()") — tracked in domSeenNodes but invisible to
+    // the destroy chain. No frame may run between the detach and destroy: the
+    // next frame's prune pass would release the node and hide the leak.
+    const root = (scene as unknown as { root: Entity }).root;
+    root.children.splice(root.children.indexOf(node), 1);
+    (node as unknown as { parent: Entity | null }).parent = null;
+    scene.destroy();
+    expect(backend.unmounts).toBe(1);
+    expect(scene.getProjectionResolution('d1')).toBeUndefined();
+    expect(scene.getProjectionResolutions().map((r) => r.nodeId)).not.toContain('d1');
+  });
+
   it('focused node keeps its backend with reason focus-pinned, never drops focus', () => {
     scene.addProjectionBackend(fakeDomBackend());
     scene.projectionHysteresisFrames = 1;
