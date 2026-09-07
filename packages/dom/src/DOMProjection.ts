@@ -11,6 +11,13 @@ export const DOM_ROOT_ATTR = 'data-vecto-dom-root';
 /** Maximum pooled elements kept per tag (RFC §4.1 tag-keyed pool). */
 const POOL_CAP_PER_TAG = 8;
 
+/**
+ * Cap on retained first-mount z records (r6). Bounds memory for scenes that
+ * churn node ids; an evicted id simply re-bases to a fresh slot on its next
+ * mount (documented, and pinned by the remount-order test for live ids).
+ */
+const MOUNT_ORDER_CAP = 2048;
+
 /** Telemetry counters (also the dirty-check assertions tests pin). */
 export interface DOMProjectionStats {
   mounts: number;
@@ -19,6 +26,8 @@ export interface DOMProjectionStats {
   opacityWrites: number;
   sizeWrites: number;
   contentWrites: number;
+  /** `clip-path` writes for the r5 `clipChildren` agreement (dirty-checked). */
+  clipWrites: number;
   poolHits: number;
   poolMisses: number;
 }
@@ -138,6 +147,127 @@ const passthroughSpec = (tag: string): DOMKindSpec => ({
 /** Shared fallback for unknown `domKind`s (avoids one alloc per update). */
 const fallbackSpec = passthroughSpec('div');
 
+/** A 2D point in a node's local pixel space. */
+interface ClipPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * Round clip coordinates to 1e-3 px (sub-pixel jitter is invisible; keeps the
+ * emitted `clip-path` string stable across frames) and normalize -0 to 0.
+ */
+function roundClip(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  const r = Math.round(v * 1000) / 1000;
+  return r === 0 ? 0 : r;
+}
+
+/** Signed polygon area (its sign is the winding; zero is degenerate). */
+function signedArea(poly: ClipPoint[]): number {
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    area += p.x * q.y - q.x * p.y;
+  }
+  return area / 2;
+}
+
+/**
+ * Intersect two convex polygons (Sutherland–Hodgman against each edge of
+ * `clip`). The clip winding is derived from its signed area, so mirrored
+ * (negative-determinant) world transforms clip correctly too.
+ */
+function intersectConvexPolygons(subject: ClipPoint[], clip: ClipPoint[]): ClipPoint[] {
+  const ccw = signedArea(clip) >= 0;
+  let output = subject;
+  for (let i = 0; i < clip.length; i++) {
+    const a = clip[i];
+    const b = clip[(i + 1) % clip.length];
+    const inside = (p: ClipPoint): boolean => {
+      const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+      return ccw ? cross >= -1e-9 : cross <= 1e-9;
+    };
+    const crossing = (p: ClipPoint, q: ClipPoint): ClipPoint => {
+      const dx = q.x - p.x;
+      const dy = q.y - p.y;
+      const ex = b.x - a.x;
+      const ey = b.y - a.y;
+      const denom = dx * ey - dy * ex;
+      if (Math.abs(denom) < 1e-12) return { x: p.x, y: p.y };
+      const t = ((a.x - p.x) * ey - (a.y - p.y) * ex) / denom;
+      return { x: p.x + t * dx, y: p.y + t * dy };
+    };
+    const input = output;
+    output = [];
+    if (input.length === 0) break;
+    for (let j = 0; j < input.length; j++) {
+      const current = input[j];
+      const previous = input[(j + input.length - 1) % input.length];
+      const currentIn = inside(current);
+      const previousIn = inside(previous);
+      if (currentIn) {
+        if (!previousIn) output.push(crossing(previous, current));
+        output.push(current);
+      } else if (previousIn) {
+        output.push(crossing(previous, current));
+      }
+    }
+  }
+  return output;
+}
+
+/**
+ * CSS `clip-path` for `node`'s projected element so DOM rendering agrees with
+ * canvas / `HitTester.isHitEligible` clipping (r5): the intersection of every
+ * `clipChildren` ancestor's local box, expressed in the node's own local
+ * pixels (the element's `clip-path` reference box shares that origin, since
+ * the element itself is positioned purely by its world-matrix transform).
+ *
+ * Uses only public core surface (`parent`, `clipChildren`, `width`/`height`,
+ * `getWorldTransform`, `worldToLocal`) — no core internals, so no core change
+ * was needed. Zero-area clippers are skipped: they clip nothing on canvas and
+ * are skipped by `Scene.projectionBoxVisible` and the a11y region walk too.
+ *
+ * Returns `''` when nothing clips (the element stays unclipped), and a
+ * zero-area `polygon()` when the intersection is empty (fully clipped). A
+ * degenerate node transform also returns `''` — its singular matrix already
+ * paints nothing, so there is nothing to clip.
+ */
+export function clipPathForNode(node: Entity): string {
+  let poly: ClipPoint[] | null = null;
+  for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+    if (!ancestor.clipChildren || ancestor.width <= 0 || ancestor.height <= 0) continue;
+    const t = ancestor.getWorldTransform();
+    const corners: ClipPoint[] = [
+      { x: t.e, y: t.f },
+      { x: t.a * ancestor.width + t.e, y: t.b * ancestor.width + t.f },
+      {
+        x: t.a * ancestor.width + t.c * ancestor.height + t.e,
+        y: t.b * ancestor.width + t.d * ancestor.height + t.f,
+      },
+      { x: t.c * ancestor.height + t.e, y: t.d * ancestor.height + t.f },
+    ];
+    const quad: ClipPoint[] = [];
+    let degenerate = false;
+    for (const corner of corners) {
+      const local = node.worldToLocal(corner.x, corner.y);
+      if (!local) {
+        degenerate = true;
+        break;
+      }
+      quad.push({ x: local.x, y: local.y });
+    }
+    if (degenerate) return '';
+    poly = poly ? intersectConvexPolygons(poly, quad) : quad;
+    if (poly.length === 0) break;
+  }
+  if (!poly) return '';
+  if (poly.length === 0) return 'polygon(0px 0px, 0px 0px, 0px 0px)';
+  return `polygon(${poly.map((p) => `${roundClip(p.x)}px ${roundClip(p.y)}px`).join(', ')})`;
+}
+
 interface DOMNodeState {
   el: HTMLElement;
   bridge: DOMBridgeHandle;
@@ -148,6 +278,8 @@ interface DOMNodeState {
   lastOpacity: string;
   lastWidth: string;
   lastHeight: string;
+  /** Last applied r5 clip-path (`''` = unclipped); dirty-checked in `update`. */
+  lastClip: string;
   intrinsicWidth: number;
   intrinsicHeight: number;
 }
@@ -181,6 +313,12 @@ export class DOMProjection implements ProjectionBackend {
   /** Nodes owning a live press: `pointerId`s per node id (RFC4 §5 pin source). */
   private readonly activeGestures = new Map<string, Set<number>>();
   private mountSeq = 0;
+  /**
+   * First-mount z per node id (r6): an unmount/remount cycle restores the same
+   * z instead of taking a fresh `mountSeq` slot that would reorder the pooled
+   * element above later siblings. FIFO-capped at {@link MOUNT_ORDER_CAP}.
+   */
+  private readonly mountOrder = new Map<string, number>();
   private readonly stats: DOMProjectionStats = {
     mounts: 0,
     unmounts: 0,
@@ -188,6 +326,7 @@ export class DOMProjection implements ProjectionBackend {
     opacityWrites: 0,
     sizeWrites: 0,
     contentWrites: 0,
+    clipWrites: 0,
     poolHits: 0,
     poolMisses: 0,
   };
@@ -290,6 +429,10 @@ export class DOMProjection implements ProjectionBackend {
       this.stats.poolHits += 1;
       if (node.domKind === 'text') el.style.userSelect = 'text';
       el.style.display = '';
+      // A pooled element carries its previous owner's clip (r5): the fresh
+      // state below starts unclipped, so restore that invariant here rather
+      // than flashing one stale-clipped frame before `update` re-syncs.
+      el.style.clipPath = '';
     } else {
       this.stats.poolMisses += 1;
       el = spec.create(node);
@@ -342,6 +485,7 @@ export class DOMProjection implements ProjectionBackend {
       lastOpacity: '',
       lastWidth: '',
       lastHeight: '',
+      lastClip: '',
       intrinsicWidth: 0,
       intrinsicHeight: 0,
     };
@@ -360,10 +504,22 @@ export class DOMProjection implements ProjectionBackend {
       state.observer = observer;
     }
     this.states.set(node.id, state);
-    // Stable mount-order z-index (documented P1 simplification): walk order is
-    // paint order, so first-mount order matches layering; steady-state frames
-    // then write no z-index at all, unlike a per-frame counter.
-    el.style.zIndex = String(1 + this.mountSeq++);
+    // Stable mount-order z-index (r6, documented P1 simplification refined):
+    // walk order is paint order, so first-mount order matches layering, and
+    // the per-id record restores it across unmount/remount cycles instead of
+    // taking a fresh `mountSeq` slot that would float the pooled element above
+    // later siblings. Steady-state frames then write no z-index at all, unlike
+    // a per-frame counter.
+    let z = this.mountOrder.get(node.id);
+    if (z === undefined) {
+      z = 1 + this.mountSeq++;
+      if (this.mountOrder.size >= MOUNT_ORDER_CAP) {
+        const oldest = this.mountOrder.keys().next();
+        if (!oldest.done) this.mountOrder.delete(oldest.value);
+      }
+      this.mountOrder.set(node.id, z);
+    }
+    el.style.zIndex = String(z);
     node.domResident = true;
     this.stats.mounts += 1;
   }
@@ -407,6 +563,17 @@ export class DOMProjection implements ProjectionBackend {
         state.lastHeight = heightStr;
         this.stats.sizeWrites += 1;
       }
+    }
+    // Clip agreement (r5): a `clipChildren` canvas ancestor clips this node's
+    // paint, but the flat DOM tree (every element a sibling under the root)
+    // would render it whole — apply the clipper intersection as `clip-path`
+    // so rendered output matches `HitTester.isHitEligible`. Dirty-checked
+    // like every other per-frame write.
+    const clip = clipPathForNode(node);
+    if (state.lastClip !== clip) {
+      state.el.style.clipPath = clip;
+      state.lastClip = clip;
+      this.stats.clipWrites += 1;
     }
     const spec = this.specFor(node);
     const cached = state.cached;
@@ -460,6 +627,7 @@ export class DOMProjection implements ProjectionBackend {
     this.states.clear();
     this.pools.clear();
     this.activeGestures.clear();
+    this.mountOrder.clear();
     this.root?.remove();
     this.root = null;
     this.sentinel = null;
