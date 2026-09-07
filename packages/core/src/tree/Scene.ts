@@ -489,6 +489,8 @@ export const SCENE_OPTION_KEYS = [
   'maxFPS',
   'particleBackend',
   'pointBackend',
+  'projectionAutoDomBudget',
+  'projectionHysteresisFrames',
   'readingDirection',
   'renderer',
   'renderMode',
@@ -3119,6 +3121,24 @@ export class Scene {
     while (this.overlayRoot.children.length > 0) {
       this.destroyEntitySubtree(this.overlayRoot.children.at(-1)!);
     }
+    // RFC4 (CTX-0606 r3): unmount projection residents the entity teardown
+    // above could not reach. Reachable residents are already released by the
+    // destroy chain (via removeA11yRecursively), but a node detached without
+    // remove() stays tracked in domSeenNodes while unreachable — and no
+    // further frame will run pruneProjectionBackends after destroy. Drain the
+    // leftovers explicitly so no backend keeps DOM for a dead scene, then drop
+    // every negotiation record (including the roots' own) with it. unmount is
+    // idempotent per the ProjectionBackend contract, so a resident the chain
+    // already released is safe to revisit.
+    for (const node of this.domSeenNodes.values()) {
+      for (const backend of this.projectionBackends) backend.unmount(node);
+    }
+    this.domSeenNodes.clear();
+    this.domSeenThisFrame.clear();
+    this.domSeenPrevFrame.clear();
+    this.projectionResolutions.clear();
+    this.projectionHysteresis.clear();
+    this.projectionGesturePins.clear();
     if (typeof window !== 'undefined' && !this.disableWindowResize) {
       window.removeEventListener('resize', this.resizeHandler);
     }
@@ -3723,12 +3743,14 @@ export class Scene {
     // RFC2 P1 (CTX-0598) + RFC4 §3 (CTX-0601): a dom-resolved node is
     // represented by its live projected element (which carries role/label via
     // the backend's content sync), not by a transparent mirror — the same
-    // single-delivery reasoning as the DOMPortalEntity skip. Explicit `'dom'`
-    // suppresses unconditionally (even with no backend mounted, as before);
-    // `'auto'` suppresses only while negotiated to `'dom'`. The walk still
-    // descends, so canvas-policy descendants keep their mirrors; only this
-    // node's own mirror is gated.
-    if (node.domPolicy === 'dom' || this.resolveProjectionFor(node) === 'dom') return false;
+    // single-delivery reasoning as the DOMPortalEntity skip. Suppression
+    // follows the negotiated resolution, not the requested policy: an
+    // explicit `'dom'` that falls back to canvas (no backend mounted,
+    // unsupported kind, prohibitive cost) still paints on canvas, so it keeps
+    // its mirror — otherwise the walk and the a11y layer disagree. The walk
+    // still descends, so canvas-policy descendants keep their mirrors; only
+    // this node's own mirror is gated.
+    if (this.resolveProjectionFor(node) === 'dom') return false;
     switch (node.a11yProjection) {
       case 'never':
         return false;
