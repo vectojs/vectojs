@@ -178,6 +178,8 @@ export class DOMProjection implements ProjectionBackend {
   private readonly pools = new Map<string, HTMLElement[]>();
   private readonly kinds = new Map<string, DOMKindSpec>();
   private readonly bridgeOptions: DOMBridgeOptions;
+  /** Nodes owning a live press: `pointerId`s per node id (RFC4 §5 pin source). */
+  private readonly activeGestures = new Map<string, Set<number>>();
   private mountSeq = 0;
   private readonly stats: DOMProjectionStats = {
     mounts: 0,
@@ -256,6 +258,15 @@ export class DOMProjection implements ProjectionBackend {
     return this.states.get(nodeId)?.el;
   }
 
+  /**
+   * Whether `node` currently owns an active press on its live element
+   * (`ProjectionBackend.hasActiveGesture`, RFC4 §5). The scene consults this
+   * during `'auto'` negotiation so a node never flips backends mid-gesture.
+   */
+  hasActiveGesture(node: Entity): boolean {
+    return (this.activeGestures.get(node.id)?.size ?? 0) > 0;
+  }
+
   /** Last ResizeObserver-measured intrinsic size, if observed. */
   getIntrinsicSize(nodeId: string): { width: number; height: number } | undefined {
     const state = this.states.get(nodeId);
@@ -296,6 +307,23 @@ export class DOMProjection implements ProjectionBackend {
     const bridge = attachDOMBridge(el, node, {
       ...this.bridgeOptions,
       editable: node.domKind === 'input' || this.bridgeOptions.editable,
+      onGestureStart: (nodeId, pointerId) => {
+        this.bridgeOptions.onGestureStart?.(nodeId, pointerId);
+        let owned = this.activeGestures.get(nodeId);
+        if (!owned) {
+          owned = new Set();
+          this.activeGestures.set(nodeId, owned);
+        }
+        owned.add(pointerId);
+      },
+      onGestureEnd: (nodeId, pointerId) => {
+        this.bridgeOptions.onGestureEnd?.(nodeId, pointerId);
+        const owned = this.activeGestures.get(nodeId);
+        if (owned) {
+          owned.delete(pointerId);
+          if (owned.size === 0) this.activeGestures.delete(nodeId);
+        }
+      },
       onNativeInput:
         node.domKind === 'input'
           ? (value: string) => {
@@ -393,6 +421,10 @@ export class DOMProjection implements ProjectionBackend {
 
   unmount(node: Entity): void {
     const state = this.states.get(node.id);
+    // A node torn down mid-gesture (explicit policy flip, removal) will never
+    // deliver the matching release — its listeners are gone with the element —
+    // so drop the pin here rather than reporting a stale gesture forever.
+    this.activeGestures.delete(node.id);
     node.domResident = false;
     if (!state) return;
     // RFC §4.3 focus fallback: a focused element removed without a fallback
@@ -427,6 +459,7 @@ export class DOMProjection implements ProjectionBackend {
     }
     this.states.clear();
     this.pools.clear();
+    this.activeGestures.clear();
     this.root?.remove();
     this.root = null;
     this.sentinel = null;

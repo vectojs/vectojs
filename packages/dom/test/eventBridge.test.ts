@@ -125,4 +125,26 @@ describe('DOM event bridge (RFC §6, DOMPortalEntity precedent)', () => {
     el.click();
     expect(clicks).toBe(0);
   });
+
+  it('reports gesture start/end with node id and pointer id (RFC4 §5)', () => {
+    const node = new ProbeNode('b6');
+    const el = document.createElement('div');
+    host.appendChild(el);
+    const calls: Array<[string, string, number]> = [];
+    const bridge = attachDOMBridge(el, node, {
+      onGestureStart: (nodeId, pointerId) => calls.push(['start', nodeId, pointerId]),
+      onGestureEnd: (nodeId, pointerId) => calls.push(['end', nodeId, pointerId]),
+    });
+    const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+    (down as unknown as Record<string, number>).pointerId = 11;
+    el.dispatchEvent(down);
+    const up = new Event('pointerup', { bubbles: true }) as PointerEvent;
+    (up as unknown as Record<string, number>).pointerId = 11;
+    el.dispatchEvent(up);
+    expect(calls).toEqual([
+      ['start', 'b6', 11],
+      ['end', 'b6', 11],
+    ]);
+    bridge.release();
+  });
 });

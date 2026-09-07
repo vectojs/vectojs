@@ -79,6 +79,20 @@ import {
   type SemanticProjectionDecision,
   type SemanticProjectionPolicy,
 } from './scene/SemanticProjectionPolicy';
+import {
+  DEFAULT_PROJECTION_CAPABILITIES,
+  PROJECTION_AUTO_DOM_BUDGET,
+  PROJECTION_AUTO_HYSTERESIS_FRAMES,
+  UNKNOWN_PROJECTION_CAPABILITY,
+  hysteresisVote,
+  resolveProjection,
+  type ProjectionCapabilityRow,
+  type ProjectionFallbackReason,
+  type ProjectionHysteresisState,
+  type ProjectionPolicy,
+  type ProjectionResolution,
+  type SceneProjectionCapabilities,
+} from './scene/ProjectionPolicy';
 
 // `RenderPhase` and `RenderPhaseEntry` were exported from this module before the
 // phase timer moved out, and `packages/core/src/index.ts` is `export * from
@@ -281,6 +295,20 @@ export interface SceneOptions {
    * {@link Scene.semanticProjectionPolicy}.
    */
   semanticProjectionPolicy?: SemanticProjectionPolicy;
+  /**
+   * Consecutive syncs an `'auto'`-policy node must keep voting for the other
+   * backend before its sticky resolution flips (RFC4 §3 rule 3). Defaults to
+   * {@link PROJECTION_AUTO_HYSTERESIS_FRAMES}. Also settable later via
+   * {@link Scene.projectionHysteresisFrames}.
+   */
+  projectionHysteresisFrames?: number;
+  /**
+   * Maximum `'auto'`-resolved DOM residents per scene per frame (RFC4 §4
+   * particle-row backstop). Explicit `'dom'` requests bypass it. Defaults to
+   * {@link PROJECTION_AUTO_DOM_BUDGET}. Also settable later via
+   * {@link Scene.projectionAutoDomBudget}.
+   */
+  projectionAutoDomBudget?: number;
   /**
    * Custom renderer implementation (e.g., ThreeRenderer from @vectojs/three).
    * If provided, this renderer will be used for drawing rather than the default CanvasRenderer.
@@ -1345,6 +1373,19 @@ export class Scene {
    * See {@link SceneOptions.semanticProjectionPolicy}.
    */
   public semanticProjectionPolicy: SemanticProjectionPolicy = DEFAULT_SEMANTIC_PROJECTION_POLICY;
+  /**
+   * Consecutive syncs an `'auto'`-policy node must keep voting for the other
+   * backend before its sticky resolution flips (RFC4 §3 rule 3, CTX-0601).
+   * Documented tunable — see {@link PROJECTION_AUTO_HYSTERESIS_FRAMES}.
+   */
+  public projectionHysteresisFrames: number = PROJECTION_AUTO_HYSTERESIS_FRAMES;
+  /**
+   * Maximum `'auto'`-resolved DOM residents per scene per frame (RFC4 §4
+   * particle-row backstop: bulk-count nodes stay canvas). Explicit `'dom'`
+   * requests bypass it. Documented tunable — see
+   * {@link PROJECTION_AUTO_DOM_BUDGET}.
+   */
+  public projectionAutoDomBudget: number = PROJECTION_AUTO_DOM_BUDGET;
   /** Timestamp of the last a11y sync, for throttling. */
   private lastA11ySync: number = -Infinity;
   /** True if we skipped an a11y sync during animation and need to sync when at rest. */
@@ -1596,6 +1637,19 @@ export class Scene {
   private domSeenPrevFrame: Set<string> = new Set();
   private domSeenThisFrame: Set<string> = new Set();
   private domSeenNodes: Map<string, Entity> = new Map();
+  /**
+   * Negotiation state (RFC4 §3, CTX-0601): last resolution per node (the
+   * per-scene queryable surface behind {@link getProjectionResolutions}),
+   * hysteresis votes, per-kind capability overrides, and explicit gesture
+   * pins. Plain data only — no `HTMLElement` surface in core.
+   */
+  private projectionResolutions: Map<string, ProjectionResolution> = new Map();
+  private projectionHysteresis: Map<string, ProjectionHysteresisState> = new Map();
+  private projectionCapabilityOverrides: Map<string, ProjectionCapabilityRow> = new Map();
+  private projectionGesturePins: Map<string, number> = new Map();
+  /** Frame id the `'auto'` DOM budget count belongs to (bulk backstop). */
+  private projectionBudgetFrame: number = -1;
+  private projectionDomAutoCount: number = 0;
   private renderOrderCounter: number = 0;
 
   // --- domain: render-scheduler — authoritative frame counter ---
@@ -2358,6 +2412,9 @@ export class Scene {
     this.a11ySyncInterval = options.a11ySyncInterval ?? 0;
     this.semanticProjectionPolicy =
       options.semanticProjectionPolicy ?? DEFAULT_SEMANTIC_PROJECTION_POLICY;
+    this.projectionHysteresisFrames =
+      options.projectionHysteresisFrames ?? PROJECTION_AUTO_HYSTERESIS_FRAMES;
+    this.projectionAutoDomBudget = options.projectionAutoDomBudget ?? PROJECTION_AUTO_DOM_BUDGET;
     this.contentProjectionEnabled = options.contentProjection ?? true;
     this.contentProjectionMargin = options.contentProjectionMargin;
     this.contentSemanticMargin = options.contentSemanticMargin;
@@ -2917,6 +2974,12 @@ export class Scene {
       this.domSeenPrevFrame.delete(node.id);
       this.domSeenNodes.delete(node.id);
     }
+    // RFC4 §3 (CTX-0601): negotiation records die with the node, or a
+    // re-added node with the same id would inherit a stale sticky resolution
+    // and its readout would outlive the entity.
+    this.projectionResolutions.delete(node.id);
+    this.projectionHysteresis.delete(node.id);
+    this.projectionGesturePins.delete(node.id);
     // Content projections must go with their entity: a surviving node is
     // still selectable (pointer-events: auto), still find-in-page-able at its
     // stale position, and leaks — the same orphan class as a11y elements.
@@ -3657,12 +3720,15 @@ export class Scene {
   private shouldProjectA11y(node: Entity): boolean {
     if (!node.interactive) return false;
     if (!(node.width > 0 || node.a11yFullViewport)) return false;
-    // RFC2 P1 (CTX-0598): a 'dom'-policy node is represented by its live
-    // projected element (which carries role/label via the backend's content
-    // sync), not by a transparent mirror — the same single-delivery reasoning
-    // as the DOMPortalEntity skip. The walk still descends, so canvas-policy
-    // descendants keep their mirrors; only this node's own mirror is gated.
-    if (node.domPolicy === 'dom') return false;
+    // RFC2 P1 (CTX-0598) + RFC4 §3 (CTX-0601): a dom-resolved node is
+    // represented by its live projected element (which carries role/label via
+    // the backend's content sync), not by a transparent mirror — the same
+    // single-delivery reasoning as the DOMPortalEntity skip. Explicit `'dom'`
+    // suppresses unconditionally (even with no backend mounted, as before);
+    // `'auto'` suppresses only while negotiated to `'dom'`. The walk still
+    // descends, so canvas-policy descendants keep their mirrors; only this
+    // node's own mirror is gated.
+    if (node.domPolicy === 'dom' || this.resolveProjectionFor(node) === 'dom') return false;
     switch (node.a11yProjection) {
       case 'never':
         return false;
@@ -3989,14 +4055,19 @@ export class Scene {
           if (e.target === capEl && typeof capEl.setPointerCapture === 'function') {
             capEl.setPointerCapture(e.pointerId);
           }
+          // RFC4 §5 (CTX-0601): an active gesture pins the node's backend —
+          // flipping mid-gesture would strand the capture on a removed element.
+          this.pinProjectionForGesture(node);
           node.dispatchEvent(new VectoJSEvent('pointerdown', node, e));
         });
         el.addEventListener('pointerup', (e) => {
           releasePointer(e);
+          this.unpinProjectionForGesture(node);
           node.dispatchEvent(new VectoJSEvent('pointerup', node, e));
         });
         el.addEventListener('pointercancel', (e) => {
           releasePointer(e);
+          this.unpinProjectionForGesture(node);
           node.dispatchEvent(new VectoJSEvent('pointercancel', node, e));
         });
         el.addEventListener('pointermove', (e) =>
@@ -5714,6 +5785,177 @@ export class Scene {
   }
 
   /**
+   * Scene-level projection capabilities (RFC4 §3 rule 2, CTX-0601).
+   *
+   * Plain-data feature detection in the shape of the proposed
+   * `scene.inputCapabilities` (input-dispatch-contract-v2 §4): apps and
+   * devtools query where a node _would_ materialize and why, without touching
+   * any backend. Additive only — no existing surface moves.
+   */
+  public get projectionCapabilities(): SceneProjectionCapabilities {
+    return {
+      hasDOM: typeof document !== 'undefined',
+      domBackendMounted: this.projectionBackends.some((b) => b.kind === 'dom'),
+      backends: this.projectionBackends.map((b) => b.kind),
+      autoHysteresisFrames: this.projectionHysteresisFrames,
+      autoDomBudget: this.projectionAutoDomBudget,
+    };
+  }
+
+  /**
+   * Register (or replace) the Capability Matrix row for one `domKind`
+   * (RFC4 §4, CTX-0601). Custom kinds start at the unknown-kind default
+   * (`unsupported-kind` → canvas); registering a row is how a custom backend
+   * kind opts into `'auto'` resolution and how tests drive oscillating costs.
+   */
+  public registerProjectionCapability(domKind: string, row: ProjectionCapabilityRow): this {
+    this.projectionCapabilityOverrides.set(domKind, row);
+    return this;
+  }
+
+  /** Matrix row for a node's `domKind` (override wins, unknown → canvas). */
+  public getProjectionCapability(node: Entity): ProjectionCapabilityRow {
+    return (
+      this.projectionCapabilityOverrides.get(node.domKind) ??
+      DEFAULT_PROJECTION_CAPABILITIES[node.domKind] ??
+      UNKNOWN_PROJECTION_CAPABILITY
+    );
+  }
+
+  /**
+   * Pin a node's backend for the duration of an active gesture (RFC4 §5 +
+   * input-dispatch-contract-v2 §4 gesture stickiness: no mid-gesture handoff).
+   * The a11y-mirror pointerdown/up/cancel listeners maintain this; DOM-side
+   * gestures are consulted through
+   * {@link ProjectionBackend.hasActiveGesture | backend.hasActiveGesture}.
+   * Refcounted so multi-pointer gestures on one node unpin exactly once.
+   */
+  public pinProjectionForGesture(node: Entity): void {
+    this.projectionGesturePins.set(node.id, (this.projectionGesturePins.get(node.id) ?? 0) + 1);
+  }
+
+  /** Release one gesture pin taken by {@link pinProjectionForGesture}. */
+  public unpinProjectionForGesture(node: Entity): void {
+    const count = (this.projectionGesturePins.get(node.id) ?? 0) - 1;
+    if (count <= 0) this.projectionGesturePins.delete(node.id);
+    else this.projectionGesturePins.set(node.id, count);
+  }
+
+  /** Whether `node` currently owns an active gesture on a core mirror. */
+  public isProjectionPinned(node: Entity): boolean {
+    return (this.projectionGesturePins.get(node.id) ?? 0) > 0;
+  }
+
+  /**
+   * Last negotiation for one node, if it was ever resolved on this scene.
+   * Accepts the node or its id; returns the stored record (not a copy — treat
+   * as read-only).
+   */
+  public getProjectionResolution(node: Entity | string): ProjectionResolution | undefined {
+    return this.projectionResolutions.get(typeof node === 'string' ? node : node.id);
+  }
+
+  /** Every node's last negotiation, in first-resolution order. */
+  public getProjectionResolutions(): readonly ProjectionResolution[] {
+    return [...this.projectionResolutions.values()];
+  }
+
+  /**
+   * Resolve one node's `domPolicy` to its effective backend (RFC4 §3, CTX-0601).
+   *
+   * Memoized per main frame (`currentFrame`, bumped once per authoritative
+   * render): the render walk and the later a11y sync must agree within a
+   * frame, or a node could lose its mirror the same frame it gains an element.
+   * `'auto'` applies, in order: no-DOM short-circuit → pure negotiation →
+   * gesture/focus hard bars (a pinned node keeps its current backend, never
+   * flips mid-gesture, focus is preserved-or-moved never dropped to `body` per
+   * input-dispatch-contract-v2 §4) → hysteresis stickiness → bulk budget.
+   * Every outcome is recorded on the per-scene queryable surface
+   * ({@link getProjectionResolutions}) with its reason — fallbacks are
+   * reported, not silent (§3 rule 2).
+   */
+  public resolveProjectionFor(node: Entity): 'canvas' | 'dom' {
+    const want: ProjectionPolicy = node.domPolicy;
+    // Fast path: with no backends registered and no non-default policy, there
+    // is nothing to negotiate and nothing to record — today's scenes pay zero.
+    if (this.projectionBackends.length === 0 && want === 'canvas') return 'canvas';
+    const memo = this.projectionHysteresis.get(node.id);
+    if (memo && memo.lastFrame === this.currentFrame) return memo.resolved;
+    const hasDOM = typeof document !== 'undefined';
+    const domBackendMounted = this.projectionBackends.some((b) => b.kind === 'dom');
+    const outcome = resolveProjection(want, this.getProjectionCapability(node), {
+      hasDOM,
+      domBackendMounted,
+    });
+    let resolved = outcome.resolved;
+    let reason: ProjectionFallbackReason | null = outcome.reason;
+    if (want === 'auto' && memo !== undefined) {
+      if (resolved !== memo.resolved) {
+        const gesturePinned =
+          this.isProjectionPinned(node) ||
+          this.projectionBackends.some((b) => b.hasActiveGesture?.(node) === true);
+        if (gesturePinned) {
+          resolved = memo.resolved;
+          reason = 'active-gesture';
+        } else if (this.ownsProjectionFocus(node)) {
+          resolved = memo.resolved;
+          reason = 'focus-pinned';
+        } else {
+          const vote = hysteresisVote(
+            memo.resolved,
+            resolved,
+            memo.consecutive,
+            this.projectionHysteresisFrames,
+          );
+          resolved = vote.resolved;
+          memo.consecutive = vote.consecutive;
+          reason = vote.flipped ? reason : 'hysteresis';
+        }
+      } else {
+        memo.consecutive = 0;
+      }
+    }
+    if (want === 'auto' && resolved === 'dom') {
+      if (this.projectionBudgetFrame !== this.currentFrame) {
+        this.projectionBudgetFrame = this.currentFrame;
+        this.projectionDomAutoCount = 0;
+      }
+      // Explicit requests bypass the budget (author's choice); the engine's
+      // own placements never outgrow the bulk backstop (§4 particle row).
+      this.projectionDomAutoCount += 1;
+      if (this.projectionDomAutoCount > this.projectionAutoDomBudget) {
+        resolved = 'canvas';
+        reason = 'bulk-budget';
+      }
+    }
+    this.projectionHysteresis.set(node.id, {
+      resolved,
+      consecutive: memo?.consecutive ?? 0,
+      lastFrame: this.currentFrame,
+    });
+    const prev = this.projectionResolutions.get(node.id);
+    if (!prev || prev.want !== want || prev.resolved !== resolved || prev.reason !== reason) {
+      this.projectionResolutions.set(node.id, { nodeId: node.id, want, resolved, reason });
+    }
+    return resolved;
+  }
+
+  /**
+   * Whether `node`'s a11y mirror currently owns browser focus (RFC4 §5 focus
+   * rule, input-dispatch-contract-v2 §4: focus stays DOM-based; flipping
+   * `projection` must preserve or deliberately move focus, never drop it to
+   * `body`). A focused node keeps its backend until blur — the actual move, if
+   * any, goes through the existing sentinels (`preserveFocusOnRemoval`, the
+   * DOM backend's own fallback), never a bare removal.
+   */
+  private ownsProjectionFocus(node: Entity): boolean {
+    if (typeof document === 'undefined') return false;
+    const mirror = this.a11yElements.get(node.id);
+    if (!mirror || mirror !== this.focusedA11yElement) return false;
+    return document.activeElement === mirror;
+  }
+
+  /**
    * RFC2 P1 (CTX-0598): unmount DOM-projection residents the walk did not see
    * this frame (viewport-culled, removed without `remove()`, policy-flipped).
    * Mirrors {@link reconcilePortals} above; unmount is idempotent per the
@@ -6371,9 +6613,11 @@ export class Scene {
       // Fully skip invisible leaf nodes (no transform, no render, no recursion).
       if (!visible && node.children.length === 0) return;
 
-      // RFC2 P1 (CTX-0598): generic DOM-projection hook (`DOMProjection` in
-      // `@vectojs/dom` behind the `ProjectionBackend` interface). Explicit
-      // per-node opt-in only (`domPolicy === 'dom'`; `'auto'` is CTX-0601).
+      // RFC2 P1 (CTX-0598) + RFC4 §3 (CTX-0601): generic DOM-projection hook
+      // (`DOMProjection` in `@vectojs/dom` behind the `ProjectionBackend`
+      // interface). Explicit per-node opt-in (`domPolicy === 'dom'`) resolves
+      // exactly as before; `'auto'` negotiates per node per frame via
+      // resolveProjectionFor (memoized, so the a11y sync below agrees).
       // Gated on main-renderer (secondary renderers must not double-drive, as
       // with portals above) and on the viewport cull. The matrix object is one
       // small alloc per DOM node per frame — DOM residency is tens of nodes by
@@ -6385,7 +6629,7 @@ export class Scene {
       if (
         isMainRenderer &&
         this.projectionBackends.length > 0 &&
-        node.domPolicy === 'dom' &&
+        this.resolveProjectionFor(node) === 'dom' &&
         visible
       ) {
         for (const backend of this.projectionBackends) {

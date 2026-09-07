@@ -55,4 +55,12 @@ export interface ProjectionBackend {
   update(node: Entity, worldMatrix: AffineTransform): void;
   /** Tear down backend state on removal or policy change. Idempotent. */
   unmount(node: Entity): void;
+  /**
+   * Whether `node` currently owns an active gesture on this backend (RFC4 §5,
+   * CTX-0601). Consulted by the scene's capability negotiation alongside its
+   * own mirror pins: a pinned node keeps its backend until gesture end —
+   * input-dispatch-contract-v2 §4 gesture stickiness, no mid-gesture handoff.
+   * Optional so test fakes stay three methods; absent means "no gestures".
+   */
+  hasActiveGesture?(node: Entity): boolean;
 }

@@ -21,6 +21,7 @@ export * from './tree/Entity';
 export * from './tree/Scene';
 export * from './tree/scene/HitResult';
 export * from './tree/scene/ProjectionBackend';
+export * from './tree/scene/ProjectionPolicy';
 export * from './tree/scene/SemanticProjectionPolicy';
 export * from './components/TextEntity';
 export * from './components/VirtualizedSetAggregate';
