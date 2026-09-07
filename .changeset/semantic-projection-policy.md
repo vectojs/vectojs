@@ -1,5 +1,0 @@
----
-'@vectojs/core': minor
----
-
-Add the RFC3 §5 semantic-projection policy seams (`tree/scene/SemanticProjectionPolicy.ts`, CTX-0599): the `SemanticProjectionPolicy` interface (`choose(node, capabilities, environment): 'project' | 'defer-to-browser' | 'never'`) with a framework-known default of `'project'`, wired at the single per-node decision point (`Scene.shouldProjectA11y`) via a new `SceneOptions.semanticProjectionPolicy` option (also settable as `Scene.semanticProjectionPolicy`) — zero behaviour change out of the box; `'defer-to-browser'` falls back to projection until a real backend exists and is allow-listed per content class (`isDeferrableSemanticNode`, never for controls). Also adds the honest `supportsHTMLInCanvas()` / `describeHTMLInCanvasSupport()` feature-detect stub (always `{ supported: false }` until a real backend) and the `VirtualizedSetAggregate` component (RFC §4.4): one persistent container (role + aria-label with count) with roving focus and a small viewport-bounded hotspot pool for virtualized sets, following the `Tree`/`Table` hotspot precedent.
