@@ -177,15 +177,38 @@ async function main(): Promise<void> {
   document.body.appendChild(readout);
 
   const renderReadout = (mode: string): void => {
-    const rows = blocks
-      .map(({ node, label }) => {
-        const r = scene.getProjectionResolution(node.id);
-        return `<tr><td>${label}</td><td>${r?.want ?? '—'}</td><td>${r?.resolved ?? '—'}</td><td>${r?.reason ?? '—'}</td></tr>`;
-      })
-      .join('');
-    readout.innerHTML =
-      `<div>mode: <b>${mode}</b> — per-block resolution + fallback reason (§3 rule 2).</div>` +
-      `<table border="1" cellpadding="4"><tr><th>block</th><th>want</th><th>resolved</th><th>reason</th></tr>${rows}</table>`;
+    // Built with DOM APIs, not innerHTML: block labels derive from document
+    // content, so interpolated HTML would be a stored-XSS sink (CodeQL
+    // js/xss). textContent keeps the bench readout inert by construction.
+    readout.textContent = '';
+    const head = document.createElement('div');
+    head.textContent = 'mode: ';
+    const bold = document.createElement('b');
+    bold.textContent = mode;
+    head.appendChild(bold);
+    head.append(' — per-block resolution + fallback reason (§3 rule 2).');
+    readout.appendChild(head);
+    const table = document.createElement('table');
+    table.setAttribute('border', '1');
+    table.setAttribute('cellpadding', '4');
+    const header = document.createElement('tr');
+    for (const text of ['block', 'want', 'resolved', 'reason']) {
+      const th = document.createElement('th');
+      th.textContent = text;
+      header.appendChild(th);
+    }
+    table.appendChild(header);
+    for (const { node, label } of blocks) {
+      const r = scene.getProjectionResolution(node.id);
+      const tr = document.createElement('tr');
+      for (const text of [label, r?.want ?? '—', r?.resolved ?? '—', r?.reason ?? '—']) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+      table.appendChild(tr);
+    }
+    readout.appendChild(table);
   };
 
   for (const mode of ['canvas', 'dom', 'hybrid'] as const satisfies MarkdownProjectionMode[]) {
