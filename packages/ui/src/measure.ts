@@ -6,6 +6,11 @@ import { createMeasuringContext, getSharedMeasuringContext } from '@vectojs/core
  * Canvas 2D context. DOM-free environments fall back to a rough estimate so the
  * core math stays portable (no `document` access at module load).
  *
+ * Backend assumption (RFC1 §2): every width here is measured with the canvas
+ * backend's font rasterization, so laid-out x positions are only valid for
+ * canvas materialization. A future DOM projection backend must supply its own
+ * metrics rather than reusing these extents.
+ *
  * The two context helpers now live in `@vectojs/text` (the leaf of the package
  * graph) so `text`, `layout`, `ui` and `core` all measure through one attached
  * canvas instead of four. They are re-exported here because this module was

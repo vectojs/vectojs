@@ -134,7 +134,11 @@ export const KEYBOARD_OWNING_ROLES: ReadonlySet<string> = new Set([
  */
 export function ownsKeyboard(el: Element | null): boolean {
   if (!el) return false;
-  if (el === document.body || el === document.documentElement) return false;
+  // Guarded: headless (no-DOM) callers can only pass null, but a mock element
+  // must not throw at the document comparison (core semantic path owns no
+  // unguarded document/window contact per RFC1 §4).
+  if (typeof document !== 'undefined' && (el === document.body || el === document.documentElement))
+    return false;
   if (el.hasAttribute('data-vecto-a11y-root')) return false;
   const tag = el.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
@@ -3689,6 +3693,10 @@ export class Scene {
   }
 
   private syncA11y(node: Entity, container: A11yContainer | null = null) {
+    // The `A11yProjection` row of ProjectionBackend
+    // (`tree/scene/ProjectionBackend.ts`): this walk mounts (mirror creation
+    // below) and updates (geometry/attribute writes further down) one mirror
+    // per projected node; unmount is removeA11yRecursively/pruneA11ySubtree.
     if (!this.a11yRoot) return; // no DOM (SSR) → a11y projection is a no-op
     if (node === this.root) {
       // Refill the per-sync materialization budget at the start of each walk.
@@ -4497,6 +4505,10 @@ export class Scene {
   }
 
   private syncContentProjection(node: Entity): void {
+    // The `ContentProjection` row of ProjectionBackend
+    // (`tree/scene/ProjectionBackend.ts`): the descriptor comes from
+    // Entity.getContentProjection; this method mounts/updates the transparent
+    // DOM copy and releaseProjectionEl below unmounts it.
     if (!this.contentProjectionEnabled || !this.a11yRoot) return;
     let el = this.contentElements.get(node.id);
 
@@ -5714,6 +5726,12 @@ export class Scene {
 
   /**
    * Render the entire scene graph onto the specified renderer.
+   *
+   * This is the `CanvasProjection` row of {@link ProjectionBackend}:
+   * the per-frame materialization of scene semantics into pixels through the
+   * backend-agnostic `IRenderer` contract. (The `A11yProjection` /
+   * `ContentProjection` rows run on the same cadence via {@link Scene.syncA11y}
+   * below; the `DOMProjection` row does not exist yet — RFC2/CTX-0598.)
    *
    * Main-frame causal order is a correctness contract:
    *

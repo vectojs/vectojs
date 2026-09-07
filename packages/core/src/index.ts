@@ -19,6 +19,7 @@ export * from './renderer/TextRasterCache';
 export * from './performance/UserTiming';
 export * from './tree/Entity';
 export * from './tree/Scene';
+export * from './tree/scene/ProjectionBackend';
 export * from './components/TextEntity';
 export * from './components/GridTextEntity';
 export * from './components/SplineEntity';
