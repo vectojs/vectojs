@@ -1,0 +1,53 @@
+{
+  "name": "@vectojs/dom",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "DOM visual projection backend for VectoJS (RFC2 P1): selected subtrees materialize as live HTMLElements positioned by their world matrix.",
+  "keywords": [
+    "dom",
+    "projection",
+    "accessibility",
+    "vectojs",
+    "typescript"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vectojs/vectojs.git",
+    "directory": "packages/dom"
+  },
+  "bugs": {
+    "url": "https://github.com/vectojs/vectojs/issues"
+  },
+  "homepage": "https://github.com/vectojs/vectojs#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "(cd ../core && bun run build) && tsup src/index.ts --format cjs,esm --external @vectojs/core --clean && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vectojs/core": "^1.39.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "esbuild": "^0.28.1",
+    "jsdom": "^30.0.1",
+    "tsup": "^8.3.5",
+    "vitest": "^4.1.11"
+  }
+}

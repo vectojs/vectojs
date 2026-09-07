@@ -104,6 +104,20 @@
         "@vectojs/ui",
       ],
     },
+    "packages/dom": {
+      "name": "@vectojs/dom",
+      "version": "0.1.0",
+      "dependencies": {
+        "@vectojs/core": "^1.39.0",
+      },
+      "devDependencies": {
+        "@types/node": "^26.4.0",
+        "esbuild": "^0.28.1",
+        "jsdom": "^30.0.1",
+        "tsup": "^8.3.5",
+        "vitest": "^4.1.11",
+      },
+    },
     "packages/graph-layout": {
       "name": "@vectojs/graph-layout",
       "version": "0.3.0",
@@ -896,6 +910,8 @@
     "@vectojs/desktop": ["@vectojs/desktop@workspace:packages/desktop"],
 
     "@vectojs/devtools": ["@vectojs/devtools@workspace:packages/devtools"],
+
+    "@vectojs/dom": ["@vectojs/dom@workspace:packages/dom"],
 
     "@vectojs/graph-layout": ["@vectojs/graph-layout@workspace:packages/graph-layout"],
 

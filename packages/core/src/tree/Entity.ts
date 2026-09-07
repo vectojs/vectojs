@@ -595,6 +595,21 @@ export interface ListenerOptions {
 }
 
 /**
+ * Origin transport of a dispatched {@link VectoJSEvent} (input-dispatch-contract
+ * v2 §4 rule 1: source attribution; gesture stickiness and single delivery are
+ * judged against this field).
+ *
+ * `'mirror'` is the a11y-shadow transport that ships today; `'canvas'` and
+ * `'at'` are reserved for the canvas-first dispatcher and AT-synthesized
+ * reflection. `'dom'` is owned by `@vectojs/dom` (RFC2): the live projected
+ * element counts as a materialized target at its point, so its bridge tags
+ * every event it forwards. The open tail leaves room for future backends
+ * without touching this type. `undefined` means "unattributed" (legacy call
+ * sites and synthetic dispatches predate the contract).
+ */
+export type VectoEventSource = 'mirror' | 'canvas' | 'at' | (string & {});
+
+/**
  * A propagating event dispatched through the entity tree by
  * {@link Entity.dispatchEvent} (DOM-like capture + bubble).
  *
@@ -615,6 +630,11 @@ export class VectoJSEvent<N = unknown> {
   readonly nativeEvent: N | undefined;
   /** Whether the event bubbles past its target (capture always runs). */
   readonly bubbles: boolean;
+  /**
+   * Which transport delivered this event ({@link VectoEventSource}).
+   * `undefined` for unattributed legacy/synthetic dispatches.
+   */
+  readonly source: VectoEventSource | undefined;
   private readonly explicitScenePoint: Point | undefined;
   private stopped = false;
   private stoppedImmediate = false;
@@ -625,6 +645,7 @@ export class VectoJSEvent<N = unknown> {
     nativeEvent?: N,
     bubbles: boolean = true,
     scenePoint?: Point,
+    source?: VectoEventSource,
   ) {
     this.type = type;
     this.target = target;
@@ -632,6 +653,7 @@ export class VectoJSEvent<N = unknown> {
     this.nativeEvent = nativeEvent;
     this.bubbles = bubbles;
     this.explicitScenePoint = scenePoint;
+    this.source = source;
   }
 
   /** Stop the event from reaching the next node in the propagation path. */
@@ -985,6 +1007,35 @@ export abstract class Entity {
    * faint-but-live control.
    */
   public a11yHidden: boolean = false;
+
+  /**
+   * Opt-in to the DOM visual projection (RFC2, implemented by `@vectojs/dom`).
+   * Plain data only — core never materializes an element from this; a
+   * registered `ProjectionBackend` does.
+   *
+   * - `'canvas'` (default): today's rendering. Zero behavior change.
+   * - `'dom'`: the node materializes as a live `HTMLElement` positioned by its
+   *   world matrix. The live element replaces the transparent a11y mirror
+   *   (same single-delivery reasoning as `DOMPortalEntity`), so opting in
+   *   requires a DOM backend and a DOM environment for the AT representation.
+   * - `'auto'`: reserved for CTX-0601 heuristics; treated as `'canvas'` here.
+   */
+  public domPolicy: 'canvas' | 'dom' | 'auto' = 'canvas';
+  /**
+   * Backend-side creation hint for a `'dom'`-policy node (tag/content mapping
+   * key, e.g. `'text' | 'button' | 'input' | 'container' | 'transform'`). Plain
+   * string so custom nodes need no DOM types in core; `@vectojs/dom` owns the
+   * registry. `''` means a plain positioned `div` with no content sync.
+   */
+  public domKind: string = '';
+  /**
+   * Internal cache owned by the DOM backend: true while the node has a live
+   * projected element. The render walk reads it to skip canvas paint for
+   * DOM-resident nodes (so a mounted node is never double-drawn) and falls
+   * through to canvas while false (SSR / no backend registered). Do not set
+   * by hand — the backend sets it on mount and clears it on unmount.
+   */
+  public domResident: boolean = false;
   /**
    * Clip this node's children to its local box (`[0,0]–[width,height]`) while
    * rendering. Combined with translating a content child, this is how
