@@ -26,6 +26,7 @@ import { SVGRenderer } from '../renderer/SVGRenderer';
 import { IRenderer, setRendererDevMode } from '../renderer/IRenderer';
 import type { PointRenderer, WebGLDrawStats } from '../renderer/WebGLPointRenderer';
 import { DOMPortalEntity } from './DOMPortalEntity';
+import type { ProjectionBackend, ProjectionBackendKind } from './scene/ProjectionBackend';
 import type { WebGPUParticleSystemManager } from '../renderer/WebGPUParticleSystemManager';
 import { ComputeParticleEntity } from './ComputeParticleEntity';
 import { type WasmModuleSource, type WasmTransformBackend } from '../wasm/backend';
@@ -1584,6 +1585,17 @@ export class Scene {
   private activePortalsThisFrame: Set<string> = new Set();
   private activePortalsPrevFrame: Set<string> = new Set();
   private portalEntities: Map<string, DOMPortalEntity> = new Map();
+  /**
+   * Generic projection backends (RFC1 §5 vocabulary, `tree/scene/ProjectionBackend.ts`).
+   * Render-independent: the interface exchanges only node identity, world
+   * matrix, and lifecycle calls, so registering a DOM backend adds no
+   * `HTMLElement` surface to core. `@vectojs/dom` owns the only implementation.
+   */
+  private projectionBackends: ProjectionBackend[] = [];
+  /** Per-frame seen-sets driving {@link pruneProjectionBackends} (portal-precedent). */
+  private domSeenPrevFrame: Set<string> = new Set();
+  private domSeenThisFrame: Set<string> = new Set();
+  private domSeenNodes: Map<string, Entity> = new Map();
   private renderOrderCounter: number = 0;
 
   // --- domain: render-scheduler — authoritative frame counter ---
@@ -2894,6 +2906,17 @@ export class Scene {
       this.activePortalsThisFrame.delete(node.id);
       this.activePortalsPrevFrame.delete(node.id);
     }
+    // RFC2 P1 (CTX-0598): release generic DOM-projection state on the remove()
+    // path (element, listeners, observer live in the backend). Idempotent per
+    // the ProjectionBackend contract; re-add re-mounts on the next frame.
+    // The `domResident` half of the gate catches a node removed after a
+    // policy flip but before the prune pass ran.
+    if (node.domPolicy === 'dom' || node.domResident) {
+      for (const backend of this.projectionBackends) backend.unmount(node);
+      this.domSeenThisFrame.delete(node.id);
+      this.domSeenPrevFrame.delete(node.id);
+      this.domSeenNodes.delete(node.id);
+    }
     // Content projections must go with their entity: a surviving node is
     // still selectable (pointer-events: auto), still find-in-page-able at its
     // stale position, and leaks — the same orphan class as a11y elements.
@@ -3634,6 +3657,12 @@ export class Scene {
   private shouldProjectA11y(node: Entity): boolean {
     if (!node.interactive) return false;
     if (!(node.width > 0 || node.a11yFullViewport)) return false;
+    // RFC2 P1 (CTX-0598): a 'dom'-policy node is represented by its live
+    // projected element (which carries role/label via the backend's content
+    // sync), not by a transparent mirror — the same single-delivery reasoning
+    // as the DOMPortalEntity skip. The walk still descends, so canvas-policy
+    // descendants keep their mirrors; only this node's own mirror is gated.
+    if (node.domPolicy === 'dom') return false;
     switch (node.a11yProjection) {
       case 'never':
         return false;
@@ -5661,6 +5690,49 @@ export class Scene {
     this.activePortalsThisFrame.clear();
   }
 
+  /**
+   * Register a generic projection backend (RFC1 §5, RFC2 P1 CTX-0598).
+   * Registration is idempotent per backend instance. Core drives
+   * mount/update/unmount from the render walk; the backend owns all
+   * medium-specific state.
+   */
+  public addProjectionBackend(backend: ProjectionBackend): this {
+    if (!this.projectionBackends.includes(backend)) this.projectionBackends.push(backend);
+    return this;
+  }
+
+  /**
+   * Remove a previously registered projection backend by instance or
+   * {@link ProjectionBackendKind | kind}. Removing does not unmount resident
+   * nodes — unmount the backend first if teardown order matters.
+   */
+  public removeProjectionBackend(backend: ProjectionBackend | ProjectionBackendKind): this {
+    this.projectionBackends = this.projectionBackends.filter((b) =>
+      typeof backend === 'string' ? b.kind !== backend : b !== backend,
+    );
+    return this;
+  }
+
+  /**
+   * RFC2 P1 (CTX-0598): unmount DOM-projection residents the walk did not see
+   * this frame (viewport-culled, removed without `remove()`, policy-flipped).
+   * Mirrors {@link reconcilePortals} above; unmount is idempotent per the
+   * `ProjectionBackend` contract so notifying every backend is safe.
+   */
+  private pruneProjectionBackends(): void {
+    for (const id of this.domSeenPrevFrame) {
+      if (!this.domSeenThisFrame.has(id)) {
+        const node = this.domSeenNodes.get(id);
+        if (node) {
+          for (const backend of this.projectionBackends) backend.unmount(node);
+          this.domSeenNodes.delete(id);
+        }
+      }
+    }
+    this.domSeenPrevFrame = new Set(this.domSeenThisFrame);
+    this.domSeenThisFrame.clear();
+  }
+
   // --- domain: render-scheduler — the loop and the render walk ---
   /**
    * The frame-rate cap actually in effect: the explicit {@link maxFPS}, further
@@ -6299,6 +6371,33 @@ export class Scene {
       // Fully skip invisible leaf nodes (no transform, no render, no recursion).
       if (!visible && node.children.length === 0) return;
 
+      // RFC2 P1 (CTX-0598): generic DOM-projection hook (`DOMProjection` in
+      // `@vectojs/dom` behind the `ProjectionBackend` interface). Explicit
+      // per-node opt-in only (`domPolicy === 'dom'`; `'auto'` is CTX-0601).
+      // Gated on main-renderer (secondary renderers must not double-drive, as
+      // with portals above) and on the viewport cull. The matrix object is one
+      // small alloc per DOM node per frame — DOM residency is tens of nodes by
+      // policy (bulk stays canvas), so this never pays the walk's zero-alloc
+      // budget any meaningful cost. A resident leaf returns (the DOM element
+      // owns all visuals, exactly like a portal); a resident non-leaf keeps
+      // recursing so opted-in descendants stay synced, and its own canvas
+      // paint is its class's responsibility (the prototype nodes no-op it).
+      if (
+        isMainRenderer &&
+        this.projectionBackends.length > 0 &&
+        node.domPolicy === 'dom' &&
+        visible
+      ) {
+        for (const backend of this.projectionBackends) {
+          backend.update(node, { a, b, c, d, e: te, f: tf });
+        }
+        if (node.domResident) {
+          this.domSeenThisFrame.add(node.id);
+          this.domSeenNodes.set(node.id, node);
+          if (node.children.length === 0) return;
+        }
+      }
+
       // Batch fast-path: a uniform-scaled leaf circle draws through the renderer
       // batch in the parent's transform space (center = local pos, radius scaled),
       // skipping its own save/translate/scale/rotate/render/restore. Runs of
@@ -6460,6 +6559,7 @@ export class Scene {
       this.frameHadAnimation = walkHadAnimation;
       this.frameHadInteractive = walkHadInteractive;
       this.reconcilePortals();
+      this.pruneProjectionBackends();
     }
     const flushTiming = this.phases.userTiming
       ? beginVectoUserTiming(VECTO_USER_TIMING.scene.flush)
