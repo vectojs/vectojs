@@ -59,6 +59,7 @@
 import type { Bounds, Entity } from '../Entity';
 import { gatherHitAABBs } from '../../wasm/hit-store';
 import { createHitGatherBuffer, gatherHitAABBsFromStore } from '../../wasm/hit-store-fused';
+import type { DomHitCandidate, HitResult } from './HitResult';
 import type { WasmBackendFacade } from './WasmBackendFacade';
 
 /** Axis-aligned intersection of two world-space boxes (empty if disjoint). */
@@ -118,6 +119,84 @@ export class HitTester {
     // returns the correct entity or null, never "inconclusive" — so no
     // further JS fallback is needed for that call. Otherwise (no backend, or
     // an overflowing build) fall back to the permanent JS walk.
+    return this.findMainTreeHit(x, y, frame, width, height);
+  }
+
+  /**
+   * The merged hit list (RFC5 §2, CTX-0600): the canvas spatial test plus
+   * caller-observed DOM-native candidates (mirror / portal / `dom-visual`
+   * extension point for CTX-0598) as ONE ordered candidate list.
+   *
+   * Query API only — no dispatch change: `findEntityAt` keeps its single
+   * topmost answer byte-for-byte. Coordinates enter in scene space (callers
+   * map client coordinates first, e.g. `Scene.findHitsAtClient`); backend
+   * attribution follows. DOM candidates pass through the same
+   * `disabled` / `pointerEvents: 'none'` predicate as the canvas paths
+   * (RFC5 §2 rule 4); the browser's hit test is their geometric authority,
+   * so scene-space `isPointInside` is not re-checked.
+   *
+   * Overlay order is authoritative (RFC5 §2 rule 2): overlay-subtree
+   * candidates sort above main-tree candidates, DOM-native backends above
+   * canvas within one subtree. Sorted descending by `priority`; ties keep
+   * insertion order (canvas overlay, canvas main, then DOM in caller order).
+   */
+  public findHitsAt(
+    x: number,
+    y: number,
+    frame: number,
+    width: number,
+    height: number,
+    domCandidates: DomHitCandidate[] = [],
+  ): HitResult[] {
+    const results: HitResult[] = [];
+    const overlayHit = this.findHitRecursively(this.overlayRoot, x, y);
+    if (overlayHit) results.push(this.toHitResult(overlayHit, 'canvas', x, y));
+    const mainHit = this.findMainTreeHit(x, y, frame, width, height);
+    if (mainHit) results.push(this.toHitResult(mainHit, 'canvas', x, y));
+    for (const candidate of domCandidates) {
+      if (!this.isHitEligible(candidate.node, x, y)) continue;
+      results.push(this.toHitResult(candidate.node, candidate.backend, x, y));
+    }
+    results.sort((a, b) => b.priority - a.priority);
+    return results;
+  }
+
+  /**
+   * Attribute one candidate: scene-space point plus node-local point, with
+   * the compositor-layer priority (overlay subtree above main tree,
+   * DOM-native backends above canvas within one subtree).
+   */
+  private toHitResult(
+    node: Entity,
+    backend: HitResult['backend'],
+    x: number,
+    y: number,
+  ): HitResult {
+    return {
+      node,
+      backend,
+      localPoint: node.worldToLocal(x, y),
+      worldPoint: { x, y },
+      priority: (this.isInOverlaySubtree(node) ? 2 : 0) + (backend === 'canvas' ? 0 : 1),
+    };
+  }
+
+  /** Whether `node` lives under the overlay root (drawn above the main tree). */
+  private isInOverlaySubtree(node: Entity): boolean {
+    for (let current: Entity | null = node; current; current = current.parent) {
+      if (current === this.overlayRoot) return true;
+    }
+    return false;
+  }
+
+  /** Main-tree arm of {@link findEntityAt}, shared with {@link findHitsAt}. */
+  private findMainTreeHit(
+    x: number,
+    y: number,
+    frame: number,
+    width: number,
+    height: number,
+  ): Entity | null {
     if (this.backends.hit && this.ensureHitGrid(frame, width, height)) {
       return this.findEntityAtWasm(x, y);
     }
