@@ -1,5 +1,11 @@
 export * from './Markdown';
 export {
+  applyProjectionMode,
+  classifyProjectionBlock,
+  classifyProjectionBlocks,
+} from './projection-policy';
+export type { ClassifiedProjectionBlock, MarkdownProjectionMode } from './projection-policy';
+export {
   BlockAffordanceButton,
   BlockWithAffordances,
   escapeCsvField,

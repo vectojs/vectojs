@@ -1013,12 +1013,19 @@ export abstract class Entity {
    * Plain data only — core never materializes an element from this; a
    * registered `ProjectionBackend` does.
    *
+   * Name mapping: this field IS the RFC4 §2 `projection` policy
+   * (`ProjectionPolicy`: `'canvas' | 'dom' | 'auto'` in
+   * `tree/scene/ProjectionPolicy.ts`) — predates the RFC, so the field keeps
+   * its name and the RFC spelling lives on the value type.
+   *
    * - `'canvas'` (default): today's rendering. Zero behavior change.
    * - `'dom'`: the node materializes as a live `HTMLElement` positioned by its
    *   world matrix. The live element replaces the transparent a11y mirror
    *   (same single-delivery reasoning as `DOMPortalEntity`), so opting in
    *   requires a DOM backend and a DOM environment for the AT representation.
-   * - `'auto'`: reserved for CTX-0601 heuristics; treated as `'canvas'` here.
+   * - `'auto'`: negotiated per node per frame by `Scene.resolveProjectionFor`
+   *   (RFC4 §3: explicit beats automatic, fallbacks reported with reasons,
+   *   hysteresis against flip-flop, no-DOM short-circuits to canvas).
    */
   public domPolicy: 'canvas' | 'dom' | 'auto' = 'canvas';
   /**

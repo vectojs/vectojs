@@ -146,4 +146,33 @@ describe('Scene + DOMProjection integration (RFC §9.1/9.7)', () => {
     expect(projection.getElement('flip')).toBeUndefined();
     expect(node.renders).toBeGreaterThan(0);
   });
+
+  it('tracks live gestures per node for negotiation pins (RFC4 §5)', () => {
+    const btn = new DOMButton('press', 'hold me');
+    scene.add(btn);
+    tick();
+    const el = projection.getElement('press')!;
+    expect(projection.hasActiveGesture(btn)).toBe(false);
+    const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+    (down as unknown as Record<string, number>).pointerId = 3;
+    el.dispatchEvent(down);
+    expect(projection.hasActiveGesture(btn)).toBe(true);
+    const up = new Event('pointerup', { bubbles: true }) as PointerEvent;
+    (up as unknown as Record<string, number>).pointerId = 3;
+    el.dispatchEvent(up);
+    expect(projection.hasActiveGesture(btn)).toBe(false);
+  });
+
+  it('unmount clears a gesture left hanging by a mid-press teardown', () => {
+    const btn = new DOMButton('torn', 'gone mid-press');
+    scene.add(btn);
+    tick();
+    const el = projection.getElement('torn')!;
+    const down = new Event('pointerdown', { bubbles: true }) as PointerEvent;
+    (down as unknown as Record<string, number>).pointerId = 5;
+    el.dispatchEvent(down);
+    expect(projection.hasActiveGesture(btn)).toBe(true);
+    scene.remove(btn);
+    expect(projection.hasActiveGesture(btn)).toBe(false);
+  });
 });

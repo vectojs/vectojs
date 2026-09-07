@@ -27,6 +27,19 @@ export interface DOMBridgeOptions {
   onNativeInput?: (value: string) => void;
   /** Starting interaction mode (default `'selection'`). */
   mode?: DOMInteractionMode;
+  /**
+   * Called when a press elects this node as the gesture owner for a
+   * `pointerId` (RFC4 §5 never-flip-inside-gesture: the scene pins the node's
+   * backend until the matching end). Paired with {@link onGestureEnd}.
+   */
+  onGestureStart?: (nodeId: string, pointerId: number) => void;
+  /**
+   * Called when the owning gesture releases (`pointerup`/`pointercancel`),
+   * unpinning what {@link onGestureStart} pinned. A release can arrive
+   * without a start on this element (press began outside, released inside),
+   * so the consumer must tolerate an unmatched end.
+   */
+  onGestureEnd?: (nodeId: string, pointerId: number) => void;
 }
 
 /** Handle returned by {@link attachDOMBridge}. */
@@ -110,6 +123,7 @@ export function attachDOMBridge(
     if (e.type === 'pointerdown') {
       const id = (e as PointerEvent).pointerId ?? 0;
       if (!gestureOwner.has(id)) gestureOwner.set(id, 'dom');
+      options.onGestureStart?.(node.id, id);
       node.dispatchEvent(new VectoJSEvent('pointerdown', node, e, true, undefined, 'dom'));
     }
     if (mode === 'selection') e.stopPropagation();
@@ -119,7 +133,9 @@ export function attachDOMBridge(
   for (const type of POINTER_EVENTS) {
     on(type, (e: Event) => {
       if (type === 'pointerup' || type === 'pointercancel') {
-        gestureOwner.delete((e as PointerEvent).pointerId ?? 0);
+        const id = (e as PointerEvent).pointerId ?? 0;
+        gestureOwner.delete(id);
+        options.onGestureEnd?.(node.id, id);
       }
       node.dispatchEvent(new VectoJSEvent(type, node, e, true, undefined, 'dom'));
     });

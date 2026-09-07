@@ -52,7 +52,7 @@ function sourcePlugin() {
         return { path: join(PKGS, pkg!, 'src', `${rest.join('/')}.ts`) };
       });
       b.onResolve(
-        { filter: /^@vectojs\/(core|text|layout|math|animation|ui|markdown|three|devtools)$/ },
+        { filter: /^@vectojs\/(core|text|layout|math|animation|ui|markdown|three|devtools|dom)$/ },
         (a) => ({
           path: join(PKGS, a.path.replace('@vectojs/', ''), 'src/index.ts'),
         }),
