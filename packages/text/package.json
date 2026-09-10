@@ -44,10 +44,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "bidi-js": "^1.0.3"
+    "bidi-js": "^1.1.0"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }

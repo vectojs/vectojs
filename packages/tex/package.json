@@ -49,9 +49,9 @@
     "encode-glyphs": "bun run scripts/encode-glyphs.ts"
   },
   "devDependencies": {
-    "katex": "0.18.4",
+    "katex": "0.18.7",
     "tsup": "^8.3.5",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }
