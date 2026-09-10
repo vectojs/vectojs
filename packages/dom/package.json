@@ -44,10 +44,10 @@
     "@vectojs/core": "^1.40.1"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }
