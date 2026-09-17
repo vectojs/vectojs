@@ -71,11 +71,11 @@
   },
   "devDependencies": {
     "@guidepup/virtual-screen-reader": "0.32.1",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^5.0.0",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",
-    "puppeteer-core": "^25.9.0",
+    "puppeteer-core": "^25.10.0",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }

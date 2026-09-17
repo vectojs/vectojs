@@ -35,9 +35,9 @@
     "three": "^0.160.0"
   },
   "devDependencies": {
-    "@types/three": "^0.185.3",
+    "@types/three": "^0.186.0",
     "jsdom": "^30.0.1",
     "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }
