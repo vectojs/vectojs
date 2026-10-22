@@ -29,7 +29,7 @@
   "devDependencies": {
     "@vectojs/core": "workspace:*",
     "@types/three": "^0.185.3",
-    "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "tsup": "^9.0.0",
+    "vitest": "^5.0.5"
   }
 }
