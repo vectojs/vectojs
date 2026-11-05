@@ -43,7 +43,7 @@
     "@vectojs/core": "^1.39.0"
   },
   "devDependencies": {
-    "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "tsup": "^9.0.0",
+    "vitest": "^5.0.5"
   }
 }
