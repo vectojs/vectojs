@@ -47,17 +47,17 @@
   },
   "dependencies": {
     "@vectojs/graph3d": "workspace:*",
-    "n3": "^2.6.4"
+    "n3": "^2.13.12"
   },
   "peerDependencies": {
-    "three": "^0.185.1"
+    "three": "^0.187.0"
   },
   "devDependencies": {
-    "@types/n3": "^1.26.3",
-    "@types/three": "^0.185.3",
-    "jsdom": "^30.0.1",
-    "three": "^0.185.1",
-    "tsup": "^8.3.5",
-    "vitest": "^4.1.11"
+    "@types/n3": "^1.26.6",
+    "@types/three": "^0.187.0",
+    "jsdom": "^31.0.0",
+    "three": "^0.187.0",
+    "tsup": "^9.0.0",
+    "vitest": "^5.1.0"
   }
 }
